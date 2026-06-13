@@ -26,6 +26,9 @@ importers:
       '@rizz/core':
         specifier: workspace:*
         version: link:../core
+      '@rizz/providers':
+        specifier: workspace:*
+        version: link:../providers
       '@rizz/tui':
         specifier: workspace:*
         version: link:../tui
@@ -43,6 +46,9 @@ importers:
       '@rizz/core':
         specifier: workspace:*
         version: link:../core
+      '@rizz/providers':
+        specifier: workspace:*
+        version: link:../providers
 
 packages:
 

@@ -7,6 +7,12 @@ import type { Result } from '@rizz/providers';
 export const VERSION = '0.0.0';
 
 export type { Result };
-
-// The loop, budget, compression and fallback land here in M3. M0 establishes the package
-// boundary and the one-way dependency on the service layer only.
+export { type Session, createSession } from './session.js';
+export {
+  type Budget,
+  type BudgetState,
+  DEFAULT_BUDGET,
+  newBudgetState,
+  isExhausted,
+} from './budget.js';
+export { type RunTurnOptions, type TurnResult, runTurn } from './loop.js';
