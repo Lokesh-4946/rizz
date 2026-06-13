@@ -15,8 +15,14 @@ concurrency:
 
 jobs:
   check:
-    name: lint · type-check · test · eval · footprint
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} · lint · type-check · test · eval · footprint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cross-platform from day one (decision D-008). The lightweight constraint and
+        # path/shell differences are first-class CI concerns on all three OSes.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
