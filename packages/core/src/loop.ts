@@ -41,8 +41,8 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
   const budget = options.budget ?? DEFAULT_BUDGET;
   const budgetState = options.budgetState ?? newBudgetState();
 
-  session.messages.push({ role: 'user', content: input });
-
+  // Guard before mutating the session: if the turn can't run (interrupted / over budget), the user
+  // message must NOT land in history, or a retry would duplicate it and corrupt model context.
   if (signal?.aborted) {
     return err(new RizzError('INTERRUPTED', 'turn interrupted'));
   }
@@ -50,6 +50,8 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
     const reached = `${budgetState.turns} turns, ${budgetState.tokens} tokens`;
     return err(new RizzError('BUDGET_EXCEEDED', `budget reached (${reached})`));
   }
+
+  session.messages.push({ role: 'user', content: input });
 
   const request: CompletionRequest =
     signal === undefined ? { messages: session.messages } : { messages: session.messages, signal };

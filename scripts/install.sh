@@ -17,7 +17,7 @@ pnpm install --frozen-lockfile
 echo "› building…"
 pnpm build
 
-# Link the cli's bin onto PATH. Prefer ~/.local/bin (usually on PATH); fall back to /usr/local/bin.
+# Link the cli's bin into ~/.local/bin (usually on PATH). If it isn't on PATH, we print a note below.
 BIN_SRC="$ROOT/packages/cli/dist/index.js"
 chmod +x "$BIN_SRC"
 
