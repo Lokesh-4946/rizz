@@ -3,7 +3,7 @@
 // the exact published binary and the total compiled size, and fails the build if either exceeds
 // the budget in .footprint-budget.json. This is what keeps "extremely lightweight" honest.
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +48,9 @@ function coldStartMs(runs = 7) {
 }
 
 console.log('› building packages for footprint check…');
-execFileSync('pnpm', ['-s', 'build'], { cwd: root, stdio: 'inherit' });
+// String form via execSync so the shell resolves `pnpm` → `pnpm.cmd` on Windows (execFileSync
+// can't find it without the extension). Cross-platform.
+execSync('pnpm -s build', { cwd: root, stdio: 'inherit' });
 
 const actual = { coldStartMs: coldStartMs(), distKb: distKb() };
 
