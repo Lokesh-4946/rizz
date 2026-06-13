@@ -1,0 +1,27 @@
+{
+  "name": "rizz-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "rizz — the lightest, most connectable coding agent harness. Single-agent minimal by default; /workspace multi-agent on demand.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "biome ci .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "eval": "node eval/run.mjs",
+    "footprint": "node scripts/footprint-check.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval && pnpm footprint"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

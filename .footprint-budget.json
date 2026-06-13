@@ -1,0 +1,5 @@
+{
+  "$comment": "Hard lightweight constraint (brief §2). CI fails if actuals exceed these. Raising a budget is a deliberate, reviewed decision — justify it in the PR.",
+  "coldStartMs": 250,
+  "distKb": 200
+}

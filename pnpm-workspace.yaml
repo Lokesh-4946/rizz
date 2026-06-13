@@ -1,0 +1,8 @@
+packages:
+  - "packages/*"
+
+# pnpm 11 gates native-binary build scripts. Biome ships its binary via optional deps; esbuild
+# (vitest's bundler) needs its build script. Both are trusted, lightweight devDeps.
+allowBuilds:
+  "@biomejs/biome": true
+  esbuild: true
