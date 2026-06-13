@@ -1,0 +1,13 @@
+# Normalize all text files to LF in the working tree on every platform. Without this, Windows
+# checkout converts LF→CRLF and Biome's formatter (lineEnding: lf) fails CI on every file.
+* text=auto eol=lf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
