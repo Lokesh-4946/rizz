@@ -9,6 +9,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@rizz/core": "workspace:*"
+    "@rizz/core": "workspace:*",
+    "@rizz/providers": "workspace:*"
   }
 }
