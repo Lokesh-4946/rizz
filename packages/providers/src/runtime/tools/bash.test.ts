@@ -59,6 +59,12 @@ describe('classifyCommand (pure safety classifier)', () => {
     expect(classifyCommand('echo `rm -rf .`').requiresApproval).toBe(true);
   });
 
+  it('requires approval for sort -o (writes a file without a shell redirect)', () => {
+    expect(classifyCommand('sort data.txt').requiresApproval).toBe(false);
+    expect(classifyCommand('sort data.txt -o data.txt').requiresApproval).toBe(true);
+    expect(classifyCommand('sort --output=/etc/hosts /dev/null').requiresApproval).toBe(true);
+  });
+
   it('flags a truncating redirect even with a read-only program', () => {
     const c = classifyCommand('echo hi > important.txt');
     expect(c.requiresApproval).toBe(true);

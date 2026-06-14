@@ -156,6 +156,12 @@ function classifySegment(segment: string): Classification {
     return { kind: 'read-only', reason: 'find searches', requiresApproval: false };
   }
 
+  // `sort` reads, but `-o`/`--output` writes (even in place) without a shell `>` → approve. NOTE:
+  // any read-only program added above that can write via a flag needs a guard like this one.
+  if (program === 'sort' && /\s(-o|--output)(=|\s|$)/.test(segment)) {
+    return { kind: 'destructive', reason: 'sort -o writes a file', requiresApproval: true };
+  }
+
   if (NETWORKED.has(program)) {
     return { kind: 'networked', reason: `${program} touches the network`, requiresApproval: true };
   }
