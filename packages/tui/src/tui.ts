@@ -73,7 +73,10 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   const store: SessionStore = await openSessionStore({ dir: SESSIONS_DIR });
   const budgetState = newBudgetState();
   const { session, sessionId, notice } = await openSession(store, provider.label, options.resumeId);
-  budgetState.tokens = estimateMessagesTokens(session.messages);
+  // Do NOT seed budgetState.tokens from the rehydrated messages: the budget tracks THIS run's spend,
+  // and recordUsage will count the first call's inputTokens (which already include the resumed
+  // context). Seeding here would double-count and trip BUDGET_EXCEEDED on large resumes. The status
+  // bar shows context fullness separately via estimateMessagesTokens(session.messages).
 
   const writeLine = (s: string): void => {
     process.stdout.write(`${s}\n`);
