@@ -83,6 +83,7 @@ export {
   type Capability,
   type ModelInfo,
   type ModelRegistry,
+  CAPABILITIES,
   DEFAULT_REGISTRY,
   estimateCostUsd,
   getModel,

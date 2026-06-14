@@ -11,6 +11,7 @@
 
 import {
   ANTHROPIC_ACCOUNT,
+  CAPABILITIES,
   type Capability,
   DEFAULT_REGISTRY,
   type ModelInfo,
@@ -28,7 +29,6 @@ import {
   selectByCapability,
 } from '@rizz/providers';
 
-const CAPABILITIES: readonly Capability[] = ['code', 'plan', 'cheap', 'long-context'];
 const isCapability = (value: string): value is Capability =>
   (CAPABILITIES as readonly string[]).includes(value);
 

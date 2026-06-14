@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { BUILTIN_PROFILES, type Profile } from './profiles.js';
 import {
+  CAPABILITIES,
   type Capability,
   DEFAULT_REGISTRY,
   type ModelInfo,
@@ -68,8 +69,6 @@ function hasForbiddenKey(value: unknown): boolean {
   }
   return false;
 }
-
-const CAPABILITIES: readonly Capability[] = ['code', 'plan', 'cheap', 'long-context'];
 
 /** Strict guard: a user-edited entry must be a complete ModelInfo before we trust it. */
 function isModelInfo(value: unknown): value is ModelInfo {

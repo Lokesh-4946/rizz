@@ -82,22 +82,29 @@ function rankModels(
 export function selectByCapability(params: CapabilityRouteParams): Result<CapabilityRoute> {
   const { registry, request, policy, scoreFn } = params;
 
-  // 1. An explicit per-task override wins outright (opt-in; only when configured + resolvable).
+  // Capability is a hard filter (tool-capable + has the requested capability), ranked.
+  const capable = registry.models.filter(
+    (m) => m.toolCapable && m.capabilities.includes(request.capability),
+  );
+
+  // 1. An explicit per-task override wins outright (opt-in; only when configured + resolvable). Its
+  //    fallback chain stays capability-filtered + ranked, so alternates still match the request.
   const overrideId = request.taskTag !== undefined ? policy?.perTask?.[request.taskTag] : undefined;
   if (overrideId !== undefined) {
     const override = getModel(registry, overrideId);
     if (override !== undefined) {
-      const chain = registry.models.filter((m) => m.toolCapable && m.id !== override.id);
+      const chain = rankModels(
+        capable.filter((m) => m.id !== override.id),
+        request,
+        scoreFn,
+      );
       return ok({ model: override, chain, reason: 'per-task' });
     }
     // A configured override that isn't in the registry falls through to capability scoring rather
     // than failing the turn — the model genuinely isn't available.
   }
 
-  // 2. Capability is a hard filter (tool-capable + has the requested capability), then rank.
-  const capable = registry.models.filter(
-    (m) => m.toolCapable && m.capabilities.includes(request.capability),
-  );
+  // 2. No override (or it was unresolvable) → pick the best capable model.
   if (capable.length === 0) {
     return err(
       new RizzError(
