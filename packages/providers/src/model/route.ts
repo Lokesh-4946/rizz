@@ -14,6 +14,11 @@ export interface RoutingPolicy {
   readonly defaultModel: string;
   /** Ordered model ids to try on a retryable failure, after the default. */
   readonly fallbackChain: readonly string[];
+  /**
+   * Opt-in per-task override (D-023): taskTag → model id. Off by default (absent). Consumed only by
+   * the capability router (`selectByCapability`), never on the default cold path.
+   */
+  readonly perTask?: Readonly<Record<string, string>>;
 }
 
 export interface RouteRequest {

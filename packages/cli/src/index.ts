@@ -11,36 +11,42 @@ const VERSION = '0.0.0';
 const USAGE = `rizz — the lightest, most connectable coding agent harness
 
 Usage:
-  rizz                 launch the interactive TUI (set ANTHROPIC_API_KEY or /login to connect)
-  rizz --profile <p>   pick a model profile (default · deep · fast · cheap · local)
-  rizz --resume <id>   resume a saved session by id (rehydrates its full history)
-  rizz < file          run one turn on piped input and print the reply (print mode)
-  rizz --version       print the rizz version
-  rizz --help          show this help
+  rizz                   launch the interactive TUI (set ANTHROPIC_API_KEY or /login to connect)
+  rizz --profile <p>     pick a model profile (default · deep · fast · cheap · local)
+  rizz --capability <c>  pick the best model for a capability (code · plan · cheap · long-context)
+  rizz --resume <id>     resume a saved session by id (rehydrates its full history)
+  rizz < file            run one turn on piped input and print the reply (print mode)
+  rizz --version         print the rizz version
+  rizz --help            show this help
 
 Single-agent and minimal by default. With no key set it runs in demo mode. The /workspace
 multi-agent mode arrives in a later milestone.`;
 
-/** Pull `--profile <name>` out of argv (it composes with any mode); return it + the remaining args. */
-function extractProfile(argv: readonly string[]): {
-  profile?: string;
-  rest: string[];
-  missingValue?: boolean;
-} {
+/** Model-selection options pulled from the CLI; composes with any mode. */
+interface SelectOpts {
+  readonly profile?: string;
+  readonly capability?: string;
+}
+
+/** Pull a `--flag <value>` pair out of argv; reports a missing value so the caller can error. */
+function extractFlag(
+  argv: readonly string[],
+  flag: string,
+): { value?: string; rest: string[]; missingValue?: boolean } {
   const rest = [...argv];
-  const i = rest.indexOf('--profile');
+  const i = rest.indexOf(flag);
   if (i === -1) return { rest };
-  const name = rest[i + 1];
-  if (name === undefined) {
+  const value = rest[i + 1];
+  if (value === undefined) {
     rest.splice(i, 1);
     return { rest, missingValue: true };
   }
   rest.splice(i, 2);
-  return { profile: name, rest };
+  return { value, rest };
 }
 
 /** Non-TTY: read all of stdin as one prompt, run a single turn, print the reply. */
-async function runPrint(profile?: string): Promise<number> {
+async function runPrint(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const input = Buffer.concat(chunks).toString('utf8').trim();
@@ -49,7 +55,7 @@ async function runPrint(profile?: string): Promise<number> {
     return 0;
   }
 
-  const resolved = await resolveProvider(profile !== undefined ? { profile } : {});
+  const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
 
   const result = await runTurn({
@@ -69,14 +75,25 @@ async function runPrint(profile?: string): Promise<number> {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const { profile, rest, missingValue } = extractProfile(argv);
-  if (missingValue) {
+  const p = extractFlag(argv, '--profile');
+  if (p.missingValue) {
     process.stderr.write(
       "rizz: --profile needs a name (default · deep · fast · cheap · local)\nTry 'rizz --help'.\n",
     );
     return 2;
   }
-  const resolveOpts = profile !== undefined ? { profile } : {};
+  const c = extractFlag(p.rest, '--capability');
+  if (c.missingValue) {
+    process.stderr.write(
+      "rizz: --capability needs a name (code · plan · cheap · long-context)\nTry 'rizz --help'.\n",
+    );
+    return 2;
+  }
+  const select: SelectOpts = {
+    ...(p.value !== undefined ? { profile: p.value } : {}),
+    ...(c.value !== undefined ? { capability: c.value } : {}),
+  };
+  const rest = c.rest;
   const arg = rest[0];
   switch (arg) {
     case '-v':
@@ -93,15 +110,15 @@ async function main(argv: readonly string[]): Promise<number> {
         process.stderr.write("rizz: --resume needs a session id\nTry 'rizz --help'.\n");
         return 2;
       }
-      await startTui({ ...(await resolveProvider(resolveOpts)), resumeId });
+      await startTui({ ...(await resolveProvider(select)), resumeId });
       return 0;
     }
     case undefined:
       if (process.stdin.isTTY) {
-        await startTui(await resolveProvider(resolveOpts));
+        await startTui(await resolveProvider(select));
         return 0;
       }
-      return runPrint(profile);
+      return runPrint(select);
     default:
       process.stderr.write(`rizz: unknown option '${arg}'\nTry 'rizz --help'.\n`);
       return 2;

@@ -7,7 +7,10 @@
 // dimension for BYOK/metered use. On the Claude subscription path the cost is always $0 (D-021,
 // status bar shows "$0.00 (sub)"), so registry prices are not consulted there.
 
-export type Capability = 'code' | 'plan' | 'cheap' | 'long-context';
+// Single source of truth: the runtime list and the `Capability` type derive from one array, so a new
+// capability is added in exactly one place (no hand-maintained copies to drift — greploop fix).
+export const CAPABILITIES = ['code', 'plan', 'cheap', 'long-context'] as const;
+export type Capability = (typeof CAPABILITIES)[number];
 
 export interface ModelInfo {
   readonly id: string;

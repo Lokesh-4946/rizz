@@ -11,6 +11,8 @@
 
 import {
   ANTHROPIC_ACCOUNT,
+  CAPABILITIES,
+  type Capability,
   DEFAULT_REGISTRY,
   type ModelInfo,
   type ModelRegistry,
@@ -24,7 +26,11 @@ import {
   loadRegistry,
   openSecretStore,
   resolveProfile,
+  selectByCapability,
 } from '@rizz/providers';
+
+const isCapability = (value: string): value is Capability =>
+  (CAPABILITIES as readonly string[]).includes(value);
 
 export type AuthKind = 'api-key' | 'demo';
 
@@ -51,6 +57,13 @@ export interface ResolveProviderOptions {
   readonly modelId?: string;
   /** Named profile (D-023) — resolved to a model id when no explicit modelId is given. */
   readonly profile?: string;
+  /**
+   * Opt-in capability route (D-023) — pick the best model for a capability when no modelId/profile is
+   * given. Off by default; never the marketed default. One of: code | plan | cheap | long-context.
+   */
+  readonly capability?: string;
+  /** Bias the capability route toward the cheapest capable model (D-021). */
+  readonly preferCheap?: boolean;
   /** Pass-through to the adapter for tests. */
   readonly fetchImpl?: typeof fetch;
 }
@@ -104,6 +117,34 @@ export async function resolveProvider(
     }
   }
 
+  // Opt-in capability route (D-023): only when neither modelId nor profile fixed a model. Off the
+  // default path — a plain launch never enters this branch.
+  if (modelId === undefined && options.capability !== undefined) {
+    if (!isCapability(options.capability)) {
+      notice = joinNotices(
+        notice,
+        `unknown capability "${options.capability}" — one of: ${CAPABILITIES.join(', ')}`,
+      );
+    } else {
+      const route = selectByCapability({
+        registry,
+        request: {
+          capability: options.capability,
+          ...(options.preferCheap !== undefined ? { preferCheap: options.preferCheap } : {}),
+        },
+      });
+      if (route.ok) {
+        modelId = route.value.model.id;
+        notice = joinNotices(
+          notice,
+          `capability "${options.capability}" → ${route.value.model.label}`,
+        );
+      } else {
+        notice = joinNotices(notice, route.error.message);
+      }
+    }
+  }
+
   const envKey = readEnvKey(env);
   let storedKey: string | undefined;
 
@@ -115,7 +156,10 @@ export async function resolveProvider(
     if (got.ok) {
       storedKey = got.value ?? undefined;
     } else {
-      notice = `could not read the keychain (${got.error.code}) — continuing without a saved key`;
+      notice = joinNotices(
+        notice,
+        `could not read the keychain (${got.error.code}) — continuing without a saved key`,
+      );
     }
   }
 
