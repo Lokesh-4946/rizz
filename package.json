@@ -16,7 +16,8 @@
     "test": "vitest run",
     "eval": "node eval/run.mjs",
     "footprint": "node scripts/footprint-check.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval && pnpm footprint"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval && pnpm footprint",
+    "link:local": "pnpm build && node scripts/install-local.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
