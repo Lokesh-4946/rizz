@@ -5,14 +5,30 @@ The footprint gate (`scripts/footprint-check.mjs`, run in CI via `pnpm footprint
 
 ## What the gate measures
 
-- **Compiled size** = the **installed** artifacts only: shipped `.js` + `.d.ts` across every
-  `packages/*/dist`. It **excludes**:
+- **Core size** = the **installed** artifacts of the **default/core** packages only: shipped `.js` +
+  `.d.ts` across `packages/*/dist`, **excluding**:
   - source maps — `*.map`
   - compiled test files — anything matching `*.test.*`
+  - **opt-in packages** — any package named in `optInPackages` (see below)
 - **Cold start** = best of 7 runs of `node packages/cli/dist/index.js --version`.
 
-These exclusions exist because a user never installs maps or tests (D-026): the gate measures install
-size, not the dev build.
+The maps/tests exclusions exist because a user never installs them (D-026): the gate measures install
+size, not the dev build. The gate also prints a **per-package breakdown** so a regression points at the
+package that grew.
+
+## Opt-in packages don't count toward the core budget (D-001)
+
+`/workspace` (multi-agent) and `/mcp` are **summoned, not shipped on the default path** (D-001). Their
+packages (`optInPackages` in `.footprint-budget.json`, currently `["workspace", "mcp"]`) are **excluded
+from the core `distKb` budget** — the lightweight constraint is about the default single-agent cold
+path, which never imports them. They still appear in the per-package breakdown, marked `opt-in`.
+
+**Rules:**
+- A capability that must load on the default path belongs in a core package and **counts** — keep it lean.
+- A genuinely opt-in capability (lazy-loaded, summoned by a command) goes in its own package listed in
+  `optInPackages`. It must NOT be imported by any core package (that would pull it onto the cold path —
+  and it would then need to count). If an opt-in package grows large, give it its own budget here.
+- Cold start already reflects only the default CLI path (`--version`), so opt-in packages never affect it.
 
 ## The drift rule (must stay in sync)
 
