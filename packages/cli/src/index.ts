@@ -12,10 +12,11 @@ const VERSION = '0.0.0';
 const USAGE = `rizz — the lightest, most connectable coding agent harness
 
 Usage:
-  rizz              launch the interactive TUI (empty loop; demo provider until /login lands in M3)
-  rizz < file       run one turn on piped input and print the reply (print mode)
-  rizz --version    print the rizz version
-  rizz --help       show this help
+  rizz               launch the interactive TUI (demo provider until /login is wired)
+  rizz --resume <id> resume a saved session by id (rehydrates its full history)
+  rizz < file        run one turn on piped input and print the reply (print mode)
+  rizz --version     print the rizz version
+  rizz --help        show this help
 
 Single-agent and minimal by default. /login, /model and the /workspace multi-agent mode
 arrive in later milestones.`;
@@ -55,6 +56,15 @@ async function main(argv: readonly string[]): Promise<number> {
     case '--help':
       process.stdout.write(`${USAGE}\n`);
       return 0;
+    case '--resume': {
+      const resumeId = argv[1];
+      if (resumeId === undefined) {
+        process.stderr.write("rizz: --resume needs a session id\nTry 'rizz --help'.\n");
+        return 2;
+      }
+      await startTui({ provider: new StubProvider(), resumeId });
+      return 0;
+    }
     case undefined:
       if (process.stdin.isTTY) {
         await startTui({ provider: new StubProvider() });

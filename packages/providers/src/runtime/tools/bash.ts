@@ -118,8 +118,11 @@ const NETWORKED = new Set([
   'kubectl',
 ]);
 
-const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'remote', 'rev-parse']);
-const NETWORKED_GIT = new Set(['push', 'pull', 'fetch', 'clone', 'remote-add']);
+const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'rev-parse']);
+const NETWORKED_GIT = new Set(['push', 'pull', 'fetch', 'clone']);
+// `git remote` is read-only when listing (`git remote`, `git remote -v`, `git remote show`) but
+// mutates repo config with these sub-subcommands → approve.
+const MUTATING_REMOTE = new Set(['add', 'remove', 'rm', 'rename', 'set-url', 'set-head', 'prune']);
 const NODE_PM = new Set(['npm', 'pnpm', 'yarn']);
 const NETWORKED_PM_SUBCMD = new Set(['install', 'i', 'add', 'ci', 'update', 'up', 'dlx', 'create']);
 const READ_ONLY_PM_SUBCMD = new Set(['test', 'run', 'list', 'ls', 'why', 'outdated']);
@@ -157,6 +160,17 @@ function classifySegment(segment: string): Classification {
         reason: `git ${sub} touches the network`,
         requiresApproval: true,
       };
+    }
+    if (sub === 'remote') {
+      const remoteSub = tokens[2] ?? '';
+      if (MUTATING_REMOTE.has(remoteSub)) {
+        return {
+          kind: 'destructive',
+          reason: `git remote ${remoteSub} edits config`,
+          requiresApproval: true,
+        };
+      }
+      return { kind: 'read-only', reason: 'git remote lists', requiresApproval: false };
     }
     if (READ_ONLY_GIT.has(sub)) {
       return { kind: 'read-only', reason: `git ${sub} only reads`, requiresApproval: false };

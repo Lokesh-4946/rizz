@@ -13,6 +13,7 @@ import {
   err,
   getModel,
   ok,
+  openSessionStore,
 } from '@rizz/providers';
 import { describe, expect, it } from 'vitest';
 import { type TurnEvent, runTurn } from './loop.js';
@@ -183,6 +184,34 @@ describe('runTurn — agentic loop', () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.stopReason).toBe('backstop');
+  });
+
+  it('persists each message to the session store so a later load resumes the full turn', async () => {
+    const dir = await tmpDir();
+    const store = await openSessionStore({ dir });
+    const created = await store.create({ model: 'm', branch: 'dev' });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const sessionId = created.value;
+
+    const result = await runTurn({
+      provider: scripted([final('persisted answer')]),
+      session: createSession(),
+      input: 'remember this',
+      cwd: process.cwd(),
+      store,
+      sessionId,
+    });
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(sessionId);
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      expect(loaded.value.messages.map((m) => m.content)).toEqual([
+        'remember this',
+        'persisted answer',
+      ]);
+    }
   });
 
   it('denies a destructive command when approval is refused', async () => {

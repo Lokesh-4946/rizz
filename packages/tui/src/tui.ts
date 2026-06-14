@@ -3,29 +3,71 @@
 // events (tool lines, visible fallback, compaction notes), prompts inline for destructive/networked
 // command approval, and shows the live budget. The real provider auth (`/login`) lands separately.
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   DEFAULT_COMPRESS,
+  type Session,
   type TurnEvent,
   createSession,
   newBudgetState,
   runTurn,
 } from '@rizz/core';
-import { type Provider, StubProvider, estimateMessagesTokens } from '@rizz/providers';
+import {
+  type Provider,
+  type SessionStore,
+  StubProvider,
+  estimateMessagesTokens,
+  openSessionStore,
+} from '@rizz/providers';
 import { renderEmptyState, renderHeader, renderHint, renderStatusBar } from './render.js';
 import { type Theme, createTheme, defaultColorEnabled } from './theme.js';
 
 export interface TuiOptions {
   readonly provider?: Provider;
   readonly theme?: Theme;
+  /** Resume a prior session by id (rehydrates its full message history). */
+  readonly resumeId?: string;
+}
+
+/** Where sessions persist. Local-first; no cloud (D-011). */
+const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
+
+/**
+ * Create a fresh session, or resume one by id (rehydrating its full message history — the /resume
+ * failure cluster, latent-demands §6). A failed create degrades to an in-memory session (no
+ * persistence) rather than blocking startup; `sessionId` is then undefined.
+ */
+async function openSession(
+  store: SessionStore,
+  model: string,
+  resumeId?: string,
+): Promise<{ session: Session; sessionId: string | undefined }> {
+  if (resumeId !== undefined) {
+    const loaded = await store.load(resumeId);
+    if (loaded.ok) {
+      const session = createSession();
+      session.messages.push(...loaded.value.messages);
+      return { session, sessionId: resumeId };
+    }
+  }
+  const created = await store.create({ model, branch: 'dev' });
+  return { session: createSession(), sessionId: created.ok ? created.value : undefined };
 }
 
 export async function startTui(options: TuiOptions = {}): Promise<void> {
   const provider = options.provider ?? new StubProvider();
   const theme = options.theme ?? createTheme({ color: defaultColorEnabled() });
-  const session = createSession();
-  const budgetState = newBudgetState();
   const cwd = process.cwd();
+
+  // Open the local session store (node:sqlite primary, JSONL fallback) and create or resume a session.
+  const store: SessionStore = await openSessionStore({ dir: SESSIONS_DIR });
+  const budgetState = newBudgetState();
+  const { session, sessionId } = await openSession(store, provider.label, options.resumeId);
+  if (options.resumeId !== undefined) {
+    budgetState.tokens = estimateMessagesTokens(session.messages);
+  }
 
   const writeLine = (s: string): void => {
     process.stdout.write(`${s}\n`);
@@ -107,7 +149,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       ctxPct,
       tokens: budgetState.tokens,
       cost: '$0.00 (sub)',
-      branch: 'm3',
+      branch: 'dev', // TODO: read the active git branch once the workspace service lands.
     });
   };
 
@@ -129,6 +171,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       signal: inFlight.signal,
       budgetState,
       compress: DEFAULT_COMPRESS,
+      store,
+      ...(sessionId !== undefined ? { sessionId } : {}),
       onEvent: renderEvent,
       onApprovalNeeded: approve,
     });

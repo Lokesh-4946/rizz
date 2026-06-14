@@ -12,6 +12,7 @@ import {
   type Provider,
   type Result,
   RizzError,
+  type SessionStore,
   TOOL_SPECS,
   type ToolSpec,
   callModel,
@@ -62,6 +63,9 @@ export interface RunTurnOptions {
   readonly routing?: RoutingContext;
   /** Enables context compaction. Omitted → never compress (e.g. short sessions / tests). */
   readonly compress?: CompressConfig;
+  /** Persists each new message + running totals. Omitted → in-memory only (e.g. print mode / tests). */
+  readonly store?: SessionStore;
+  readonly sessionId?: string;
   readonly onApprovalNeeded?: (req: ApprovalRequest) => Promise<ApprovalDecision>;
   readonly onChunk?: (text: string) => void;
   readonly onEvent?: (event: TurnEvent) => void;
@@ -87,15 +91,19 @@ function budgetExceeded(state: BudgetState): RizzError {
 /** A model-backed summarizer for compaction, bound to the currently active provider. */
 function makeSummarizer(provider: Provider) {
   return async (slice: readonly Message[]): Promise<Result<string>> => {
+    // Flatten the slice into ONE user message. Passing the raw slice would forward orphan `tool`
+    // (and `assistant` tool-call) messages that real provider APIs reject because their originating
+    // tool_use isn't in the request — which would make compaction fail for any tool-using session.
+    const transcript = slice.map((m) => `${m.role}: ${m.content}`).join('\n\n');
     const reply = await callModel({
       provider,
       messages: [
         {
           role: 'system',
           content:
-            'Summarize the following conversation slice faithfully and concisely. Preserve decisions, file paths, and any open threads.',
+            'Summarize the following conversation transcript faithfully and concisely. Preserve decisions, file paths, and any open threads.',
         },
-        ...slice,
+        { role: 'user', content: transcript },
       ],
     });
     if (!reply.ok) return reply;
@@ -112,14 +120,35 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
   const backstop = options.iterationBackstop ?? 50;
   const subscription = options.subscription ?? true;
   const compressConfig = options.compress;
+  const { store, sessionId } = options;
   const emit = (event: TurnEvent): void => onEvent?.(event);
+
+  // Append a new message to the in-memory session AND, when a store is wired, to disk. Compaction is
+  // deliberately NOT persisted: the store keeps the full history (design §4); only the in-context
+  // window is compressed. A persistence failure surfaces a notice but never loses the turn.
+  const pushMessage = async (message: Message): Promise<void> => {
+    session.messages.push(message);
+    if (store !== undefined && sessionId !== undefined) {
+      const appended = await store.append(sessionId, message);
+      if (!appended.ok)
+        emit({ type: 'notice', message: `session not persisted: ${appended.error.code}` });
+    }
+  };
+  const persistTotals = async (): Promise<void> => {
+    if (store !== undefined && sessionId !== undefined) {
+      await store.updateMeta(sessionId, {
+        tokens: budgetState.tokens,
+        costUsd: budgetState.costUsd,
+      });
+    }
+  };
 
   // Guard BEFORE mutating the session (M2 invariant): if the turn can't even start, the user message
   // must not land in history, or a retry would duplicate it.
   if (signal?.aborted) return err(new RizzError('INTERRUPTED', 'turn interrupted'));
   if (isExhausted(budgetState, budget)) return err(budgetExceeded(budgetState));
 
-  session.messages.push({ role: 'user', content: input });
+  await pushMessage({ role: 'user', content: input });
 
   let activeProvider = provider;
   let activeModel = options.model;
@@ -170,7 +199,7 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
         repairs += 1;
         // `user`, not `system`: the Messages API takes the system prompt as a top-level param, so a
         // mid-conversation system message is a 400. A user-role nudge is valid across providers.
-        session.messages.push({
+        await pushMessage({
           role: 'user',
           content: 'Your previous tool call was malformed. Re-emit a single valid tool call.',
         });
@@ -185,10 +214,11 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
         ? 0
         : estimateCostUsd(activeModel, usage, { subscription: false });
     recordUsage(budgetState, { ...usage, costUsd });
+    await persistTotals();
 
     lastContent = content;
     if (content !== '') {
-      session.messages.push({ role: 'assistant', content });
+      await pushMessage({ role: 'assistant', content });
       emit({ type: 'assistant', content });
     }
 
@@ -206,14 +236,14 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
 
       if (!dispatched.ok) {
         // Feed the failure back to the model so it can adjust — never a silent tool failure.
-        session.messages.push({
+        await pushMessage({
           role: 'tool',
           content: `tool ${call.name} failed — ${dispatched.error.code}: ${dispatched.error.message}`,
           ...(call.id !== undefined ? { toolCallId: call.id } : {}),
         });
         emit({ type: 'tool', display: `${call.name} · ${dispatched.error.code}`, ok: false });
       } else {
-        session.messages.push({
+        await pushMessage({
           role: 'tool',
           content: dispatched.value.forModel,
           ...(call.id !== undefined ? { toolCallId: call.id } : {}),

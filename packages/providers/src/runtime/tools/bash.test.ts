@@ -43,6 +43,11 @@ describe('classifyCommand (pure safety classifier)', () => {
     expect(c.requiresApproval).toBe(true);
   });
 
+  it('classes `git remote` listing read-only but `git remote add` as approval-required', () => {
+    expect(classifyCommand('git remote -v').requiresApproval).toBe(false);
+    expect(classifyCommand('git remote add origin https://x').requiresApproval).toBe(true);
+  });
+
   it('flags a truncating redirect even with a read-only program', () => {
     const c = classifyCommand('echo hi > important.txt');
     expect(c.requiresApproval).toBe(true);
