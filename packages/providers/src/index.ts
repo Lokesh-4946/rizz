@@ -112,6 +112,14 @@ export {
   REGISTRY_VERSION,
   loadRegistry,
 } from './model/registry-store.js';
+// Opt-in capability/cost/latency router (ADR-002 §6 / D-023) — off the default path; never "smart routing".
+export {
+  type CapabilityRequest,
+  type CapabilityRoute,
+  type CapabilityRouteParams,
+  type ScoreFn,
+  selectByCapability,
+} from './model/capability-route.js';
 
 // Compression service (design §3.3) + token estimation.
 export { type CompressParams, type CompressResult, compressContext } from './compress.js';

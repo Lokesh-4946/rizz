@@ -200,3 +200,54 @@ describe('resolveProvider — profiles + on-disk registry (D-023)', () => {
     expect(resolved.notice).toContain('secret-bearing');
   });
 });
+
+describe('resolveProvider — opt-in capability route (D-023)', () => {
+  const env = { ANTHROPIC_API_KEY: 'sk-ant-env' };
+  const noFile = () => null;
+
+  it('routes a capability to the best model + surfaces the choice', async () => {
+    const resolved = await resolveProvider({
+      env,
+      readRegistryFile: noFile,
+      capability: 'long-context',
+    });
+    expect(resolved.model?.id).toBe('claude-opus-4-8'); // only long-context model
+    expect(resolved.notice).toContain('capability "long-context"');
+  });
+
+  it('preferCheap biases toward the cheapest capable model', async () => {
+    const resolved = await resolveProvider({
+      env,
+      readRegistryFile: noFile,
+      capability: 'code',
+      preferCheap: true,
+    });
+    expect(resolved.model?.id).toBe('claude-haiku-4-5');
+  });
+
+  it('modelId and profile both win over capability', async () => {
+    const byModel = await resolveProvider({
+      env,
+      readRegistryFile: noFile,
+      capability: 'cheap',
+      modelId: 'claude-opus-4-8',
+    });
+    expect(byModel.model?.id).toBe('claude-opus-4-8');
+    const byProfile = await resolveProvider({
+      env,
+      readRegistryFile: noFile,
+      capability: 'cheap',
+      profile: 'fast',
+    });
+    expect(byProfile.model?.id).toBe('claude-sonnet-4-6');
+  });
+
+  it('notices an unknown capability instead of routing', async () => {
+    const resolved = await resolveProvider({
+      env,
+      readRegistryFile: noFile,
+      capability: 'telepathy',
+    });
+    expect(resolved.notice).toContain('unknown capability');
+  });
+});
