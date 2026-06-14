@@ -3,7 +3,11 @@
 // No args + a TTY → the interactive TUI; no args + piped stdin → one print-mode turn (scriptable,
 // job #3). Kept dependency-light so cold start stays fast (the footprint gate measures this binary).
 
-import { createSession, resolveProvider, runTurn } from '@rizz/core';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { createRpcServer, createSession, resolveProvider, runJsonTurn, runTurn } from '@rizz/core';
+import { openSessionStore } from '@rizz/providers';
 import { startTui } from '@rizz/tui';
 
 const VERSION = '0.0.0';
@@ -16,11 +20,16 @@ Usage:
   rizz --capability <c>  pick the best model for a capability (code · plan · cheap · long-context)
   rizz --resume <id>     resume a saved session by id (rehydrates its full history)
   rizz < file            run one turn on piped input and print the reply (print mode)
+  rizz --json < file     one-shot turn, structured JSON result on stdout (scriptable)
+  rizz --rpc             stdin/stdout JSON line protocol for tools to drive rizz (job #3)
   rizz --version         print the rizz version
   rizz --help            show this help
 
 Single-agent and minimal by default. With no key set it runs in demo mode. The /workspace
-multi-agent mode arrives in a later milestone.`;
+multi-agent mode arrives in a later milestone. The headless contract is in runbooks/headless.md.`;
+
+/** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
+const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
 
 /** Model-selection options pulled from the CLI; composes with any mode. */
 interface SelectOpts {
@@ -74,6 +83,45 @@ async function runPrint(select: SelectOpts): Promise<number> {
   return 0;
 }
 
+/** One-shot headless JSON: a turn in on stdin, a structured JSON result on stdout (job #3). */
+async function runJson(select: SelectOpts): Promise<number> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const input = Buffer.concat(chunks).toString('utf8').trim();
+  if (input === '') {
+    process.stdout.write(
+      `${JSON.stringify({ ok: false, error: { code: 'BAD_REQUEST', message: 'empty input' } })}\n`,
+    );
+    return 2;
+  }
+  const resolved = await resolveProvider(select);
+  if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
+  const result = await runJsonTurn({ resolved, input, cwd: process.cwd() });
+  process.stdout.write(`${JSON.stringify(result)}\n`); // stdout stays pure JSON; notices go to stderr
+  return result.ok ? 0 : 1;
+}
+
+/** RPC mode: drive rizz over a stdin/stdout JSON line protocol (job #3 — the interop hub). */
+async function runRpc(select: SelectOpts): Promise<number> {
+  const resolved = await resolveProvider(select);
+  if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
+  const store = await openSessionStore({ dir: SESSIONS_DIR });
+  const server = createRpcServer({
+    resolved,
+    cwd: process.cwd(),
+    store,
+    write: (line) => process.stdout.write(line),
+  });
+  const rl = createInterface({ input: process.stdin });
+  await new Promise<void>((resolve) => {
+    rl.on('line', (line) => {
+      void server.handle(line);
+    });
+    rl.on('close', () => resolve());
+  });
+  return 0;
+}
+
 async function main(argv: readonly string[]): Promise<number> {
   const p = extractFlag(argv, '--profile');
   if (p.missingValue) {
@@ -93,7 +141,10 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
-  const rest = c.rest;
+  // Headless modes (job #3) consume the remaining args as boolean flags; --rpc wins over --json.
+  const rest = c.rest.filter((a) => a !== '--json' && a !== '--rpc');
+  if (c.rest.includes('--rpc')) return runRpc(select);
+  if (c.rest.includes('--json')) return runJson(select);
   const arg = rest[0];
   switch (arg) {
     case '-v':
