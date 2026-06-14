@@ -23,11 +23,12 @@ the real install size diverge.
 **At publish time, for each package that flips `private: false`:**
 
 1. Set `"files": ["dist"]` (ship only the build output — not `src`).
-2. Add a package `.npmignore` (or rely on `files` + an ignore) that drops the gate-excluded patterns:
+2. Add a package `.npmignore` (or rely on `files` + an ignore) that drops the gate-excluded patterns.
+   Use the `*.test.*` glob so it matches the gate's `/\.test\./` regex exactly (incl. `.test.cjs` /
+   `.test.mjs`, not just `.test.js` / `.test.d.ts`):
    ```
    *.map
-   *.test.js
-   *.test.d.ts
+   *.test.*
    ```
 3. Verify with `npm pack --dry-run` that the tarball contains **no** `*.map` and **no** `*.test.*`,
    matching `isShipped()` in `scripts/footprint-check.mjs` (the single source of truth for the

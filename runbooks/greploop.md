@@ -6,9 +6,11 @@ for this repo's Greptile install.
 
 ## Acceptance rule (D-016)
 
-The Greptile install on `Lokesh-4946/rizz` posts **inline review comments only** — it emits **no
-numeric `X/5` confidence score**, so the skill's literal "5/5" cannot be read programmatically. The
-gate is therefore satisfied when **all** of the following hold:
+The Greptile install on `Lokesh-4946/rizz` posts **inline review comments**; whatever confidence it
+may compute internally is **not exposed in the GitHub review body/API** — verified empirically: the
+`pulls/<n>/reviews` bodies are empty (length 0) across PRs #3–#6. So the skill's literal "5/5" cannot
+be read programmatically from the API. The gate is therefore satisfied when **all** of the following
+hold (if a numeric score ever does start appearing in the review body, treat 5/5 as a sixth criterion):
 
 1. **Every actionable Greptile finding is addressed** — fixed in code, or (for a false positive /
    informational note) consciously dismissed with a reply.
