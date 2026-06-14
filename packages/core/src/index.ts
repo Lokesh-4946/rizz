@@ -56,3 +56,14 @@ export {
   type TurnResult,
   runTurn,
 } from './loop.js';
+export {
+  type HeadlessProvider,
+  type JsonToolCall,
+  type JsonTurnResult,
+  type RpcRequest,
+  type RpcServer,
+  type RpcServerOptions,
+  type RunJsonTurnParams,
+  createRpcServer,
+  runJsonTurn,
+} from './headless.js';
