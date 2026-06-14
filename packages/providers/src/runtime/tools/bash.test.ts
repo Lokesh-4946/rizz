@@ -54,6 +54,12 @@ describe('classifyCommand (pure safety classifier)', () => {
     expect(classifyCommand('find . -delete').requiresApproval).toBe(true);
   });
 
+  it('allows a plain `fd` search but requires approval for fd --exec', () => {
+    expect(classifyCommand('fd ".ts$"').requiresApproval).toBe(false);
+    expect(classifyCommand('fd . -x rm -rf {}').requiresApproval).toBe(true);
+    expect(classifyCommand('fd . --exec-batch rm').requiresApproval).toBe(true);
+  });
+
   it('requires approval when a command uses command substitution', () => {
     expect(classifyCommand('cat $(rm -rf .)').requiresApproval).toBe(true);
     expect(classifyCommand('echo `rm -rf .`').requiresApproval).toBe(true);

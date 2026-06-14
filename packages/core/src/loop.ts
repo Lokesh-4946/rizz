@@ -88,8 +88,14 @@ function budgetExceeded(state: BudgetState): RizzError {
   );
 }
 
-/** A model-backed summarizer for compaction, bound to the currently active provider. */
-function makeSummarizer(provider: Provider) {
+type UsageSink = (usage: { inputTokens: number; outputTokens: number }) => void;
+
+/**
+ * A model-backed summarizer for compaction, bound to the active provider. Compaction is a real model
+ * call, so its usage is reported via `onUsage` and counted against the budget — otherwise metered
+ * spend would be understated and the cost cap unenforced for summarization.
+ */
+function makeSummarizer(provider: Provider, onUsage: UsageSink) {
   return async (slice: readonly Message[]): Promise<Result<string>> => {
     // Flatten the slice into ONE user message. Passing the raw slice would forward orphan `tool`
     // (and `assistant` tool-call) messages that real provider APIs reject because their originating
@@ -107,6 +113,7 @@ function makeSummarizer(provider: Provider) {
       ],
     });
     if (!reply.ok) return reply;
+    onUsage(reply.value.usage);
     return ok(reply.value.content);
   };
 }
@@ -155,6 +162,16 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
   let lastContent = '';
   let repairs = 0;
 
+  // Count one model call's usage against the budget (cost is 0 on a subscription). Used for both the
+  // main turn calls and compaction calls, so summarization spend is never invisible.
+  const accrue = (usage: { inputTokens: number; outputTokens: number }): void => {
+    const costUsd =
+      subscription || activeModel === undefined
+        ? 0
+        : estimateCostUsd(activeModel, usage, { subscription: false });
+    recordUsage(budgetState, { ...usage, costUsd });
+  };
+
   for (let iteration = 0; iteration < backstop; iteration += 1) {
     // Mid-turn interrupt: the partial turn is preserved in the session, never silently dropped.
     if (signal?.aborted) return err(new RizzError('INTERRUPTED', 'turn interrupted'));
@@ -164,8 +181,9 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
       const compacted = await maybeCompress(
         session.messages,
         compressConfig,
-        makeSummarizer(activeProvider),
+        makeSummarizer(activeProvider, accrue),
       );
+      await persistTotals();
       if (compacted.ok && compacted.value.note !== undefined) {
         session.messages.splice(0, session.messages.length, ...compacted.value.messages);
         emit({ type: 'compacted', note: compacted.value.note });
@@ -209,11 +227,7 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
     }
 
     const { usage, content, toolCalls } = reply.value;
-    const costUsd =
-      subscription || activeModel === undefined
-        ? 0
-        : estimateCostUsd(activeModel, usage, { subscription: false });
-    recordUsage(budgetState, { ...usage, costUsd });
+    accrue(usage);
     await persistTotals();
 
     lastContent = content;

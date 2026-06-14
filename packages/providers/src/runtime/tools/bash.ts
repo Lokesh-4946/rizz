@@ -51,7 +51,6 @@ const READ_ONLY = new Set([
   'printenv',
   'grep',
   'rg',
-  'fd',
   'tree',
   'stat',
   'file',
@@ -76,6 +75,8 @@ const READ_ONLY = new Set([
 
 // `find` flags that execute a program or delete files — these make a `find` command dangerous.
 const FIND_DANGEROUS = /\s-(exec|execdir|ok|okdir|delete)\b/;
+// `fd`'s exec flags run an arbitrary program per match (the same hazard as `find -exec`).
+const FD_DANGEROUS = /\s(-x|--exec|-X|--exec-batch)\b/;
 
 // Programs that mutate the filesystem or process state — always approve.
 const DESTRUCTIVE = new Set([
@@ -154,6 +155,14 @@ function classifySegment(segment: string): Classification {
       };
     }
     return { kind: 'read-only', reason: 'find searches', requiresApproval: false };
+  }
+
+  // `fd` mirrors `find`: read-only when searching, but -x/--exec/-X runs an arbitrary program.
+  if (program === 'fd') {
+    if (FD_DANGEROUS.test(segment)) {
+      return { kind: 'destructive', reason: 'fd --exec runs a program', requiresApproval: true };
+    }
+    return { kind: 'read-only', reason: 'fd searches', requiresApproval: false };
   }
 
   // `sort` reads, but `-o`/`--output` writes (even in place) without a shell `>` → approve. NOTE:
