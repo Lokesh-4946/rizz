@@ -22,7 +22,9 @@ export class StubProvider implements Provider {
 
     const prompt = request.messages.at(-1)?.content ?? '';
     const said = truncate(prompt, 200);
-    const content = `demo mode — no model is connected yet. You said: "${said}". Run /login to connect your Claude subscription (lands in M3).`;
+    // Concise demo reply — the persistent "/login to go live" hint is the TUI's demo banner (D-032),
+    // so this no longer re-nags every turn.
+    const content = `(demo) I can't run a real turn yet. You said: "${said}".`;
 
     return ok({
       content,

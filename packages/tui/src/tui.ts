@@ -1,7 +1,9 @@
-// Simple-mode interactive TUI (UI/UX spec §4). Zero runtime dependencies — built on node:readline
-// + the theme's ANSI (decision D-015). M3 wires the real agentic loop: it renders streamed turn
-// events (tool lines, visible fallback, compaction notes), prompts inline for destructive/networked
-// command approval, and shows the live budget. The real provider auth (`/login`) lands separately.
+// Simple-mode interactive TUI (UI/UX spec §4/§5). Zero runtime dependencies — built on node:readline
+// + the theme's ANSI (decision D-015). It renders streamed turn events (tool lines, visible fallback,
+// compaction notes), prompts inline for command approval, shows the live budget, and routes the slash
+// commands `/login` (BYOK key → keychain, D-033), `/model` (picker + hot-swap, D-029), `/theme`
+// (hot-swap across the color-depth ladder), and `/plan` (visible stub, D-030). Demo mode is a single
+// quiet banner; commands route to their handler rather than being echoed back as chat (D-032).
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -9,22 +11,41 @@ import { createInterface } from 'node:readline';
 import {
   type AuthKind,
   DEFAULT_COMPRESS,
+  type ResolvedProvider,
   type Session,
   type TurnEvent,
   createSession,
+  loginWithApiKey,
   newBudgetState,
+  resolveProvider,
   runTurn,
 } from '@rizz/core';
 import {
+  DEFAULT_REGISTRY,
   type ModelInfo,
   type Provider,
+  type SecretStore,
   type SessionStore,
   StubProvider,
   estimateMessagesTokens,
+  listToolCapable,
+  openSecretStore,
   openSessionStore,
 } from '@rizz/providers';
-import { renderEmptyState, renderHeader, renderHint, renderStatusBar } from './render.js';
-import { type Theme, createTheme, defaultColorEnabled } from './theme.js';
+import { PROVIDER_CATALOG } from './catalog.js';
+import { parseCommand, parseThemeArg } from './commands.js';
+import {
+  type PickerModel,
+  renderComingSoon,
+  renderEmptyState,
+  renderHeader,
+  renderHint,
+  renderModelPicker,
+  renderPlanStub,
+  renderStatusBar,
+  renderThemeList,
+} from './render.js';
+import { BUILTIN_THEMES, THEME_NAMES, type Theme, createTheme, detectColorDepth } from './theme.js';
 
 export interface TuiOptions {
   readonly provider?: Provider;
@@ -91,30 +112,37 @@ async function openSession(
 }
 
 export async function startTui(options: TuiOptions = {}): Promise<void> {
-  const provider = options.provider ?? new StubProvider();
-  const theme = options.theme ?? createTheme({ color: defaultColorEnabled() });
-  const subscription = options.subscription ?? true;
-  const authLabel: AuthKind = options.auth ?? 'demo';
+  // Active session state — mutable so /login, /model, and /theme hot-swap without a restart.
+  let theme = options.theme ?? createTheme({ depth: detectColorDepth() });
+  let activeProvider: Provider = options.provider ?? new StubProvider();
+  let activeModel: ModelInfo | undefined = options.model;
+  let activeSubscription = options.subscription ?? true;
+  let activeAuth: AuthKind = options.auth ?? 'demo';
   const cwd = process.cwd();
 
-  // Open the local session store (node:sqlite primary, JSONL fallback) and create or resume a session.
   const store: SessionStore = await openSessionStore({ dir: SESSIONS_DIR });
+  const secrets: SecretStore = await openSecretStore();
   const budgetState = newBudgetState();
-  const { session, sessionId, notice } = await openSession(store, provider.label, options.resumeId);
-  // Do NOT seed budgetState.tokens from the rehydrated messages: the budget tracks THIS run's spend,
-  // and recordUsage will count the first call's inputTokens (which already include the resumed
-  // context). Seeding here would double-count and trip BUDGET_EXCEEDED on large resumes. The status
-  // bar shows context fullness separately via estimateMessagesTokens(session.messages).
+  const { session, sessionId, notice } = await openSession(
+    store,
+    activeProvider.label,
+    options.resumeId,
+  );
 
   const writeLine = (s: string): void => {
     process.stdout.write(`${s}\n`);
   };
 
-  writeLine(renderHeader(theme, provider.label));
+  writeLine(renderHeader(theme, activeProvider.label));
   writeLine('');
-  // Startup notices (e.g. a keychain read failure) and a failed --resume must be visible, not silent.
   if (options.notice !== undefined) writeLine(theme.alert(`  ⚠ ${options.notice}`));
   if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
+  // Demo mode is one quiet banner, not a per-turn nag (D-032).
+  if (activeAuth === 'demo') {
+    writeLine(
+      theme.dim('  demo mode · no model connected — /login or set ANTHROPIC_API_KEY to go live'),
+    );
+  }
   writeLine(renderEmptyState(theme));
   writeLine(renderHint(theme));
   writeLine('');
@@ -127,6 +155,35 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       rl.once('close', onClose);
       rl.question(question, (answer) => {
         rl.off('close', onClose);
+        resolve(answer);
+      });
+    });
+
+  // Read a secret with the echo suppressed so the key never lands in the terminal/scrollback (§3.6).
+  // readline has no built-in masked input; overriding `_writeToOutput` is the standard approach.
+  const askSecret = (question: string): Promise<string | null> =>
+    new Promise((resolve) => {
+      // reason: `_writeToOutput` is a readline internal — the only hook for muting echo in core Node.
+      const internal = rl as unknown as { _writeToOutput?: ((s: string) => void) | undefined };
+      const original = internal._writeToOutput;
+      const restore = (): void => {
+        internal._writeToOutput = original;
+      };
+      internal._writeToOutput = (s: string): void => {
+        if (s === question) {
+          original?.call(rl, s);
+        } else if (s.includes('\n')) {
+          original?.call(rl, '\n');
+        }
+      };
+      const onClose = (): void => {
+        restore();
+        resolve(null);
+      };
+      rl.once('close', onClose);
+      rl.question(question, (answer) => {
+        rl.off('close', onClose);
+        restore();
         resolve(answer);
       });
     });
@@ -150,7 +207,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
         break;
       case 'tool': {
         const paint = event.ok ? theme.system : theme.alert;
-        writeLine(paint(`  · ${event.display}`));
+        writeLine(paint(`  ${theme.glyphs.arrow} ${event.display}`));
         break;
       }
       case 'fallback':
@@ -160,7 +217,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
         writeLine(theme.dim(`  ⤵ ${event.note}`));
         break;
       case 'approval-denied':
-        writeLine(theme.dim(`  ✗ denied: ${event.command}`));
+        writeLine(theme.dim(`  ${theme.glyphs.cross} denied: ${event.command}`));
         break;
       case 'notice':
         writeLine(theme.dim(`  ${event.message}`));
@@ -184,10 +241,10 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     const used = estimateMessagesTokens(session.messages);
     const ctxPct = Math.min(100, Math.round((used / DEFAULT_COMPRESS.contextWindow) * 100));
     // $0.00 (sub) on the subscription/demo path; the real running spend on a metered BYOK key.
-    const cost = subscription ? '$0.00 (sub)' : `$${budgetState.costUsd.toFixed(2)}`;
+    const cost = activeSubscription ? '$0.00 (sub)' : `$${budgetState.costUsd.toFixed(2)}`;
     return renderStatusBar(theme, {
-      model: provider.label,
-      auth: authLabel,
+      model: activeProvider.label,
+      auth: activeAuth,
       ctxPct,
       tokens: budgetState.tokens,
       cost,
@@ -195,25 +252,83 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     });
   };
 
-  const handleLine = async (line: string): Promise<boolean> => {
-    const input = line.trim();
-    if (input === '') return true;
-    if (input === '/exit' || input === '/quit') return false;
-    if (input === '/help') {
-      writeLine(renderHint(theme));
-      return true;
-    }
+  /** Apply a resolved provider as the new active model (shared by /login and /model). */
+  const adopt = (resolved: ResolvedProvider): void => {
+    activeProvider = resolved.provider;
+    activeModel = resolved.model;
+    activeSubscription = resolved.subscription;
+    activeAuth = resolved.auth;
+    if (resolved.notice !== undefined) writeLine(theme.dim(`  ${resolved.notice}`));
+  };
 
+  const handleLogin = async (): Promise<void> => {
+    const key = (
+      await askSecret(theme.accent('  paste your Anthropic API key (hidden): '))
+    )?.trim();
+    if (key === undefined || key === '') {
+      writeLine(theme.dim('  login cancelled.'));
+      return;
+    }
+    const { resolved, persisted } = await loginWithApiKey(secrets, key);
+    adopt(resolved);
+    if (resolved.auth === 'api-key') {
+      writeLine(theme.system(`  ${theme.glyphs.check} signed in — ${activeProvider.label}`));
+      if (!persisted) writeLine(theme.dim('  (key not saved to the keychain — this session only)'));
+    } else {
+      writeLine(theme.alert('  could not activate that key.'));
+    }
+  };
+
+  const handleModel = async (): Promise<void> => {
+    const models: PickerModel[] = listToolCapable(DEFAULT_REGISTRY).map((m) => ({
+      id: m.id,
+      label: m.label,
+      active: m.id === activeModel?.id,
+    }));
+    writeLine(renderModelPicker(theme, models, PROVIDER_CATALOG));
+    const answer = (await ask(theme.accent('  model #: ')))?.trim() ?? '';
+    if (answer === '') return;
+    const index = Number.parseInt(answer, 10) - 1;
+    const chosen = models[index];
+    if (chosen === undefined) {
+      writeLine(theme.alert('  no such model.'));
+      return;
+    }
+    if (activeAuth !== 'api-key') {
+      writeLine(renderComingSoon(theme, chosen.label));
+      writeLine(theme.dim('  run /login first to connect a key, then pick a model.'));
+      return;
+    }
+    const resolved = await resolveProvider({ secrets, modelId: chosen.id });
+    adopt(resolved);
+    writeLine(theme.system(`  ${theme.glyphs.check} switched to ${activeProvider.label}`));
+  };
+
+  const handleTheme = (arg: string | undefined): void => {
+    const name = parseThemeArg(arg);
+    if (name === undefined) {
+      writeLine(renderThemeList(theme, THEME_NAMES, theme.name));
+      return;
+    }
+    if (BUILTIN_THEMES[name] === undefined) {
+      writeLine(theme.alert(`  unknown theme "${name}" — try: ${THEME_NAMES.join(', ')}`));
+      return;
+    }
+    theme = createTheme({ depth: theme.depth, spec: name });
+    writeLine(theme.system(`  ${theme.glyphs.check} theme set to ${name}`));
+  };
+
+  const handleChat = async (text: string): Promise<void> => {
     inFlight = new AbortController();
     const result = await runTurn({
-      provider,
+      provider: activeProvider,
       session,
-      input,
+      input: text,
       cwd,
       signal: inFlight.signal,
       budgetState,
-      subscription,
-      ...(options.model ? { model: options.model } : {}),
+      subscription: activeSubscription,
+      ...(activeModel ? { model: activeModel } : {}),
       compress: DEFAULT_COMPRESS,
       store,
       ...(sessionId !== undefined ? { sessionId } : {}),
@@ -221,16 +336,51 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       onApprovalNeeded: approve,
     });
     inFlight = null;
-
     if (!result.ok && result.error.code !== 'INTERRUPTED') {
       writeLine(theme.alert(`  ${result.error.code}: ${result.error.message}`));
     }
     writeLine(statusLine());
-    return true;
+  };
+
+  // Returns false to quit the loop. Commands route here (not to the model) — D-032.
+  const handleLine = async (line: string): Promise<boolean> => {
+    const command = parseCommand(line);
+    switch (command.kind) {
+      case 'empty':
+        return true;
+      case 'exit':
+        return false;
+      case 'help':
+        writeLine(renderHint(theme));
+        return true;
+      case 'login':
+        await handleLogin();
+        return true;
+      case 'model':
+        await handleModel();
+        return true;
+      case 'theme':
+        handleTheme(command.arg);
+        return true;
+      case 'plan':
+        writeLine(renderPlanStub(theme));
+        return true;
+      case 'workspace':
+        writeLine(
+          theme.dim('  /workspace (multi-agent mode) is opt-in and arrives in a later milestone.'),
+        );
+        return true;
+      case 'unknown':
+        writeLine(theme.alert(`  unknown command /${command.name} — try /help`));
+        return true;
+      case 'chat':
+        await handleChat(command.text);
+        return true;
+    }
   };
 
   for (;;) {
-    const line = await ask(theme.accent('› '));
+    const line = await ask(theme.accent(`${theme.glyphs.caret} `));
     if (line === null) break; // interface closed (idle Ctrl+C / EOF)
     const keepGoing = await handleLine(line);
     if (!keepGoing) break;

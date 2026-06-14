@@ -1,6 +1,7 @@
 // Pure render helpers for the Simple-mode TUI (UI/UX spec §4, §8, §9). They take a theme + data and
 // return a string — no I/O — so they're unit-testable without a TTY.
 
+import type { CatalogProvider } from './catalog.js';
 import type { Theme } from './theme.js';
 
 export interface StatusInfo {
@@ -33,3 +34,55 @@ export const renderStatusBar = (theme: Theme, info: StatusInfo): string => {
   ];
   return theme.system(`  ${parts.join('  │  ')}`);
 };
+
+/** One selectable model row for the picker. */
+export interface PickerModel {
+  readonly id: string;
+  readonly label: string;
+  readonly active: boolean;
+}
+
+// The /model picker (spec §4, D-029): numbered selectable models, then the full catalog with
+// unwired providers dimmed + a "coming soon" label so the roadmap is honest without faking capability.
+export const renderModelPicker = (
+  theme: Theme,
+  models: readonly PickerModel[],
+  catalog: readonly CatalogProvider[],
+): string => {
+  const lines: string[] = [theme.accent('  Select a model')];
+  models.forEach((m, i) => {
+    const marker = m.active ? theme.accent(theme.glyphs.star) : ' ';
+    lines.push(`  ${marker} ${theme.text(`${i + 1}. ${m.label}`)}`);
+  });
+  lines.push(theme.dim('  ─ also on the roadmap (not yet selectable) ─'));
+  for (const p of catalog) {
+    if (p.wired) continue;
+    lines.push(theme.dim(`    ${theme.glyphs.bulletOpen} ${p.label} — ${p.blurb} · coming soon`));
+  }
+  lines.push(theme.dim('  type a number to switch, or press enter to cancel'));
+  return lines.join('\n');
+};
+
+// The /theme list (spec §2.1): each built-in with a live swatch; the active one marked.
+export const renderThemeList = (
+  theme: Theme,
+  names: readonly string[],
+  activeName: string,
+): string => {
+  const lines: string[] = [theme.accent('  Themes')];
+  for (const name of names) {
+    const marker = name === activeName ? theme.accent(theme.glyphs.selected) : ' ';
+    const swatch = `${theme.accent('█')}${theme.system('█')}${theme.alert('█')}`;
+    lines.push(`  ${marker} ${theme.text(name)}  ${swatch}`);
+  }
+  lines.push(theme.dim('  /theme set <name> to switch (hot-swaps, no restart)'));
+  return lines.join('\n');
+};
+
+// /plan is a visible stub at M3 (D-030): reserve the verb honestly, don't fake a planning UI.
+export const renderPlanStub = (theme: Theme): string =>
+  theme.dim("  plan-mode is coming — for now, just describe the task and I'll work it directly.");
+
+// Selecting a not-yet-wired provider (D-029): a one-line honest hint, never a fake flow.
+export const renderComingSoon = (theme: Theme, label: string): string =>
+  theme.dim(`  ${label} isn't wired yet — BYOK/login for more providers lands in M4.`);

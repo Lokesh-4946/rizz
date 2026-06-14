@@ -10,8 +10,11 @@ export type { Result };
 export { type Session, createSession } from './session.js';
 export {
   type AuthKind,
+  type LoginOptions,
+  type LoginResult,
   type ResolveProviderOptions,
   type ResolvedProvider,
+  loginWithApiKey,
   resolveProvider,
 } from './bootstrap.js';
 export {
