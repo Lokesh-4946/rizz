@@ -199,4 +199,32 @@ describe('createAnthropicProvider.complete (streaming)', () => {
     expect(result.value.inputTokens).toBe(9);
     expect(result.value.outputTokens).toBe(7);
   });
+
+  it('does not drop a final event that lacks a trailing newline', async () => {
+    // A stub/proxy may omit the final \n; the tail flush must still surface the last event.
+    const text =
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}';
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(text));
+              controller.close();
+            },
+          }),
+          { status: 200 },
+        ),
+    ) as unknown as typeof fetch;
+    const chunks: string[] = [];
+    const provider = createAnthropicProvider({ apiKey: KEY, model: 'm', fetchImpl });
+    const result = await provider.complete({
+      messages: [{ role: 'user', content: 'hi' }],
+      onChunk: (d) => chunks.push(d),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(chunks).toEqual(['hi']);
+    expect(result.value.content).toBe('hi');
+  });
 });

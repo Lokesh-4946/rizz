@@ -384,6 +384,20 @@ interface StreamEvent {
   readonly delta?: { type?: string; text?: string; partial_json?: string };
 }
 
+/** Parse one SSE line into an event, or undefined for a non-data/keep-alive/non-JSON line. */
+function lineToEvent(raw: string): StreamEvent | undefined {
+  const line = raw.replace(/\r$/, '');
+  if (!line.startsWith('data:')) return undefined;
+  const payload = line.slice(5).trim();
+  if (payload === '' || payload === '[DONE]') return undefined;
+  try {
+    return JSON.parse(payload) as StreamEvent;
+  } catch {
+    // A non-JSON keep-alive/comment line is ignored, never fatal.
+    return undefined;
+  }
+}
+
 /** Decode the response body as Server-Sent Events, yielding each parsed `data:` payload. */
 async function* readSse(response: Response): AsyncGenerator<StreamEvent> {
   const stream = response.body;
@@ -394,21 +408,17 @@ async function* readSse(response: Response): AsyncGenerator<StreamEvent> {
     buffer += decoder.decode(bytes, { stream: true });
     let nl = buffer.indexOf('\n');
     while (nl !== -1) {
-      const line = buffer.slice(0, nl).replace(/\r$/, '');
+      const event = lineToEvent(buffer.slice(0, nl));
       buffer = buffer.slice(nl + 1);
-      if (line.startsWith('data:')) {
-        const payload = line.slice(5).trim();
-        if (payload !== '' && payload !== '[DONE]') {
-          try {
-            yield JSON.parse(payload) as StreamEvent;
-          } catch {
-            // A non-JSON keep-alive/comment line is ignored, never fatal.
-          }
-        }
-      }
+      if (event !== undefined) yield event;
       nl = buffer.indexOf('\n');
     }
   }
+  // Flush any bytes the decoder still holds, then emit a trailing newline-less line. A proxy or stub
+  // that omits the final `\n` would otherwise leave the last event stranded in the buffer.
+  buffer += decoder.decode();
+  const tail = lineToEvent(buffer);
+  if (tail !== undefined) yield tail;
 }
 
 /** Iterate a web ReadableStream (Node fetch body) as byte chunks. */

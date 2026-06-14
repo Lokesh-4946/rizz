@@ -87,15 +87,22 @@ export async function resolveProvider(
     };
   }
 
-  const model =
-    (options.modelId ? getModel(registry, options.modelId) : undefined) ?? registry.models[0];
+  const requested = options.modelId ? getModel(registry, options.modelId) : undefined;
+  // A requested-but-unknown model must not be silently swapped — say so (latent-demands §6).
+  if (options.modelId !== undefined && requested === undefined) {
+    notice = joinNotices(
+      notice,
+      `model "${options.modelId}" is not in the registry — using the default`,
+    );
+  }
+  const model = requested ?? registry.models[0];
   if (model === undefined) {
     // An empty registry is a programmer error, but never crash the launch — degrade to demo.
     return {
       provider: new StubProvider(),
       subscription: true,
       auth: 'demo',
-      notice: 'no models are registered — running in demo mode',
+      notice: joinNotices(notice, 'no models are registered — running in demo mode'),
     };
   }
 
@@ -106,4 +113,9 @@ export async function resolveProvider(
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   });
   return { provider, model, subscription: false, auth: 'api-key', ...(notice ? { notice } : {}) };
+}
+
+/** Combine two optional notices into one line so a single surface shows both. */
+function joinNotices(a: string | undefined, b: string): string {
+  return a !== undefined ? `${a}; ${b}` : b;
 }

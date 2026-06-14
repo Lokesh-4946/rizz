@@ -81,4 +81,14 @@ describe('resolveProvider (BYOK)', () => {
     });
     expect(resolved.model?.id).toBe('claude-haiku-4-5');
   });
+
+  it('notices (does not silently swap) when a requested modelId is unknown', async () => {
+    const resolved = await resolveProvider({
+      env: { ANTHROPIC_API_KEY: 'sk-ant-env' },
+      secrets: fakeStore(),
+      modelId: 'nope-9000',
+    });
+    expect(resolved.model).toBeDefined();
+    expect(resolved.notice).toContain('nope-9000');
+  });
 });

@@ -50,7 +50,7 @@ describe('command builders', () => {
       'anthropic',
       '-w',
     ]);
-    expect(macosArgs.set(REF, 'k')).toEqual([
+    expect(macosArgs.set(REF)).toEqual([
       'add-generic-password',
       '-U',
       '-s',
@@ -58,7 +58,6 @@ describe('command builders', () => {
       '-a',
       'anthropic',
       '-w',
-      'k',
     ]);
     expect(macosArgs.delete(REF)).toEqual([
       'delete-generic-password',
@@ -128,6 +127,48 @@ describe('macOS backend over an injected runner', () => {
   it('reports a write failure as TOOL_IO', async () => {
     const run: Runner = async () => ({ code: 1, stdout: '', stderr: 'denied' });
     const store = await openSecretStore({ platform: 'darwin', runner: run });
+    const set = await store.set(REF, 'k');
+    expect(set.ok).toBe(false);
+    if (set.ok) return;
+    expect(set.error.code).toBe('TOOL_IO');
+  });
+
+  it('feeds the secret to security over stdin, never via argv', async () => {
+    let captured: { args: readonly string[]; input: string | undefined } | undefined;
+    const run: Runner = async (_file, args, input) => {
+      captured = { args, input };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const store = await openSecretStore({ platform: 'darwin', runner: run });
+    await store.set(REF, 'super-secret');
+    expect(captured?.input).toBe('super-secret');
+    expect(captured?.args).not.toContain('super-secret');
+  });
+});
+
+describe('probe + write-failure paths', () => {
+  it('probes for secret-tool with `which` on the resolved platform', async () => {
+    const seen: string[] = [];
+    const run: Runner = async (file) => {
+      seen.push(file);
+      return { code: 1, stdout: '', stderr: '' };
+    };
+    await openSecretStore({ platform: 'linux', runner: run, fileDeps: noopFileDeps });
+    expect(seen).toContain('which');
+  });
+
+  it('returns TOOL_IO when the file write throws (ENOSPC/EACCES)', async () => {
+    const store = await openSecretStore({
+      platform: 'win32',
+      runner: okRun,
+      fileDeps: {
+        path: '/x',
+        readFile: () => null,
+        writeFile: () => {
+          throw new Error('ENOSPC');
+        },
+      },
+    });
     const set = await store.set(REF, 'k');
     expect(set.ok).toBe(false);
     if (set.ok) return;

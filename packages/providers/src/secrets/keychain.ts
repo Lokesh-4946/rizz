@@ -49,10 +49,10 @@ export const macosArgs = {
   get(ref: SecretRef): readonly string[] {
     return ['find-generic-password', '-s', ref.service, '-a', ref.account, '-w'];
   },
-  // `-U` updates an existing item instead of erroring on duplicate. The secret rides in argv; on a
-  // single-user machine this is the documented `security` interface — we still never log it.
-  set(ref: SecretRef, secret: string): readonly string[] {
-    return ['add-generic-password', '-U', '-s', ref.service, '-a', ref.account, '-w', secret];
+  // The secret is fed over stdin (the trailing `-w` takes no value), so it never appears in argv /
+  // `ps` output. `-U` updates an existing item instead of erroring on a duplicate.
+  set(ref: SecretRef): readonly string[] {
+    return ['add-generic-password', '-U', '-s', ref.service, '-a', ref.account, '-w'];
   },
   delete(ref: SecretRef): readonly string[] {
     return ['delete-generic-password', '-s', ref.service, '-a', ref.account];
@@ -92,7 +92,7 @@ function macosBackend(run: Runner): SecretStore {
       return ok(r.stdout.replace(/\n$/, ''));
     },
     async set(ref, secret) {
-      const r = await run('security', macosArgs.set(ref, secret));
+      const r = await run('security', macosArgs.set(ref), secret);
       if (r.code !== 0)
         return err(new RizzError('TOOL_IO', `keychain write failed (security exit ${r.code})`));
       return ok(undefined);
@@ -150,6 +150,15 @@ function fileBackend(deps: FileBackendDeps): SecretStore {
       return {};
     }
   };
+  // A disk write can fail (ENOSPC/EACCES/EROFS) — return a structured error, never throw (ADR-001).
+  const writeData = (data: Record<string, string>): Result<void> => {
+    try {
+      deps.writeFile(deps.path, JSON.stringify(data));
+      return ok(undefined);
+    } catch (cause) {
+      return err(new RizzError('TOOL_IO', 'could not write the secret store', { cause }));
+    }
+  };
   return {
     backend: 'file',
     async get(ref) {
@@ -159,14 +168,12 @@ function fileBackend(deps: FileBackendDeps): SecretStore {
     async set(ref, secret) {
       const data = load();
       data[refKey(ref)] = secret;
-      deps.writeFile(deps.path, JSON.stringify(data));
-      return ok(undefined);
+      return writeData(data);
     },
     async delete(ref) {
       const data = load();
       delete data[refKey(ref)];
-      deps.writeFile(deps.path, JSON.stringify(data));
-      return ok(undefined);
+      return writeData(data);
     },
   };
 }
@@ -210,9 +217,9 @@ function defaultFileDeps(): FileBackendDeps {
   };
 }
 
-/** True when a helper command resolves on PATH — probed once at store-open. */
-async function commandExists(run: Runner, file: string): Promise<boolean> {
-  const probe = osPlatform() === 'win32' ? 'where' : 'which';
+/** True when a helper command resolves on PATH — probed once at store-open against the resolved platform. */
+async function commandExists(run: Runner, plat: NodeJS.Platform, file: string): Promise<boolean> {
+  const probe = plat === 'win32' ? 'where' : 'which';
   const r = await run(probe, [file]);
   return r.code === 0;
 }
@@ -235,6 +242,7 @@ export async function openSecretStore(options: OpenSecretStoreOptions = {}): Pro
   const run = options.runner ?? defaultRunner();
 
   if (plat === 'darwin') return macosBackend(run);
-  if (plat === 'linux' && (await commandExists(run, 'secret-tool'))) return libsecretBackend(run);
+  if (plat === 'linux' && (await commandExists(run, plat, 'secret-tool')))
+    return libsecretBackend(run);
   return fileBackend(options.fileDeps ?? defaultFileDeps());
 }
