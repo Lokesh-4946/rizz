@@ -1,6 +1,29 @@
 import { type Result, RizzError, type SecretRef, type SecretStore, err, ok } from '@rizz/providers';
 import { describe, expect, it } from 'vitest';
-import { resolveProvider } from './bootstrap.js';
+import { loginWithApiKey, providerFromKey, resolveProvider } from './bootstrap.js';
+
+/** A secret store that records the last set() and can be made to fail the write. */
+function recordingStore(opts?: { failSet?: boolean }): {
+  store: SecretStore;
+  saved: () => string | undefined;
+} {
+  let savedKey: string | undefined;
+  const store: SecretStore = {
+    backend: 'file',
+    async get() {
+      return ok(savedKey ?? null);
+    },
+    async set(_ref: SecretRef, secret: string): Promise<Result<void>> {
+      if (opts?.failSet) return err(new RizzError('TOOL_IO', 'no disk'));
+      savedKey = secret;
+      return ok(undefined);
+    },
+    async delete() {
+      return ok(undefined);
+    },
+  };
+  return { store, saved: () => savedKey };
+}
 
 /** An in-memory secret store for tests. */
 function fakeStore(stored?: string, opts?: { failGet?: boolean }): SecretStore {
@@ -90,5 +113,34 @@ describe('resolveProvider (BYOK)', () => {
     });
     expect(resolved.model).toBeDefined();
     expect(resolved.notice).toContain('nope-9000');
+  });
+});
+
+describe('loginWithApiKey (/login)', () => {
+  it('persists the entered key and builds the live provider from it', async () => {
+    const { store, saved } = recordingStore();
+    const { resolved, persisted } = await loginWithApiKey(store, 'sk-ant-fresh');
+    expect(persisted).toBe(true);
+    expect(saved()).toBe('sk-ant-fresh');
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.subscription).toBe(false);
+    expect(resolved.provider.id).toBe('anthropic');
+  });
+
+  it('still returns a working provider (session-only) when the keychain write fails', async () => {
+    const { store } = recordingStore({ failSet: true });
+    const { resolved, persisted } = await loginWithApiKey(store, 'sk-ant-fresh');
+    expect(persisted).toBe(false);
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.notice).toContain('this session only');
+  });
+});
+
+describe('providerFromKey (model switch without the keychain)', () => {
+  it('builds a live provider for the requested model from an in-memory key', () => {
+    const resolved = providerFromKey('sk-ant-mem', { modelId: 'claude-haiku-4-5' });
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.provider.id).toBe('anthropic');
+    expect(resolved.model?.id).toBe('claude-haiku-4-5');
   });
 });

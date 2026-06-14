@@ -86,13 +86,31 @@ export async function resolveProvider(
       ...(notice ? { notice } : {}),
     };
   }
+  return buildFromKey(apiKey, {
+    registry,
+    ...(options.modelId !== undefined ? { modelId: options.modelId } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(notice !== undefined ? { priorNotice: notice } : {}),
+  });
+}
 
-  const requested = options.modelId ? getModel(registry, options.modelId) : undefined;
+interface BuildOptions {
+  readonly registry: ModelRegistry;
+  readonly modelId?: string;
+  readonly fetchImpl?: typeof fetch;
+  readonly priorNotice?: string;
+}
+
+/** Build the live Anthropic provider from a key — shared by resolveProvider and loginWithApiKey. */
+function buildFromKey(apiKey: string, opts: BuildOptions): ResolvedProvider {
+  const { registry } = opts;
+  const requested = opts.modelId ? getModel(registry, opts.modelId) : undefined;
   // A requested-but-unknown model must not be silently swapped — say so (latent-demands §6).
-  if (options.modelId !== undefined && requested === undefined) {
+  let notice = opts.priorNotice;
+  if (opts.modelId !== undefined && requested === undefined) {
     notice = joinNotices(
       notice,
-      `model "${options.modelId}" is not in the registry — using the default`,
+      `model "${opts.modelId}" is not in the registry — using the default`,
     );
   }
   const model = requested ?? registry.models[0];
@@ -105,14 +123,62 @@ export async function resolveProvider(
       notice: joinNotices(notice, 'no models are registered — running in demo mode'),
     };
   }
-
   const provider = createAnthropicProvider({
     apiKey,
     model: model.id,
     label: model.label,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
   });
   return { provider, model, subscription: false, auth: 'api-key', ...(notice ? { notice } : {}) };
+}
+
+/**
+ * Build a live provider directly from an in-memory key, without touching the keychain. Used to switch
+ * models when the key is only held for the session (a failed `/login` persist), so a model switch never
+ * silently downgrades a working session to demo.
+ */
+export function providerFromKey(apiKey: string, options: LoginOptions = {}): ResolvedProvider {
+  return buildFromKey(apiKey, {
+    registry: options.registry ?? DEFAULT_REGISTRY,
+    ...(options.modelId !== undefined ? { modelId: options.modelId } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+  });
+}
+
+export interface LoginResult {
+  readonly resolved: ResolvedProvider;
+  /** False → the keychain write failed; the key works this session only. */
+  readonly persisted: boolean;
+}
+
+export interface LoginOptions {
+  readonly registry?: ModelRegistry;
+  readonly modelId?: string;
+  readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * The `/login` flow: persist a freshly entered Anthropic key to the keychain, then build the live
+ * provider FROM that key (not re-reading env). A failed persist still returns a working provider for
+ * the session, with a notice — never a silent drop.
+ */
+export async function loginWithApiKey(
+  secrets: SecretStore,
+  apiKey: string,
+  options: LoginOptions = {},
+): Promise<LoginResult> {
+  const registry = options.registry ?? DEFAULT_REGISTRY;
+  const stored = await secrets.set({ service: RIZZ_SERVICE, account: ANTHROPIC_ACCOUNT }, apiKey);
+  const persistNotice = stored.ok
+    ? undefined
+    : `key not saved to the keychain (${stored.error.code}) — it will work this session only`;
+  const resolved = buildFromKey(apiKey, {
+    registry,
+    ...(options.modelId !== undefined ? { modelId: options.modelId } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(persistNotice !== undefined ? { priorNotice: persistNotice } : {}),
+  });
+  return { resolved, persisted: stored.ok };
 }
 
 /** Combine two optional notices into one line so a single surface shows both. */
