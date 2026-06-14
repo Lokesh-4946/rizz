@@ -38,6 +38,19 @@ function contract(name: string, open: () => Promise<SessionStore>): void {
       }
     });
 
+    it('round-trips a tool message with its toolCallId (correlation survives resume)', async () => {
+      const store = await open();
+      const created = await store.create({ model: 'm', branch: 'b' });
+      if (!created.ok) return;
+      await store.append(created.value, { role: 'assistant', content: 'calling' });
+      await store.append(created.value, { role: 'tool', content: 'result', toolCallId: 'call_42' });
+      const loaded = await store.load(created.value);
+      if (loaded.ok) {
+        const toolMessage = loaded.value.messages.find((m) => m.role === 'tool');
+        expect(toolMessage?.toolCallId).toBe('call_42');
+      }
+    });
+
     it('persists running token/cost totals via updateMeta', async () => {
       const store = await open();
       const created = await store.create({ model: 'm', branch: 'b' });

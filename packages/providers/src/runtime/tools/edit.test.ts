@@ -74,6 +74,15 @@ describe('editTool', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('writes newText literally even when it contains $ replacement patterns', async () => {
+    const path = await tmpFile('a.txt', 'PLACEHOLDER\n');
+    // `$$`, `$&`, `$\`` are special in String.replace's string form — they must be written literally.
+    const literal = 'echo "$$ $& money $1" >> $`out`';
+    const result = await editTool({ path, oldText: 'PLACEHOLDER', newText: literal });
+    expect(result.ok).toBe(true);
+    expect(await readFile(path, 'utf8')).toBe(`${literal}\n`);
+  });
+
   it('preserves CRLF line endings — never normalizes to LF (the #13456 failure)', async () => {
     const path = await tmpFile('a.txt', 'one\r\ntwo\r\nthree\r\n');
     // The model sends oldText with LF; matching is EOL-agnostic but output stays CRLF.

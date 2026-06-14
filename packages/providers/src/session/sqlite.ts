@@ -27,6 +27,7 @@ interface SessionRow {
 interface MessageRow {
   role: string;
   content: string;
+  tool_call_id: string | null;
 }
 
 function toMeta(row: SessionRow): SessionMeta {
@@ -50,6 +51,7 @@ export function createSqliteStore(dir: string): SessionStore {
     );
     CREATE TABLE IF NOT EXISTS messages (
       session_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+      tool_call_id TEXT,
       PRIMARY KEY (session_id, seq)
     );
   `);
@@ -72,12 +74,9 @@ export function createSqliteStore(dir: string): SessionStore {
         const row = db
           .prepare('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM messages WHERE session_id = ?')
           .get(id) as unknown as { next: number };
-        db.prepare('INSERT INTO messages (session_id, seq, role, content) VALUES (?, ?, ?, ?)').run(
-          id,
-          row.next,
-          message.role,
-          message.content,
-        );
+        db.prepare(
+          'INSERT INTO messages (session_id, seq, role, content, tool_call_id) VALUES (?, ?, ?, ?, ?)',
+        ).run(id, row.next, message.role, message.content, message.toolCallId ?? null);
       } catch (cause) {
         return err(new RizzError('TOOL_IO', `could not append to session ${id}`, { cause }));
       }
@@ -119,11 +118,14 @@ export function createSqliteStore(dir: string): SessionStore {
           | undefined;
         if (row === undefined) return err(new RizzError('TOOL_IO', `session ${id} not found`));
         const rows = db
-          .prepare('SELECT role, content FROM messages WHERE session_id = ? ORDER BY seq')
+          .prepare(
+            'SELECT role, content, tool_call_id FROM messages WHERE session_id = ? ORDER BY seq',
+          )
           .all(id) as unknown as MessageRow[];
         const messages: Message[] = rows.map((m) => ({
           role: m.role as Message['role'],
           content: m.content,
+          ...(m.tool_call_id !== null ? { toolCallId: m.tool_call_id } : {}),
         }));
         return ok({ meta: toMeta(row), messages });
       } catch (cause) {

@@ -168,8 +168,10 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
       }
       if (action === 'repair' && repairs < MAX_REPAIRS) {
         repairs += 1;
+        // `user`, not `system`: the Messages API takes the system prompt as a top-level param, so a
+        // mid-conversation system message is a 400. A user-role nudge is valid across providers.
         session.messages.push({
-          role: 'system',
+          role: 'user',
           content: 'Your previous tool call was malformed. Re-emit a single valid tool call.',
         });
         continue;

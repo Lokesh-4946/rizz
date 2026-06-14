@@ -48,7 +48,12 @@ export async function compressContext(params: CompressParams): Promise<Result<Co
   };
   const rewritten = [...head, summaryMessage, ...tail];
 
-  const tokensSaved = estimateMessagesTokens(middle) - estimateTokens(summaryMessage.content);
+  // Clamp to 0: a verbose summary could in theory be longer than the slice it replaced, and a
+  // negative "saved ~-50 tokens" line would be confusing.
+  const tokensSaved = Math.max(
+    0,
+    estimateMessagesTokens(middle) - estimateTokens(summaryMessage.content),
+  );
   return {
     ok: true,
     value: { messages: rewritten, droppedSummary: summarized.value, tokensSaved },

@@ -78,7 +78,10 @@ export async function editTool(params: EditParams): Promise<Result<EditResult>> 
     );
   }
 
-  const resultLf = rawLf.replace(oldLf, newLf);
+  // Function replacement, NOT a string: a string replacement interprets `$&`, `$$`, `` $` ``, `$'`
+  // specially, which would silently corrupt newText containing `$` (shell `$$`, makefiles, regex).
+  // edit-verify would NOT catch it because `intended` would already hold the wrong expansion.
+  const resultLf = rawLf.replace(oldLf, () => newLf);
   const intended = applyEol(resultLf, eol);
 
   const written = await verifyWrite(params.path, intended);

@@ -38,6 +38,11 @@ describe('classifyCommand (pure safety classifier)', () => {
     expect(c.kind).toBe('destructive');
   });
 
+  it('does NOT treat `node -e` as read-only — it can execute arbitrary code', () => {
+    const c = classifyCommand("node -e \"require('fs').unlinkSync('x')\"");
+    expect(c.requiresApproval).toBe(true);
+  });
+
   it('flags a truncating redirect even with a read-only program', () => {
     const c = classifyCommand('echo hi > important.txt');
     expect(c.requiresApproval).toBe(true);

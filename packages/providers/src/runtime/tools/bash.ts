@@ -66,12 +66,13 @@ const READ_ONLY = new Set([
   'uniq',
   'cut',
   'diff',
-  'node',
   'tsc',
   'vitest',
   'jest',
   'biome',
 ]);
+// NOTE: `node`/`python`/`ruby`/`perl` are deliberately NOT read-only — `node -e "..."` executes
+// arbitrary code and would bypass the approval gate. They fall through to "unknown → destructive".
 
 // Programs that mutate the filesystem or process state — always approve.
 const DESTRUCTIVE = new Set([
