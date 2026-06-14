@@ -1,7 +1,7 @@
 // callModel — the model service (design §3.1). The loop calls THIS, not a Provider directly, so
 // streaming, abort, and usage normalization live in one place. It returns a normalized ModelReply.
 //
-// DEVIATION (see handoff D-023): the design's ModelReply.usage carries `costUsd`; this returns raw
+// DEVIATION (see handoff D-024): the design's ModelReply.usage carries `costUsd`; this returns raw
 // token usage only. Cost depends on price metadata + whether the call is on a subscription — both
 // orchestration concerns (ADR-001: a service takes data in, it does not read pricing/subscription
 // state). The loop computes cost via estimateCostUsd(model, usage, { subscription }).

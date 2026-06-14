@@ -3,7 +3,7 @@
 // latency — that is Tier 2 (deferred, NEEDS ORCHESTRATOR REVIEW per ADR-002). M3 routing surface:
 // a default model plus an ordered fallback chain tried on a retryable provider failure.
 //
-// DEVIATION (see handoff D-023): the design's RouteDecision returns a live `Provider`; this returns
+// DEVIATION (see handoff D-024): the design's RouteDecision returns a live `Provider`; this returns
 // the selected `ModelInfo` instead, so routing stays pure (no provider construction inside the
 // service — ADR-001 "no ambient state"). The loop maps model→Provider via a factory it holds.
 

@@ -14,7 +14,7 @@ const budget = JSON.parse(readFileSync(join(root, '.footprint-budget.json'), 'ut
 /**
  * Installed footprint (KB): the compiled artifacts a user actually installs — shipped `.js` + `.d.ts`.
  * Source maps (`*.map`) and compiled test files (`*.test.*`) are dev-only and excluded from the npm
- * tarball, so they are NOT counted here — the gate measures install size, not the dev build. (D-025)
+ * tarball, so they are NOT counted here — the gate measures install size, not the dev build. (D-026)
  */
 function distKb() {
   const packagesDir = join(root, 'packages');
