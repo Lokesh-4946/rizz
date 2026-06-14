@@ -144,3 +144,59 @@ describe('providerFromKey (model switch without the keychain)', () => {
     expect(resolved.model?.id).toBe('claude-haiku-4-5');
   });
 });
+
+describe('resolveProvider — profiles + on-disk registry (D-023)', () => {
+  const env = { ANTHROPIC_API_KEY: 'sk-ant-env' };
+  const noFile = () => null;
+
+  it('resolves a profile name to its model (built-in registry)', async () => {
+    const resolved = await resolveProvider({ env, readRegistryFile: noFile, profile: 'cheap' });
+    expect(resolved.model?.id).toBe('claude-haiku-4-5');
+  });
+
+  it('an explicit modelId wins over a profile', async () => {
+    const resolved = await resolveProvider({
+      env,
+      readRegistryFile: noFile,
+      profile: 'cheap',
+      modelId: 'claude-opus-4-8',
+    });
+    expect(resolved.model?.id).toBe('claude-opus-4-8');
+  });
+
+  it('notices (does not crash) when a profile references an unconfigured model', async () => {
+    const resolved = await resolveProvider({ env, readRegistryFile: noFile, profile: 'local' });
+    expect(resolved.model).toBeDefined(); // fell back to the registry default
+    expect(resolved.notice).toContain('ollama');
+  });
+
+  it('loads a custom on-disk registry when present', async () => {
+    const file = JSON.stringify({
+      models: [
+        {
+          id: 'custom-1',
+          provider: 'custom',
+          label: 'Custom',
+          capabilities: ['code'],
+          contextWindow: 1000,
+          priceInputPerM: 1,
+          priceOutputPerM: 2,
+          latencyHint: 'fast',
+          toolCapable: true,
+        },
+      ],
+    });
+    const resolved = await resolveProvider({
+      env,
+      readRegistryFile: () => file,
+      modelId: 'custom-1',
+    });
+    expect(resolved.model?.id).toBe('custom-1');
+  });
+
+  it('surfaces the registry notice when the on-disk file is secret-bearing', async () => {
+    const file = JSON.stringify({ models: [{ id: 'x', apiKey: 'sk-LEAK' }] });
+    const resolved = await resolveProvider({ env, readRegistryFile: () => file });
+    expect(resolved.notice).toContain('secret-bearing');
+  });
+});

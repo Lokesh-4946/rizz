@@ -14,13 +14,16 @@ import {
   DEFAULT_REGISTRY,
   type ModelInfo,
   type ModelRegistry,
+  type Profile,
   type Provider,
   RIZZ_SERVICE,
   type SecretStore,
   StubProvider,
   createAnthropicProvider,
   getModel,
+  loadRegistry,
   openSecretStore,
+  resolveProfile,
 } from '@rizz/providers';
 
 export type AuthKind = 'api-key' | 'demo';
@@ -40,9 +43,14 @@ export interface ResolveProviderOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Injected secret store (tests); defaults to the OS keychain with a file fallback. */
   readonly secrets?: SecretStore;
+  /** Inject the registry directly (tests); otherwise it is loaded from ~/.rizz/models.json + built-ins. */
   readonly registry?: ModelRegistry;
-  /** Preferred model id; defaults to the registry's first entry. */
+  /** Inject the on-disk registry reader (tests). */
+  readonly readRegistryFile?: (path: string) => string | null;
+  /** Preferred model id (wins over `profile`); defaults to the registry's first entry. */
   readonly modelId?: string;
+  /** Named profile (D-023) — resolved to a model id when no explicit modelId is given. */
+  readonly profile?: string;
   /** Pass-through to the adapter for tests. */
   readonly fetchImpl?: typeof fetch;
 }
@@ -59,11 +67,36 @@ export async function resolveProvider(
   options: ResolveProviderOptions = {},
 ): Promise<ResolvedProvider> {
   const env = options.env ?? process.env;
-  const registry = options.registry ?? DEFAULT_REGISTRY;
+
+  // Registry: injected (tests) or loaded from ~/.rizz/models.json with a built-in fallback (D-023).
+  let registry: ModelRegistry;
+  let profiles: Readonly<Record<string, Profile>>;
+  let notice: string | undefined;
+  if (options.registry !== undefined) {
+    registry = options.registry;
+    profiles = {};
+  } else {
+    const loaded = loadRegistry(
+      options.readRegistryFile ? { readFile: options.readRegistryFile } : {},
+    );
+    registry = loaded.registry;
+    profiles = loaded.profiles;
+    notice = loaded.notice;
+  }
+
+  // Resolve a profile name to a model id when no explicit modelId was given (modelId wins, D-023).
+  let modelId = options.modelId;
+  if (modelId === undefined && options.profile !== undefined) {
+    const resolved = resolveProfile(registry, profiles, options.profile);
+    if (resolved.ok) {
+      modelId = resolved.value.model.id;
+    } else {
+      notice = joinNotices(notice, resolved.error.message);
+    }
+  }
 
   const envKey = readEnvKey(env);
   let storedKey: string | undefined;
-  let notice: string | undefined;
 
   // Only touch the keychain when the env var is absent — env is the explicit override and avoids a
   // keychain prompt on every launch.
@@ -88,7 +121,7 @@ export async function resolveProvider(
   }
   return buildFromKey(apiKey, {
     registry,
-    ...(options.modelId !== undefined ? { modelId: options.modelId } : {}),
+    ...(modelId !== undefined ? { modelId } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(notice !== undefined ? { priorNotice: notice } : {}),
   });
