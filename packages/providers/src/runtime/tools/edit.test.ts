@@ -52,7 +52,12 @@ describe('editTool', () => {
   it('fails STALE_FILE when the baseHash no longer matches', async () => {
     const path = await tmpFile('a.txt', 'original\n');
     const staleHash = contentHash('something else entirely');
-    const result = await editTool({ path, oldText: 'original', newText: 'new', baseHash: staleHash });
+    const result = await editTool({
+      path,
+      oldText: 'original',
+      newText: 'new',
+      baseHash: staleHash,
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('STALE_FILE');
   });
@@ -60,7 +65,12 @@ describe('editTool', () => {
   it('applies when the baseHash matches the current file', async () => {
     const path = await tmpFile('a.txt', 'original\n');
     const goodHash = contentHash('original\n');
-    const result = await editTool({ path, oldText: 'original', newText: 'new', baseHash: goodHash });
+    const result = await editTool({
+      path,
+      oldText: 'original',
+      newText: 'new',
+      baseHash: goodHash,
+    });
     expect(result.ok).toBe(true);
   });
 

@@ -63,9 +63,13 @@ describe('estimateCostUsd', () => {
     const opus = getModel(DEFAULT_REGISTRY, 'claude-opus-4-8');
     expect(opus).toBeDefined();
     if (opus) {
-      const cost = estimateCostUsd(opus, { inputTokens: 1_000_000, outputTokens: 1_000_000 }, {
-        subscription: true,
-      });
+      const cost = estimateCostUsd(
+        opus,
+        { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+        {
+          subscription: true,
+        },
+      );
       expect(cost).toBe(0);
     }
   });
@@ -73,9 +77,13 @@ describe('estimateCostUsd', () => {
   it('prices metered (BYOK) usage from the registry', () => {
     const opus = getModel(DEFAULT_REGISTRY, 'claude-opus-4-8');
     if (opus) {
-      const cost = estimateCostUsd(opus, { inputTokens: 1_000_000, outputTokens: 1_000_000 }, {
-        subscription: false,
-      });
+      const cost = estimateCostUsd(
+        opus,
+        { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+        {
+          subscription: false,
+        },
+      );
       expect(cost).toBe(opus.priceInputPerM + opus.priceOutputPerM);
     }
   });

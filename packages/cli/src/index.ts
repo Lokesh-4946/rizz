@@ -30,7 +30,12 @@ async function runPrint(): Promise<number> {
     return 0;
   }
 
-  const result = await runTurn({ provider: new StubProvider(), session: createSession(), input });
+  const result = await runTurn({
+    provider: new StubProvider(),
+    session: createSession(),
+    input,
+    cwd: process.cwd(),
+  });
   if (!result.ok) {
     process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     return 1;

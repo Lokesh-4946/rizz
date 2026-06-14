@@ -4,7 +4,7 @@
 // content exactly as provided.
 
 import { readFile } from 'node:fs/promises';
-import { type Result } from '../../result.js';
+import type { Result } from '../../result.js';
 import { applyEol, detectEol } from '../eol.js';
 import { type VerifiedWrite, verifyWrite } from '../verify.js';
 

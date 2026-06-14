@@ -7,7 +7,7 @@
 // the selected `ModelInfo` instead, so routing stays pure (no provider construction inside the
 // service — ADR-001 "no ambient state"). The loop maps model→Provider via a factory it holds.
 
-import { type Result, type RizzErrorCode, RizzError, err, ok } from '../result.js';
+import { type Result, RizzError, type RizzErrorCode, err, ok } from '../result.js';
 import { type ModelInfo, type ModelRegistry, getModel } from './registry.js';
 
 export interface RoutingPolicy {
@@ -49,7 +49,9 @@ export function resolveModelRoute(params: RouteParams): Result<RouteDecision> {
   if (failed === undefined) {
     const model = getModel(registry, policy.defaultModel);
     if (model === undefined) {
-      return err(new RizzError('UNKNOWN', `default model "${policy.defaultModel}" is not in the registry`));
+      return err(
+        new RizzError('UNKNOWN', `default model "${policy.defaultModel}" is not in the registry`),
+      );
     }
     return ok({ model, reason: 'default' });
   }

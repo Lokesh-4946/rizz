@@ -47,9 +47,15 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path to edit.' },
-        oldText: { type: 'string', description: 'Exact text to replace (must occur exactly once).' },
+        oldText: {
+          type: 'string',
+          description: 'Exact text to replace (must occur exactly once).',
+        },
         newText: { type: 'string', description: 'Replacement text.' },
-        baseHash: { type: 'string', description: 'Hash from the prior read, to detect staleness. Optional.' },
+        baseHash: {
+          type: 'string',
+          description: 'Hash from the prior read, to detect staleness. Optional.',
+        },
       },
       required: ['path', 'oldText', 'newText'],
     },

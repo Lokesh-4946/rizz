@@ -11,7 +11,13 @@ describe('classifyCommand (pure safety classifier)', () => {
   });
 
   it('classes destructive commands as approval-required', () => {
-    for (const cmd of ['rm -rf /tmp/x', 'mv a b', 'git reset --hard', 'git commit -m x', 'chmod -R 777 .']) {
+    for (const cmd of [
+      'rm -rf /tmp/x',
+      'mv a b',
+      'git reset --hard',
+      'git commit -m x',
+      'chmod -R 777 .',
+    ]) {
       const c = classifyCommand(cmd);
       expect(c.requiresApproval).toBe(true);
       expect(c.kind).toBe('destructive');

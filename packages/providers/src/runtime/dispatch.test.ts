@@ -10,20 +10,29 @@ async function tmpDir(): Promise<string> {
 
 describe('dispatchTool', () => {
   it('rejects an unknown tool with BAD_TOOL_CALL', async () => {
-    const result = await dispatchTool({ call: { name: 'frobnicate', args: {} }, cwd: process.cwd() });
+    const result = await dispatchTool({
+      call: { name: 'frobnicate', args: {} },
+      cwd: process.cwd(),
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('BAD_TOOL_CALL');
   });
 
   it('rejects a write missing required args with BAD_TOOL_CALL', async () => {
-    const result = await dispatchTool({ call: { name: 'write', args: { path: 'x' } }, cwd: process.cwd() });
+    const result = await dispatchTool({
+      call: { name: 'write', args: { path: 'x' } },
+      cwd: process.cwd(),
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('BAD_TOOL_CALL');
   });
 
   it('routes write→read round-trip with a clickable display line', async () => {
     const cwd = await tmpDir();
-    const write = await dispatchTool({ call: { name: 'write', args: { path: 'a.txt', content: 'hi' } }, cwd });
+    const write = await dispatchTool({
+      call: { name: 'write', args: { path: 'a.txt', content: 'hi' } },
+      cwd,
+    });
     expect(write.ok).toBe(true);
     if (write.ok) expect(write.value.forDisplay).toContain('write · a.txt');
     expect(await readFile(join(cwd, 'a.txt'), 'utf8')).toBe('hi');

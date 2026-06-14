@@ -9,13 +9,7 @@ import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promise
 import { join } from 'node:path';
 import type { Message } from '../provider.js';
 import { type Result, RizzError, err, ok } from '../result.js';
-import type {
-  MetaPatch,
-  SessionInit,
-  SessionMeta,
-  SessionStore,
-  StoredSession,
-} from './store.js';
+import type { MetaPatch, SessionInit, SessionMeta, SessionStore, StoredSession } from './store.js';
 
 function metaPath(dir: string, id: string): string {
   return join(dir, `${id}.meta.json`);

@@ -53,7 +53,10 @@ export async function editTool(params: EditParams): Promise<Result<EditResult>> 
 
   if (params.baseHash !== undefined && contentHash(raw) !== params.baseHash) {
     return err(
-      new RizzError('STALE_FILE', `${params.path} changed since it was read — re-read before editing`),
+      new RizzError(
+        'STALE_FILE',
+        `${params.path} changed since it was read — re-read before editing`,
+      ),
     );
   }
 

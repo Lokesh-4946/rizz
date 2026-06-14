@@ -11,15 +11,20 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const budget = JSON.parse(readFileSync(join(root, '.footprint-budget.json'), 'utf8'));
 
-/** Total size (KB) of every package's compiled dist/ output. */
+/**
+ * Installed footprint (KB): the compiled artifacts a user actually installs — shipped `.js` + `.d.ts`.
+ * Source maps (`*.map`) and compiled test files (`*.test.*`) are dev-only and excluded from the npm
+ * tarball, so they are NOT counted here — the gate measures install size, not the dev build. (D-025)
+ */
 function distKb() {
   const packagesDir = join(root, 'packages');
   let bytes = 0;
+  const isShipped = (name) => !name.endsWith('.map') && !/\.test\./.test(name);
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else bytes += statSync(full).size;
+      else if (isShipped(entry.name)) bytes += statSync(full).size;
     }
   };
   for (const pkg of readdirSync(packagesDir)) {

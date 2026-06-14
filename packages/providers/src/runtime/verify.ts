@@ -35,7 +35,9 @@ export async function verifyWrite(
     // Fresh read, no cache: a write that "succeeds" but lands wrong must be caught here.
     reread = await readFile(path, 'utf8');
   } catch (cause) {
-    return err(new RizzError('EDIT_VERIFY_FAILED', `could not re-read ${path} to verify`, { cause }));
+    return err(
+      new RizzError('EDIT_VERIFY_FAILED', `could not re-read ${path} to verify`, { cause }),
+    );
   }
 
   const expectedHash = contentHash(intendedContent);
@@ -49,5 +51,9 @@ export async function verifyWrite(
     );
   }
 
-  return ok({ path, bytesWritten: Buffer.byteLength(intendedContent, 'utf8'), newHash: actualHash });
+  return ok({
+    path,
+    bytesWritten: Buffer.byteLength(intendedContent, 'utf8'),
+    newHash: actualHash,
+  });
 }

@@ -6,7 +6,7 @@
 // returned list in (ADR-001 rule 2).
 
 import type { Message } from './provider.js';
-import { type Result } from './result.js';
+import type { Result } from './result.js';
 import { estimateMessagesTokens, estimateTokens } from './tokens.js';
 
 export interface CompressParams {

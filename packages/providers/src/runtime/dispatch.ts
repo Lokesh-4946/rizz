@@ -16,6 +16,8 @@ import { readTool } from './tools/read.js';
 import { writeTool } from './tools/write.js';
 
 export interface ToolCall {
+  /** Provider-assigned id used to correlate the tool result back to the call. Optional. */
+  readonly id?: string;
   readonly name: string;
   readonly args: Record<string, unknown>;
 }
@@ -68,7 +70,8 @@ export async function dispatchTool(params: DispatchToolParams): Promise<Result<T
 
 async function dispatchRead(call: ToolCall, cwd: string): Promise<Result<ToolResult>> {
   const path = asString(call.args.path);
-  if (path === undefined) return err(new RizzError('BAD_TOOL_CALL', 'read requires a string "path"'));
+  if (path === undefined)
+    return err(new RizzError('BAD_TOOL_CALL', 'read requires a string "path"'));
   const abs = resolveWorkspacePath(cwd, path);
   const offset = asNumber(call.args.offset);
   const limit = asNumber(call.args.limit);
@@ -173,7 +176,10 @@ async function dispatchBash(params: DispatchToolParams): Promise<Result<ToolResu
 }
 
 function bashToolResult(command: string, r: BashResult): ToolResult {
-  const body = [r.stdout, r.stderr].filter((s) => s.length > 0).join('\n').trimEnd();
+  const body = [r.stdout, r.stderr]
+    .filter((s) => s.length > 0)
+    .join('\n')
+    .trimEnd();
   return {
     forModel: `$ ${command}\n(exit ${r.exitCode})\n${body}`,
     forDisplay: `bash · ${command.length > 48 ? `${command.slice(0, 48)}…` : command} · exit ${r.exitCode}`,

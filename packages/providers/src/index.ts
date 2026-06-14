@@ -73,6 +73,7 @@ export {
   DEFAULT_POLICY,
   resolveModelRoute,
 } from './model/route.js';
+export { type CallModelParams, type ModelReply, callModel } from './model/call.js';
 
 // Compression service (design §3.3) + token estimation.
 export { type CompressParams, type CompressResult, compressContext } from './compress.js';

@@ -14,5 +14,35 @@ export {
   DEFAULT_BUDGET,
   newBudgetState,
   isExhausted,
+  recordUsage,
+  describeBudget,
 } from './budget.js';
-export { type RunTurnOptions, type TurnResult, runTurn } from './loop.js';
+export {
+  type CompressConfig,
+  type MaybeCompressResult,
+  DEFAULT_COMPRESS,
+  maybeCompress,
+  shouldCompress,
+} from './compress.js';
+export {
+  type FailureAction,
+  type FallbackResult,
+  type ProviderFor,
+  type RoutingContext,
+  classifyFailure,
+  runFallback,
+} from './fallback.js';
+export {
+  type CredentialAvailability,
+  type CredentialChoice,
+  type CredentialPlan,
+  planCredential,
+  resolveCredential,
+} from './auth.js';
+export {
+  type RunTurnOptions,
+  type StopReason,
+  type TurnEvent,
+  type TurnResult,
+  runTurn,
+} from './loop.js';

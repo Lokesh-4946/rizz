@@ -38,21 +38,83 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 // Programs that only observe. Anything not in here is suspect (conservative default).
 const READ_ONLY = new Set([
-  'ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'which', 'whoami', 'date', 'env', 'printenv',
-  'grep', 'rg', 'fd', 'find', 'tree', 'stat', 'file', 'du', 'df', 'basename', 'dirname', 'realpath',
-  'sort', 'uniq', 'cut', 'diff', 'node', 'tsc', 'vitest', 'jest', 'biome',
+  'ls',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'pwd',
+  'echo',
+  'which',
+  'whoami',
+  'date',
+  'env',
+  'printenv',
+  'grep',
+  'rg',
+  'fd',
+  'find',
+  'tree',
+  'stat',
+  'file',
+  'du',
+  'df',
+  'basename',
+  'dirname',
+  'realpath',
+  'sort',
+  'uniq',
+  'cut',
+  'diff',
+  'node',
+  'tsc',
+  'vitest',
+  'jest',
+  'biome',
 ]);
 
 // Programs that mutate the filesystem or process state — always approve.
 const DESTRUCTIVE = new Set([
-  'rm', 'rmdir', 'mv', 'cp', 'dd', 'mkfs', 'shred', 'truncate', 'chmod', 'chown', 'ln',
-  'kill', 'killall', 'pkill', 'shutdown', 'reboot', 'mkdir', 'touch', 'tee',
+  'rm',
+  'rmdir',
+  'mv',
+  'cp',
+  'dd',
+  'mkfs',
+  'shred',
+  'truncate',
+  'chmod',
+  'chown',
+  'ln',
+  'kill',
+  'killall',
+  'pkill',
+  'shutdown',
+  'reboot',
+  'mkdir',
+  'touch',
+  'tee',
 ]);
 
 // Programs that touch the network — always approve (exfiltration + surprise-install risk).
 const NETWORKED = new Set([
-  'curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'nc', 'ncat', 'telnet', 'ftp', 'pip', 'pip3',
-  'brew', 'apt', 'apt-get', 'docker', 'kubectl',
+  'curl',
+  'wget',
+  'ssh',
+  'scp',
+  'sftp',
+  'rsync',
+  'nc',
+  'ncat',
+  'telnet',
+  'ftp',
+  'pip',
+  'pip3',
+  'brew',
+  'apt',
+  'apt-get',
+  'docker',
+  'kubectl',
 ]);
 
 const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show', 'branch', 'remote', 'rev-parse']);
@@ -79,13 +141,21 @@ function classifySegment(segment: string): Classification {
     return { kind: 'networked', reason: `${program} touches the network`, requiresApproval: true };
   }
   if (DESTRUCTIVE.has(program)) {
-    return { kind: 'destructive', reason: `${program} mutates the filesystem`, requiresApproval: true };
+    return {
+      kind: 'destructive',
+      reason: `${program} mutates the filesystem`,
+      requiresApproval: true,
+    };
   }
 
   if (program === 'git') {
     const sub = tokens[1] ?? '';
     if (NETWORKED_GIT.has(sub)) {
-      return { kind: 'networked', reason: `git ${sub} touches the network`, requiresApproval: true };
+      return {
+        kind: 'networked',
+        reason: `git ${sub} touches the network`,
+        requiresApproval: true,
+      };
     }
     if (READ_ONLY_GIT.has(sub)) {
       return { kind: 'read-only', reason: `git ${sub} only reads`, requiresApproval: false };
@@ -97,7 +167,11 @@ function classifySegment(segment: string): Classification {
   if (NODE_PM.has(program)) {
     const sub = tokens[1] ?? '';
     if (NETWORKED_PM_SUBCMD.has(sub)) {
-      return { kind: 'networked', reason: `${program} ${sub} fetches packages`, requiresApproval: true };
+      return {
+        kind: 'networked',
+        reason: `${program} ${sub} fetches packages`,
+        requiresApproval: true,
+      };
     }
     if (READ_ONLY_PM_SUBCMD.has(sub)) {
       return { kind: 'read-only', reason: `${program} ${sub} is safe`, requiresApproval: false };
@@ -119,7 +193,10 @@ function classifySegment(segment: string): Classification {
 
 /** Classify a (possibly chained/piped) command by its most dangerous segment. PURE — no execution. */
 export function classifyCommand(command: string): Classification {
-  const segments = command.split(/&&|\|\||;|\|/).map((s) => s.trim()).filter(Boolean);
+  const segments = command
+    .split(/&&|\|\||;|\|/)
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (segments.length === 0) {
     return { kind: 'read-only', reason: 'empty command', requiresApproval: false };
   }

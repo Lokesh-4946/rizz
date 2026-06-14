@@ -9,17 +9,12 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type { Message } from '../provider.js';
 import { type Result, RizzError, err, ok } from '../result.js';
-import type {
-  MetaPatch,
-  SessionInit,
-  SessionMeta,
-  SessionStore,
-  StoredSession,
-} from './store.js';
+import type { MetaPatch, SessionInit, SessionMeta, SessionStore, StoredSession } from './store.js';
 
 // Load the builtin via createRequire so bundlers/test runners that rewrite `node:` specifiers can't
 // break it (see sqliteAvailable in store.ts). The type comes from @types/node without a runtime import.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+type NodeSqlite = typeof import('node:sqlite');
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as NodeSqlite;
 
 interface SessionRow {
   id: string;
@@ -77,9 +72,12 @@ export function createSqliteStore(dir: string): SessionStore {
         const row = db
           .prepare('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM messages WHERE session_id = ?')
           .get(id) as unknown as { next: number };
-        db.prepare(
-          'INSERT INTO messages (session_id, seq, role, content) VALUES (?, ?, ?, ?)',
-        ).run(id, row.next, message.role, message.content);
+        db.prepare('INSERT INTO messages (session_id, seq, role, content) VALUES (?, ?, ?, ?)').run(
+          id,
+          row.next,
+          message.role,
+          message.content,
+        );
       } catch (cause) {
         return err(new RizzError('TOOL_IO', `could not append to session ${id}`, { cause }));
       }
@@ -123,7 +121,10 @@ export function createSqliteStore(dir: string): SessionStore {
         const rows = db
           .prepare('SELECT role, content FROM messages WHERE session_id = ? ORDER BY seq')
           .all(id) as unknown as MessageRow[];
-        const messages: Message[] = rows.map((m) => ({ role: m.role as Message['role'], content: m.content }));
+        const messages: Message[] = rows.map((m) => ({
+          role: m.role as Message['role'],
+          content: m.content,
+        }));
         return ok({ meta: toMeta(row), messages });
       } catch (cause) {
         return err(new RizzError('TOOL_IO', `could not load session ${id}`, { cause }));
