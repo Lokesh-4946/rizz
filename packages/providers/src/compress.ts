@@ -42,9 +42,11 @@ export async function compressContext(params: CompressParams): Promise<Result<Co
   const summarized = await summarize(middle);
   if (!summarized.ok) return summarized;
 
+  // `user`, not `system`: the summary is spliced in at index keepHead (mid-array), and real provider
+  // APIs reject a `system` entry anywhere but position 0. A bracketed user message is valid anywhere.
   const summaryMessage: Message = {
-    role: 'system',
-    content: `[compacted ${middle.length} earlier messages — kept task intent + recent work]\n${summarized.value}`,
+    role: 'user',
+    content: `[Context summary of ${middle.length} earlier messages — task intent + recent work preserved]\n${summarized.value}`,
   };
   const rewritten = [...head, summaryMessage, ...tail];
 
