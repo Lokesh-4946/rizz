@@ -11,15 +11,12 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const budget = JSON.parse(readFileSync(join(root, '.footprint-budget.json'), 'utf8'));
 
-/**
- * Installed footprint (KB): the compiled artifacts a user actually installs — shipped `.js` + `.d.ts`.
- * Source maps (`*.map`) and compiled test files (`*.test.*`) are dev-only and excluded from the npm
- * tarball, so they are NOT counted here — the gate measures install size, not the dev build. (D-026)
- */
-function distKb() {
-  const packagesDir = join(root, 'packages');
+const isShipped = (name) => !name.endsWith('.map') && !/\.test\./.test(name);
+
+/** Bytes of shipped `.js` + `.d.ts` under one package's dist (excludes maps + tests, D-026). */
+function packageDistBytes(pkg) {
+  const dist = join(root, 'packages', pkg, 'dist');
   let bytes = 0;
-  const isShipped = (name) => !name.endsWith('.map') && !/\.test\./.test(name);
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -27,15 +24,32 @@ function distKb() {
       else if (isShipped(entry.name)) bytes += statSync(full).size;
     }
   };
-  for (const pkg of readdirSync(packagesDir)) {
-    const dist = join(packagesDir, pkg, 'dist');
-    try {
-      if (statSync(dist).isDirectory()) walk(dist);
-    } catch {
-      // package has no dist yet — skip
-    }
+  try {
+    if (statSync(dist).isDirectory()) walk(dist);
+  } catch {
+    // package has no dist yet — skip
   }
-  return Math.round(bytes / 1024);
+  return bytes;
+}
+
+/**
+ * Installed CORE footprint (KB): shipped `.js` + `.d.ts` across the default/core packages only.
+ * `optInPackages` (D-001) are summoned, not on the default path, so they do NOT count toward the core
+ * budget (they may carry their own budget later). Source maps + compiled tests are excluded as
+ * dev-only (D-026). Returns a per-package breakdown so a regression points at the package that grew.
+ */
+function distKb() {
+  const optIn = new Set(budget.optInPackages ?? []);
+  const perPackage = [];
+  let bytes = 0;
+  for (const pkg of readdirSync(join(root, 'packages'))) {
+    const pkgBytes = packageDistBytes(pkg);
+    if (pkgBytes === 0) continue;
+    const counted = !optIn.has(pkg);
+    perPackage.push({ pkg, kb: Math.round(pkgBytes / 1024), counted });
+    if (counted) bytes += pkgBytes;
+  }
+  return { total: Math.round(bytes / 1024), perPackage };
 }
 
 /** Cold start (ms): best of N runs of `node dist/index.js --version`. Best-of removes scheduler noise. */
@@ -57,11 +71,12 @@ console.log('› building packages for footprint check…');
 // can't find it without the extension). Cross-platform.
 execSync('pnpm -s build', { cwd: root, stdio: 'inherit' });
 
-const actual = { coldStartMs: coldStartMs(), distKb: distKb() };
+const dist = distKb();
+const actual = { coldStartMs: coldStartMs(), distKb: dist.total };
 
 const checks = [
   { name: 'cold start', key: 'coldStartMs', unit: 'ms' },
-  { name: 'compiled size', key: 'distKb', unit: 'KB' },
+  { name: 'core size', key: 'distKb', unit: 'KB' },
 ];
 
 let failed = false;
@@ -76,6 +91,13 @@ for (const { name, key, unit } of checks) {
   console.log(
     `  ${name.padEnd(13)} ${`${a}${unit}`.padStart(6)}   ${`${b}${unit}`.padStart(6)}  ${mark}`,
   );
+}
+
+// Per-package breakdown — opt-in packages are shown but marked as not counted (D-001).
+console.log('\n  package          size   counted');
+console.log('  ─────────────────────────────────');
+for (const { pkg, kb, counted } of dist.perPackage) {
+  console.log(`  ${pkg.padEnd(14)} ${`${kb}KB`.padStart(6)}   ${counted ? 'yes' : 'opt-in'}`);
 }
 
 if (failed) {
