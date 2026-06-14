@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
+  type AuthKind,
   DEFAULT_COMPRESS,
   type Session,
   type TurnEvent,
@@ -15,6 +16,7 @@ import {
   runTurn,
 } from '@rizz/core';
 import {
+  type ModelInfo,
   type Provider,
   type SessionStore,
   StubProvider,
@@ -29,6 +31,14 @@ export interface TuiOptions {
   readonly theme?: Theme;
   /** Resume a prior session by id (rehydrates its full message history). */
   readonly resumeId?: string;
+  /** Active model (cost accounting + status bar). Omitted in demo mode. */
+  readonly model?: ModelInfo;
+  /** Subscription/demo path → cost is $0; metered → the running spend is shown. Default true. */
+  readonly subscription?: boolean;
+  /** Auth label for the status bar. Default 'demo'. */
+  readonly auth?: AuthKind;
+  /** A one-time startup notice (e.g. a keychain read failure), surfaced before the prompt. */
+  readonly notice?: string;
 }
 
 /** Where sessions persist. Local-first; no cloud (D-011). */
@@ -83,6 +93,8 @@ async function openSession(
 export async function startTui(options: TuiOptions = {}): Promise<void> {
   const provider = options.provider ?? new StubProvider();
   const theme = options.theme ?? createTheme({ color: defaultColorEnabled() });
+  const subscription = options.subscription ?? true;
+  const authLabel: AuthKind = options.auth ?? 'demo';
   const cwd = process.cwd();
 
   // Open the local session store (node:sqlite primary, JSONL fallback) and create or resume a session.
@@ -100,7 +112,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
 
   writeLine(renderHeader(theme, provider.label));
   writeLine('');
-  // A failed --resume must be visible, not silent (latent-demands §6).
+  // Startup notices (e.g. a keychain read failure) and a failed --resume must be visible, not silent.
+  if (options.notice !== undefined) writeLine(theme.alert(`  ⚠ ${options.notice}`));
   if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
   writeLine(renderEmptyState(theme));
   writeLine(renderHint(theme));
@@ -170,12 +183,14 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   const statusLine = (): string => {
     const used = estimateMessagesTokens(session.messages);
     const ctxPct = Math.min(100, Math.round((used / DEFAULT_COMPRESS.contextWindow) * 100));
+    // $0.00 (sub) on the subscription/demo path; the real running spend on a metered BYOK key.
+    const cost = subscription ? '$0.00 (sub)' : `$${budgetState.costUsd.toFixed(2)}`;
     return renderStatusBar(theme, {
       model: provider.label,
-      auth: 'demo',
+      auth: authLabel,
       ctxPct,
       tokens: budgetState.tokens,
-      cost: '$0.00 (sub)',
+      cost,
       branch: 'dev', // TODO: read the active git branch once the workspace service lands.
     });
   };
@@ -197,6 +212,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       cwd,
       signal: inFlight.signal,
       budgetState,
+      subscription,
+      ...(options.model ? { model: options.model } : {}),
       compress: DEFAULT_COMPRESS,
       store,
       ...(sessionId !== undefined ? { sessionId } : {}),
