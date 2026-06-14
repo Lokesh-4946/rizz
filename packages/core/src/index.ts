@@ -15,6 +15,7 @@ export {
   type ResolveProviderOptions,
   type ResolvedProvider,
   loginWithApiKey,
+  providerFromKey,
   resolveProvider,
 } from './bootstrap.js';
 export {

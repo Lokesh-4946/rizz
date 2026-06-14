@@ -132,6 +132,19 @@ function buildFromKey(apiKey: string, opts: BuildOptions): ResolvedProvider {
   return { provider, model, subscription: false, auth: 'api-key', ...(notice ? { notice } : {}) };
 }
 
+/**
+ * Build a live provider directly from an in-memory key, without touching the keychain. Used to switch
+ * models when the key is only held for the session (a failed `/login` persist), so a model switch never
+ * silently downgrades a working session to demo.
+ */
+export function providerFromKey(apiKey: string, options: LoginOptions = {}): ResolvedProvider {
+  return buildFromKey(apiKey, {
+    registry: options.registry ?? DEFAULT_REGISTRY,
+    ...(options.modelId !== undefined ? { modelId: options.modelId } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+  });
+}
+
 export interface LoginResult {
   readonly resolved: ResolvedProvider;
   /** False → the keychain write failed; the key works this session only. */

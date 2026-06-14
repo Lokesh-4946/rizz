@@ -1,6 +1,6 @@
 import { type Result, RizzError, type SecretRef, type SecretStore, err, ok } from '@rizz/providers';
 import { describe, expect, it } from 'vitest';
-import { loginWithApiKey, resolveProvider } from './bootstrap.js';
+import { loginWithApiKey, providerFromKey, resolveProvider } from './bootstrap.js';
 
 /** A secret store that records the last set() and can be made to fail the write. */
 function recordingStore(opts?: { failSet?: boolean }): {
@@ -133,5 +133,14 @@ describe('loginWithApiKey (/login)', () => {
     expect(persisted).toBe(false);
     expect(resolved.auth).toBe('api-key');
     expect(resolved.notice).toContain('this session only');
+  });
+});
+
+describe('providerFromKey (model switch without the keychain)', () => {
+  it('builds a live provider for the requested model from an in-memory key', () => {
+    const resolved = providerFromKey('sk-ant-mem', { modelId: 'claude-haiku-4-5' });
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.provider.id).toBe('anthropic');
+    expect(resolved.model?.id).toBe('claude-haiku-4-5');
   });
 });

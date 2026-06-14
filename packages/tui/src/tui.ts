@@ -17,6 +17,7 @@ import {
   createSession,
   loginWithApiKey,
   newBudgetState,
+  providerFromKey,
   resolveProvider,
   runTurn,
 } from '@rizz/core';
@@ -118,6 +119,9 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   let activeModel: ModelInfo | undefined = options.model;
   let activeSubscription = options.subscription ?? true;
   let activeAuth: AuthKind = options.auth ?? 'demo';
+  // The BYOK key entered via /login, held in memory only (never logged). Lets /model switch models even
+  // when the keychain write failed — so a model switch never silently downgrades a live session to demo.
+  let sessionApiKey: string | undefined;
   const cwd = process.cwd();
 
   const store: SessionStore = await openSessionStore({ dir: SESSIONS_DIR });
@@ -160,32 +164,32 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     });
 
   // Read a secret with the echo suppressed so the key never lands in the terminal/scrollback (§3.6).
-  // readline has no built-in masked input; overriding `_writeToOutput` is the standard approach.
+  // readline has no built-in masked input; overriding `_writeToOutput` is the standard approach. We
+  // print the prompt ourselves and then mute EVERYTHING except newlines — robust across Node versions
+  // (no reliance on readline echoing the prompt back in a single, exact-match call).
   const askSecret = (question: string): Promise<string | null> =>
     new Promise((resolve) => {
+      process.stdout.write(question);
       // reason: `_writeToOutput` is a readline internal — the only hook for muting echo in core Node.
       const internal = rl as unknown as { _writeToOutput?: ((s: string) => void) | undefined };
       const original = internal._writeToOutput;
       const restore = (): void => {
         internal._writeToOutput = original;
       };
+      // Swallow keystroke echoes; let newlines through so Enter still advances the line.
       internal._writeToOutput = (s: string): void => {
-        if (s === question) {
-          original?.call(rl, s);
-        } else if (s.includes('\n')) {
-          original?.call(rl, '\n');
-        }
+        if (s.includes('\n')) original?.call(rl, '\n');
       };
       const onClose = (): void => {
         restore();
         resolve(null);
       };
-      rl.once('close', onClose);
-      rl.question(question, (answer) => {
+      rl.question('', (answer) => {
         rl.off('close', onClose);
         restore();
         resolve(answer);
       });
+      rl.once('close', onClose);
     });
 
   // One controller per in-flight turn. Ctrl+C aborts a running turn; when idle, it quits.
@@ -272,6 +276,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     const { resolved, persisted } = await loginWithApiKey(secrets, key);
     adopt(resolved);
     if (resolved.auth === 'api-key') {
+      sessionApiKey = key; // held in memory so /model can switch models without the keychain
       writeLine(theme.system(`  ${theme.glyphs.check} signed in — ${activeProvider.label}`));
       if (!persisted) writeLine(theme.dim('  (key not saved to the keychain — this session only)'));
     } else {
@@ -299,7 +304,18 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       writeLine(theme.dim('  run /login first to connect a key, then pick a model.'));
       return;
     }
-    const resolved = await resolveProvider({ secrets, modelId: chosen.id });
+    // Build from the in-memory key when we have it (covers a session-only login); otherwise re-read
+    // the keychain/env. Guard against a silent downgrade: never overwrite a live session with demo.
+    const resolved =
+      sessionApiKey !== undefined
+        ? providerFromKey(sessionApiKey, { modelId: chosen.id })
+        : await resolveProvider({ secrets, modelId: chosen.id });
+    if (resolved.auth !== 'api-key') {
+      writeLine(
+        theme.alert("  couldn't re-read your key — keeping the current model. Try /login again."),
+      );
+      return;
+    }
     adopt(resolved);
     writeLine(theme.system(`  ${theme.glyphs.check} switched to ${activeProvider.label}`));
   };
