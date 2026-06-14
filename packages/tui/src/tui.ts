@@ -34,34 +34,50 @@ export interface TuiOptions {
 /** Where sessions persist. Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
 
-/**
- * Create a fresh session, or resume one by id (rehydrating its full message history — the /resume
- * failure cluster, latent-demands §6). A failed create degrades to an in-memory session (no
- * persistence) rather than blocking startup; `sessionId` is then undefined.
- */
+interface OpenedSession {
+  session: Session;
+  sessionId: string | undefined;
+  notice?: string;
+}
+
+/** Create a fresh persisted session; if the store can't create one, fall back to in-memory and say so. */
+async function newSession(store: SessionStore, model: string): Promise<OpenedSession> {
+  const created = await store.create({ model, branch: 'dev' });
+  if (created.ok) return { session: createSession(), sessionId: created.value };
+  // Never swallow it (§3.6): tell the user the turn won't be saved.
+  return {
+    session: createSession(),
+    sessionId: undefined,
+    notice: `session store unavailable (${created.error.code}) — running in-memory, nothing will be saved`,
+  };
+}
+
+/** Resume a session by id (full history), else start fresh. Every failure path surfaces a notice. */
 async function openSession(
   store: SessionStore,
   model: string,
   resumeId?: string,
-): Promise<{ session: Session; sessionId: string | undefined; notice?: string }> {
-  if (resumeId !== undefined) {
-    const loaded = await store.load(resumeId);
-    if (loaded.ok) {
-      const session = createSession();
-      session.messages.push(...loaded.value.messages);
-      return { session, sessionId: resumeId };
-    }
-    // Resume was requested but failed — never silently start blank (that IS the /resume failure the
-    // PR fixes). Start a fresh session but tell the user exactly what happened.
-    const created = await store.create({ model, branch: 'dev' });
-    return {
-      session: createSession(),
-      sessionId: created.ok ? created.value : undefined,
-      notice: `could not resume session ${resumeId} (${loaded.error.code}) — started a new session`,
-    };
+): Promise<OpenedSession> {
+  if (resumeId === undefined) return newSession(store, model);
+
+  const loaded = await store.load(resumeId);
+  if (loaded.ok) {
+    const session = createSession();
+    session.messages.push(...loaded.value.messages);
+    return { session, sessionId: resumeId };
   }
-  const created = await store.create({ model, branch: 'dev' });
-  return { session: createSession(), sessionId: created.ok ? created.value : undefined };
+
+  // Resume failed — never silently start blank (that IS the /resume failure the PR fixes). Start
+  // fresh, surfacing both the resume failure and any store-create failure.
+  const fresh = await newSession(store, model);
+  const resumeNote = `could not resume session ${resumeId} (${loaded.error.code})`;
+  return {
+    ...fresh,
+    notice:
+      fresh.notice !== undefined
+        ? `${resumeNote}; ${fresh.notice}`
+        : `${resumeNote} — started a new session`,
+  };
 }
 
 export async function startTui(options: TuiOptions = {}): Promise<void> {
