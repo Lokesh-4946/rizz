@@ -35,12 +35,19 @@ function main() {
   const binDir = parseDir(process.argv.slice(2));
   const shimPath = join(binDir, 'rizz');
   mkdirSync(binDir, { recursive: true });
-  // exec so signals (Ctrl+C) reach node directly; "$@" forwards all args.
-  writeFileSync(shimPath, `#!/bin/sh\nexec node "${cliEntry}" "$@"\n`, { mode: 0o755 });
+  // Single-quote the path so `$`, backticks, and `"` in the repo path can't expand/break the shim;
+  // the only char to escape inside single quotes is `'` itself (→ '\'' ). exec so Ctrl+C reaches
+  // node directly; "$@" forwards all args.
+  const quotedEntry = `'${cliEntry.replace(/'/g, "'\\''")}'`;
+  writeFileSync(shimPath, `#!/bin/sh\nexec node ${quotedEntry} "$@"\n`, { mode: 0o755 });
   chmodSync(shimPath, 0o755);
 
   console.log(`✓ installed: ${shimPath} -> ${cliEntry}`);
-  const onPath = (process.env.PATH ?? '').split(':').includes(binDir);
+  // Best-effort PATH check: normalize segments so a trailing slash / relative form doesn't read as absent.
+  const target = resolve(binDir);
+  const onPath = (process.env.PATH ?? '')
+    .split(':')
+    .some((seg) => seg !== '' && resolve(seg) === target);
   if (!onPath) {
     console.log(`\n${binDir} is not on your PATH. Add it (then restart your shell):`);
     console.log(`  export PATH="${binDir}:$PATH"`);
