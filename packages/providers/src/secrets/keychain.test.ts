@@ -112,10 +112,19 @@ describe('backend selection', () => {
 });
 
 describe('macOS backend over an injected runner', () => {
-  it('returns null when the item is absent (non-zero exit)', async () => {
+  it('returns null only for errSecItemNotFound (exit 44)', async () => {
     const run: Runner = async () => ({ code: 44, stdout: '', stderr: 'not found' });
     const store = await openSecretStore({ platform: 'darwin', runner: run });
     expect(await store.get(REF)).toEqual({ ok: true, value: null });
+  });
+
+  it('surfaces a locked/denied keychain (non-44 exit) as TOOL_IO, not silent demo', async () => {
+    const run: Runner = async () => ({ code: 36, stdout: '', stderr: 'interaction required' });
+    const store = await openSecretStore({ platform: 'darwin', runner: run });
+    const got = await store.get(REF);
+    expect(got.ok).toBe(false);
+    if (got.ok) return;
+    expect(got.error.code).toBe('TOOL_IO');
   });
 
   it('returns the trimmed secret on success', async () => {
@@ -196,7 +205,10 @@ describe('file backend round-trip', () => {
     expect(await store.get(REF)).toEqual({ ok: true, value: null });
     expect((await store.set(REF, 'k-123')).ok).toBe(true);
     expect(await store.get(REF)).toEqual({ ok: true, value: 'k-123' });
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // POSIX-only: Windows NTFS reports 0o666 (no POSIX bits) — the file is protected by the profile ACL.
+    if (process.platform !== 'win32') {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    }
     expect((await store.delete(REF)).ok).toBe(true);
     expect(await store.get(REF)).toEqual({ ok: true, value: null });
   });

@@ -21,6 +21,9 @@ export interface SecretRef {
 export const RIZZ_SERVICE = 'rizz';
 export const ANTHROPIC_ACCOUNT = 'anthropic';
 
+/** macOS `security` exit code for errSecItemNotFound — the only "no key" (vs locked/denied) signal. */
+const SEC_ITEM_NOT_FOUND = 44;
+
 export type SecretBackend = 'macos-keychain' | 'libsecret' | 'file';
 
 export interface SecretStore {
@@ -87,9 +90,11 @@ function macosBackend(run: Runner): SecretStore {
     backend: 'macos-keychain',
     async get(ref) {
       const r = await run('security', macosArgs.get(ref));
-      // `find-generic-password` exits non-zero when the item is absent — that is "no secret", not an error.
-      if (r.code !== 0) return ok(null);
-      return ok(r.stdout.replace(/\n$/, ''));
+      if (r.code === 0) return ok(r.stdout.replace(/\n$/, ''));
+      // Only exit 44 (errSecItemNotFound) means "no key". Other codes — 36 (keychain locked / auth
+      // required), denial, corruption — must surface, or a stored key silently drops to demo mode.
+      if (r.code === SEC_ITEM_NOT_FOUND) return ok(null);
+      return err(new RizzError('TOOL_IO', `keychain read failed (security exit ${r.code})`));
     },
     async set(ref, secret) {
       const r = await run('security', macosArgs.set(ref), secret);
@@ -127,7 +132,9 @@ function libsecretBackend(run: Runner): SecretStore {
   };
 }
 
-/** Per-user JSON store at 0600 — the fallback when no OS keychain helper is present. */
+// Per-user JSON store at 0600 — the fallback when no OS keychain helper is present. On Windows the
+// 0o600 chmod is a near-no-op (NTFS has no POSIX bits), but the file lives under the user-profile
+// directory whose ACL is already user-restricted; a DPAPI-backed Windows backend is a future upgrade.
 export interface FileBackendDeps {
   readonly path: string;
   readonly readFile: (path: string) => string | null;
