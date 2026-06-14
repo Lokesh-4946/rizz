@@ -48,6 +48,17 @@ describe('classifyCommand (pure safety classifier)', () => {
     expect(classifyCommand('git remote add origin https://x').requiresApproval).toBe(true);
   });
 
+  it('allows a plain `find` search but requires approval for find -exec/-delete', () => {
+    expect(classifyCommand('find . -name "*.ts"').requiresApproval).toBe(false);
+    expect(classifyCommand('find . -name "*.ts" -exec rm -rf {} +').requiresApproval).toBe(true);
+    expect(classifyCommand('find . -delete').requiresApproval).toBe(true);
+  });
+
+  it('requires approval when a command uses command substitution', () => {
+    expect(classifyCommand('cat $(rm -rf .)').requiresApproval).toBe(true);
+    expect(classifyCommand('echo `rm -rf .`').requiresApproval).toBe(true);
+  });
+
   it('flags a truncating redirect even with a read-only program', () => {
     const c = classifyCommand('echo hi > important.txt');
     expect(c.requiresApproval).toBe(true);

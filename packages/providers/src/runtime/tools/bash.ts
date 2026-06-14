@@ -48,12 +48,10 @@ const READ_ONLY = new Set([
   'which',
   'whoami',
   'date',
-  'env',
   'printenv',
   'grep',
   'rg',
   'fd',
-  'find',
   'tree',
   'stat',
   'file',
@@ -72,7 +70,12 @@ const READ_ONLY = new Set([
   'biome',
 ]);
 // NOTE: `node`/`python`/`ruby`/`perl` are deliberately NOT read-only — `node -e "..."` executes
-// arbitrary code and would bypass the approval gate. They fall through to "unknown → destructive".
+// arbitrary code and would bypass the approval gate. So are `env` (`env FOO=x rm -rf .` runs a
+// program) and `find` (handled specially below, since `-exec`/`-delete` run/remove). They fall
+// through to "unknown → destructive".
+
+// `find` flags that execute a program or delete files — these make a `find` command dangerous.
+const FIND_DANGEROUS = /\s-(exec|execdir|ok|okdir|delete)\b/;
 
 // Programs that mutate the filesystem or process state — always approve.
 const DESTRUCTIVE = new Set([
@@ -139,6 +142,18 @@ function classifySegment(segment: string): Classification {
   const withoutStderrMerge = segment.replace(/\d?>&\d/g, '');
   if (/>/.test(withoutStderrMerge)) {
     return { kind: 'destructive', reason: 'redirect writes to a file', requiresApproval: true };
+  }
+
+  // `find` is read-only when searching, but `-exec`/`-delete` run programs or remove files → approve.
+  if (program === 'find') {
+    if (FIND_DANGEROUS.test(segment)) {
+      return {
+        kind: 'destructive',
+        reason: 'find -exec/-delete runs or removes',
+        requiresApproval: true,
+      };
+    }
+    return { kind: 'read-only', reason: 'find searches', requiresApproval: false };
   }
 
   if (NETWORKED.has(program)) {
@@ -208,6 +223,16 @@ function classifySegment(segment: string): Classification {
 
 /** Classify a (possibly chained/piped) command by its most dangerous segment. PURE — no execution. */
 export function classifyCommand(command: string): Classification {
+  // Command substitution ($(...) or backticks) hides a nested command the segment parser can't see
+  // (`cat $(rm -rf .)`). We can't classify the inner command safely → require approval.
+  if (/\$\(|`/.test(command)) {
+    return {
+      kind: 'destructive',
+      reason: 'command substitution — cannot classify safely',
+      requiresApproval: true,
+    };
+  }
+
   const segments = command
     .split(/&&|\|\||;|\|/)
     .map((s) => s.trim())
