@@ -66,9 +66,11 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       case 'assistant':
         writeLine(theme.text(`  ${event.content}`));
         break;
-      case 'tool':
-        writeLine((event.ok ? theme.system : theme.alert)(`  · ${event.display}`));
+      case 'tool': {
+        const paint = event.ok ? theme.system : theme.alert;
+        writeLine(paint(`  · ${event.display}`));
         break;
+      }
       case 'fallback':
         writeLine(theme.alert(`  ↻ ${event.note}`));
         break;
