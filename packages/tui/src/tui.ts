@@ -43,7 +43,7 @@ async function openSession(
   store: SessionStore,
   model: string,
   resumeId?: string,
-): Promise<{ session: Session; sessionId: string | undefined }> {
+): Promise<{ session: Session; sessionId: string | undefined; notice?: string }> {
   if (resumeId !== undefined) {
     const loaded = await store.load(resumeId);
     if (loaded.ok) {
@@ -51,6 +51,14 @@ async function openSession(
       session.messages.push(...loaded.value.messages);
       return { session, sessionId: resumeId };
     }
+    // Resume was requested but failed — never silently start blank (that IS the /resume failure the
+    // PR fixes). Start a fresh session but tell the user exactly what happened.
+    const created = await store.create({ model, branch: 'dev' });
+    return {
+      session: createSession(),
+      sessionId: created.ok ? created.value : undefined,
+      notice: `could not resume session ${resumeId} (${loaded.error.code}) — started a new session`,
+    };
   }
   const created = await store.create({ model, branch: 'dev' });
   return { session: createSession(), sessionId: created.ok ? created.value : undefined };
@@ -64,10 +72,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   // Open the local session store (node:sqlite primary, JSONL fallback) and create or resume a session.
   const store: SessionStore = await openSessionStore({ dir: SESSIONS_DIR });
   const budgetState = newBudgetState();
-  const { session, sessionId } = await openSession(store, provider.label, options.resumeId);
-  if (options.resumeId !== undefined) {
-    budgetState.tokens = estimateMessagesTokens(session.messages);
-  }
+  const { session, sessionId, notice } = await openSession(store, provider.label, options.resumeId);
+  budgetState.tokens = estimateMessagesTokens(session.messages);
 
   const writeLine = (s: string): void => {
     process.stdout.write(`${s}\n`);
@@ -75,6 +81,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
 
   writeLine(renderHeader(theme, provider.label));
   writeLine('');
+  // A failed --resume must be visible, not silent (latent-demands §6).
+  if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
   writeLine(renderEmptyState(theme));
   writeLine(renderHint(theme));
   writeLine('');
