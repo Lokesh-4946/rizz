@@ -185,6 +185,31 @@ describe('probe + write-failure paths', () => {
   });
 });
 
+describe('libsecret backend over an injected runner', () => {
+  it('treats a clean miss (non-zero, empty stderr) as no key', async () => {
+    // `which` must succeed so the libsecret backend (not the file fallback) is selected.
+    const run: Runner = async (file) =>
+      file === 'which'
+        ? { code: 0, stdout: '/usr/bin/secret-tool', stderr: '' }
+        : { code: 1, stdout: '', stderr: '' };
+    const store = await openSecretStore({ platform: 'linux', runner: run });
+    expect(store.backend).toBe('libsecret');
+    expect(await store.get(REF)).toEqual({ ok: true, value: null });
+  });
+
+  it('surfaces a runtime failure (non-zero, non-empty stderr) as TOOL_IO', async () => {
+    const run: Runner = async (file) =>
+      file === 'which'
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 1, stdout: '', stderr: 'Cannot create an item in a locked collection' };
+    const store = await openSecretStore({ platform: 'linux', runner: run });
+    const got = await store.get(REF);
+    expect(got.ok).toBe(false);
+    if (got.ok) return;
+    expect(got.error.code).toBe('TOOL_IO');
+  });
+});
+
 describe('file backend round-trip', () => {
   let dir: string;
   beforeEach(() => {

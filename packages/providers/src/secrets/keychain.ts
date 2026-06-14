@@ -115,7 +115,17 @@ function libsecretBackend(run: Runner): SecretStore {
     backend: 'libsecret',
     async get(ref) {
       const r = await run('secret-tool', libsecretArgs.lookup(ref));
-      if (r.code !== 0) return ok(null);
+      if (r.code !== 0) {
+        // secret-tool exits 1 for both "not found" and runtime errors (daemon down, keyring locked,
+        // dbus error). Non-empty stderr reliably marks a real failure vs. a clean absence — surface
+        // it so a stored key never silently drops to demo (mirrors the macOS exit-44 distinction).
+        if (r.stderr.trim() !== '') {
+          return err(
+            new RizzError('TOOL_IO', `libsecret read failed (secret-tool exit ${r.code})`),
+          );
+        }
+        return ok(null);
+      }
       const value = r.stdout.replace(/\n$/, '');
       return ok(value === '' ? null : value);
     },
