@@ -28,6 +28,7 @@ interface MessageRow {
   role: string;
   content: string;
   tool_call_id: string | null;
+  tool_calls: string | null;
 }
 
 function toMeta(row: SessionRow): SessionMeta {
@@ -51,7 +52,7 @@ export function createSqliteStore(dir: string): SessionStore {
     );
     CREATE TABLE IF NOT EXISTS messages (
       session_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
-      tool_call_id TEXT,
+      tool_call_id TEXT, tool_calls TEXT,
       PRIMARY KEY (session_id, seq)
     );
   `);
@@ -75,8 +76,15 @@ export function createSqliteStore(dir: string): SessionStore {
           .prepare('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM messages WHERE session_id = ?')
           .get(id) as unknown as { next: number };
         db.prepare(
-          'INSERT INTO messages (session_id, seq, role, content, tool_call_id) VALUES (?, ?, ?, ?, ?)',
-        ).run(id, row.next, message.role, message.content, message.toolCallId ?? null);
+          'INSERT INTO messages (session_id, seq, role, content, tool_call_id, tool_calls) VALUES (?, ?, ?, ?, ?, ?)',
+        ).run(
+          id,
+          row.next,
+          message.role,
+          message.content,
+          message.toolCallId ?? null,
+          message.toolCalls !== undefined ? JSON.stringify(message.toolCalls) : null,
+        );
       } catch (cause) {
         return err(new RizzError('TOOL_IO', `could not append to session ${id}`, { cause }));
       }
@@ -119,13 +127,16 @@ export function createSqliteStore(dir: string): SessionStore {
         if (row === undefined) return err(new RizzError('TOOL_IO', `session ${id} not found`));
         const rows = db
           .prepare(
-            'SELECT role, content, tool_call_id FROM messages WHERE session_id = ? ORDER BY seq',
+            'SELECT role, content, tool_call_id, tool_calls FROM messages WHERE session_id = ? ORDER BY seq',
           )
           .all(id) as unknown as MessageRow[];
         const messages: Message[] = rows.map((m) => ({
           role: m.role as Message['role'],
           content: m.content,
           ...(m.tool_call_id !== null ? { toolCallId: m.tool_call_id } : {}),
+          ...(m.tool_calls !== null
+            ? { toolCalls: JSON.parse(m.tool_calls) as NonNullable<Message['toolCalls']> }
+            : {}),
         }));
         return ok({ meta: toMeta(row), messages });
       } catch (cause) {

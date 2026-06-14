@@ -42,10 +42,16 @@ function contract(name: string, open: () => Promise<SessionStore>): void {
       const store = await open();
       const created = await store.create({ model: 'm', branch: 'b' });
       if (!created.ok) return;
-      await store.append(created.value, { role: 'assistant', content: 'calling' });
+      await store.append(created.value, {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_42', name: 'bash', args: { command: 'echo hi' } }],
+      });
       await store.append(created.value, { role: 'tool', content: 'result', toolCallId: 'call_42' });
       const loaded = await store.load(created.value);
       if (loaded.ok) {
+        const assistant = loaded.value.messages.find((m) => m.role === 'assistant');
+        expect(assistant?.toolCalls?.[0]?.id).toBe('call_42');
         const toolMessage = loaded.value.messages.find((m) => m.role === 'tool');
         expect(toolMessage?.toolCallId).toBe('call_42');
       }

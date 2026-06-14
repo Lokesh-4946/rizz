@@ -217,9 +217,16 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
     await persistTotals();
 
     lastContent = content;
-    if (content !== '') {
-      await pushMessage({ role: 'assistant', content });
-      emit({ type: 'assistant', content });
+    // Record the assistant turn whenever it has text OR tool calls. The tool-use blocks must be
+    // persisted even when content is empty, or the following `tool` results become orphans that real
+    // providers reject (and a resumed history would be invalid).
+    if (content !== '' || toolCalls.length > 0) {
+      await pushMessage({
+        role: 'assistant',
+        content,
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      });
+      if (content !== '') emit({ type: 'assistant', content });
     }
 
     if (toolCalls.length === 0) {

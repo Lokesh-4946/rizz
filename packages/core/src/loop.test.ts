@@ -82,6 +82,31 @@ describe('runTurn — agentic loop', () => {
     expect(events.some((e) => e.type === 'tool' && e.ok)).toBe(true);
   });
 
+  it('records the assistant tool-use turn (with toolCalls) before the tool result', async () => {
+    // Pure tool-use turn: empty content but a tool call. The assistant message must still be
+    // recorded with its toolCalls, or the following tool result is an orphan for real providers.
+    const provider = scripted([
+      ok({
+        content: '',
+        inputTokens: 1,
+        outputTokens: 1,
+        toolCalls: [{ id: 't1', name: 'bash', args: { command: 'echo hi' } }],
+      }),
+      final('done'),
+    ]);
+    const session = createSession();
+    await runTurn({ provider, session, input: 'run it', cwd: process.cwd() });
+    const assistantToolUse = session.messages.find(
+      (m) => m.role === 'assistant' && m.toolCalls !== undefined,
+    );
+    expect(assistantToolUse?.toolCalls?.[0]?.name).toBe('bash');
+    // The tool result comes after the assistant tool-use, never before it.
+    const assistantIdx = session.messages.indexOf(assistantToolUse as never);
+    const toolIdx = session.messages.findIndex((m) => m.role === 'tool');
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    expect(toolIdx).toBeGreaterThan(assistantIdx);
+  });
+
   it('feeds a tool failure back to the model rather than crashing', async () => {
     const provider = scripted([
       ok({

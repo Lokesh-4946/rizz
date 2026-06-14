@@ -15,6 +15,12 @@ export interface Message {
   readonly content: string;
   /** For a `tool` message: the id of the tool call this is the result of (correlation). */
   readonly toolCallId?: string;
+  /**
+   * For an `assistant` message: the tool calls this turn issued (the provider's tool_use blocks).
+   * Recorded even when `content` is empty so the history stays valid for real providers and resume —
+   * a `tool` result must always be preceded by the assistant tool_use that requested it.
+   */
+  readonly toolCalls?: readonly ToolCall[];
 }
 
 export interface CompletionRequest {
