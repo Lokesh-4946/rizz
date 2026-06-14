@@ -18,8 +18,20 @@ import {
 /** Bump when the on-disk schema changes; older files are still read leniently for the fields we use. */
 export const REGISTRY_VERSION = 1;
 
-// Keys that must NEVER appear in the on-disk registry — the secrets-free invariant (§3.6).
-const FORBIDDEN_KEYS = ['apikey', 'api_key', 'key', 'secret', 'token', 'password', 'authorization'];
+// Credential-specific key names that must NEVER appear in the on-disk registry — the secrets-free
+// invariant (§3.6). Deliberately specific (not the bare `key`, a common non-secret metadata field).
+const FORBIDDEN_KEYS = [
+  'apikey',
+  'api_key',
+  'secret_key',
+  'access_key',
+  'private_key',
+  'secret',
+  'token',
+  'password',
+  'authorization',
+  'bearer',
+];
 
 export interface LoadRegistryOptions {
   /** Override the registry path (default ~/.rizz/models.json). */
@@ -108,20 +120,20 @@ export function loadRegistry(options: LoadRegistryOptions = {}): LoadedRegistry 
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return builtin('~/.rizz/models.json is not valid JSON — using the built-in registry');
+    return builtin(`${path} is not valid JSON — using the built-in registry`);
   }
   if (hasForbiddenKey(parsed)) {
     return builtin(
-      '~/.rizz/models.json contains a secret-bearing field — ignored; the registry must be secrets-free (keys live in the keychain)',
+      `${path} contains a secret-bearing field — ignored; the registry must be secrets-free (keys live in the keychain)`,
     );
   }
   if (parsed === null || typeof parsed !== 'object') {
-    return builtin('~/.rizz/models.json is not an object — using the built-in registry');
+    return builtin(`${path} is not an object — using the built-in registry`);
   }
 
   const obj = parsed as { models?: unknown; profiles?: unknown };
   if (!Array.isArray(obj.models) || obj.models.length === 0 || !obj.models.every(isModelInfo)) {
-    return builtin('~/.rizz/models.json has no valid "models" array — using the built-in registry');
+    return builtin(`${path} has no valid "models" array — using the built-in registry`);
   }
 
   const fileProfiles: Record<string, Profile> = {};

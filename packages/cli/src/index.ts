@@ -22,13 +22,21 @@ Single-agent and minimal by default. With no key set it runs in demo mode. The /
 multi-agent mode arrives in a later milestone.`;
 
 /** Pull `--profile <name>` out of argv (it composes with any mode); return it + the remaining args. */
-function extractProfile(argv: readonly string[]): { profile?: string; rest: string[] } {
+function extractProfile(argv: readonly string[]): {
+  profile?: string;
+  rest: string[];
+  missingValue?: boolean;
+} {
   const rest = [...argv];
   const i = rest.indexOf('--profile');
   if (i === -1) return { rest };
   const name = rest[i + 1];
-  rest.splice(i, name !== undefined ? 2 : 1);
-  return { ...(name !== undefined ? { profile: name } : {}), rest };
+  if (name === undefined) {
+    rest.splice(i, 1);
+    return { rest, missingValue: true };
+  }
+  rest.splice(i, 2);
+  return { profile: name, rest };
 }
 
 /** Non-TTY: read all of stdin as one prompt, run a single turn, print the reply. */
@@ -61,7 +69,13 @@ async function runPrint(profile?: string): Promise<number> {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const { profile, rest } = extractProfile(argv);
+  const { profile, rest, missingValue } = extractProfile(argv);
+  if (missingValue) {
+    process.stderr.write(
+      "rizz: --profile needs a name (default · deep · fast · cheap · local)\nTry 'rizz --help'.\n",
+    );
+    return 2;
+  }
   const resolveOpts = profile !== undefined ? { profile } : {};
   const arg = rest[0];
   switch (arg) {

@@ -90,6 +90,15 @@ export async function resolveProvider(
     const resolved = resolveProfile(registry, profiles, options.profile);
     if (resolved.ok) {
       modelId = resolved.value.model.id;
+      // Anti-overclaim (§3.6): a profile's thinking/temperature knobs are recorded but NOT yet applied
+      // to the model call (adapter support pending) — say so rather than let `deep` silently equal `default`.
+      const { thinkingLevel, temperature } = resolved.value.profile;
+      if (thinkingLevel !== undefined || temperature !== undefined) {
+        notice = joinNotices(
+          notice,
+          `profile "${options.profile}" → ${resolved.value.model.label}; its thinking/temperature tuning isn't applied yet (adapter support pending)`,
+        );
+      }
     } else {
       notice = joinNotices(notice, resolved.error.message);
     }
