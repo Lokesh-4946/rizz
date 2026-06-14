@@ -97,6 +97,21 @@ export {
   resolveModelRoute,
 } from './model/route.js';
 export { type CallModelParams, type ModelReply, callModel } from './model/call.js';
+// Model layer (ADR-002 Tier 2 / D-023): declarative profiles + local-first secrets-free registry.
+export {
+  type Profile,
+  type ResolvedProfile,
+  type ThinkingLevel,
+  BUILTIN_PROFILES,
+  PROFILE_NAMES,
+  resolveProfile,
+} from './model/profiles.js';
+export {
+  type LoadRegistryOptions,
+  type LoadedRegistry,
+  REGISTRY_VERSION,
+  loadRegistry,
+} from './model/registry-store.js';
 
 // Compression service (design §3.3) + token estimation.
 export { type CompressParams, type CompressResult, compressContext } from './compress.js';

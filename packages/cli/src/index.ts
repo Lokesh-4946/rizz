@@ -11,17 +11,36 @@ const VERSION = '0.0.0';
 const USAGE = `rizz — the lightest, most connectable coding agent harness
 
 Usage:
-  rizz               launch the interactive TUI (set ANTHROPIC_API_KEY or /login to connect)
-  rizz --resume <id> resume a saved session by id (rehydrates its full history)
-  rizz < file        run one turn on piped input and print the reply (print mode)
-  rizz --version     print the rizz version
-  rizz --help        show this help
+  rizz                 launch the interactive TUI (set ANTHROPIC_API_KEY or /login to connect)
+  rizz --profile <p>   pick a model profile (default · deep · fast · cheap · local)
+  rizz --resume <id>   resume a saved session by id (rehydrates its full history)
+  rizz < file          run one turn on piped input and print the reply (print mode)
+  rizz --version       print the rizz version
+  rizz --help          show this help
 
 Single-agent and minimal by default. With no key set it runs in demo mode. The /workspace
 multi-agent mode arrives in a later milestone.`;
 
+/** Pull `--profile <name>` out of argv (it composes with any mode); return it + the remaining args. */
+function extractProfile(argv: readonly string[]): {
+  profile?: string;
+  rest: string[];
+  missingValue?: boolean;
+} {
+  const rest = [...argv];
+  const i = rest.indexOf('--profile');
+  if (i === -1) return { rest };
+  const name = rest[i + 1];
+  if (name === undefined) {
+    rest.splice(i, 1);
+    return { rest, missingValue: true };
+  }
+  rest.splice(i, 2);
+  return { profile: name, rest };
+}
+
 /** Non-TTY: read all of stdin as one prompt, run a single turn, print the reply. */
-async function runPrint(): Promise<number> {
+async function runPrint(profile?: string): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const input = Buffer.concat(chunks).toString('utf8').trim();
@@ -30,7 +49,7 @@ async function runPrint(): Promise<number> {
     return 0;
   }
 
-  const resolved = await resolveProvider();
+  const resolved = await resolveProvider(profile !== undefined ? { profile } : {});
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
 
   const result = await runTurn({
@@ -50,7 +69,15 @@ async function runPrint(): Promise<number> {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const arg = argv[0];
+  const { profile, rest, missingValue } = extractProfile(argv);
+  if (missingValue) {
+    process.stderr.write(
+      "rizz: --profile needs a name (default · deep · fast · cheap · local)\nTry 'rizz --help'.\n",
+    );
+    return 2;
+  }
+  const resolveOpts = profile !== undefined ? { profile } : {};
+  const arg = rest[0];
   switch (arg) {
     case '-v':
     case '--version':
@@ -61,20 +88,20 @@ async function main(argv: readonly string[]): Promise<number> {
       process.stdout.write(`${USAGE}\n`);
       return 0;
     case '--resume': {
-      const resumeId = argv[1];
+      const resumeId = rest[1];
       if (resumeId === undefined) {
         process.stderr.write("rizz: --resume needs a session id\nTry 'rizz --help'.\n");
         return 2;
       }
-      await startTui({ ...(await resolveProvider()), resumeId });
+      await startTui({ ...(await resolveProvider(resolveOpts)), resumeId });
       return 0;
     }
     case undefined:
       if (process.stdin.isTTY) {
-        await startTui(await resolveProvider());
+        await startTui(await resolveProvider(resolveOpts));
         return 0;
       }
-      return runPrint();
+      return runPrint(profile);
     default:
       process.stderr.write(`rizz: unknown option '${arg}'\nTry 'rizz --help'.\n`);
       return 2;
