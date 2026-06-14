@@ -9,6 +9,12 @@ export const VERSION = '0.0.0';
 export type { Result };
 export { type Session, createSession } from './session.js';
 export {
+  type AuthKind,
+  type ResolveProviderOptions,
+  type ResolvedProvider,
+  resolveProvider,
+} from './bootstrap.js';
+export {
   type Budget,
   type BudgetState,
   DEFAULT_BUDGET,

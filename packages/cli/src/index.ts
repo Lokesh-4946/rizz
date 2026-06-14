@@ -3,8 +3,7 @@
 // No args + a TTY → the interactive TUI; no args + piped stdin → one print-mode turn (scriptable,
 // job #3). Kept dependency-light so cold start stays fast (the footprint gate measures this binary).
 
-import { createSession, runTurn } from '@rizz/core';
-import { StubProvider } from '@rizz/providers';
+import { createSession, resolveProvider, runTurn } from '@rizz/core';
 import { startTui } from '@rizz/tui';
 
 const VERSION = '0.0.0';
@@ -12,14 +11,14 @@ const VERSION = '0.0.0';
 const USAGE = `rizz — the lightest, most connectable coding agent harness
 
 Usage:
-  rizz               launch the interactive TUI (demo provider until /login is wired)
+  rizz               launch the interactive TUI (set ANTHROPIC_API_KEY or /login to connect)
   rizz --resume <id> resume a saved session by id (rehydrates its full history)
   rizz < file        run one turn on piped input and print the reply (print mode)
   rizz --version     print the rizz version
   rizz --help        show this help
 
-Single-agent and minimal by default. /login, /model and the /workspace multi-agent mode
-arrive in later milestones.`;
+Single-agent and minimal by default. With no key set it runs in demo mode. The /workspace
+multi-agent mode arrives in a later milestone.`;
 
 /** Non-TTY: read all of stdin as one prompt, run a single turn, print the reply. */
 async function runPrint(): Promise<number> {
@@ -31,11 +30,16 @@ async function runPrint(): Promise<number> {
     return 0;
   }
 
+  const resolved = await resolveProvider();
+  if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
+
   const result = await runTurn({
-    provider: new StubProvider(),
+    provider: resolved.provider,
     session: createSession(),
     input,
     cwd: process.cwd(),
+    subscription: resolved.subscription,
+    ...(resolved.model ? { model: resolved.model } : {}),
   });
   if (!result.ok) {
     process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
@@ -62,12 +66,12 @@ async function main(argv: readonly string[]): Promise<number> {
         process.stderr.write("rizz: --resume needs a session id\nTry 'rizz --help'.\n");
         return 2;
       }
-      await startTui({ provider: new StubProvider(), resumeId });
+      await startTui({ ...(await resolveProvider()), resumeId });
       return 0;
     }
     case undefined:
       if (process.stdin.isTTY) {
-        await startTui({ provider: new StubProvider() });
+        await startTui(await resolveProvider());
         return 0;
       }
       return runPrint();

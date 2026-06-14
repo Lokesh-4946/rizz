@@ -20,6 +20,29 @@ export type {
 } from './provider.js';
 export { StubProvider } from './stub-provider.js';
 
+// Real model adapter (BYOK over the Anthropic Messages API). The subscription OAuth path is not wired.
+export {
+  type AnthropicProviderOptions,
+  type AnthropicRequestBody,
+  buildAnthropicRequest,
+  createAnthropicProvider,
+} from './providers/anthropic.js';
+
+// Secret storage (the BYOK key, kept off the repo/logs — §3.6): OS keychain with a 0600 file fallback.
+export {
+  type OpenSecretStoreOptions,
+  type RunResult,
+  type Runner,
+  type SecretBackend,
+  type SecretRef,
+  type SecretStore,
+  ANTHROPIC_ACCOUNT,
+  RIZZ_SERVICE,
+  libsecretArgs,
+  macosArgs,
+  openSecretStore,
+} from './secrets/keychain.js';
+
 // Runtime services — the four tools, dispatch, and the primitives they share (design §2, §3.2).
 export {
   type ApprovalDecision,
