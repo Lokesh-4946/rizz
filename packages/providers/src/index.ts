@@ -19,3 +19,38 @@ export type {
   Provider,
 } from './provider.js';
 export { StubProvider } from './stub-provider.js';
+
+// Runtime services — the four tools, dispatch, and the primitives they share (design §2, §3.2).
+export {
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type BashParams,
+  type BashResult,
+  type Classification,
+  type CommandClass,
+  type DispatchToolParams,
+  type EditParams,
+  type EditResult,
+  type Eol,
+  type ReadParams,
+  type ReadResult,
+  type ToolCall,
+  type ToolResult,
+  type ToolSpec,
+  type VerifiedWrite,
+  type WriteParams,
+  type WriteResult,
+  TOOL_SPECS,
+  applyEol,
+  classifyCommand,
+  contentHash,
+  detectEol,
+  dispatchTool,
+  editTool,
+  expandHome,
+  readTool,
+  resolveWorkspacePath,
+  runBash,
+  verifyWrite,
+  writeTool,
+} from './runtime/index.js';

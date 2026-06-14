@@ -9,6 +9,13 @@ export type RizzErrorCode =
   | 'PROVIDER_UNAVAILABLE'
   | 'BAD_TOOL_CALL'
   | 'EDIT_VERIFY_FAILED'
+  // Edit sub-failures kept distinct from EDIT_VERIFY_FAILED so the loop can react precisely (design
+  // §2.3/§2.4): the file moved under us, the search text is ambiguous, or it was not found at all.
+  | 'STALE_FILE'
+  | 'AMBIGUOUS_MATCH'
+  | 'NO_MATCH'
+  // A tool's underlying I/O failed (file not found, permission denied, command spawn error).
+  | 'TOOL_IO'
   | 'BUDGET_EXCEEDED'
   | 'INTERRUPTED'
   | 'UNKNOWN';
