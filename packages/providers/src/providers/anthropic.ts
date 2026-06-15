@@ -8,9 +8,11 @@
 // state; the loop drives cost/fallback/retry off the Result this returns.
 
 import type { CompletionRequest, CompletionResult, Message, Provider } from '../provider.js';
-import { type Result, RizzError, type RizzErrorCode, err, ok } from '../result.js';
+import { type Result, RizzError, err, ok } from '../result.js';
 import type { ToolCall } from '../runtime/dispatch.js';
 import type { ToolSpec } from '../runtime/tools/spec.js';
+import { sseDataLines } from './sse.js';
+import { codeForStatus, redact } from './util.js';
 
 const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -169,21 +171,6 @@ function resolveDanglingToolUses(
     }
     for (const id of missing) satisfied.add(id);
   }
-}
-
-/** Map an HTTP status to a stable error code the loop can classify (design §5). */
-function codeForStatus(status: number): RizzErrorCode {
-  if (status === 401 || status === 403) return 'PROVIDER_AUTH';
-  if (status === 429) return 'PROVIDER_RATE_LIMIT';
-  // 408/409/5xx (incl. Anthropic's 529 "overloaded") are transient → fallback/retry.
-  if (status === 408 || status === 409 || status >= 500) return 'PROVIDER_UNAVAILABLE';
-  // Other 4xx (400/404/422…) are caller-side and non-retryable → surface, don't loop.
-  return 'UNKNOWN';
-}
-
-/** Remove the key from any text before it could be surfaced (defense in depth — the key isn't logged). */
-function redact(text: string, secret: string): string {
-  return secret === '' ? text : text.split(secret).join('«redacted»');
 }
 
 interface ParsedReply {
@@ -384,53 +371,13 @@ interface StreamEvent {
   readonly delta?: { type?: string; text?: string; partial_json?: string };
 }
 
-/** Parse one SSE line into an event, or undefined for a non-data/keep-alive/non-JSON line. */
-function lineToEvent(raw: string): StreamEvent | undefined {
-  const line = raw.replace(/\r$/, '');
-  if (!line.startsWith('data:')) return undefined;
-  const payload = line.slice(5).trim();
-  if (payload === '' || payload === '[DONE]') return undefined;
-  try {
-    return JSON.parse(payload) as StreamEvent;
-  } catch {
-    // A non-JSON keep-alive/comment line is ignored, never fatal.
-    return undefined;
-  }
-}
-
-/** Decode the response body as Server-Sent Events, yielding each parsed `data:` payload. */
+/** Decode the response body as Anthropic SSE events (parsing each shared `data:` payload). */
 async function* readSse(response: Response): AsyncGenerator<StreamEvent> {
-  const stream = response.body;
-  if (stream === null) return;
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for await (const bytes of streamChunks(stream)) {
-    buffer += decoder.decode(bytes, { stream: true });
-    let nl = buffer.indexOf('\n');
-    while (nl !== -1) {
-      const event = lineToEvent(buffer.slice(0, nl));
-      buffer = buffer.slice(nl + 1);
-      if (event !== undefined) yield event;
-      nl = buffer.indexOf('\n');
+  for await (const payload of sseDataLines(response)) {
+    try {
+      yield JSON.parse(payload) as StreamEvent;
+    } catch {
+      // A non-JSON keep-alive/comment line is ignored, never fatal.
     }
-  }
-  // Flush any bytes the decoder still holds, then emit a trailing newline-less line. A proxy or stub
-  // that omits the final `\n` would otherwise leave the last event stranded in the buffer.
-  buffer += decoder.decode();
-  const tail = lineToEvent(buffer);
-  if (tail !== undefined) yield tail;
-}
-
-/** Iterate a web ReadableStream (Node fetch body) as byte chunks. */
-async function* streamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
-  const reader = stream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) yield value;
-    }
-  } finally {
-    reader.releaseLock();
   }
 }

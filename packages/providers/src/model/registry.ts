@@ -24,6 +24,17 @@ export interface ModelInfo {
   readonly priceOutputPerM: number;
   readonly latencyHint: 'fast' | 'medium' | 'slow';
   readonly toolCapable: boolean;
+  /**
+   * OpenAI-compatible base URL for non-default endpoints (OpenRouter / Ollama / custom). Omitted →
+   * the provider's default (Anthropic, or OpenAI's api.openai.com). Carried so a single OpenAI-shaped
+   * adapter can serve many endpoints by config (D-002 provider-agnostic).
+   */
+  readonly baseUrl?: string;
+  /**
+   * A local/keyless endpoint (e.g. Ollama) needs no BYOK key — bootstrap connects it without reading
+   * env/keychain (D-044). Omitted → keyed (the default for hosted providers).
+   */
+  readonly keyless?: boolean;
 }
 
 export interface ModelRegistry {
@@ -64,6 +75,29 @@ export const DEFAULT_REGISTRY: ModelRegistry = {
       contextWindow: 200_000,
       priceInputPerM: 0.8,
       priceOutputPerM: 4,
+      latencyHint: 'fast',
+      toolCapable: true,
+    },
+    // OpenAI (BYOK over the OpenAI-compatible adapter). Default endpoint; prices are a curated snapshot.
+    {
+      id: 'gpt-4o',
+      provider: 'openai',
+      label: 'GPT-4o',
+      capabilities: ['code', 'plan'],
+      contextWindow: 128_000,
+      priceInputPerM: 2.5,
+      priceOutputPerM: 10,
+      latencyHint: 'fast',
+      toolCapable: true,
+    },
+    {
+      id: 'gpt-4o-mini',
+      provider: 'openai',
+      label: 'GPT-4o mini',
+      capabilities: ['code', 'cheap'],
+      contextWindow: 128_000,
+      priceInputPerM: 0.15,
+      priceOutputPerM: 0.6,
       latencyHint: 'fast',
       toolCapable: true,
     },

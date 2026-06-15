@@ -67,3 +67,68 @@ under `~/.rizz` where no keychain helper exists. It is never written to the repo
 
 > The Pro/Max **subscription** sign-in is intentionally not wired (it would route around the
 > subscription's intended access path); BYOK is the supported path. See decision D-033.
+
+### OpenAI-compatible providers (OpenAI / OpenRouter / Ollama / custom)
+
+One OpenAI-compatible adapter covers any endpoint that speaks the Chat Completions wire — they differ
+only by **base URL** and which key they need (D-044). rizz picks the adapter by the model's `provider`
+(the provider-factory); the agent loop is unchanged.
+
+**The key comes from `<PROVIDER>_API_KEY`** (the same env-or-keychain path as Anthropic): the keychain
+account is the provider id, so no key is ever stored in the registry — only referenced.
+
+| Provider     | Model `provider` | Base URL                          | Key env var          |
+| ------------ | ---------------- | --------------------------------- | -------------------- |
+| OpenAI       | `openai`         | `https://api.openai.com/v1` (def) | `OPENAI_API_KEY`     |
+| OpenRouter   | `openrouter`     | `https://openrouter.ai/api/v1`    | `OPENROUTER_API_KEY` |
+| Ollama       | `ollama`         | `http://localhost:11434/v1`       | _(keyless — local)_  |
+| Custom       | any id, e.g. `mycorp` | your endpoint's `…/v1`       | `MYCORP_API_KEY`     |
+
+OpenAI ships in the built-in registry, so a key is all you need:
+
+```sh
+export OPENAI_API_KEY=sk-...
+rizz                          # then: /model → pick "GPT-4o" / "GPT-4o mini"
+```
+
+**OpenRouter, Ollama, and custom endpoints** are added to the **on-disk registry** at
+`~/.rizz/models.json` (it merges over the built-ins). Keep keys out of this file — reference the
+provider only; the key is read from the env var or keychain at launch:
+
+```jsonc
+{
+  "models": [
+    {
+      "id": "meta-llama/llama-3.1-8b-instruct",   // sent verbatim as the model name
+      "provider": "openrouter",
+      "label": "Llama 3.1 8B (OpenRouter)",
+      "capabilities": ["code"],
+      "contextWindow": 131072,
+      "priceInputPerM": 0.05, "priceOutputPerM": 0.05,
+      "latencyHint": "fast", "toolCapable": true,
+      "baseUrl": "https://openrouter.ai/api/v1"
+    },
+    {
+      "id": "llama3.1",
+      "provider": "ollama",
+      "label": "Llama 3.1 (Ollama, local)",
+      "capabilities": ["code"],
+      "contextWindow": 131072,
+      "priceInputPerM": 0, "priceOutputPerM": 0,
+      "latencyHint": "medium", "toolCapable": true,
+      "baseUrl": "http://localhost:11434/v1",
+      "keyless": true
+    }
+  ]
+}
+```
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...   # not needed for the keyless Ollama entry
+rizz                                  # then: /model → pick the OpenRouter or Ollama entry
+# or pin it for one launch:  rizz --model llama3.1
+```
+
+A **custom** OpenAI-compatible endpoint is the same recipe: invent a `provider` id (e.g. `mycorp`),
+set its `baseUrl`, and rizz reads `MYCORP_API_KEY`. The on-disk registry is validated and must stay
+**secrets-free** — a file containing a key-like field is rejected with a notice (D-023).

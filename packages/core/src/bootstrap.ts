@@ -22,6 +22,7 @@ import {
   type SecretStore,
   StubProvider,
   createAnthropicProvider,
+  createOpenAiProvider,
   getModel,
   loadRegistry,
   openSecretStore,
@@ -68,11 +69,88 @@ export interface ResolveProviderOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
-const ENV_KEY = 'ANTHROPIC_API_KEY';
+const ANTHROPIC_PROVIDER = 'anthropic';
 
-function readEnvKey(env: NodeJS.ProcessEnv): string | undefined {
-  const raw = env[ENV_KEY]?.trim();
+/**
+ * The env var holding a provider's BYOK key, by convention `<PROVIDER>_API_KEY` — so the same rule
+ * covers ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, and any custom provider id (D-044).
+ * The env var is the explicit, ephemeral override; the keychain (account = provider id) is the
+ * persisted fallback.
+ */
+function envVarFor(provider: string): string {
+  return `${provider.toUpperCase()}_API_KEY`;
+}
+
+function readEnvKey(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const raw = env[name]?.trim();
   return raw !== undefined && raw !== '' ? raw : undefined;
+}
+
+/** Pick the active model: an explicit id (with a notice if it is unknown) else the registry default. */
+function selectModel(
+  registry: ModelRegistry,
+  modelId: string | undefined,
+): { model?: ModelInfo; notice?: string } {
+  const requested = modelId !== undefined ? getModel(registry, modelId) : undefined;
+  const fallback = registry.models[0];
+  // A requested-but-unknown model must not be silently swapped — say so (latent-demands §6).
+  if (modelId !== undefined && requested === undefined) {
+    return {
+      ...(fallback ? { model: fallback } : {}),
+      notice: `model "${modelId}" is not in the registry — using the default`,
+    };
+  }
+  const model = requested ?? fallback;
+  return model ? { model } : {};
+}
+
+/**
+ * The provider-factory (D-044): select the adapter by `model.provider`. Anthropic is native; every
+ * other provider (openai / openrouter / ollama / a custom base URL) speaks the OpenAI-compatible wire,
+ * differing only by `baseUrl`. The loop is unchanged — it drives whichever Provider this returns.
+ */
+function createProviderFor(model: ModelInfo, apiKey: string, fetchImpl?: typeof fetch): Provider {
+  if (model.provider === ANTHROPIC_PROVIDER) {
+    return createAnthropicProvider({
+      apiKey,
+      model: model.id,
+      label: model.label,
+      ...(fetchImpl ? { fetchImpl } : {}),
+    });
+  }
+  return createOpenAiProvider({
+    apiKey,
+    model: model.id,
+    label: model.label,
+    ...(model.baseUrl !== undefined ? { baseUrl: model.baseUrl } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
+  });
+}
+
+interface Credential {
+  /** The resolved key, `''` for a keyless local endpoint, or undefined when none is available. */
+  readonly apiKey?: string;
+  readonly notice?: string;
+}
+
+/** Resolve the BYOK key for a model's provider: keyless → none needed; else env override → keychain. */
+async function resolveCredential(
+  model: ModelInfo,
+  env: NodeJS.ProcessEnv,
+  injected?: SecretStore,
+): Promise<Credential> {
+  if (model.keyless === true) return { apiKey: '' };
+  const envKey = readEnvKey(env, envVarFor(model.provider));
+  if (envKey !== undefined) return { apiKey: envKey };
+  // Only touch the keychain when the env var is absent — avoids a keychain prompt on every launch.
+  const secrets = injected ?? (await openSecretStore());
+  const got = await secrets.get({ service: RIZZ_SERVICE, account: model.provider });
+  if (!got.ok) {
+    return {
+      notice: `could not read the keychain (${got.error.code}) — continuing without a saved key`,
+    };
+  }
+  return got.value !== null ? { apiKey: got.value } : {};
 }
 
 /** Resolve the BYOK key + build the matching Provider, or fall back to the demo stub. */
@@ -145,26 +223,24 @@ export async function resolveProvider(
     }
   }
 
-  const envKey = readEnvKey(env);
-  let storedKey: string | undefined;
-
-  // Only touch the keychain when the env var is absent — env is the explicit override and avoids a
-  // keychain prompt on every launch.
-  if (envKey === undefined) {
-    const secrets = options.secrets ?? (await openSecretStore());
-    const got = await secrets.get({ service: RIZZ_SERVICE, account: ANTHROPIC_ACCOUNT });
-    if (got.ok) {
-      storedKey = got.value ?? undefined;
-    } else {
-      notice = joinNotices(
-        notice,
-        `could not read the keychain (${got.error.code}) — continuing without a saved key`,
-      );
-    }
+  // Select the active model BEFORE resolving a credential — the model's provider decides which key
+  // to read (D-044). An empty registry is a programmer error, but never crash the launch.
+  const selected = selectModel(registry, modelId);
+  if (selected.notice !== undefined) notice = joinNotices(notice, selected.notice);
+  const model = selected.model;
+  if (model === undefined) {
+    return {
+      provider: new StubProvider(),
+      subscription: true,
+      auth: 'demo',
+      notice: joinNotices(notice, 'no models are registered — running in demo mode'),
+    };
   }
 
-  const apiKey = envKey ?? storedKey;
-  if (apiKey === undefined) {
+  // Resolve the BYOK credential for this model's provider (keyless local endpoints need none).
+  const credential = await resolveCredential(model, env, options.secrets);
+  if (credential.notice !== undefined) notice = joinNotices(notice, credential.notice);
+  if (credential.apiKey === undefined) {
     return {
       provider: new StubProvider(),
       subscription: true,
@@ -172,12 +248,9 @@ export async function resolveProvider(
       ...(notice ? { notice } : {}),
     };
   }
-  return buildFromKey(apiKey, {
-    registry,
-    ...(modelId !== undefined ? { modelId } : {}),
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    ...(notice !== undefined ? { priorNotice: notice } : {}),
-  });
+
+  const provider = createProviderFor(model, credential.apiKey, options.fetchImpl);
+  return { provider, model, subscription: false, auth: 'api-key', ...(notice ? { notice } : {}) };
 }
 
 interface BuildOptions {
@@ -187,19 +260,18 @@ interface BuildOptions {
   readonly priorNotice?: string;
 }
 
-/** Build the live Anthropic provider from a key — shared by resolveProvider and loginWithApiKey. */
+/**
+ * Build a live provider from an in-memory key — shared by resolveProvider's siblings and loginWithApiKey.
+ * Selects the adapter by the resolved model's provider (D-044), so a `/model` switch to an OpenAI-
+ * compatible model builds that adapter rather than always Anthropic.
+ */
 function buildFromKey(apiKey: string, opts: BuildOptions): ResolvedProvider {
-  const { registry } = opts;
-  const requested = opts.modelId ? getModel(registry, opts.modelId) : undefined;
-  // A requested-but-unknown model must not be silently swapped — say so (latent-demands §6).
-  let notice = opts.priorNotice;
-  if (opts.modelId !== undefined && requested === undefined) {
-    notice = joinNotices(
-      notice,
-      `model "${opts.modelId}" is not in the registry — using the default`,
-    );
-  }
-  const model = requested ?? registry.models[0];
+  const selected = selectModel(opts.registry, opts.modelId);
+  const notice =
+    selected.notice !== undefined
+      ? joinNotices(opts.priorNotice, selected.notice)
+      : opts.priorNotice;
+  const model = selected.model;
   if (model === undefined) {
     // An empty registry is a programmer error, but never crash the launch — degrade to demo.
     return {
@@ -209,12 +281,7 @@ function buildFromKey(apiKey: string, opts: BuildOptions): ResolvedProvider {
       notice: joinNotices(notice, 'no models are registered — running in demo mode'),
     };
   }
-  const provider = createAnthropicProvider({
-    apiKey,
-    model: model.id,
-    label: model.label,
-    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
-  });
+  const provider = createProviderFor(model, apiKey, opts.fetchImpl);
   return { provider, model, subscription: false, auth: 'api-key', ...(notice ? { notice } : {}) };
 }
 

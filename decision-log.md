@@ -214,7 +214,29 @@ channel to ask, so it **denies** destructive/networked commands outright and run
 `tsconfig` `removeComments` for emitted JavaScript dropped core from 203KB to 147KB (budget stays
 200KB); generated `.d.ts` retains JSDoc for consumers. → `tsconfig.base.json`.
 
+#### D-043
+**The decision log is a tracked file, reconstructed from the repo.** — Committed
+This file was cited across runbooks, commits, and source `D-NNN`/`ADR-NNN` comments but never
+committed; it is reconstructed here from those references (see the Provenance note) so the log
+resolves and new decisions have a home. New decisions are appended in the PR that makes them, citing
+the ID in the commit/runbook/source. → `decision-log.md`, [rizz#11](https://github.com/Lokesh-4946/rizz/pull/11).
+
+#### D-044
+**One OpenAI-compatible adapter, selected by `model.provider`, keyed by `<PROVIDER>_API_KEY`.** — Committed (M4)
+BYOK over any OpenAI-shaped endpoint (OpenAI, OpenRouter, Ollama, custom) through a single adapter
+that differs only by `baseUrl`; a provider-factory in bootstrap picks Anthropic-native vs
+OpenAI-compatible by `model.provider`, and the agent loop is unchanged. The adapter mirrors the
+Anthropic one (stream + non-stream, tool mapping, status→RizzError, key redaction) and stays pure
+(ADR-001/[D-024](#d-024)). Credential resolution is orchestration: the key is read from
+`<PROVIDER>_API_KEY` (env override → keychain account = provider id), so **no key is stored in the
+registry — only referenced**; a `keyless` model (local Ollama) connects with no key. The built-in
+registry carries OpenAI; **OpenRouter / Ollama / custom live in the on-disk registry**
+(`~/.rizz/models.json`), which keeps local/free endpoints out of the opt-in capability auto-router by
+default. Follow-up: the `local` profile still points at a placeholder id and stays an honest stub;
+wiring it to a concrete local model is deferred. → `packages/providers/src/providers/openai.ts`,
+`packages/core/src/bootstrap.ts`, `runbooks/install.md`.
+
 ---
 
-*Next decision: **D-043**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+*Next decision: **D-045**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*

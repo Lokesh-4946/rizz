@@ -85,7 +85,11 @@ function isModelInfo(value: unknown): value is ModelInfo {
     typeof m.priceInputPerM === 'number' &&
     typeof m.priceOutputPerM === 'number' &&
     (m.latencyHint === 'fast' || m.latencyHint === 'medium' || m.latencyHint === 'slow') &&
-    typeof m.toolCapable === 'boolean'
+    typeof m.toolCapable === 'boolean' &&
+    // Optional OpenAI-compatible endpoint fields — when present they must be the right type, so a
+    // malformed on-disk entry can't smuggle in a non-string base URL or a non-boolean flag (D-044).
+    (m.baseUrl === undefined || typeof m.baseUrl === 'string') &&
+    (m.keyless === undefined || typeof m.keyless === 'boolean')
   );
 }
 
