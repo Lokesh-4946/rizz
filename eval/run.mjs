@@ -341,6 +341,37 @@ async function runHeadlessSmoke() {
         assert(!rizzHomeExists, 'unsupported setup arg created temp HOME/.rizz');
       },
     },
+    {
+      name: 'rizz setup enters demo harness without provider credentials or config writes',
+      run() {
+        const secret = 'sk-ant-eval-interactive-setup-secret';
+        const { configExists, result } = withTempHomeSync((home) => {
+          const child = spawnSync(process.execPath, [cliBin, 'setup'], {
+            cwd: repoRoot,
+            input: '\n\n/exit\n',
+            encoding: 'utf8',
+            env: setupSmokeEnv(home, secret),
+            timeout: 5_000,
+          });
+          return {
+            configExists: existsSync(join(home, '.rizz', 'config.json')),
+            result: child,
+          };
+        });
+        const combinedOutput = `${result.stdout}\n${result.stderr}`;
+
+        assert(result.error === undefined, String(result.error));
+        assert(
+          result.status === 0,
+          `expected exit 0, got ${result.status}: ${redactOutput(result.stderr, secret)}`,
+        );
+        assert(result.stdout.includes('rizz setup'), 'expected setup output');
+        assert(result.stdout.includes('Harness Mode ready'), 'expected setup boot output');
+        assert(result.stdout.includes('pi online'), 'expected TUI launch output');
+        assert(!combinedOutput.includes(secret), 'fake provider key was echoed');
+        assert(!configExists, 'interactive setup wrote temp HOME/.rizz/config.json');
+      },
+    },
   ];
 
   for (const check of checks) {

@@ -13,6 +13,11 @@ export interface StatusInfo {
   readonly branch: string;
 }
 
+export interface SetupLaunchInfo {
+  readonly agentName: string;
+  readonly mode: 'Demo / Harness';
+}
+
 // Internal name only (decision D-010 — no hardcoded public product name yet).
 export const renderHeader = (theme: Theme, model: string): string =>
   `${theme.dim('┌─ ')}${theme.accent('rizz')}${theme.dim(' · by Valoir')}${theme.dim(' — ')}${theme.text(model)}`;
@@ -23,6 +28,21 @@ export const renderEmptyState = (theme: Theme): string =>
 
 export const renderHint = (theme: Theme): string =>
   theme.dim('  /login · /model · /theme · /workspace · /help');
+
+export const renderSetupBoot = (theme: Theme): string =>
+  [
+    theme.dim('  rizz setup'),
+    theme.system(`  ${theme.glyphs.arrow} dependency doctor complete`),
+    theme.system(`  ${theme.glyphs.arrow} demo provider selected`),
+    theme.accent(`  ${theme.glyphs.check} Harness Mode ready`),
+  ].join('\n');
+
+export const renderSetupLaunch = (theme: Theme, info: SetupLaunchInfo): string =>
+  [
+    theme.accent(`  ${info.agentName} online`),
+    theme.text(`  mode: ${info.mode}`),
+    theme.dim('  provider: demo · billing: $0.00 (sub) · permissions: ask'),
+  ].join('\n');
 
 // Always-visible status line: model · auth │ ctx% │ tokens · cost │ branch (spec §8).
 export const renderStatusBar = (theme: Theme, info: StatusInfo): string => {

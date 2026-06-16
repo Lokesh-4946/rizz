@@ -43,6 +43,7 @@ import {
   renderHint,
   renderModelPicker,
   renderPlanStub,
+  renderSetupLaunch,
   renderStatusBar,
   renderThemeList,
 } from './render.js';
@@ -61,6 +62,8 @@ export interface TuiOptions {
   readonly auth?: AuthKind;
   /** A one-time startup notice (e.g. a keychain read failure), surfaced before the prompt. */
   readonly notice?: string;
+  /** Launch-only display name from setup. Not persisted and not provider identity. */
+  readonly agentName?: string;
 }
 
 /** Where sessions persist. Local-first; no cloud (D-011). */
@@ -139,6 +142,10 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
 
   writeLine(renderHeader(theme, activeProvider.label));
   writeLine('');
+  if (options.agentName !== undefined) {
+    writeLine(renderSetupLaunch(theme, { agentName: options.agentName, mode: 'Demo / Harness' }));
+    writeLine('');
+  }
   if (options.notice !== undefined) writeLine(theme.alert(`  ⚠ ${options.notice}`));
   if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
   // Demo mode is one quiet banner, not a per-turn nag (D-032).

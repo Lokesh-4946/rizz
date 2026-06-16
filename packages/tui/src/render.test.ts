@@ -7,6 +7,8 @@ import {
   renderHeader,
   renderModelPicker,
   renderPlanStub,
+  renderSetupBoot,
+  renderSetupLaunch,
   renderStatusBar,
   renderThemeList,
 } from './render.js';
@@ -79,5 +81,24 @@ describe('theme list + stubs', () => {
 
   it('coming-soon hint names the provider', () => {
     expect(renderComingSoon(plain, 'Codex')).toContain('Codex');
+  });
+});
+
+describe('setup launch renderers', () => {
+  it('renders setup boot copy without ANSI in plain mode', () => {
+    const out = renderSetupBoot(plain);
+
+    expect(out).toContain('dependency doctor complete');
+    expect(out).toContain('Harness Mode ready');
+    expect(out).not.toContain('\x1b[');
+  });
+
+  it('renders launch state with demo billing and permissions visible', () => {
+    const out = renderSetupLaunch(plain, { agentName: 'juno_01', mode: 'Demo / Harness' });
+
+    expect(out).toContain('juno_01 online');
+    expect(out).toContain('Demo / Harness');
+    expect(out).toContain('$0.00 (sub)');
+    expect(out).toContain('permissions: ask');
   });
 });
