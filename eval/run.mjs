@@ -4,7 +4,17 @@
 // step to build on; the loop-backed tasks land in M5.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +23,7 @@ const evalDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(evalDir);
 const tasksDir = join(evalDir, 'tasks');
 const cliBin = join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+const installLocalScript = join(repoRoot, 'scripts', 'install-local.mjs');
 
 /** Load every *.task.json under eval/tasks. */
 function loadTasks() {
@@ -78,6 +89,15 @@ async function withTempHomeAsync(run) {
   }
 }
 
+function withTempDirSync(prefix, run) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    return run(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function parseJsonLines(stdout) {
   const lines = stdout.split('\n').filter((line) => line.trim() !== '');
   assert(lines.length > 0, 'expected at least one stdout line');
@@ -115,6 +135,27 @@ function runSetupCliSync(args, secret) {
       result,
       rizzHomeExists: existsSync(join(home, '.rizz')),
     };
+  });
+}
+
+function runInstallLocalSync(args) {
+  return spawnSync(process.execPath, [installLocalScript, ...args], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+}
+
+function runInstalledShim(shimPath, args) {
+  const nodeDir = dirname(process.execPath);
+  return spawnSync(shimPath, args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${nodeDir}:${process.env.PATH ?? ''}`,
+    },
+    timeout: 5_000,
   });
 }
 
@@ -318,5 +359,131 @@ async function runHeadlessSmoke() {
   return smokePassed === checks.length;
 }
 
+function runInstallShimSmoke() {
+  console.log('\nrizz install-local smoke - shim safety gates');
+  let smokePassed = 0;
+  const checks = [
+    {
+      name: 'install-local writes a regular executable shim and forwards args',
+      run() {
+        withTempDirSync('rizz-install-smoke-', (dir) => {
+          const binDir = join(dir, 'bin');
+          const result = runInstallLocalSync(['--dir', binDir]);
+          if (process.platform === 'win32') {
+            assert(result.status === 1, `expected Windows exit 1, got ${result.status}`);
+            assert(
+              result.stderr.includes('pnpm build && pnpm -C packages/cli link --global'),
+              'expected Windows pnpm link guidance',
+            );
+            return;
+          }
+
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          const shimPath = join(binDir, 'rizz');
+          const shimStat = lstatSync(shimPath);
+          assert(shimStat.isFile(), 'expected shim to be a regular file');
+          assert(!shimStat.isSymbolicLink(), 'expected shim not to be a symlink');
+          assert((shimStat.mode & 0o111) !== 0, 'expected executable bit on shim');
+
+          const version = runInstalledShim(shimPath, ['--version']);
+          assert(
+            version.status === 0,
+            `expected installed shim --version exit 0, got ${version.status}: ${version.stderr}`,
+          );
+          assert(version.stdout.trim() === '0.0.0', 'expected shim to forward --version');
+        });
+      },
+    },
+    {
+      name: 'install-local replaces a symlink without touching its target',
+      run() {
+        if (process.platform === 'win32') return;
+        withTempDirSync('rizz-install-symlink-smoke-', (dir) => {
+          const binDir = join(dir, 'bin');
+          mkdirSync(binDir, { recursive: true });
+          const targetPath = join(dir, 'symlink-target');
+          const shimPath = join(binDir, 'rizz');
+          writeFileSync(targetPath, 'target sentinel');
+          symlinkSync(targetPath, shimPath);
+
+          const result = runInstallLocalSync(['--dir', binDir]);
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          assert(readFileSync(targetPath, 'utf8') === 'target sentinel', 'symlink target changed');
+          const shimStat = lstatSync(shimPath);
+          assert(shimStat.isFile(), 'expected replacement shim to be a regular file');
+          assert(!shimStat.isSymbolicLink(), 'expected replacement shim not to be a symlink');
+        });
+      },
+    },
+    {
+      name: 'install-local replaces a dangling symlink without creating its target',
+      run() {
+        if (process.platform === 'win32') return;
+        withTempDirSync('rizz-install-dangling-symlink-smoke-', (dir) => {
+          const binDir = join(dir, 'bin');
+          mkdirSync(binDir, { recursive: true });
+          const targetPath = join(dir, 'missing-target');
+          const shimPath = join(binDir, 'rizz');
+          symlinkSync(targetPath, shimPath);
+
+          const result = runInstallLocalSync(['--dir', binDir]);
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          assert(!existsSync(targetPath), 'dangling symlink target was created');
+          const shimStat = lstatSync(shimPath);
+          assert(shimStat.isFile(), 'expected replacement shim to be a regular file');
+          assert(!shimStat.isSymbolicLink(), 'expected replacement shim not to be a symlink');
+        });
+      },
+    },
+    {
+      name: 'install-local refuses to replace an existing rizz directory',
+      run() {
+        if (process.platform === 'win32') return;
+        withTempDirSync('rizz-install-directory-smoke-', (dir) => {
+          const binDir = join(dir, 'bin');
+          const shimPath = join(binDir, 'rizz');
+          mkdirSync(shimPath, { recursive: true });
+
+          const result = runInstallLocalSync(['--dir', binDir]);
+          assert(result.status === 1, `expected exit 1, got ${result.status}`);
+          assert(result.stderr.includes('is a directory'), 'expected directory collision message');
+          assert(
+            lstatSync(shimPath).isDirectory(),
+            'directory collision did not remain a directory',
+          );
+        });
+      },
+    },
+    {
+      name: 'install-local rejects missing --dir value and unknown flags',
+      run() {
+        const missingDir = runInstallLocalSync(['--dir']);
+        assert(missingDir.status === 2, `expected exit 2, got ${missingDir.status}`);
+        assert(missingDir.stderr.includes('--dir needs a path'), 'expected missing --dir message');
+
+        const unknown = runInstallLocalSync(['--unknown']);
+        assert(unknown.status === 2, `expected exit 2, got ${unknown.status}`);
+        assert(unknown.stderr.includes('unknown option'), 'expected unknown flag message');
+      },
+    },
+  ];
+
+  for (const check of checks) {
+    try {
+      check.run();
+      smokePassed += 1;
+      console.log(`  ✓ ${check.name}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`  ✗ ${check.name}`);
+      console.log(`    ${message}`);
+    }
+  }
+
+  console.log(`\n${smokePassed}/${checks.length} install-local smoke check(s) passed`);
+  return smokePassed === checks.length;
+}
+
 const smokeOk = await runHeadlessSmoke();
-process.exit(passed === tasks.length && smokeOk ? 0 : 1);
+const installSmokeOk = runInstallShimSmoke();
+process.exit(passed === tasks.length && smokeOk && installSmokeOk ? 0 : 1);
