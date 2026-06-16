@@ -143,7 +143,9 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
   if (c.rest[0] === 'setup') {
-    const { SETUP_USAGE, parseSetupArgs, runSetupDryRun } = await import('./setup.js');
+    const { SETUP_USAGE, parseSetupArgs, runSetupDryRun, runSetupInteractive } = await import(
+      './setup.js'
+    );
     if (select.profile !== undefined || select.capability !== undefined) {
       process.stderr.write(
         "rizz: setup does not accept model selection flags yet\nTry 'rizz setup --dry-run'.\n",
@@ -158,6 +160,16 @@ async function main(argv: readonly string[]): Promise<number> {
     if (setupArgs.action === 'help') {
       process.stdout.write(`${SETUP_USAGE}\n`);
       return 0;
+    }
+    if (setupArgs.action === 'interactive') {
+      return runSetupInteractive({
+        env: process.env,
+        nodeVersion: process.versions.node,
+        platform: process.platform,
+        homeDir: homedir(),
+        isTTY: process.stdout.isTTY === true,
+        ...(process.stdout.columns !== undefined ? { columns: process.stdout.columns } : {}),
+      });
     }
     return runSetupDryRun({
       env: process.env,

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { homedir as osHomedir, platform as osPlatform } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 
 export type DoctorCheckId =
   | 'node'
@@ -95,11 +96,20 @@ export interface RunSetupDryRunOptions {
   readonly write?: (text: string) => void;
 }
 
+export type SetupQuestion = (question: string) => Promise<string | null>;
+
+export interface RunSetupInteractiveOptions extends RunSetupDryRunOptions {
+  readonly ask?: SetupQuestion;
+  readonly defaultUserName?: string;
+  readonly startDemoTui?: (options: { readonly agentName: string }) => Promise<void>;
+}
+
 export type SetupArgsResult =
-  | { readonly ok: true; readonly action: 'dry-run' | 'help' }
+  | { readonly ok: true; readonly action: 'interactive' | 'dry-run' | 'help' }
   | { readonly ok: false; readonly message: string };
 
 export const SETUP_USAGE = `Usage:
+  rizz setup             launch setup into Demo / Harness Mode
   rizz setup --dry-run   check local readiness without connecting a provider
   rizz setup --help      show setup help`;
 
@@ -388,14 +398,9 @@ export function doctorExitCode(report: DependencyDoctorReport): 0 | 1 {
 }
 
 export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
+  if (args.length === 0) return { ok: true, action: 'interactive' };
   if (args.length === 1 && args[0] === '--dry-run') return { ok: true, action: 'dry-run' };
   if (args.length === 1 && args[0] === '--help') return { ok: true, action: 'help' };
-  if (args.length === 0) {
-    return {
-      ok: false,
-      message: 'setup is interactive in a later slice; run `rizz setup --dry-run` for now',
-    };
-  }
   return {
     ok: false,
     message: 'unsupported setup option(s) for this setup slice',
@@ -558,6 +563,101 @@ export function formatDependencyDoctorReport(report: DependencyDoctorReport): st
   return lines.join('\n');
 }
 
+function formatInteractiveDoctorSummary(report: DependencyDoctorReport): string {
+  const lines = ['rizz setup', '', 'dependency doctor', ...report.checks.map(formatCheck), ''];
+  if (report.blockers > 0) {
+    lines.push('setup stopped: fix blocker(s), then rerun rizz setup', '');
+    lines.push('next steps', ...report.nextSteps.map((step) => `- ${step}`), '');
+  }
+  return lines.join('\n');
+}
+
+function cleanDisplayName(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || trimmed === '') return undefined;
+  const words = trimmed
+    .replace(/[._-]+/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word !== '');
+  if (words.length === 0) return undefined;
+  return words
+    .slice(0, 2)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(' ');
+}
+
+function detectFriendlyDisplayName(env: Readonly<NodeJS.ProcessEnv>, homeDir: string): string {
+  return (
+    cleanDisplayName(env.RIZZ_SETUP_NAME) ??
+    cleanDisplayName(env.USER) ??
+    cleanDisplayName(env.USERNAME) ??
+    cleanDisplayName(
+      homeDir
+        .split(/[\\/]/)
+        .filter((part) => part !== '')
+        .at(-1),
+    ) ??
+    'there'
+  );
+}
+
+function cleanAgentName(value: string, fallback: string): string {
+  const trimmed = value.trim();
+  if (trimmed === '') return fallback;
+  const safe = trimmed.replace(/[^\w .-]/g, '').trim();
+  return safe === '' ? fallback : safe.slice(0, 32);
+}
+
+function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly close: () => void } {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return {
+    ask: async (prompt) =>
+      new Promise((resolve) => {
+        const onClose = (): void => resolve(null);
+        rl.once('close', onClose);
+        rl.question(prompt, (answer) => {
+          rl.off('close', onClose);
+          resolve(answer);
+        });
+      }),
+    close: () => {
+      rl.close();
+    },
+  };
+}
+
+async function askSetupQuestion(ask: SetupQuestion, question: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    void ask(question).then(resolve);
+  });
+}
+
+async function askSetupQuestions(params: {
+  readonly ask?: SetupQuestion;
+  readonly defaultAgentName: string;
+}): Promise<{ readonly agentName: string; readonly shouldLaunch: boolean }> {
+  const prompt = params.ask === undefined ? createDefaultSetupPrompt() : undefined;
+  const ask = params.ask ?? prompt?.ask;
+  if (ask === undefined) {
+    return { agentName: params.defaultAgentName, shouldLaunch: true };
+  }
+  try {
+    const rawAgentName =
+      (await askSetupQuestion(
+        ask,
+        `What do you want to call your agent? [${params.defaultAgentName}] `,
+      )) ?? '';
+    const agentName = cleanAgentName(rawAgentName, params.defaultAgentName);
+    const modeAnswer = (await askSetupQuestion(ask, 'Start Demo / Harness Mode? [Y/n] ')) ?? '';
+    return {
+      agentName,
+      shouldLaunch: !modeAnswer.trim().toLowerCase().startsWith('n'),
+    };
+  } finally {
+    prompt?.close();
+  }
+}
+
 export async function runSetupDryRun(options: RunSetupDryRunOptions = {}): Promise<0 | 1> {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? osHomedir();
@@ -575,4 +675,47 @@ export async function runSetupDryRun(options: RunSetupDryRunOptions = {}): Promi
 
   options.write?.(formatDependencyDoctorReport(report));
   return doctorExitCode(report);
+}
+
+export async function runSetupInteractive(
+  options: RunSetupInteractiveOptions = {},
+): Promise<0 | 1> {
+  const env = options.env ?? process.env;
+  const homeDir = options.homeDir ?? osHomedir();
+  const report = await buildDependencyDoctorReport({
+    nodeVersion: options.nodeVersion ?? process.versions.node,
+    platform: options.platform ?? osPlatform(),
+    env,
+    homeDir,
+    ...(options.rizzHomeDir !== undefined ? { rizzHomeDir: options.rizzHomeDir } : {}),
+    isTTY: options.isTTY ?? false,
+    ...(options.columns !== undefined ? { columns: options.columns } : {}),
+    commandRunner: options.commandRunner ?? runCommandProbe,
+    pathAccess: options.pathAccess ?? runPathAccess,
+  });
+
+  const write = options.write ?? ((text: string) => process.stdout.write(text));
+  write(formatInteractiveDoctorSummary(report));
+  if (report.blockers > 0) return 1;
+
+  const friendlyName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
+  const defaultAgentName = 'pi';
+  write(`Hi ${friendlyName}.\n`);
+  const { agentName, shouldLaunch } =
+    options.ask === undefined && options.isTTY !== true
+      ? { agentName: defaultAgentName, shouldLaunch: true }
+      : await askSetupQuestions({
+          defaultAgentName,
+          ...(options.ask !== undefined ? { ask: options.ask } : {}),
+        });
+  if (!shouldLaunch) {
+    write('setup cancelled. run rizz setup to launch later.\n');
+    return 0;
+  }
+
+  const { createTheme, renderSetupBoot, startTui } = await import('@rizz/tui');
+  const theme = createTheme({ color: options.isTTY === true });
+  write(`\n${renderSetupBoot(theme)}\n\n`);
+  await (options.startDemoTui ?? ((tuiOptions) => startTui(tuiOptions)))({ agentName });
+  return 0;
 }

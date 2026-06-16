@@ -7,9 +7,12 @@ export const VERSION = '0.0.0';
 export { type TuiOptions, startTui } from './tui.js';
 export { type Theme, createTheme, defaultColorEnabled } from './theme.js';
 export {
+  type SetupLaunchInfo,
   type StatusInfo,
   renderHeader,
   renderEmptyState,
   renderHint,
+  renderSetupBoot,
+  renderSetupLaunch,
   renderStatusBar,
 } from './render.js';

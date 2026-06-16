@@ -14,6 +14,7 @@ import {
   formatDependencyDoctorReport,
   parseSetupArgs,
   runCommandProbe,
+  runSetupInteractive,
 } from './setup.js';
 
 const HOME = '/tmp/rizz-home';
@@ -244,10 +245,10 @@ describe('setup dependency doctor', () => {
     expect(output).not.toMatch(/ANTHROPIC_API_KEY|api key|provider key|token/i);
   });
 
-  it('parses only setup --dry-run and setup --help for this slice', () => {
+  it('parses setup, setup --dry-run, and setup --help for this slice', () => {
+    expect(parseSetupArgs([])).toEqual({ ok: true, action: 'interactive' });
     expect(parseSetupArgs(['--dry-run'])).toEqual({ ok: true, action: 'dry-run' });
     expect(parseSetupArgs(['--help'])).toEqual({ ok: true, action: 'help' });
-    expect(parseSetupArgs([])).toMatchObject({ ok: false });
     expect(parseSetupArgs(['--provider', 'anthropic'])).toMatchObject({ ok: false });
     expect(parseSetupArgs(['--dry-run', '--json'])).toMatchObject({ ok: false });
   });
@@ -279,5 +280,101 @@ describe('setup dependency doctor', () => {
         process.env.ANTHROPIC_API_KEY = original;
       }
     }
+  });
+
+  it('interactive setup launches demo TUI with a launch-only agent name', async () => {
+    const answers = ['juno_01', ''];
+    const output: string[] = [];
+    const launched: string[] = [];
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: { USER: 'lokesh' },
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      write: (text) => output.push(text),
+      startDemoTui: async ({ agentName }) => {
+        launched.push(agentName);
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(output.join('')).toContain('rizz setup');
+    expect(output.join('')).toContain('Hi Lokesh.');
+    expect(output.join('')).toContain('Harness Mode ready');
+    expect(launched).toEqual(['juno_01']);
+  });
+
+  it('interactive setup can cancel before launching the TUI', async () => {
+    const answers = ['', 'n'];
+    const launched: string[] = [];
+    const output: string[] = [];
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      write: (text) => output.push(text),
+      startDemoTui: async ({ agentName }) => {
+        launched.push(agentName);
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(output.join('')).toContain('setup cancelled');
+    expect(launched).toEqual([]);
+  });
+
+  it('interactive setup stops before prompting when the doctor has blockers', async () => {
+    let promptCount = 0;
+    let launchCount = 0;
+    const code = await runSetupInteractive({
+      nodeVersion: '21.9.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({}).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: true, writable: true },
+      }).pathAccess,
+      ask: async () => {
+        promptCount += 1;
+        return '';
+      },
+      write: () => {},
+      startDemoTui: async () => {
+        launchCount += 1;
+      },
+    });
+
+    expect(code).toBe(1);
+    expect(promptCount).toBe(0);
+    expect(launchCount).toBe(0);
   });
 });
