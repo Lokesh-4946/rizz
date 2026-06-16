@@ -22,6 +22,7 @@ Usage:
   rizz < file            run one turn on piped input and print the reply (print mode)
   rizz --json < file     one-shot turn, structured JSON result on stdout (scriptable)
   rizz --rpc             stdin/stdout JSON line protocol for tools to drive rizz (job #3)
+  rizz setup --dry-run   check local readiness without connecting a provider
   rizz --version         print the rizz version
   rizz --help            show this help
 
@@ -141,6 +142,33 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
+  if (c.rest[0] === 'setup') {
+    const { SETUP_USAGE, parseSetupArgs, runSetupDryRun } = await import('./setup.js');
+    if (select.profile !== undefined || select.capability !== undefined) {
+      process.stderr.write(
+        "rizz: setup does not accept model selection flags yet\nTry 'rizz setup --dry-run'.\n",
+      );
+      return 2;
+    }
+    const setupArgs = parseSetupArgs(c.rest.slice(1));
+    if (!setupArgs.ok) {
+      process.stderr.write(`rizz: ${setupArgs.message}\n${SETUP_USAGE}\n`);
+      return 2;
+    }
+    if (setupArgs.action === 'help') {
+      process.stdout.write(`${SETUP_USAGE}\n`);
+      return 0;
+    }
+    return runSetupDryRun({
+      env: process.env,
+      nodeVersion: process.versions.node,
+      platform: process.platform,
+      homeDir: homedir(),
+      isTTY: process.stdout.isTTY === true,
+      ...(process.stdout.columns !== undefined ? { columns: process.stdout.columns } : {}),
+      write: (text) => process.stdout.write(text),
+    });
+  }
   // Headless modes (job #3) consume the remaining args as boolean flags; --rpc wins over --json.
   const rest = c.rest.filter((a) => a !== '--json' && a !== '--rpc');
   if (c.rest.includes('--rpc')) return runRpc(select);
