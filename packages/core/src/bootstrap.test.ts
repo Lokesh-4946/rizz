@@ -227,11 +227,25 @@ describe('resolveProvider — opt-in capability route (D-023)', () => {
     expect(resolved.notice).toContain('capability "long-context"');
   });
 
-  it('preferCheap biases toward the cheapest capable model', async () => {
+  it('preferCheap avoids an uncredentialed cheaper provider when a credentialed fallback exists', async () => {
+    const resolved = await resolveProvider({
+      env,
+      secrets: fakeStore(),
+      readRegistryFile: noFile,
+      capability: 'code',
+      preferCheap: true,
+    });
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.model?.id).toBe('claude-haiku-4-5');
+    expect(resolved.notice).toContain('GPT-4o mini has no credential');
+  });
+
+  it('preferCheap can choose OpenAI when the OpenAI key is present', async () => {
     // With the OpenAI models in the built-in registry, gpt-4o-mini is the cheapest 'code' model
     // (it undercuts Haiku) — the ranker follows price, not provider (D-044).
     const resolved = await resolveProvider({
       env: { ...env, OPENAI_API_KEY: 'sk-oai' },
+      secrets: fakeStore(),
       readRegistryFile: noFile,
       capability: 'code',
       preferCheap: true,

@@ -163,6 +163,7 @@ export async function resolveProvider(
   let registry: ModelRegistry;
   let profiles: Readonly<Record<string, Profile>>;
   let notice: string | undefined;
+  let capabilityCandidates: readonly ModelInfo[] | undefined;
   if (options.registry !== undefined) {
     registry = options.registry;
     profiles = {};
@@ -213,6 +214,7 @@ export async function resolveProvider(
       });
       if (route.ok) {
         modelId = route.value.model.id;
+        capabilityCandidates = [route.value.model, ...route.value.chain];
         notice = joinNotices(
           notice,
           `capability "${options.capability}" → ${route.value.model.label}`,
@@ -227,7 +229,7 @@ export async function resolveProvider(
   // to read (D-044). An empty registry is a programmer error, but never crash the launch.
   const selected = selectModel(registry, modelId);
   if (selected.notice !== undefined) notice = joinNotices(notice, selected.notice);
-  const model = selected.model;
+  let model = selected.model;
   if (model === undefined) {
     return {
       provider: new StubProvider(),
@@ -238,8 +240,25 @@ export async function resolveProvider(
   }
 
   // Resolve the BYOK credential for this model's provider (keyless local endpoints need none).
-  const credential = await resolveCredential(model, env, options.secrets);
+  let credential = await resolveCredential(model, env, options.secrets);
   if (credential.notice !== undefined) notice = joinNotices(notice, credential.notice);
+  if (credential.apiKey === undefined && capabilityCandidates !== undefined) {
+    for (const candidate of capabilityCandidates) {
+      if (candidate.id === model.id) continue;
+      const fallbackCredential = await resolveCredential(candidate, env, options.secrets);
+      if (fallbackCredential.notice !== undefined) {
+        notice = joinNotices(notice, fallbackCredential.notice);
+      }
+      if (fallbackCredential.apiKey === undefined) continue;
+      notice = joinNotices(
+        notice,
+        `${model.label} has no credential — using ${candidate.label} for capability "${options.capability}"`,
+      );
+      model = candidate;
+      credential = fallbackCredential;
+      break;
+    }
+  }
   if (credential.apiKey === undefined) {
     return {
       provider: new StubProvider(),
