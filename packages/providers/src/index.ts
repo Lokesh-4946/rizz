@@ -27,6 +27,13 @@ export {
   buildAnthropicRequest,
   createAnthropicProvider,
 } from './providers/anthropic.js';
+// BYOK over any OpenAI-compatible endpoint (OpenAI / OpenRouter / Ollama / custom). No subscription.
+export {
+  type OpenAiProviderOptions,
+  type OpenAiRequestBody,
+  buildOpenAiRequest,
+  createOpenAiProvider,
+} from './providers/openai.js';
 
 // Secret storage (the BYOK key, kept off the repo/logs — §3.6): OS keychain with a 0600 file fallback.
 export {
