@@ -47,6 +47,22 @@ export type CommandRunner = (
   args: readonly string[],
 ) => Promise<CommandProbeResult>;
 
+export type SetupProviderRouteId = 'codex-subscription' | 'openai-api' | 'anthropic-api' | 'skip';
+
+export type CodexCliStatus = 'ready' | 'needs-login' | 'missing';
+
+export interface CodexCliDiagnostic {
+  readonly status: CodexCliStatus;
+  readonly summary: string;
+  readonly observed?: string;
+}
+
+export interface SetupProviderChoice {
+  readonly id: SetupProviderRouteId;
+  readonly label: string;
+  readonly summary: string;
+}
+
 export type PathAccessResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
@@ -98,12 +114,9 @@ export interface RunSetupDryRunOptions {
 
 export type SetupQuestion = (question: string) => Promise<string | null>;
 
-type SetupLaunchChoice = 'launch' | 'cancel' | 'invalid';
-
 export interface RunSetupInteractiveOptions extends RunSetupDryRunOptions {
   readonly ask?: SetupQuestion;
   readonly defaultUserName?: string;
-  readonly startDemoTui?: (options: { readonly agentName: string }) => Promise<void>;
 }
 
 export type SetupArgsResult =
@@ -111,7 +124,7 @@ export type SetupArgsResult =
   | { readonly ok: false; readonly message: string };
 
 export const SETUP_USAGE = `Usage:
-  rizz setup             launch setup into Demo / Harness Mode
+  rizz setup             choose a model route for this workspace
   rizz setup --dry-run   check local readiness without connecting a provider
   rizz setup --help      show setup help`;
 
@@ -494,8 +507,7 @@ function summarizeReport(checks: readonly DependencyDoctorCheck[]): DependencyDo
     checks,
     blockers,
     warnings,
-    nextSteps:
-      nextSteps.length > 0 ? nextSteps : ['run rizz setup when the interactive wizard lands'],
+    nextSteps: nextSteps.length > 0 ? nextSteps : ['run rizz setup to choose a model route'],
   };
 }
 
@@ -607,47 +619,6 @@ function detectFriendlyDisplayName(env: Readonly<NodeJS.ProcessEnv>, homeDir: st
   );
 }
 
-function cleanAgentName(value: string, fallback: string): string {
-  const trimmed = value.trim();
-  if (trimmed === '') return fallback;
-  const safe = trimmed.replace(/[^\w .-]/g, '').trim();
-  return safe === '' ? fallback : safe.slice(0, 32);
-}
-
-function formatSetupModeContract(): string {
-  return [
-    'Demo / Harness Mode',
-    'provider: demo',
-    'billing: $0.00 (sub)',
-    'permissions: ask',
-    'credentials: none',
-    'saved profile: none',
-    '',
-  ].join('\n');
-}
-
-function parseSetupLaunchChoice(answer: string): SetupLaunchChoice {
-  const normalized = answer.trim().toLowerCase();
-  switch (normalized) {
-    case '':
-    case '1':
-    case 'd':
-    case 'demo':
-    case 'y':
-    case 'yes':
-      return 'launch';
-    case '2':
-    case 'c':
-    case 'cancel':
-    case 'n':
-    case 'no':
-    case 'q':
-      return 'cancel';
-    default:
-      return 'invalid';
-  }
-}
-
 function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly close: () => void } {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return {
@@ -672,40 +643,208 @@ async function askSetupQuestion(ask: SetupQuestion, question: string): Promise<s
   });
 }
 
-async function askSetupQuestions(params: {
+function summarizeCodexDoctorOutput(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (trimmed === '') return 'codex doctor ok';
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed === 'object' && parsed !== null) {
+      return 'codex doctor ok';
+    }
+  } catch {
+    // Human-readable doctor output is enough; do not parse or echo it.
+  }
+  return 'codex doctor ok';
+}
+
+export async function diagnoseCodexCli(commandRunner: CommandRunner): Promise<CodexCliDiagnostic> {
+  const doctor = await commandRunner('codex', ['doctor', '--json']);
+  if (doctor.ok) {
+    return {
+      status: 'ready',
+      summary: 'detected through local Codex CLI',
+      observed: summarizeCodexDoctorOutput(doctor.stdout),
+    };
+  }
+
+  const version = await commandRunner('codex', ['--version']);
+  if (version.ok) {
+    return {
+      status: 'needs-login',
+      summary: 'installed; run codex login first',
+      observed: normalizeObservedVersion('codex', version.stdout),
+    };
+  }
+
+  return {
+    status: 'missing',
+    summary: 'not found on PATH',
+  };
+}
+
+export function buildSetupProviderChoices(
+  codex: CodexCliDiagnostic,
+): readonly SetupProviderChoice[] {
+  let codexSummary: string;
+  switch (codex.status) {
+    case 'ready':
+      codexSummary = 'detected through local Codex CLI';
+      break;
+    case 'needs-login':
+      codexSummary = 'installed; sign in with codex login';
+      break;
+    case 'missing':
+      codexSummary = 'not detected; install or open Codex first';
+      break;
+  }
+
+  return [
+    {
+      id: 'codex-subscription',
+      label: 'Codex subscription',
+      summary: codexSummary,
+    },
+    {
+      id: 'openai-api',
+      label: 'OpenAI direct',
+      summary: 'connect with your own API key later',
+    },
+    {
+      id: 'anthropic-api',
+      label: 'Anthropic direct',
+      summary: 'connect with your own API key later',
+    },
+    {
+      id: 'skip',
+      label: 'Skip for now',
+      summary: 'finish setup without connecting a model',
+    },
+  ];
+}
+
+function defaultProviderRoute(codex: CodexCliDiagnostic): SetupProviderRouteId {
+  return codex.status === 'ready' ? 'codex-subscription' : 'skip';
+}
+
+function formatSetupProviderChoices(params: {
+  readonly choices: readonly SetupProviderChoice[];
+  readonly defaultRoute: SetupProviderRouteId;
+}): string {
+  const lines = ['Choose how rizz should talk to a model:'];
+  params.choices.forEach((choice, index) => {
+    const marker = choice.id === params.defaultRoute ? '>' : ' ';
+    lines.push(`${marker} ${index + 1}. ${choice.label.padEnd(19)} ${choice.summary}`);
+  });
+  lines.push('');
+  return lines.join('\n');
+}
+
+function parseProviderRouteAnswer(params: {
+  readonly answer: string;
+  readonly choices: readonly SetupProviderChoice[];
+  readonly defaultRoute: SetupProviderRouteId;
+}): SetupProviderRouteId | 'cancel' | undefined {
+  const normalized = params.answer.trim().toLowerCase();
+  if (normalized === '') return params.defaultRoute;
+  if (normalized === 'q' || normalized === 'quit' || normalized === 'cancel') return 'cancel';
+
+  const numeric = /^\d+$/.test(normalized) ? Number.parseInt(normalized, 10) : undefined;
+  if (numeric !== undefined && numeric >= 1 && numeric <= params.choices.length) {
+    return params.choices[numeric - 1]?.id;
+  }
+
+  const match = params.choices.find((choice) => {
+    const id = choice.id.toLowerCase();
+    const label = choice.label.toLowerCase();
+    return normalized === id || normalized === label || id.startsWith(normalized);
+  });
+  return match?.id;
+}
+
+function formatRouteSelectionResult(routeId: SetupProviderRouteId): string {
+  switch (routeId) {
+    case 'codex-subscription':
+      return [
+        'Codex subscription selected.',
+        'Next: rizz will use the local Codex CLI route. Live launch lands in the next slice.',
+        'No credentials were read or written by rizz.',
+        '',
+      ].join('\n');
+    case 'openai-api':
+      return [
+        'OpenAI direct selected.',
+        'Provider connection lands in a later setup step. No key was requested now.',
+        'No credentials were read or written by rizz.',
+        '',
+      ].join('\n');
+    case 'anthropic-api':
+      return [
+        'Anthropic direct selected.',
+        'Provider connection lands in a later setup step. No key was requested now.',
+        'No credentials were read or written by rizz.',
+        '',
+      ].join('\n');
+    case 'skip':
+      return [
+        'Skipped model connection for now.',
+        'Run rizz setup again when you are ready to connect a model route.',
+        'No credentials were read or written by rizz.',
+        '',
+      ].join('\n');
+  }
+}
+
+async function askSetupProviderRoute(params: {
   readonly ask?: SetupQuestion;
-  readonly defaultAgentName: string;
+  readonly choices: readonly SetupProviderChoice[];
+  readonly defaultRoute: SetupProviderRouteId;
   readonly write: (text: string) => void;
-}): Promise<{ readonly agentName: string; readonly shouldLaunch: boolean }> {
+}): Promise<SetupProviderRouteId | 'cancel'> {
   const prompt = params.ask === undefined ? createDefaultSetupPrompt() : undefined;
   const ask = params.ask ?? prompt?.ask;
   if (ask === undefined) {
-    params.write(`launch name: ${params.defaultAgentName}\n`);
-    params.write(formatSetupModeContract());
-    return { agentName: params.defaultAgentName, shouldLaunch: true };
+    return params.defaultRoute;
   }
   try {
-    const rawAgentName =
-      (await askSetupQuestion(ask, `Name this launch? [${params.defaultAgentName}] `)) ?? '';
-    const agentName = cleanAgentName(rawAgentName, params.defaultAgentName);
-    params.write(`launch name: ${agentName}\n`);
-    params.write(formatSetupModeContract());
+    const defaultIndex =
+      params.choices.findIndex((choice) => choice.id === params.defaultRoute) + 1;
     while (true) {
-      const modeAnswer = await askSetupQuestion(ask, 'Start now? [Y/n] ');
-      if (modeAnswer === null) return { agentName, shouldLaunch: false };
-      switch (parseSetupLaunchChoice(modeAnswer)) {
-        case 'launch':
-          return { agentName, shouldLaunch: true };
-        case 'cancel':
-          return { agentName, shouldLaunch: false };
-        case 'invalid':
-          params.write('Choose Y to start, or n to cancel.\n');
-          break;
-      }
+      const answer = await askSetupQuestion(ask, `Choose route [${defaultIndex}] `);
+      if (answer === null) return 'cancel';
+      const route = parseProviderRouteAnswer({
+        answer,
+        choices: params.choices,
+        defaultRoute: params.defaultRoute,
+      });
+      if (route !== undefined) return route;
+      params.write('Choose 1, 2, 3, 4, or q to cancel.\n');
     }
   } finally {
     prompt?.close();
   }
+}
+
+async function resolveSetupProviderRoute(params: {
+  readonly ask?: SetupQuestion;
+  readonly isTTY: boolean;
+  readonly commandRunner: CommandRunner;
+  readonly write: (text: string) => void;
+}): Promise<SetupProviderRouteId | 'cancel'> {
+  const codex = await diagnoseCodexCli(params.commandRunner);
+  const choices = buildSetupProviderChoices(codex);
+  const defaultRoute = defaultProviderRoute(codex);
+  params.write(formatSetupProviderChoices({ choices, defaultRoute }));
+
+  if (params.ask === undefined && !params.isTTY) {
+    return defaultRoute;
+  }
+
+  return askSetupProviderRoute({
+    choices,
+    defaultRoute,
+    write: params.write,
+    ...(params.ask !== undefined ? { ask: params.ask } : {}),
+  });
 }
 
 export async function runSetupDryRun(options: RunSetupDryRunOptions = {}): Promise<0 | 1> {
@@ -749,38 +888,19 @@ export async function runSetupInteractive(
   if (report.blockers > 0) return 1;
 
   const friendlyName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
-  const defaultAgentName = 'pi';
   write(`Hi ${friendlyName}.\n`);
-  write('Harness Mode is local demo mode: no credentials, no config writes, $0.00.\n');
-  const { agentName, shouldLaunch } =
-    options.ask === undefined && options.isTTY !== true
-      ? (() => {
-          write(`launch name: ${defaultAgentName}\n`);
-          write(formatSetupModeContract());
-          return { agentName: defaultAgentName, shouldLaunch: true };
-        })()
-      : await askSetupQuestions({
-          defaultAgentName,
-          write,
-          ...(options.ask !== undefined ? { ask: options.ask } : {}),
-        });
-  if (!shouldLaunch) {
-    write('setup cancelled. No changes were made. Run rizz setup to launch later.\n');
+  const selectedRoute = await resolveSetupProviderRoute({
+    write,
+    commandRunner: options.commandRunner ?? runCommandProbe,
+    isTTY: options.isTTY === true,
+    ...(options.ask !== undefined ? { ask: options.ask } : {}),
+  });
+
+  if (selectedRoute === 'cancel') {
+    write('setup cancelled. No changes were made. Run rizz setup to choose a route later.\n');
     return 0;
   }
 
-  const { createTheme, renderSetupBoot, shouldRenderSetupBootPanel, startTui } = await import(
-    '@rizz/tui'
-  );
-  const colorDepth = options.isTTY === true && env.NO_COLOR === undefined ? 'truecolor' : 'none';
-  const shouldRenderBootPanel = shouldRenderSetupBootPanel({
-    isTTY: options.isTTY === true,
-    ...(options.columns !== undefined ? { columns: options.columns } : {}),
-    env,
-    colorDepth,
-  });
-  const theme = createTheme({ color: shouldRenderBootPanel });
-  write(`\n${renderSetupBoot(theme, { compact: !shouldRenderBootPanel })}\n\n`);
-  await (options.startDemoTui ?? ((tuiOptions) => startTui(tuiOptions)))({ agentName });
+  write(formatRouteSelectionResult(selectedRoute));
   return 0;
 }
