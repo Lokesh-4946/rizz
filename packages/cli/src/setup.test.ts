@@ -282,10 +282,9 @@ describe('setup dependency doctor', () => {
     }
   });
 
-  it('interactive setup launches demo TUI with a launch-only agent name', async () => {
-    const answers = ['juno_01', ''];
+  it('interactive setup selects Codex when the local Codex route is ready', async () => {
+    const answers = [''];
     const output: string[] = [];
-    const launched: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
       platform: 'linux',
@@ -297,6 +296,7 @@ describe('setup dependency doctor', () => {
         'pnpm --version': { ok: true, stdout: '11.6.0' },
         'git --version': { ok: true, stdout: 'git version 2.45.0' },
         'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: true, stdout: '{"auth":"chatgpt"}' },
       }).runner,
       pathAccess: accessFixture({
         [HOME]: { exists: true, writable: true },
@@ -304,26 +304,28 @@ describe('setup dependency doctor', () => {
       }).pathAccess,
       ask: async () => answers.shift() ?? '',
       write: (text) => output.push(text),
-      startDemoTui: async ({ agentName }) => {
-        launched.push(agentName);
-      },
     });
 
+    const text = output.join('');
     expect(code).toBe(0);
-    expect(output.join('')).toContain('rizz setup');
-    expect(output.join('')).toContain('ready: no blockers');
-    expect(output.join('')).toContain('Hi Lokesh.');
-    expect(output.join('')).toContain('Harness Mode is local demo mode');
-    expect(output.join('')).toContain('launch name: juno_01');
-    expect(output.join('')).toContain('credentials: none');
-    expect(output.join('')).toContain('saved profile: none');
-    expect(output.join('')).toContain('Harness Mode ready');
-    expect(launched).toEqual(['juno_01']);
+    expect(text).toContain('rizz setup');
+    expect(text).toContain('ready: no blockers');
+    expect(text).toContain('Hi Lokesh.');
+    expect(text).toContain('Choose how rizz should talk to a model:');
+    expect(text).toContain('Codex subscription');
+    expect(text).toContain('detected through local Codex CLI');
+    expect(text).toContain('Codex subscription selected.');
+    expect(text).toContain('Live launch lands in the next slice.');
+    expect(text).toContain('No credentials were read or written by rizz.');
+    expect(text).not.toContain('[pi]');
+    expect(text).not.toContain('Name this launch');
+    expect(text).not.toContain('local demo mode');
+    expect(text).not.toContain('Demo / Harness');
+    expect(text).not.toContain('launch name');
   });
 
-  it('interactive setup can cancel before launching the TUI', async () => {
-    const answers = ['', 'cancel'];
-    const launched: string[] = [];
+  it('interactive setup can cancel before choosing a route', async () => {
+    const answers = ['cancel'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -336,6 +338,8 @@ describe('setup dependency doctor', () => {
         'pnpm --version': { ok: true, stdout: '11.6.0' },
         'git --version': { ok: true, stdout: 'git version 2.45.0' },
         'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
       }).runner,
       pathAccess: accessFixture({
         [HOME]: { exists: true, writable: true },
@@ -343,21 +347,20 @@ describe('setup dependency doctor', () => {
       }).pathAccess,
       ask: async () => answers.shift() ?? '',
       write: (text) => output.push(text),
-      startDemoTui: async ({ agentName }) => {
-        launched.push(agentName);
-      },
     });
 
+    const text = output.join('');
     expect(code).toBe(0);
-    expect(output.join('')).toContain('launch name: pi');
-    expect(output.join('')).toContain('setup cancelled. No changes were made.');
-    expect(launched).toEqual([]);
+    expect(text).toContain('setup cancelled. No changes were made.');
+    expect(text).toContain('Run rizz setup to choose a route later.');
+    expect(text).not.toContain('[pi]');
+    expect(text).not.toContain('Name this launch');
+    expect(text).not.toContain('local demo mode');
   });
 
-  it('interactive setup retries invalid launch choices', async () => {
-    const answers = ['nova', 'maybe', 'demo'];
+  it('interactive setup retries invalid route choices', async () => {
+    const answers = ['maybe', '4'];
     const output: string[] = [];
-    const launched: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
       platform: 'linux',
@@ -369,6 +372,8 @@ describe('setup dependency doctor', () => {
         'pnpm --version': { ok: true, stdout: '11.6.0' },
         'git --version': { ok: true, stdout: 'git version 2.45.0' },
         'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
       }).runner,
       pathAccess: accessFixture({
         [HOME]: { exists: true, writable: true },
@@ -376,19 +381,17 @@ describe('setup dependency doctor', () => {
       }).pathAccess,
       ask: async () => answers.shift() ?? '',
       write: (text) => output.push(text),
-      startDemoTui: async ({ agentName }) => {
-        launched.push(agentName);
-      },
     });
 
+    const text = output.join('');
     expect(code).toBe(0);
-    expect(output.join('')).toContain('Choose Y to start, or n to cancel.');
-    expect(launched).toEqual(['nova']);
+    expect(text).toContain('Choose 1, 2, 3, 4, or q to cancel.');
+    expect(text).toContain('Skipped model connection for now.');
+    expect(text).not.toContain('Demo / Harness');
   });
 
   it('interactive setup stops before prompting when the doctor has blockers', async () => {
     let promptCount = 0;
-    let launchCount = 0;
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '21.9.0',
@@ -407,15 +410,11 @@ describe('setup dependency doctor', () => {
         return '';
       },
       write: (text) => output.push(text),
-      startDemoTui: async () => {
-        launchCount += 1;
-      },
     });
 
     expect(code).toBe(1);
     expect(output.join('')).toContain('setup stopped');
     expect(output.join('')).toContain('No changes were made.');
     expect(promptCount).toBe(0);
-    expect(launchCount).toBe(0);
   });
 });

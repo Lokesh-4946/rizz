@@ -342,13 +342,13 @@ async function runHeadlessSmoke() {
       },
     },
     {
-      name: 'rizz setup enters demo harness without provider credentials or config writes',
+      name: 'rizz setup shows route picker without provider credentials or config writes',
       run() {
         const secret = 'sk-ant-eval-interactive-setup-secret';
         const { configExists, result } = withTempHomeSync((home) => {
           const child = spawnSync(process.execPath, [cliBin, 'setup'], {
             cwd: repoRoot,
-            input: '\n\n/exit\n',
+            input: '',
             encoding: 'utf8',
             env: setupSmokeEnv(home, secret),
             timeout: 5_000,
@@ -366,8 +366,18 @@ async function runHeadlessSmoke() {
           `expected exit 0, got ${result.status}: ${redactOutput(result.stderr, secret)}`,
         );
         assert(result.stdout.includes('rizz setup'), 'expected setup output');
-        assert(result.stdout.includes('Harness Mode ready'), 'expected setup boot output');
-        assert(result.stdout.includes('pi online'), 'expected TUI launch output');
+        assert(
+          result.stdout.includes('Choose how rizz should talk to a model'),
+          'expected setup route picker',
+        );
+        assert(
+          result.stdout.includes('Skipped model connection for now.'),
+          'expected setup to skip model route in isolated env',
+        );
+        assert(!result.stdout.includes('Name this launch?'), 'old launch-name prompt remained');
+        assert(!result.stdout.includes('[pi]'), 'old pi default remained');
+        assert(!result.stdout.includes('local demo mode'), 'old local demo copy remained');
+        assert(!result.stdout.includes('Demo / Harness'), 'old demo harness copy remained');
         assert(!combinedOutput.includes(secret), 'fake provider key was echoed');
         assert(!configExists, 'interactive setup wrote temp HOME/.rizz/config.json');
       },

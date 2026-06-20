@@ -15,7 +15,8 @@ const VERSION = '0.0.0';
 const USAGE = `rizz — the lightest, most connectable coding agent harness
 
 Usage:
-  rizz                   launch the interactive TUI (set ANTHROPIC_API_KEY or /login to connect)
+  rizz                   launch the interactive TUI
+  rizz setup             choose a model route for this workspace
   rizz --profile <p>     pick a model profile (default · deep · fast · cheap · local)
   rizz --capability <c>  pick the best model for a capability (code · plan · cheap · long-context)
   rizz --resume <id>     resume a saved session by id (rehydrates its full history)
@@ -26,7 +27,8 @@ Usage:
   rizz --version         print the rizz version
   rizz --help            show this help
 
-Single-agent and minimal by default. With no key set it runs in demo mode. The /workspace
+Single-agent and minimal by default. Use setup to choose a model route; direct Anthropic/OpenAI
+API-key paths and the Codex subscription bridge are landing in focused setup slices. The /workspace
 multi-agent mode arrives in a later milestone. The headless contract is in runbooks/headless.md.`;
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
