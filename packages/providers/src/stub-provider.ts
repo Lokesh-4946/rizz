@@ -13,7 +13,7 @@ const truncate = (text: string, max: number): string =>
 
 export class StubProvider implements Provider {
   readonly id = 'stub';
-  readonly label = 'demo (no provider)';
+  readonly label = 'no model';
 
   async complete(request: CompletionRequest): Promise<Result<CompletionResult>> {
     if (request.signal?.aborted) {
@@ -22,9 +22,7 @@ export class StubProvider implements Provider {
 
     const prompt = request.messages.at(-1)?.content ?? '';
     const said = truncate(prompt, 200);
-    // Concise demo reply — the persistent "/login to go live" hint is the TUI's demo banner (D-032),
-    // so this no longer re-nags every turn.
-    const content = `(demo) I can't run a real turn yet. You said: "${said}".`;
+    const content = `No model is connected yet. Use /login or /model when ready. You said: "${said}".`;
 
     return ok({
       content,

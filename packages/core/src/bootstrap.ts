@@ -4,10 +4,8 @@
 // the TUI still runs. It calls services (the keychain, the adapter factory) and returns data — it
 // never mutates session/budget state (ADR-001).
 //
-// D-021 seam: when a subscription credential also exists, `planCredential` would prompt instead of
-// silently spending on the metered key. The Pro/Max subscription path is not wired yet (BYOK only),
-// so `hasSubscription` is false and there is nothing to disambiguate; the prompt branch activates
-// automatically once subscription auth lands.
+// D-021 seam: subscription auth is explicit today through the Codex setup route. BYOK resolution
+// still avoids silently choosing between subscription and metered spend.
 
 import {
   ANTHROPIC_ACCOUNT,
@@ -22,6 +20,7 @@ import {
   type SecretStore,
   StubProvider,
   createAnthropicProvider,
+  createCodexCliProvider,
   createOpenAiProvider,
   getModel,
   loadRegistry,
@@ -33,13 +32,13 @@ import {
 const isCapability = (value: string): value is Capability =>
   (CAPABILITIES as readonly string[]).includes(value);
 
-export type AuthKind = 'api-key' | 'demo';
+export type AuthKind = 'api-key' | 'subscription' | 'demo';
 
 export interface ResolvedProvider {
   readonly provider: Provider;
   /** The active model (cost accounting / status bar). Undefined in demo mode. */
   readonly model?: ModelInfo;
-  /** Subscription path → cost is always $0 (D-021). Demo mode reports as a subscription ($0). */
+  /** Subscription path → cost is always $0 (D-021). */
   readonly subscription: boolean;
   readonly auth: AuthKind;
   /** Surfaced to the user when something is worth saying (e.g. a keychain read failure). */
@@ -67,6 +66,11 @@ export interface ResolveProviderOptions {
   readonly preferCheap?: boolean;
   /** Pass-through to the adapter for tests. */
   readonly fetchImpl?: typeof fetch;
+}
+
+interface ResolveCodexSubscriptionProviderOptions {
+  readonly command?: string;
+  readonly cwd?: string;
 }
 
 const ANTHROPIC_PROVIDER = 'anthropic';
@@ -233,7 +237,7 @@ export async function resolveProvider(
   if (model === undefined) {
     return {
       provider: new StubProvider(),
-      subscription: true,
+      subscription: false,
       auth: 'demo',
       notice: joinNotices(notice, 'no models are registered — running in demo mode'),
     };
@@ -262,7 +266,7 @@ export async function resolveProvider(
   if (credential.apiKey === undefined) {
     return {
       provider: new StubProvider(),
-      subscription: true,
+      subscription: false,
       auth: 'demo',
       ...(notice ? { notice } : {}),
     };
@@ -270,6 +274,19 @@ export async function resolveProvider(
 
   const provider = createProviderFor(model, credential.apiKey, options.fetchImpl);
   return { provider, model, subscription: false, auth: 'api-key', ...(notice ? { notice } : {}) };
+}
+
+export function resolveCodexSubscriptionProvider(
+  options: ResolveCodexSubscriptionProviderOptions = {},
+): ResolvedProvider {
+  return {
+    provider: createCodexCliProvider({
+      ...(options.command !== undefined ? { command: options.command } : {}),
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    }),
+    subscription: true,
+    auth: 'subscription',
+  };
 }
 
 interface BuildOptions {
@@ -295,7 +312,7 @@ function buildFromKey(apiKey: string, opts: BuildOptions): ResolvedProvider {
     // An empty registry is a programmer error, but never crash the launch — degrade to demo.
     return {
       provider: new StubProvider(),
-      subscription: true,
+      subscription: false,
       auth: 'demo',
       notice: joinNotices(notice, 'no models are registered — running in demo mode'),
     };

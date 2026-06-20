@@ -8,7 +8,12 @@ import {
   ok,
 } from '@rizz/providers';
 import { describe, expect, it } from 'vitest';
-import { loginWithApiKey, providerFromKey, resolveProvider } from './bootstrap.js';
+import {
+  loginWithApiKey,
+  providerFromKey,
+  resolveCodexSubscriptionProvider,
+  resolveProvider,
+} from './bootstrap.js';
 
 /** A secret store that records the last set() and can be made to fail the write. */
 function recordingStore(opts?: { failSet?: boolean }): {
@@ -54,7 +59,7 @@ describe('resolveProvider (BYOK)', () => {
   it('falls back to the demo stub when no key is present', async () => {
     const resolved = await resolveProvider({ env: {}, secrets: fakeStore() });
     expect(resolved.auth).toBe('demo');
-    expect(resolved.subscription).toBe(true);
+    expect(resolved.subscription).toBe(false);
     expect(resolved.provider.id).toBe('stub');
     expect(resolved.model).toBeUndefined();
   });
@@ -121,6 +126,20 @@ describe('resolveProvider (BYOK)', () => {
     });
     expect(resolved.model).toBeDefined();
     expect(resolved.notice).toContain('nope-9000');
+  });
+});
+
+describe('resolveCodexSubscriptionProvider', () => {
+  it('builds an explicit subscription-backed Codex provider', () => {
+    const resolved = resolveCodexSubscriptionProvider({
+      command: 'codex-test',
+    });
+
+    expect(resolved.auth).toBe('subscription');
+    expect(resolved.subscription).toBe(true);
+    expect(resolved.provider.id).toBe('codex');
+    expect(resolved.provider.label).toBe('Codex');
+    expect(resolved.model).toBeUndefined();
   });
 });
 

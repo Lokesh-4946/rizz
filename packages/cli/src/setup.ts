@@ -58,6 +58,7 @@ export type CodexCliStatus = 'ready' | 'needs-login' | 'missing';
 
 export interface CodexCliDiagnostic {
   readonly status: CodexCliStatus;
+  readonly command?: string;
   readonly summary: string;
   readonly observed?: string;
 }
@@ -66,6 +67,11 @@ export interface SetupProviderChoice {
   readonly id: SetupProviderRouteId;
   readonly label: string;
   readonly summary: string;
+}
+
+interface SetupRouteResolution {
+  readonly route: SetupProviderRouteId | 'cancel';
+  readonly codex: CodexCliDiagnostic;
 }
 
 export type PathAccessResult =
@@ -119,9 +125,23 @@ export interface RunSetupDryRunOptions {
 
 export type SetupQuestion = (question: string) => Promise<string | null>;
 
+type SetupLaunchResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
+interface SetupLaunchContext {
+  readonly codex?: CodexCliDiagnostic;
+}
+
+type SetupLauncher = (
+  route: SetupProviderRouteId,
+  context: SetupLaunchContext,
+) => Promise<SetupLaunchResult>;
+
 export interface RunSetupInteractiveOptions extends RunSetupDryRunOptions {
   readonly ask?: SetupQuestion;
   readonly defaultUserName?: string;
+  readonly launchSelectedRoute?: SetupLauncher;
 }
 
 export type SetupArgsResult =
@@ -143,6 +163,10 @@ function probeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     ...(env.WINDIR !== undefined ? { WINDIR: env.WINDIR } : {}),
     ...(env.COMSPEC !== undefined ? { COMSPEC: env.COMSPEC } : {}),
   };
+}
+
+function commandProbeTimeoutMs(command: string, args: readonly string[]): number {
+  return command.includes('codex') && args[0] === 'doctor' ? 10_000 : 2_000;
 }
 
 function makeCheck(params: {
@@ -438,7 +462,7 @@ export async function runCommandProbe(
     execFile(
       command,
       [...args],
-      { encoding: 'utf8', env: probeEnv(), timeout: 2_000 },
+      { encoding: 'utf8', env: probeEnv(), timeout: commandProbeTimeoutMs(command, args) },
       (error, stdout) => {
         const output = String(stdout ?? '').trim();
         if (error === null) {
@@ -688,77 +712,68 @@ const CODEX_COMMAND_CANDIDATES = ['codex', '/Applications/Codex.app/Contents/Res
 export async function diagnoseCodexCli(commandRunner: CommandRunner): Promise<CodexCliDiagnostic> {
   for (const command of CODEX_COMMAND_CANDIDATES) {
     const doctor = await commandRunner(command, ['doctor', '--json']);
-    if (doctor.ok || codexDoctorShowsChatGptAuth(doctor.stdout)) {
+    if (codexDoctorShowsChatGptAuth(doctor.stdout)) {
       return {
         status: 'ready',
+        command,
         summary: 'detected through local Codex CLI',
         observed: summarizeCodexDoctorOutput(doctor.stdout ?? ''),
       };
     }
 
     const version = await commandRunner(command, ['--version']);
-    if (version.ok) {
+    if (version.ok || doctor.ok) {
       return {
         status: 'needs-login',
-        summary: 'installed; run codex login first',
-        observed: normalizeObservedVersion('codex', version.stdout),
+        command,
+        summary: 'installed; open Codex and sign in',
+        observed: version.ok
+          ? normalizeObservedVersion('codex', version.stdout)
+          : summarizeCodexDoctorOutput(doctor.stdout ?? ''),
       };
     }
   }
 
   return {
     status: 'missing',
-    summary: 'not found on PATH',
+    summary: 'not detected; install or open Codex first',
   };
 }
 
 export function buildSetupProviderChoices(
   codex: CodexCliDiagnostic,
 ): readonly SetupProviderChoice[] {
-  let codexSummary: string;
-  switch (codex.status) {
-    case 'ready':
-      codexSummary = 'detected through local Codex CLI';
-      break;
-    case 'needs-login':
-      codexSummary = 'installed; sign in with codex login';
-      break;
-    case 'missing':
-      codexSummary = 'not detected; install or open Codex first';
-      break;
-  }
-
   return [
     {
       id: 'codex-subscription',
       label: 'Codex subscription',
-      summary: codexSummary,
-    },
-    {
-      id: 'openai-api',
-      label: 'OpenAI direct',
-      summary: 'connect with your own API key later',
+      summary: codex.summary,
     },
     {
       id: 'openrouter-api',
       label: 'OpenRouter direct',
-      summary: 'connect with your OpenRouter API key later',
+      summary: 'connect with OpenRouter',
+    },
+    {
+      id: 'openai-api',
+      label: 'OpenAI direct',
+      summary: 'connect with OpenAI',
     },
     {
       id: 'anthropic-api',
       label: 'Anthropic direct',
-      summary: 'connect with your own API key later',
+      summary: 'connect with Anthropic',
     },
     {
       id: 'skip',
       label: 'Skip for now',
-      summary: 'finish setup without connecting a model',
+      summary: 'start without a model',
     },
   ];
 }
 
 function defaultProviderRoute(codex: CodexCliDiagnostic): SetupProviderRouteId {
-  return codex.status === 'ready' ? 'codex-subscription' : 'skip';
+  return codex.status === 'ready' ? 'codex-subscription' : 'openrouter-api';
 }
 
 function formatSetupProviderChoices(params: {
@@ -799,37 +814,32 @@ function parseProviderRouteAnswer(params: {
 function formatRouteSelectionResult(routeId: SetupProviderRouteId): string {
   switch (routeId) {
     case 'codex-subscription':
-      return [
-        'Codex subscription selected.',
-        'Next: rizz will use the local Codex CLI route. Live launch lands in the next slice.',
-        'No credentials were read or written by rizz.',
-        '',
-      ].join('\n');
+      return ['Codex subscription selected.', 'Starting rizz with Codex.', ''].join('\n');
     case 'openai-api':
       return [
         'OpenAI direct selected.',
-        'Provider connection lands in a later setup step. No key was requested now.',
+        'No model connected yet.',
         'No credentials were read or written by rizz.',
         '',
       ].join('\n');
     case 'openrouter-api':
       return [
         'OpenRouter direct selected.',
-        'Provider connection lands in a later setup step. No key was requested now.',
+        'No model connected yet.',
         'No credentials were read or written by rizz.',
         '',
       ].join('\n');
     case 'anthropic-api':
       return [
         'Anthropic direct selected.',
-        'Provider connection lands in a later setup step. No key was requested now.',
+        'No model connected yet.',
         'No credentials were read or written by rizz.',
         '',
       ].join('\n');
     case 'skip':
       return [
-        'Skipped model connection for now.',
-        'Run rizz setup again when you are ready to connect a model route.',
+        'Skipped model connection.',
+        'Starting rizz without an active model.',
         'No credentials were read or written by rizz.',
         '',
       ].join('\n');
@@ -871,22 +881,24 @@ async function resolveSetupProviderRoute(params: {
   readonly isTTY: boolean;
   readonly commandRunner: CommandRunner;
   readonly write: (text: string) => void;
-}): Promise<SetupProviderRouteId | 'cancel'> {
+}): Promise<SetupRouteResolution> {
   const codex = await diagnoseCodexCli(params.commandRunner);
   const choices = buildSetupProviderChoices(codex);
-  const defaultRoute = defaultProviderRoute(codex);
+  const defaultRoute =
+    params.ask === undefined && !params.isTTY ? 'skip' : defaultProviderRoute(codex);
   params.write(formatSetupProviderChoices({ choices, defaultRoute }));
 
   if (params.ask === undefined && !params.isTTY) {
-    return defaultRoute;
+    return { route: defaultRoute, codex };
   }
 
-  return askSetupProviderRoute({
+  const route = await askSetupProviderRoute({
     choices,
     defaultRoute,
     write: params.write,
     ...(params.ask !== undefined ? { ask: params.ask } : {}),
   });
+  return { route, codex };
 }
 
 export async function runSetupDryRun(options: RunSetupDryRunOptions = {}): Promise<0 | 1> {
@@ -931,18 +943,25 @@ export async function runSetupInteractive(
 
   const friendlyName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
   write(`Hi ${friendlyName}.\n`);
-  const selectedRoute = await resolveSetupProviderRoute({
+  const selected = await resolveSetupProviderRoute({
     write,
     commandRunner: options.commandRunner ?? runCommandProbe,
     isTTY: options.isTTY === true,
     ...(options.ask !== undefined ? { ask: options.ask } : {}),
   });
 
-  if (selectedRoute === 'cancel') {
+  if (selected.route === 'cancel') {
     write('setup cancelled. No changes were made. Run rizz setup to choose a route later.\n');
     return 0;
   }
 
-  write(formatRouteSelectionResult(selectedRoute));
+  write(formatRouteSelectionResult(selected.route));
+  if (options.launchSelectedRoute !== undefined && options.isTTY === true) {
+    const launched = await options.launchSelectedRoute(selected.route, { codex: selected.codex });
+    if (!launched.ok) {
+      write(`Could not start rizz: ${launched.message}\n`);
+      return 1;
+    }
+  }
   return 0;
 }

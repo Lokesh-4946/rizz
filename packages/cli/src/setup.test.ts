@@ -296,7 +296,10 @@ describe('setup dependency doctor', () => {
         'pnpm --version': { ok: true, stdout: '11.6.0' },
         'git --version': { ok: true, stdout: 'git version 2.45.0' },
         'which secret-tool': { ok: false, reason: 'ENOENT' },
-        'codex doctor --json': { ok: true, stdout: '{"auth":"chatgpt"}' },
+        'codex doctor --json': {
+          ok: true,
+          stdout: '{"checks":{"auth.credentials":{"status":"ok"}}}',
+        },
       }).runner,
       pathAccess: accessFixture({
         [HOME]: { exists: true, writable: true },
@@ -316,8 +319,7 @@ describe('setup dependency doctor', () => {
     expect(text).toContain('detected through local Codex CLI');
     expect(text).toContain('OpenRouter direct');
     expect(text).toContain('Codex subscription selected.');
-    expect(text).toContain('Live launch lands in the next slice.');
-    expect(text).toContain('No credentials were read or written by rizz.');
+    expect(text).toContain('Starting rizz with Codex.');
     expect(text).not.toContain('[pi]');
     expect(text).not.toContain('Name this launch');
     expect(text).not.toContain('local demo mode');
@@ -379,7 +381,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('can select OpenRouter without requesting a key in this setup slice', async () => {
-    const answers = ['3'];
+    const answers = ['2'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -407,8 +409,118 @@ describe('setup dependency doctor', () => {
     expect(code).toBe(0);
     expect(text).toContain('OpenRouter direct');
     expect(text).toContain('OpenRouter direct selected.');
-    expect(text).toContain('No key was requested now.');
+    expect(text).toContain('No model connected yet.');
     expect(text).toContain('No credentials were read or written by rizz.');
+    expect(text).not.toContain('Key connection lands next');
+    expect(text).not.toContain('setup selected');
+  });
+
+  it('does not treat a generic successful Codex doctor as subscription-ready', async () => {
+    const answers = [''];
+    const output: string[] = [];
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: { USER: 'lokesh' },
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: true, stdout: '{"overallStatus":"ok"}' },
+        'codex --version': { ok: true, stdout: 'codex-cli 1.2.3' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(text).toContain('Codex subscription');
+    expect(text).toContain('installed; open Codex and sign in');
+    expect(text).toContain('> 2. OpenRouter direct');
+    expect(text).toContain('OpenRouter direct selected.');
+    expect(text).not.toContain('Codex subscription selected.');
+  });
+
+  it('tells users to open Codex instead of running a shell login command', async () => {
+    const output: string[] = [];
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'darwin',
+      env: { USER: 'lokesh' },
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'security -h': { ok: true, stdout: 'security help' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+        '/Applications/Codex.app/Contents/Resources/codex doctor --json': {
+          ok: true,
+          stdout: '{"overallStatus":"ok"}',
+        },
+        '/Applications/Codex.app/Contents/Resources/codex --version': {
+          ok: true,
+          stdout: 'codex-cli 1.2.3',
+        },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => '',
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(text).toContain('installed; open Codex and sign in');
+    expect(text).not.toContain('codex login');
+  });
+
+  it('launches only in a real interactive terminal', async () => {
+    let launchCount = 0;
+    const base = {
+      nodeVersion: '24.0.0',
+      platform: 'linux' as const,
+      env: { USER: 'lokesh' },
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': {
+          ok: false,
+          reason: 'COMMAND_FAILED',
+          stdout: '{"checks":{"auth.credentials":{"status":"ok"}}}',
+        },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => '',
+      write: () => undefined,
+      launchSelectedRoute: async () => {
+        launchCount += 1;
+        return { ok: true as const };
+      },
+    };
+
+    await runSetupInteractive({ ...base, isTTY: false });
+    expect(launchCount).toBe(0);
+    await runSetupInteractive({ ...base, isTTY: true });
+    expect(launchCount).toBe(1);
   });
 
   it('interactive setup can cancel before choosing a route', async () => {
@@ -473,7 +585,7 @@ describe('setup dependency doctor', () => {
     const text = output.join('');
     expect(code).toBe(0);
     expect(text).toContain('Choose 1-5, or q to cancel.');
-    expect(text).toContain('Skipped model connection for now.');
+    expect(text).toContain('Skipped model connection.');
     expect(text).not.toContain('Demo / Harness');
   });
 

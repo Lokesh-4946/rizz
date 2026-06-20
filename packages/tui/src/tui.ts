@@ -43,7 +43,6 @@ import {
   renderHint,
   renderModelPicker,
   renderPlanStub,
-  renderSetupLaunch,
   renderStatusBar,
   renderThemeList,
 } from './render.js';
@@ -62,8 +61,8 @@ export interface TuiOptions {
   readonly auth?: AuthKind;
   /** A one-time startup notice (e.g. a keychain read failure), surfaced before the prompt. */
   readonly notice?: string;
-  /** Launch-only display name from setup. Not persisted and not provider identity. */
-  readonly agentName?: string;
+  /** Setup launches use in-memory sessions so route selection does not silently write session files. */
+  readonly persistSession?: boolean;
 }
 
 /** Where sessions persist. Local-first; no cloud (D-011). */
@@ -127,14 +126,15 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   let sessionApiKey: string | undefined;
   const cwd = process.cwd();
 
-  const store: SessionStore = await openSessionStore({ dir: SESSIONS_DIR });
+  const store: SessionStore | undefined =
+    options.persistSession === false ? undefined : await openSessionStore({ dir: SESSIONS_DIR });
   const secrets: SecretStore = await openSecretStore();
   const budgetState = newBudgetState();
-  const { session, sessionId, notice } = await openSession(
-    store,
-    activeProvider.label,
-    options.resumeId,
-  );
+  const opened =
+    store === undefined
+      ? { session: createSession(), sessionId: undefined, notice: undefined }
+      : await openSession(store, activeProvider.label, options.resumeId);
+  const { session, sessionId, notice } = opened;
 
   const writeLine = (s: string): void => {
     process.stdout.write(`${s}\n`);
@@ -142,17 +142,13 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
 
   writeLine(renderHeader(theme, activeProvider.label));
   writeLine('');
-  if (options.agentName !== undefined) {
-    writeLine(renderSetupLaunch(theme, { agentName: options.agentName, mode: 'Demo / Harness' }));
-    writeLine('');
-  }
   if (options.notice !== undefined) writeLine(theme.alert(`  ⚠ ${options.notice}`));
   if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
-  // Demo mode is one quiet banner, not a per-turn nag (D-032).
+  if (activeAuth === 'subscription') {
+    writeLine(theme.dim('  Codex subscription active.'));
+  }
   if (activeAuth === 'demo') {
-    writeLine(
-      theme.dim('  demo mode · no model connected — /login or set ANTHROPIC_API_KEY to go live'),
-    );
+    writeLine(theme.dim('  No model connected. Use /login or /model when ready.'));
   }
   writeLine(renderEmptyState(theme));
   writeLine(renderHint(theme));
@@ -353,7 +349,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       subscription: activeSubscription,
       ...(activeModel ? { model: activeModel } : {}),
       compress: DEFAULT_COMPRESS,
-      store,
+      ...(store !== undefined ? { store } : {}),
       ...(sessionId !== undefined ? { sessionId } : {}),
       onEvent: renderEvent,
       onApprovalNeeded: approve,
