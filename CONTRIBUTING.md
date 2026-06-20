@@ -4,7 +4,7 @@ rizz dogfoods the discipline it ships. Every change after bootstrap follows the 
 
 ## Dev loop (mandatory per change)
 
-**plan → `git worktree add` per task → build → code-simplifier pass → PR via `gh` → greploop to 5/5 → merge to `develop`**
+**plan → `git worktree add` per task → build → code-simplifier pass → PR via `gh` → `check-pr` → `review-loop` → merge to `develop`**
 
 1. **Plan.** Write a short plan + task list before editing; keep it with the feature branch.
 2. **Isolate.** One git worktree per task: `git worktree add ../rizz-<task> -b feature/<task>`.
@@ -13,8 +13,9 @@ rizz dogfoods the discipline it ships. Every change after bootstrap follows the 
 4. **Simplify.** Run the `code-simplifier` pass on the recently-changed code (clarity, not
    behavior — see `.claude/skills/code-simplifier`).
 5. **PR.** Open via `gh pr create` targeting `develop`.
-6. **greploop.** Run `greploop` (`.claude/skills/greploop`) to **5/5 confidence, zero unresolved
-   comments**, capped at 5 iterations. No merge before 5/5 (or a human signs off the remainder).
+6. **Local review gate.** Run `check-pr` then `review-loop` (`.claude/skills/check-pr`,
+   `.claude/skills/review-loop`). No external review-bot score is required; bot comments, if any
+   already exist, are ordinary comments and must be classified as actionable, stale, or informational.
 7. **Merge** to `develop`. `main` stays protected + always releasable.
 
 ## Branches

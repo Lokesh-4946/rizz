@@ -102,4 +102,4 @@ Enforced:
 - Branches: `feature/*`, `fix/*`, `release/*` off `develop`; `develop` integrates; `main` is
   protected + always releasable.
 - Dev loop for every change after bootstrap: **plan → `git worktree add` per task → build →
-  code-simplifier pass → PR via `gh` → greploop to 5/5 → merge to `develop`.**
+  code-simplifier pass → PR via `gh` → `check-pr` → `review-loop` → merge to `develop`.**

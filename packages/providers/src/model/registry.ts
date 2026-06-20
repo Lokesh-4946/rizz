@@ -8,7 +8,7 @@
 // status bar shows "$0.00 (sub)"), so registry prices are not consulted there.
 
 // Single source of truth: the runtime list and the `Capability` type derive from one array, so a new
-// capability is added in exactly one place (no hand-maintained copies to drift — greploop fix).
+// capability is added in exactly one place (no hand-maintained copies to drift).
 export const CAPABILITIES = ['code', 'plan', 'cheap', 'long-context'] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 

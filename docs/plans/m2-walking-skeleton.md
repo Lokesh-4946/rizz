@@ -35,4 +35,4 @@ boundary is shaped now so M3 swaps in the real Claude adapter with no loop/TUI c
 ## Dev loop
 
 worktree `feature/m2-walking-skeleton` → build → `pnpm check` green → code-simplifier pass → PR to
-`develop` → greploop 5/5 → merge.
+`develop` → local `check-pr` + `review-loop` gate → merge.
