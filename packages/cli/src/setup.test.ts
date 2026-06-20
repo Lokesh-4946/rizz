@@ -311,13 +311,18 @@ describe('setup dependency doctor', () => {
 
     expect(code).toBe(0);
     expect(output.join('')).toContain('rizz setup');
+    expect(output.join('')).toContain('ready: no blockers');
     expect(output.join('')).toContain('Hi Lokesh.');
+    expect(output.join('')).toContain('Harness Mode is local demo mode');
+    expect(output.join('')).toContain('launch name: juno_01');
+    expect(output.join('')).toContain('credentials: none');
+    expect(output.join('')).toContain('saved profile: none');
     expect(output.join('')).toContain('Harness Mode ready');
     expect(launched).toEqual(['juno_01']);
   });
 
   it('interactive setup can cancel before launching the TUI', async () => {
-    const answers = ['', 'n'];
+    const answers = ['', 'cancel'];
     const launched: string[] = [];
     const output: string[] = [];
     const code = await runSetupInteractive({
@@ -344,13 +349,47 @@ describe('setup dependency doctor', () => {
     });
 
     expect(code).toBe(0);
-    expect(output.join('')).toContain('setup cancelled');
+    expect(output.join('')).toContain('launch name: pi');
+    expect(output.join('')).toContain('setup cancelled. No changes were made.');
     expect(launched).toEqual([]);
+  });
+
+  it('interactive setup retries invalid launch choices', async () => {
+    const answers = ['nova', 'maybe', 'demo'];
+    const output: string[] = [];
+    const launched: string[] = [];
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      write: (text) => output.push(text),
+      startDemoTui: async ({ agentName }) => {
+        launched.push(agentName);
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(output.join('')).toContain('Choose Y to start, or n to cancel.');
+    expect(launched).toEqual(['nova']);
   });
 
   it('interactive setup stops before prompting when the doctor has blockers', async () => {
     let promptCount = 0;
     let launchCount = 0;
+    const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '21.9.0',
       platform: 'linux',
@@ -367,13 +406,15 @@ describe('setup dependency doctor', () => {
         promptCount += 1;
         return '';
       },
-      write: () => {},
+      write: (text) => output.push(text),
       startDemoTui: async () => {
         launchCount += 1;
       },
     });
 
     expect(code).toBe(1);
+    expect(output.join('')).toContain('setup stopped');
+    expect(output.join('')).toContain('No changes were made.');
     expect(promptCount).toBe(0);
     expect(launchCount).toBe(0);
   });

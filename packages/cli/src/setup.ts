@@ -98,6 +98,8 @@ export interface RunSetupDryRunOptions {
 
 export type SetupQuestion = (question: string) => Promise<string | null>;
 
+type SetupLaunchChoice = 'launch' | 'cancel' | 'invalid';
+
 export interface RunSetupInteractiveOptions extends RunSetupDryRunOptions {
   readonly ask?: SetupQuestion;
   readonly defaultUserName?: string;
@@ -568,7 +570,11 @@ function formatInteractiveDoctorSummary(report: DependencyDoctorReport): string 
   if (report.blockers > 0) {
     lines.push('setup stopped: fix blocker(s), then rerun rizz setup', '');
     lines.push('next steps', ...report.nextSteps.map((step) => `- ${step}`), '');
+    lines.push('No changes were made.', '');
+    return lines.join('\n');
   }
+  const warningLabel = report.warnings === 1 ? 'warning' : 'warnings';
+  lines.push(`ready: no blockers, ${report.warnings} ${warningLabel}`, '');
   return lines.join('\n');
 }
 
@@ -608,6 +614,40 @@ function cleanAgentName(value: string, fallback: string): string {
   return safe === '' ? fallback : safe.slice(0, 32);
 }
 
+function formatSetupModeContract(): string {
+  return [
+    'Demo / Harness Mode',
+    'provider: demo',
+    'billing: $0.00 (sub)',
+    'permissions: ask',
+    'credentials: none',
+    'saved profile: none',
+    '',
+  ].join('\n');
+}
+
+function parseSetupLaunchChoice(answer: string): SetupLaunchChoice {
+  const normalized = answer.trim().toLowerCase();
+  switch (normalized) {
+    case '':
+    case '1':
+    case 'd':
+    case 'demo':
+    case 'y':
+    case 'yes':
+      return 'launch';
+    case '2':
+    case 'c':
+    case 'cancel':
+    case 'n':
+    case 'no':
+    case 'q':
+      return 'cancel';
+    default:
+      return 'invalid';
+  }
+}
+
 function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly close: () => void } {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return {
@@ -635,24 +675,34 @@ async function askSetupQuestion(ask: SetupQuestion, question: string): Promise<s
 async function askSetupQuestions(params: {
   readonly ask?: SetupQuestion;
   readonly defaultAgentName: string;
+  readonly write: (text: string) => void;
 }): Promise<{ readonly agentName: string; readonly shouldLaunch: boolean }> {
   const prompt = params.ask === undefined ? createDefaultSetupPrompt() : undefined;
   const ask = params.ask ?? prompt?.ask;
   if (ask === undefined) {
+    params.write(`launch name: ${params.defaultAgentName}\n`);
+    params.write(formatSetupModeContract());
     return { agentName: params.defaultAgentName, shouldLaunch: true };
   }
   try {
     const rawAgentName =
-      (await askSetupQuestion(
-        ask,
-        `What do you want to call your agent? [${params.defaultAgentName}] `,
-      )) ?? '';
+      (await askSetupQuestion(ask, `Name this launch? [${params.defaultAgentName}] `)) ?? '';
     const agentName = cleanAgentName(rawAgentName, params.defaultAgentName);
-    const modeAnswer = (await askSetupQuestion(ask, 'Start Demo / Harness Mode? [Y/n] ')) ?? '';
-    return {
-      agentName,
-      shouldLaunch: !modeAnswer.trim().toLowerCase().startsWith('n'),
-    };
+    params.write(`launch name: ${agentName}\n`);
+    params.write(formatSetupModeContract());
+    while (true) {
+      const modeAnswer = await askSetupQuestion(ask, 'Start now? [Y/n] ');
+      if (modeAnswer === null) return { agentName, shouldLaunch: false };
+      switch (parseSetupLaunchChoice(modeAnswer)) {
+        case 'launch':
+          return { agentName, shouldLaunch: true };
+        case 'cancel':
+          return { agentName, shouldLaunch: false };
+        case 'invalid':
+          params.write('Choose Y to start, or n to cancel.\n');
+          break;
+      }
+    }
   } finally {
     prompt?.close();
   }
@@ -701,21 +751,36 @@ export async function runSetupInteractive(
   const friendlyName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
   const defaultAgentName = 'pi';
   write(`Hi ${friendlyName}.\n`);
+  write('Harness Mode is local demo mode: no credentials, no config writes, $0.00.\n');
   const { agentName, shouldLaunch } =
     options.ask === undefined && options.isTTY !== true
-      ? { agentName: defaultAgentName, shouldLaunch: true }
+      ? (() => {
+          write(`launch name: ${defaultAgentName}\n`);
+          write(formatSetupModeContract());
+          return { agentName: defaultAgentName, shouldLaunch: true };
+        })()
       : await askSetupQuestions({
           defaultAgentName,
+          write,
           ...(options.ask !== undefined ? { ask: options.ask } : {}),
         });
   if (!shouldLaunch) {
-    write('setup cancelled. run rizz setup to launch later.\n');
+    write('setup cancelled. No changes were made. Run rizz setup to launch later.\n');
     return 0;
   }
 
-  const { createTheme, renderSetupBoot, startTui } = await import('@rizz/tui');
-  const theme = createTheme({ color: options.isTTY === true });
-  write(`\n${renderSetupBoot(theme)}\n\n`);
+  const { createTheme, renderSetupBoot, shouldRenderSetupBootPanel, startTui } = await import(
+    '@rizz/tui'
+  );
+  const colorDepth = options.isTTY === true && env.NO_COLOR === undefined ? 'truecolor' : 'none';
+  const shouldRenderBootPanel = shouldRenderSetupBootPanel({
+    isTTY: options.isTTY === true,
+    ...(options.columns !== undefined ? { columns: options.columns } : {}),
+    env,
+    colorDepth,
+  });
+  const theme = createTheme({ color: shouldRenderBootPanel });
+  write(`\n${renderSetupBoot(theme, { compact: !shouldRenderBootPanel })}\n\n`);
   await (options.startDemoTui ?? ((tuiOptions) => startTui(tuiOptions)))({ agentName });
   return 0;
 }
