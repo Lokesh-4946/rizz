@@ -14,5 +14,6 @@ export {
   renderHint,
   renderSetupBoot,
   renderSetupLaunch,
+  shouldRenderSetupBootPanel,
   renderStatusBar,
 } from './render.js';
