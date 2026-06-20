@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Loop"
+  short_description: "Run local PR review without external bots."
+  default_prompt: "Use review-loop to self-review the current PR, fix scoped issues, verify, and report merge readiness."

@@ -54,9 +54,8 @@ typecheck, eval, footprint **158KB/200KB**, cold start 49ms.
 ## State of the dev loop
 
 - Build → simplify (no clarity changes needed) → PR #12 opened.
-- **greploop blocked:** Greptile returns "reached the 50-review limit for trial accounts" — same
-  external quota that blocked #11. No confidence score obtainable; needs a plan upgrade or a human
-  sign-off per D-005 ("5/5 *or* a human signs off the remainder").
+- Historical note: the earlier external review-bot gate was blocked by account quota. The active
+  release gate is now the local `check-pr` + `review-loop` policy in D-045.
 
 ## Next M4 slice
 

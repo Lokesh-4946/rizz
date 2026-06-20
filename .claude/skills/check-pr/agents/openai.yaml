@@ -1,0 +1,4 @@
+interface:
+  display_name: "Check PR"
+  short_description: "Inspect PR health without external bots."
+  default_prompt: "Use check-pr to inspect the current PR, report CI/review/description issues, and identify actionable fixes."

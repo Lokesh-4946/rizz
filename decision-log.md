@@ -10,11 +10,12 @@ point at one.
 > are the decisions actually referenced in the repo. Unreferenced numbers in the D-NNN sequence
 > (D-003, D-004, D-006, D-007, D-009, D-012–D-014, D-017, D-022, D-035, D-037, D-038) and the M3
 > deviation **D-027** lived only in planning/handoff notes that are not in the tree, so their text is
-> not recoverable here. **The next decision is [D-043](#log).** When a missing note resurfaces, fill
+> not recoverable here. **The next decision is [D-046](#log).** When a missing note resurfaces, fill
 > the gap in place rather than renumbering.
 
 Status legend: **Committed** (decided and in effect) · **Deferred** (decided to postpone) ·
-**Deviation** (departs from the design brief; flagged NEEDS ORCHESTRATOR REVIEW).
+**Superseded** (replaced by a later decision) · **Deviation** (departs from the design brief; flagged
+NEEDS ORCHESTRATOR REVIEW).
 
 ---
 
@@ -52,9 +53,9 @@ BYOK adapter exists (see [D-033](#d-033)). → `packages/providers/src/model/reg
 #### D-005
 **Mandatory dev loop per change.** — Committed
 Every change after bootstrap: **plan → `git worktree add` per task → build (`pnpm check`) →
-code-simplifier pass → PR via `gh` → greploop to 5/5 → merge to `develop`.** Mechanics live in
-`providers`; orchestration in `core`/`cli` (the service-layer split). → `CONTRIBUTING.md`,
-`runbooks/greploop.md`.
+code-simplifier pass → PR via `gh` → `check-pr` → `review-loop` → merge to `develop`.** Mechanics
+live in `providers`; orchestration in `core`/`cli` (the service-layer split). Local review mechanics
+are defined by [D-045](#d-045). → `CONTRIBUTING.md`, `runbooks/review-loop.md`.
 
 #### D-008
 **Cross-platform from day one.** — Committed
@@ -78,11 +79,10 @@ The TUI is hand-rolled ANSI + `readline`, no UI framework — the lightweight co
 experience layer. → `packages/tui`.
 
 #### D-016
-**greploop acceptance rule for a no-numeric-score Greptile install.** — Committed
-This Greptile install returns no readable confidence score (review bodies are empty across PRs).
-Accept a PR when: all actionable findings addressed + all threads resolved + 0 active comments +
-MERGEABLE/CLEAN + CI green on all three OSes. Capped at 5 iterations. If a numeric score ever appears,
-5/5 becomes a sixth criterion. → `runbooks/greploop.md`.
+**External review-bot acceptance rule.** — Superseded by [D-045](#d-045)
+The earlier external review-bot gate depended on an unavailable numeric score and external account
+quota. It is no longer a release requirement. Existing bot comments are ordinary comments, not a
+merge gate. → `runbooks/review-loop.md`.
 
 ### Single-agent core (M3)
 
@@ -236,7 +236,17 @@ default. Follow-up: the `local` profile still points at a placeholder id and sta
 wiring it to a concrete local model is deferred. → `packages/providers/src/providers/openai.ts`,
 `packages/core/src/bootstrap.ts`, `runbooks/install.md`.
 
+#### D-045
+**Local PR review loop replaces external review-bot scoring.** — Committed
+Release readiness is determined by rizz's local `check-pr` + `review-loop` process: inspect PR state,
+changed-file scope, CI, comments, and description; then run up to three local review/fix/verify
+iterations. No external score is required. External bot comments, if present, are classified as
+actionable, stale, or informational like any other comment. The gate is: scoped diff, actionable
+findings handled or orchestrator-deferred, no actionable unresolved threads, MERGEABLE/CLEAN, required
+CI green, complete PR body, and lightweight-footprint evidence for code changes. → `CONTRIBUTING.md`,
+`runbooks/review-loop.md`, `.claude/skills/check-pr`, `.claude/skills/review-loop`.
+
 ---
 
-*Next decision: **D-045**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+*Next decision: **D-046**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*
