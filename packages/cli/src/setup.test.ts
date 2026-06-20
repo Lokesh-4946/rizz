@@ -314,6 +314,7 @@ describe('setup dependency doctor', () => {
     expect(text).toContain('Choose how rizz should talk to a model:');
     expect(text).toContain('Codex subscription');
     expect(text).toContain('detected through local Codex CLI');
+    expect(text).toContain('OpenRouter direct');
     expect(text).toContain('Codex subscription selected.');
     expect(text).toContain('Live launch lands in the next slice.');
     expect(text).toContain('No credentials were read or written by rizz.');
@@ -322,6 +323,92 @@ describe('setup dependency doctor', () => {
     expect(text).not.toContain('local demo mode');
     expect(text).not.toContain('Demo / Harness');
     expect(text).not.toContain('launch name');
+  });
+
+  it('detects Codex through the macOS app CLI when plain codex is not on PATH', async () => {
+    const answers = [''];
+    const output: string[] = [];
+    const doctorJson = JSON.stringify({
+      overallStatus: 'fail',
+      checks: {
+        'auth.credentials': {
+          status: 'ok',
+          details: {
+            'stored auth mode': 'chatgpt',
+            'stored ChatGPT tokens': 'true',
+          },
+        },
+        'terminal.env': {
+          status: 'fail',
+        },
+      },
+    });
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'darwin',
+      env: { USER: 'lokesh' },
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which security': { ok: true, stdout: '/usr/bin/security' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+        '/Applications/Codex.app/Contents/Resources/codex doctor --json': {
+          ok: false,
+          reason: 'COMMAND_FAILED',
+          stdout: doctorJson,
+        },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(text).toContain('Codex subscription');
+    expect(text).toContain('detected through local Codex CLI');
+    expect(text).toContain('Codex subscription selected.');
+    expect(text).not.toContain('not detected; install or open Codex first');
+  });
+
+  it('can select OpenRouter without requesting a key in this setup slice', async () => {
+    const answers = ['3'];
+    const output: string[] = [];
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: false,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(text).toContain('OpenRouter direct');
+    expect(text).toContain('OpenRouter direct selected.');
+    expect(text).toContain('No key was requested now.');
+    expect(text).toContain('No credentials were read or written by rizz.');
   });
 
   it('interactive setup can cancel before choosing a route', async () => {
@@ -359,7 +446,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('interactive setup retries invalid route choices', async () => {
-    const answers = ['maybe', '4'];
+    const answers = ['maybe', '5'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -385,7 +472,7 @@ describe('setup dependency doctor', () => {
 
     const text = output.join('');
     expect(code).toBe(0);
-    expect(text).toContain('Choose 1, 2, 3, 4, or q to cancel.');
+    expect(text).toContain('Choose 1-5, or q to cancel.');
     expect(text).toContain('Skipped model connection for now.');
     expect(text).not.toContain('Demo / Harness');
   });

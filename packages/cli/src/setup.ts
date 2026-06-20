@@ -47,7 +47,12 @@ export type CommandRunner = (
   args: readonly string[],
 ) => Promise<CommandProbeResult>;
 
-export type SetupProviderRouteId = 'codex-subscription' | 'openai-api' | 'anthropic-api' | 'skip';
+export type SetupProviderRouteId =
+  | 'codex-subscription'
+  | 'openai-api'
+  | 'openrouter-api'
+  | 'anthropic-api'
+  | 'skip';
 
 export type CodexCliStatus = 'ready' | 'needs-login' | 'missing';
 
@@ -131,6 +136,9 @@ export const SETUP_USAGE = `Usage:
 function probeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return {
     ...(env.PATH !== undefined ? { PATH: env.PATH } : {}),
+    ...(env.HOME !== undefined ? { HOME: env.HOME } : {}),
+    ...(env.USERPROFILE !== undefined ? { USERPROFILE: env.USERPROFILE } : {}),
+    ...(env.CODEX_HOME !== undefined ? { CODEX_HOME: env.CODEX_HOME } : {}),
     ...(env.SystemRoot !== undefined ? { SystemRoot: env.SystemRoot } : {}),
     ...(env.WINDIR !== undefined ? { WINDIR: env.WINDIR } : {}),
     ...(env.COMSPEC !== undefined ? { COMSPEC: env.COMSPEC } : {}),
@@ -657,23 +665,45 @@ function summarizeCodexDoctorOutput(stdout: string): string {
   return 'codex doctor ok';
 }
 
-export async function diagnoseCodexCli(commandRunner: CommandRunner): Promise<CodexCliDiagnostic> {
-  const doctor = await commandRunner('codex', ['doctor', '--json']);
-  if (doctor.ok) {
-    return {
-      status: 'ready',
-      summary: 'detected through local Codex CLI',
-      observed: summarizeCodexDoctorOutput(doctor.stdout),
-    };
+function codexDoctorShowsChatGptAuth(stdout: string | undefined): boolean {
+  const trimmed = stdout?.trim();
+  if (trimmed === undefined || trimmed === '') return false;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== 'object' || parsed === null) return false;
+    const checks =
+      'checks' in parsed ? (parsed as { readonly checks?: unknown }).checks : undefined;
+    if (typeof checks !== 'object' || checks === null) return false;
+    const auth = (checks as Readonly<Record<string, unknown>>)['auth.credentials'];
+    if (typeof auth !== 'object' || auth === null) return false;
+    const status = 'status' in auth ? (auth as { readonly status?: unknown }).status : undefined;
+    return status === 'ok';
+  } catch {
+    return false;
   }
+}
 
-  const version = await commandRunner('codex', ['--version']);
-  if (version.ok) {
-    return {
-      status: 'needs-login',
-      summary: 'installed; run codex login first',
-      observed: normalizeObservedVersion('codex', version.stdout),
-    };
+const CODEX_COMMAND_CANDIDATES = ['codex', '/Applications/Codex.app/Contents/Resources/codex'];
+
+export async function diagnoseCodexCli(commandRunner: CommandRunner): Promise<CodexCliDiagnostic> {
+  for (const command of CODEX_COMMAND_CANDIDATES) {
+    const doctor = await commandRunner(command, ['doctor', '--json']);
+    if (doctor.ok || codexDoctorShowsChatGptAuth(doctor.stdout)) {
+      return {
+        status: 'ready',
+        summary: 'detected through local Codex CLI',
+        observed: summarizeCodexDoctorOutput(doctor.stdout ?? ''),
+      };
+    }
+
+    const version = await commandRunner(command, ['--version']);
+    if (version.ok) {
+      return {
+        status: 'needs-login',
+        summary: 'installed; run codex login first',
+        observed: normalizeObservedVersion('codex', version.stdout),
+      };
+    }
   }
 
   return {
@@ -708,6 +738,11 @@ export function buildSetupProviderChoices(
       id: 'openai-api',
       label: 'OpenAI direct',
       summary: 'connect with your own API key later',
+    },
+    {
+      id: 'openrouter-api',
+      label: 'OpenRouter direct',
+      summary: 'connect with your OpenRouter API key later',
     },
     {
       id: 'anthropic-api',
@@ -777,6 +812,13 @@ function formatRouteSelectionResult(routeId: SetupProviderRouteId): string {
         'No credentials were read or written by rizz.',
         '',
       ].join('\n');
+    case 'openrouter-api':
+      return [
+        'OpenRouter direct selected.',
+        'Provider connection lands in a later setup step. No key was requested now.',
+        'No credentials were read or written by rizz.',
+        '',
+      ].join('\n');
     case 'anthropic-api':
       return [
         'Anthropic direct selected.',
@@ -817,7 +859,7 @@ async function askSetupProviderRoute(params: {
         defaultRoute: params.defaultRoute,
       });
       if (route !== undefined) return route;
-      params.write('Choose 1, 2, 3, 4, or q to cancel.\n');
+      params.write(`Choose 1-${params.choices.length}, or q to cancel.\n`);
     }
   } finally {
     prompt?.close();
