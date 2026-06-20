@@ -34,6 +34,8 @@ export {
   buildOpenAiRequest,
   createOpenAiProvider,
 } from './providers/openai.js';
+// Subscription-backed local Codex CLI bridge. Codex owns auth/session refresh.
+export { createCodexCliProvider } from './providers/codex-cli.js';
 
 // Secret storage (the BYOK key, kept off the repo/logs — §3.6): OS keychain with a 0600 file fallback.
 export {

@@ -7,11 +7,8 @@ import {
   renderHeader,
   renderModelPicker,
   renderPlanStub,
-  renderSetupBoot,
-  renderSetupLaunch,
   renderStatusBar,
   renderThemeList,
-  shouldRenderSetupBootPanel,
 } from './render.js';
 import { THEME_NAMES, createTheme } from './theme.js';
 
@@ -19,9 +16,9 @@ const plain = createTheme({ color: false });
 
 describe('tui render (plain theme)', () => {
   it('header shows the internal name + model, no ANSI', () => {
-    const header = renderHeader(plain, 'demo (no provider)');
+    const header = renderHeader(plain, 'no model');
     expect(header).toContain('rizz');
-    expect(header).toContain('demo (no provider)');
+    expect(header).toContain('no model');
     expect(header).not.toContain('\x1b[');
   });
 
@@ -82,75 +79,5 @@ describe('theme list + stubs', () => {
 
   it('coming-soon hint names the provider', () => {
     expect(renderComingSoon(plain, 'Codex')).toContain('Codex');
-  });
-});
-
-describe('setup launch renderers', () => {
-  it('renders setup boot copy without ANSI in plain mode', () => {
-    const out = renderSetupBoot(plain);
-
-    expect(out).toContain('SYS: RIZZ ONLINE');
-    expect(out).toContain('dependency doctor complete');
-    expect(out).toContain('Harness Mode ready');
-    expect(out).not.toContain('\x1b[');
-  });
-
-  it('renders compact setup boot fallback without the pixel panel', () => {
-    const out = renderSetupBoot(createTheme({ color: true }), { compact: true });
-
-    expect(out).toContain('rizz setup');
-    expect(out).toContain('[ok] demo provider selected');
-    expect(out).not.toContain('SYS: RIZZ ONLINE');
-    expect(out).not.toContain('\x1b[');
-  });
-
-  it('renders launch state with demo billing and permissions visible', () => {
-    const out = renderSetupLaunch(plain, { agentName: 'juno_01', mode: 'Demo / Harness' });
-
-    expect(out).toContain('juno_01 online');
-    expect(out).toContain('Demo / Harness');
-    expect(out).toContain('provider: demo');
-    expect(out).toContain('$0.00 (sub)');
-    expect(out).toContain('permissions: ask');
-  });
-
-  it('suppresses the boot panel for non-interactive or reduced terminals', () => {
-    expect(
-      shouldRenderSetupBootPanel({
-        isTTY: false,
-        env: {},
-        colorDepth: 'truecolor',
-      }),
-    ).toBe(false);
-    expect(
-      shouldRenderSetupBootPanel({
-        isTTY: true,
-        env: { NO_COLOR: '1' },
-        colorDepth: 'truecolor',
-      }),
-    ).toBe(false);
-    expect(
-      shouldRenderSetupBootPanel({
-        isTTY: true,
-        env: { RIZZ_REDUCED_MOTION: '1' },
-        colorDepth: 'truecolor',
-      }),
-    ).toBe(false);
-    expect(
-      shouldRenderSetupBootPanel({
-        isTTY: true,
-        columns: 71,
-        env: {},
-        colorDepth: 'truecolor',
-      }),
-    ).toBe(false);
-    expect(
-      shouldRenderSetupBootPanel({
-        isTTY: true,
-        columns: 72,
-        env: {},
-        colorDepth: 'truecolor',
-      }),
-    ).toBe(true);
   });
 });

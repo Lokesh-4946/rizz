@@ -6,8 +6,15 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { createRpcServer, createSession, resolveProvider, runJsonTurn, runTurn } from '@rizz/core';
-import { openSessionStore } from '@rizz/providers';
+import {
+  createRpcServer,
+  createSession,
+  resolveCodexSubscriptionProvider,
+  resolveProvider,
+  runJsonTurn,
+  runTurn,
+} from '@rizz/core';
+import { StubProvider, openSessionStore } from '@rizz/providers';
 import { startTui } from '@rizz/tui';
 
 const VERSION = '0.0.0';
@@ -27,9 +34,10 @@ Usage:
   rizz --version         print the rizz version
   rizz --help            show this help
 
-Single-agent and minimal by default. Use setup to choose a model route; direct Anthropic/OpenAI
-API-key paths and the Codex subscription bridge are landing in focused setup slices. The /workspace
-multi-agent mode arrives in a later milestone. The headless contract is in runbooks/headless.md.`;
+Single-agent and minimal by default. Use setup to choose a model route. A signed-in Codex CLI can
+start a subscription-backed session; API-key routes continue through /login or saved provider keys.
+The /workspace multi-agent mode arrives in a later milestone. The headless contract is in
+runbooks/headless.md.`;
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
@@ -38,6 +46,16 @@ const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
 interface SelectOpts {
   readonly profile?: string;
   readonly capability?: string;
+}
+
+async function startNoModelTui(notice: string): Promise<void> {
+  await startTui({
+    provider: new StubProvider(),
+    subscription: false,
+    auth: 'demo',
+    notice,
+    persistSession: false,
+  });
 }
 
 /** Pull a `--flag <value>` pair out of argv; reports a missing value so the caller can error. */
@@ -169,8 +187,42 @@ async function main(argv: readonly string[]): Promise<number> {
         nodeVersion: process.versions.node,
         platform: process.platform,
         homeDir: homedir(),
-        isTTY: process.stdout.isTTY === true,
+        isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
         ...(process.stdout.columns !== undefined ? { columns: process.stdout.columns } : {}),
+        launchSelectedRoute: async (route, context) => {
+          if (route === 'codex-subscription') {
+            if (context.codex?.status !== 'ready' || context.codex.command === undefined) {
+              return {
+                ok: false,
+                code: 'CODEX_NOT_READY',
+                message:
+                  'Codex is not signed in yet. Open the Codex app and sign in, then rerun rizz setup.',
+              };
+            }
+            await startTui({
+              ...resolveCodexSubscriptionProvider({
+                command: context.codex.command,
+                cwd: process.cwd(),
+              }),
+              persistSession: false,
+            });
+            return { ok: true };
+          }
+          if (route === 'openrouter-api') {
+            await startNoModelTui('OpenRouter selected. No model connected yet.');
+            return { ok: true };
+          }
+          if (route === 'openai-api') {
+            await startNoModelTui('OpenAI selected. No model connected yet.');
+            return { ok: true };
+          }
+          if (route === 'anthropic-api') {
+            await startNoModelTui('Anthropic selected. No model connected yet.');
+            return { ok: true };
+          }
+          await startNoModelTui('No model connected. Use /login or /model when ready.');
+          return { ok: true };
+        },
       });
     }
     return runSetupDryRun({

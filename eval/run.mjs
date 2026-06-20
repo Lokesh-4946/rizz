@@ -371,7 +371,7 @@ async function runHeadlessSmoke() {
           'expected setup route picker',
         );
         assert(
-          result.stdout.includes('Skipped model connection for now.'),
+          result.stdout.includes('Skipped model connection.'),
           'expected setup to skip model route in isolated env',
         );
         assert(!result.stdout.includes('Name this launch?'), 'old launch-name prompt remained');

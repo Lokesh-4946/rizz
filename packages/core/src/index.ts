@@ -16,6 +16,7 @@ export {
   type ResolvedProvider,
   loginWithApiKey,
   providerFromKey,
+  resolveCodexSubscriptionProvider,
   resolveProvider,
 } from './bootstrap.js';
 export {
