@@ -41,8 +41,10 @@ export interface ModelRegistry {
   readonly models: readonly ModelInfo[];
 }
 
-// Curated snapshot — the current Claude family (D-002: default provider = Claude subscription).
-// Order is the natural default → fallback order, but the active routing order is set by RoutingPolicy.
+export const OPENROUTER_DEFAULT_MODEL_ID = 'openai/gpt-4o-mini';
+
+// Curated snapshot. Order is the natural default → fallback order, but bootstrap can pick a later
+// model when it is the first one with an available provider credential.
 export const DEFAULT_REGISTRY: ModelRegistry = {
   models: [
     {
@@ -100,6 +102,18 @@ export const DEFAULT_REGISTRY: ModelRegistry = {
       priceOutputPerM: 0.6,
       latencyHint: 'fast',
       toolCapable: true,
+    },
+    {
+      id: OPENROUTER_DEFAULT_MODEL_ID,
+      provider: 'openrouter',
+      label: 'OpenRouter GPT-4o mini',
+      capabilities: ['code', 'cheap'],
+      contextWindow: 128_000,
+      priceInputPerM: 0.15,
+      priceOutputPerM: 0.6,
+      latencyHint: 'fast',
+      toolCapable: true,
+      baseUrl: 'https://openrouter.ai/api/v1',
     },
   ],
 };

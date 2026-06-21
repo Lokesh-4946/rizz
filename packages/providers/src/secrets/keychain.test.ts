@@ -13,6 +13,7 @@ import {
 } from './keychain.js';
 
 const REF = { service: RIZZ_SERVICE, account: ANTHROPIC_ACCOUNT };
+const OPENROUTER_REF = { service: RIZZ_SERVICE, account: 'openrouter' };
 
 const okRun: Runner = async () => ({ code: 0, stdout: '', stderr: '' });
 const missingRun: Runner = async () => ({ code: 1, stdout: '', stderr: '' });
@@ -65,6 +66,24 @@ describe('command builders', () => {
       'rizz',
       '-a',
       'anthropic',
+    ]);
+  });
+
+  it('uses the provider account in keychain argv', () => {
+    expect(macosArgs.get(OPENROUTER_REF)).toEqual([
+      'find-generic-password',
+      '-s',
+      'rizz',
+      '-a',
+      'openrouter',
+      '-w',
+    ]);
+    expect(libsecretArgs.lookup(OPENROUTER_REF)).toEqual([
+      'lookup',
+      'service',
+      'rizz',
+      'account',
+      'openrouter',
     ]);
   });
 
@@ -236,5 +255,19 @@ describe('file backend round-trip', () => {
     }
     expect((await store.delete(REF)).ok).toBe(true);
     expect(await store.get(REF)).toEqual({ ok: true, value: null });
+  });
+
+  it('keeps provider accounts separate in the file fallback', async () => {
+    const path = join(dir, 'secrets.json');
+    const store = await openSecretStore({
+      platform: 'win32',
+      runner: okRun,
+      fileDeps: realFileDeps(path),
+    });
+
+    expect((await store.set(REF, 'sk-ant-key')).ok).toBe(true);
+    expect((await store.set(OPENROUTER_REF, 'sk-or-key')).ok).toBe(true);
+    expect(await store.get(REF)).toEqual({ ok: true, value: 'sk-ant-key' });
+    expect(await store.get(OPENROUTER_REF)).toEqual({ ok: true, value: 'sk-or-key' });
   });
 });

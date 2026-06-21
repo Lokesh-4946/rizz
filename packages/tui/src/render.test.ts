@@ -40,6 +40,20 @@ describe('tui render (plain theme)', () => {
     expect(bar).toContain('⎇m2');
   });
 
+  it('status bar shows OpenRouter API-key routes as metered', () => {
+    const bar = renderStatusBar(plain, {
+      model: 'OpenRouter GPT-4o mini',
+      auth: 'api-key',
+      ctxPct: 1,
+      tokens: 42,
+      cost: '$0.01',
+      branch: 'alpha',
+    });
+    expect(bar).toContain('OpenRouter GPT-4o mini · api-key');
+    expect(bar).toContain('42 tok · $0.01');
+    expect(bar).not.toContain('(sub)');
+  });
+
   it('color theme wraps text in truecolor ANSI (valoir gold)', () => {
     const colored = createTheme({ color: true }).accent('x');
     expect(colored).toContain('\x1b[38;2;227;179;65m');
@@ -64,6 +78,7 @@ describe('model picker (D-029)', () => {
     expect(out).toContain('Codex');
     // The wired provider (Anthropic) is not shown in the coming-soon section.
     expect(out).not.toContain('Anthropic — Claude — API key (BYOK) · coming soon');
+    expect(out).not.toContain('OpenRouter — any model, one key · coming soon');
   });
 });
 

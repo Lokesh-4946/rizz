@@ -14,6 +14,7 @@ import {
   DEFAULT_REGISTRY,
   type ModelInfo,
   type ModelRegistry,
+  OPENROUTER_DEFAULT_MODEL_ID,
   type Profile,
   type Provider,
   RIZZ_SERVICE,
@@ -137,6 +138,18 @@ interface Credential {
   readonly notice?: string;
 }
 
+function candidateModelsForCredentialDiscovery(
+  registry: ModelRegistry,
+  selected: ModelInfo,
+): readonly ModelInfo[] {
+  const seen = new Set<string>([selected.provider]);
+  return registry.models.filter((model) => {
+    if (model.id === selected.id || seen.has(model.provider)) return false;
+    seen.add(model.provider);
+    return true;
+  });
+}
+
 /** Resolve the BYOK key for a model's provider: keyless → none needed; else env override → keychain. */
 async function resolveCredential(
   model: ModelInfo,
@@ -246,6 +259,22 @@ export async function resolveProvider(
   // Resolve the BYOK credential for this model's provider (keyless local endpoints need none).
   let credential = await resolveCredential(model, env, options.secrets);
   if (credential.notice !== undefined) notice = joinNotices(notice, credential.notice);
+  const canDiscoverDefaultCredential =
+    options.modelId === undefined &&
+    options.profile === undefined &&
+    options.capability === undefined;
+  if (credential.apiKey === undefined && canDiscoverDefaultCredential) {
+    for (const candidate of candidateModelsForCredentialDiscovery(registry, model)) {
+      const fallbackCredential = await resolveCredential(candidate, env, options.secrets);
+      if (fallbackCredential.notice !== undefined) {
+        notice = joinNotices(notice, fallbackCredential.notice);
+      }
+      if (fallbackCredential.apiKey === undefined) continue;
+      model = candidate;
+      credential = fallbackCredential;
+      break;
+    }
+  }
   if (credential.apiKey === undefined && capabilityCandidates !== undefined) {
     for (const candidate of capabilityCandidates) {
       if (candidate.id === model.id) continue;
@@ -347,7 +376,7 @@ export interface LoginOptions {
 }
 
 /**
- * The `/login` flow: persist a freshly entered Anthropic key to the keychain, then build the live
+ * The `/login` flow: persist a freshly entered provider key to the keychain, then build the live
  * provider FROM that key (not re-reading env). A failed persist still returns a working provider for
  * the session, with a notice — never a silent drop.
  */
@@ -357,7 +386,9 @@ export async function loginWithApiKey(
   options: LoginOptions = {},
 ): Promise<LoginResult> {
   const registry = options.registry ?? DEFAULT_REGISTRY;
-  const stored = await secrets.set({ service: RIZZ_SERVICE, account: ANTHROPIC_ACCOUNT }, apiKey);
+  const selected = selectModel(registry, options.modelId);
+  const account = selected.model?.provider ?? ANTHROPIC_ACCOUNT;
+  const stored = await secrets.set({ service: RIZZ_SERVICE, account }, apiKey);
   const persistNotice = stored.ok
     ? undefined
     : `key not saved to the keychain (${stored.error.code}) — it will work this session only`;
@@ -369,6 +400,8 @@ export async function loginWithApiKey(
   });
   return { resolved, persisted: stored.ok };
 }
+
+export { OPENROUTER_DEFAULT_MODEL_ID };
 
 /** Combine two optional notices into one line so a single surface shows both. */
 function joinNotices(a: string | undefined, b: string): string {

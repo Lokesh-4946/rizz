@@ -94,6 +94,7 @@ export {
   type ModelRegistry,
   CAPABILITIES,
   DEFAULT_REGISTRY,
+  OPENROUTER_DEFAULT_MODEL_ID,
   estimateCostUsd,
   getModel,
   listToolCapable,

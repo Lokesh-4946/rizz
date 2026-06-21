@@ -124,6 +124,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   // The BYOK key entered via /login, held in memory only (never logged). Lets /model switch models even
   // when the keychain write failed — so a model switch never silently downgrades a live session to demo.
   let sessionApiKey: string | undefined;
+  let sessionApiKeyProvider: string | undefined;
   const cwd = process.cwd();
 
   const store: SessionStore | undefined =
@@ -269,17 +270,22 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   };
 
   const handleLogin = async (): Promise<void> => {
+    const loginProvider = activeModel?.provider ?? 'anthropic';
+    const loginModelId = activeModel?.id;
     const key = (
-      await askSecret(theme.accent('  paste your Anthropic API key (hidden): '))
+      await askSecret(theme.accent(`  paste your ${loginProvider} API key (hidden): `))
     )?.trim();
     if (key === undefined || key === '') {
       writeLine(theme.dim('  login cancelled.'));
       return;
     }
-    const { resolved, persisted } = await loginWithApiKey(secrets, key);
+    const { resolved, persisted } = await loginWithApiKey(secrets, key, {
+      ...(loginModelId !== undefined ? { modelId: loginModelId } : {}),
+    });
     adopt(resolved);
     if (resolved.auth === 'api-key') {
       sessionApiKey = key; // held in memory so /model can switch models without the keychain
+      sessionApiKeyProvider = resolved.model?.provider;
       writeLine(theme.system(`  ${theme.glyphs.check} signed in — ${activeProvider.label}`));
       if (!persisted) writeLine(theme.dim('  (key not saved to the keychain — this session only)'));
     } else {
@@ -288,7 +294,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   };
 
   const handleModel = async (): Promise<void> => {
-    const models: PickerModel[] = listToolCapable(DEFAULT_REGISTRY).map((m) => ({
+    const modelEntries = listToolCapable(DEFAULT_REGISTRY);
+    const models: PickerModel[] = modelEntries.map((m) => ({
       id: m.id,
       label: m.label,
       active: m.id === activeModel?.id,
@@ -302,6 +309,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       writeLine(theme.alert('  no such model.'));
       return;
     }
+    const chosenModel = modelEntries[index];
     if (activeAuth !== 'api-key') {
       writeLine(renderComingSoon(theme, chosen.label));
       writeLine(theme.dim('  run /login first to connect a key, then pick a model.'));
@@ -310,7 +318,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     // Build from the in-memory key when we have it (covers a session-only login); otherwise re-read
     // the keychain/env. Guard against a silent downgrade: never overwrite a live session with demo.
     const resolved =
-      sessionApiKey !== undefined
+      sessionApiKey !== undefined && chosenModel?.provider === sessionApiKeyProvider
         ? providerFromKey(sessionApiKey, { modelId: chosen.id })
         : await resolveProvider({ secrets, modelId: chosen.id });
     if (resolved.auth !== 'api-key') {
