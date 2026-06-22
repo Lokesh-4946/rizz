@@ -7,14 +7,16 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
+  OPENROUTER_DEFAULT_MODEL_ID,
   createRpcServer,
   createSession,
+  loginWithApiKey,
   resolveCodexSubscriptionProvider,
   resolveProvider,
   runJsonTurn,
   runTurn,
 } from '@rizz/core';
-import { StubProvider, openSessionStore } from '@rizz/providers';
+import { StubProvider, openSecretStore, openSessionStore } from '@rizz/providers';
 import { startTui } from '@rizz/tui';
 
 const VERSION = '0.0.0';
@@ -34,9 +36,9 @@ Usage:
   rizz --version         print the rizz version
   rizz --help            show this help
 
-Single-agent and minimal by default. Use setup to choose a model route. A signed-in Codex CLI can
-start a subscription-backed session; API-key routes continue through /login or saved provider keys.
-The /workspace multi-agent mode arrives in a later milestone. The headless contract is in
+Single-agent and minimal by default. Use setup to choose a model route. OpenRouter BYOK starts
+directly from setup; a signed-in Codex CLI can start a subscription-backed route.
+Workspace mode is opt-in and stays off unless you turn it on. The headless contract is in
 runbooks/headless.md.`;
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
@@ -48,13 +50,40 @@ interface SelectOpts {
   readonly capability?: string;
 }
 
-async function startNoModelTui(notice: string): Promise<void> {
+async function startNoModelTui(notice: string, displayName?: string): Promise<void> {
   await startTui({
     provider: new StubProvider(),
     subscription: false,
     auth: 'demo',
     notice,
     persistSession: false,
+    ...(displayName !== undefined ? { displayName } : {}),
+  });
+}
+
+async function askHidden(question: string): Promise<string | null> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    process.stdout.write(question);
+    const internal = rl as unknown as { _writeToOutput?: ((s: string) => void) | undefined };
+    const original = internal._writeToOutput;
+    const restore = (): void => {
+      internal._writeToOutput = original;
+    };
+    internal._writeToOutput = (s: string): void => {
+      if (s.includes('\n')) original?.call(rl, '\n');
+    };
+    const onClose = (): void => {
+      restore();
+      resolve(null);
+    };
+    rl.once('close', onClose);
+    rl.question('', (answer) => {
+      rl.off('close', onClose);
+      restore();
+      rl.close();
+      resolve(answer);
+    });
   });
 }
 
@@ -189,6 +218,7 @@ async function main(argv: readonly string[]): Promise<number> {
         homeDir: homedir(),
         isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
         ...(process.stdout.columns !== undefined ? { columns: process.stdout.columns } : {}),
+        askSecret: askHidden,
         launchSelectedRoute: async (route, context) => {
           if (route === 'codex-subscription') {
             if (context.codex?.status !== 'ready' || context.codex.command === undefined) {
@@ -205,22 +235,53 @@ async function main(argv: readonly string[]): Promise<number> {
                 cwd: process.cwd(),
               }),
               persistSession: false,
+              ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
             });
             return { ok: true };
           }
           if (route === 'openrouter-api') {
-            await startNoModelTui('OpenRouter selected. No model connected yet.');
+            if (context.apiKey === undefined || context.apiKey === '') {
+              return {
+                ok: false,
+                code: 'OPENROUTER_KEY_MISSING',
+                message: 'OpenRouter key was not entered. Rerun rizz setup when ready.',
+              };
+            }
+            const { resolved } = await loginWithApiKey(await openSecretStore(), context.apiKey, {
+              modelId: OPENROUTER_DEFAULT_MODEL_ID,
+            });
+            if (resolved.auth !== 'api-key') {
+              return {
+                ok: false,
+                code: 'OPENROUTER_NOT_READY',
+                message: 'OpenRouter could not be activated. Check the key and try again.',
+              };
+            }
+            process.stdout.write(
+              'OpenRouter connected.\nStarting rizz with OpenRouter GPT-4o mini.\n',
+            );
+            await startTui({
+              ...resolved,
+              persistSession: false,
+              ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
+            });
             return { ok: true };
           }
           if (route === 'openai-api') {
-            await startNoModelTui('OpenAI selected. No model connected yet.');
+            await startNoModelTui('OpenAI selected. No model connected yet.', context.displayName);
             return { ok: true };
           }
           if (route === 'anthropic-api') {
-            await startNoModelTui('Anthropic selected. No model connected yet.');
+            await startNoModelTui(
+              'Anthropic selected. No model connected yet.',
+              context.displayName,
+            );
             return { ok: true };
           }
-          await startNoModelTui('No model connected. Use /login or /model when ready.');
+          await startNoModelTui(
+            'No model connected. Use /login or /model when ready.',
+            context.displayName,
+          );
           return { ok: true };
         },
       });

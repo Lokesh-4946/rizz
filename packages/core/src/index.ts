@@ -14,6 +14,7 @@ export {
   type LoginResult,
   type ResolveProviderOptions,
   type ResolvedProvider,
+  OPENROUTER_DEFAULT_MODEL_ID,
   loginWithApiKey,
   providerFromKey,
   resolveCodexSubscriptionProvider,

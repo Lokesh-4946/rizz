@@ -120,6 +120,7 @@ function setupSmokeEnv(home, secret) {
   return {
     ...isolatedEnv(home),
     ANTHROPIC_API_KEY: secret,
+    OPENROUTER_API_KEY: secret,
   };
 }
 

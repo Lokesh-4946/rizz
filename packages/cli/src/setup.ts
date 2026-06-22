@@ -5,6 +5,7 @@ import { homedir as osHomedir, platform as osPlatform } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
+/** @internal */
 export type DoctorCheckId =
   | 'node'
   | 'package-manager'
@@ -13,8 +14,10 @@ export type DoctorCheckId =
   | 'terminal'
   | 'keychain';
 
+/** @internal */
 export type DoctorSeverity = 'ok' | 'info' | 'warn' | 'blocker';
 
+/** @internal */
 export interface DependencyDoctorCheck {
   readonly id: DoctorCheckId;
   readonly label: string;
@@ -24,6 +27,7 @@ export interface DependencyDoctorCheck {
   readonly fix?: string;
 }
 
+/** @internal */
 export interface DependencyDoctorReport {
   readonly checks: readonly DependencyDoctorCheck[];
   readonly blockers: number;
@@ -31,6 +35,7 @@ export interface DependencyDoctorReport {
   readonly nextSteps: readonly string[];
 }
 
+/** @internal */
 export interface ParsedNodeVersion {
   readonly raw: string;
   readonly major: number;
@@ -38,15 +43,18 @@ export interface ParsedNodeVersion {
   readonly patch: number;
 }
 
+/** @internal */
 export type CommandProbeResult =
   | { readonly ok: true; readonly stdout: string }
   | { readonly ok: false; readonly reason: string; readonly stdout?: string };
 
+/** @internal */
 export type CommandRunner = (
   command: string,
   args: readonly string[],
 ) => Promise<CommandProbeResult>;
 
+/** @internal */
 export type SetupProviderRouteId =
   | 'codex-subscription'
   | 'openai-api'
@@ -54,8 +62,10 @@ export type SetupProviderRouteId =
   | 'anthropic-api'
   | 'skip';
 
+/** @internal */
 export type CodexCliStatus = 'ready' | 'needs-login' | 'missing';
 
+/** @internal */
 export interface CodexCliDiagnostic {
   readonly status: CodexCliStatus;
   readonly command?: string;
@@ -63,6 +73,7 @@ export interface CodexCliDiagnostic {
   readonly observed?: string;
 }
 
+/** @internal */
 export interface SetupProviderChoice {
   readonly id: SetupProviderRouteId;
   readonly label: string;
@@ -74,18 +85,22 @@ interface SetupRouteResolution {
   readonly codex: CodexCliDiagnostic;
 }
 
+/** @internal */
 export type PathAccessResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
+/** @internal */
 export type PathAccess = (path: string, mode: number) => Promise<PathAccessResult>;
 
+/** @internal */
 export interface TerminalDoctorInput {
   readonly isTTY: boolean;
   readonly columns?: number;
   readonly env: Readonly<NodeJS.ProcessEnv>;
 }
 
+/** @internal */
 export interface RizzHomeDoctorInput {
   readonly rizzHomeDir: string;
   readonly rizzHomeExists: boolean;
@@ -93,11 +108,13 @@ export interface RizzHomeDoctorInput {
   readonly homeWritable?: boolean;
 }
 
+/** @internal */
 export interface KeychainDoctorInput {
   readonly platform: NodeJS.Platform;
   readonly helperAvailable?: boolean;
 }
 
+/** @internal */
 export interface BuildDependencyDoctorReportParams {
   readonly nodeVersion: string;
   readonly platform: NodeJS.Platform;
@@ -110,6 +127,7 @@ export interface BuildDependencyDoctorReportParams {
   readonly pathAccess: PathAccess;
 }
 
+/** @internal */
 export interface RunSetupDryRunOptions {
   readonly nodeVersion?: string;
   readonly platform?: NodeJS.Platform;
@@ -123,6 +141,7 @@ export interface RunSetupDryRunOptions {
   readonly write?: (text: string) => void;
 }
 
+/** @internal */
 export type SetupQuestion = (question: string) => Promise<string | null>;
 
 type SetupLaunchResult =
@@ -131,6 +150,8 @@ type SetupLaunchResult =
 
 interface SetupLaunchContext {
   readonly codex?: CodexCliDiagnostic;
+  readonly apiKey?: string;
+  readonly displayName?: string;
 }
 
 type SetupLauncher = (
@@ -138,16 +159,20 @@ type SetupLauncher = (
   context: SetupLaunchContext,
 ) => Promise<SetupLaunchResult>;
 
+/** @internal */
 export interface RunSetupInteractiveOptions extends RunSetupDryRunOptions {
   readonly ask?: SetupQuestion;
+  readonly askSecret?: SetupQuestion;
   readonly defaultUserName?: string;
   readonly launchSelectedRoute?: SetupLauncher;
 }
 
+/** @internal */
 export type SetupArgsResult =
   | { readonly ok: true; readonly action: 'interactive' | 'dry-run' | 'help' }
   | { readonly ok: false; readonly message: string };
 
+/** @internal */
 export const SETUP_USAGE = `Usage:
   rizz setup             choose a model route for this workspace
   rizz setup --dry-run   check local readiness without connecting a provider
@@ -198,6 +223,7 @@ function envFlag(value: string | undefined): boolean {
   return value !== undefined && value.trim() !== '' && value !== '0';
 }
 
+/** @internal */
 export function parseNodeVersion(version: string): ParsedNodeVersion | undefined {
   const trimmed = version.trim();
   const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(trimmed);
@@ -211,6 +237,7 @@ export function parseNodeVersion(version: string): ParsedNodeVersion | undefined
   return { raw: trimmed, major, minor, patch };
 }
 
+/** @internal */
 export function classifyNode(version: string): DependencyDoctorCheck {
   const parsed = parseNodeVersion(version);
   if (parsed === undefined) {
@@ -243,6 +270,7 @@ export function classifyNode(version: string): DependencyDoctorCheck {
   });
 }
 
+/** @internal */
 export function classifyPackageManager(params: {
   readonly pnpm: CommandProbeResult;
   readonly corepack?: CommandProbeResult;
@@ -274,6 +302,7 @@ export function classifyPackageManager(params: {
   });
 }
 
+/** @internal */
 export function classifyGit(result: CommandProbeResult): DependencyDoctorCheck {
   if (result.ok) {
     return makeCheck({
@@ -293,6 +322,7 @@ export function classifyGit(result: CommandProbeResult): DependencyDoctorCheck {
   });
 }
 
+/** @internal */
 export function classifyRizzHome(input: RizzHomeDoctorInput): DependencyDoctorCheck {
   if (input.rizzHomeExists) {
     if (input.rizzHomeWritable === true) {
@@ -334,6 +364,7 @@ export function classifyRizzHome(input: RizzHomeDoctorInput): DependencyDoctorCh
   });
 }
 
+/** @internal */
 export function classifyTerminal(input: TerminalDoctorInput): DependencyDoctorCheck {
   const columns = input.columns;
   if (envFlag(input.env.CI)) {
@@ -386,6 +417,7 @@ export function classifyTerminal(input: TerminalDoctorInput): DependencyDoctorCh
   });
 }
 
+/** @internal */
 export function classifyKeychain(input: KeychainDoctorInput): DependencyDoctorCheck {
   switch (input.platform) {
     case 'darwin':
@@ -440,10 +472,12 @@ export function classifyKeychain(input: KeychainDoctorInput): DependencyDoctorCh
   }
 }
 
+/** @internal */
 export function doctorExitCode(report: DependencyDoctorReport): 0 | 1 {
   return report.blockers > 0 ? 1 : 0;
 }
 
+/** @internal */
 export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
   if (args.length === 0) return { ok: true, action: 'interactive' };
   if (args.length === 1 && args[0] === '--dry-run') return { ok: true, action: 'dry-run' };
@@ -454,6 +488,7 @@ export function parseSetupArgs(args: readonly string[]): SetupArgsResult {
   };
 }
 
+/** @internal */
 export async function runCommandProbe(
   command: string,
   args: readonly string[],
@@ -480,6 +515,7 @@ export async function runCommandProbe(
   });
 }
 
+/** @internal */
 export async function runPathAccess(path: string, mode: number): Promise<PathAccessResult> {
   try {
     await access(path, mode);
@@ -543,6 +579,7 @@ function summarizeReport(checks: readonly DependencyDoctorCheck[]): DependencyDo
   };
 }
 
+/** @internal */
 export async function buildDependencyDoctorReport(
   params: BuildDependencyDoctorReportParams,
 ): Promise<DependencyDoctorReport> {
@@ -593,6 +630,7 @@ function formatCheck(check: DependencyDoctorCheck): string {
   return `${status}${label}${check.summary}${observed}`;
 }
 
+/** @internal */
 export function formatDependencyDoctorReport(report: DependencyDoctorReport): string {
   const lines = [
     'rizz setup --dry-run',
@@ -651,6 +689,21 @@ function detectFriendlyDisplayName(env: Readonly<NodeJS.ProcessEnv>, homeDir: st
   );
 }
 
+function preferredDisplayName(answer: string | null, fallback: string): string {
+  const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+  const trimmed = answer
+    ?.replace(ansi, ' ')
+    .split('')
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127 ? ' ' : char;
+    })
+    .join('')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return trimmed === undefined || trimmed === '' ? fallback : trimmed;
+}
+
 function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly close: () => void } {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return {
@@ -669,10 +722,25 @@ function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly clo
   };
 }
 
-async function askSetupQuestion(ask: SetupQuestion, question: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    void ask(question).then(resolve);
-  });
+async function resolveSetupDisplayName(params: {
+  readonly ask?: SetupQuestion;
+  readonly isTTY: boolean;
+  readonly defaultName: string;
+  readonly write: (text: string) => void;
+}): Promise<string> {
+  if (params.ask === undefined && !params.isTTY) return params.defaultName;
+
+  const prompt = params.ask === undefined ? createDefaultSetupPrompt() : undefined;
+  const ask = params.ask ?? prompt?.ask;
+  if (ask === undefined) return params.defaultName;
+
+  try {
+    params.write("Hey. How're you doing?\n");
+    const answer = await ask(`What should I call you? [${params.defaultName}] `);
+    return preferredDisplayName(answer, params.defaultName);
+  } finally {
+    prompt?.close();
+  }
 }
 
 function summarizeCodexDoctorOutput(stdout: string): string {
@@ -709,6 +777,7 @@ function codexDoctorShowsChatGptAuth(stdout: string | undefined): boolean {
 
 const CODEX_COMMAND_CANDIDATES = ['codex', '/Applications/Codex.app/Contents/Resources/codex'];
 
+/** @internal */
 export async function diagnoseCodexCli(commandRunner: CommandRunner): Promise<CodexCliDiagnostic> {
   for (const command of CODEX_COMMAND_CANDIDATES) {
     const doctor = await commandRunner(command, ['doctor', '--json']);
@@ -740,19 +809,20 @@ export async function diagnoseCodexCli(commandRunner: CommandRunner): Promise<Co
   };
 }
 
+/** @internal */
 export function buildSetupProviderChoices(
   codex: CodexCliDiagnostic,
 ): readonly SetupProviderChoice[] {
   return [
     {
+      id: 'openrouter-api',
+      label: 'OpenRouter direct',
+      summary: 'fast BYOK path',
+    },
+    {
       id: 'codex-subscription',
       label: 'Codex subscription',
       summary: codex.summary,
-    },
-    {
-      id: 'openrouter-api',
-      label: 'OpenRouter direct',
-      summary: 'connect with OpenRouter',
     },
     {
       id: 'openai-api',
@@ -772,8 +842,8 @@ export function buildSetupProviderChoices(
   ];
 }
 
-function defaultProviderRoute(codex: CodexCliDiagnostic): SetupProviderRouteId {
-  return codex.status === 'ready' ? 'codex-subscription' : 'openrouter-api';
+function defaultProviderRoute(): SetupProviderRouteId {
+  return 'openrouter-api';
 }
 
 function formatSetupProviderChoices(params: {
@@ -823,12 +893,7 @@ function formatRouteSelectionResult(routeId: SetupProviderRouteId): string {
         '',
       ].join('\n');
     case 'openrouter-api':
-      return [
-        'OpenRouter direct selected.',
-        'No model connected yet.',
-        'No credentials were read or written by rizz.',
-        '',
-      ].join('\n');
+      return ['OpenRouter direct selected.', ''].join('\n');
     case 'anthropic-api':
       return [
         'Anthropic direct selected.',
@@ -843,6 +908,36 @@ function formatRouteSelectionResult(routeId: SetupProviderRouteId): string {
         'No credentials were read or written by rizz.',
         '',
       ].join('\n');
+  }
+}
+
+function routeNeedsSetupApiKey(routeId: SetupProviderRouteId): boolean {
+  return routeId === 'openrouter-api';
+}
+
+function routeSecretPrompt(routeId: SetupProviderRouteId): string {
+  switch (routeId) {
+    case 'openrouter-api':
+      return 'Paste your OpenRouter API key (hidden): ';
+    case 'codex-subscription':
+    case 'openai-api':
+    case 'anthropic-api':
+    case 'skip':
+      return '';
+  }
+}
+
+function validateSetupApiKey(routeId: SetupProviderRouteId, apiKey: string): string | undefined {
+  switch (routeId) {
+    case 'openrouter-api':
+      return apiKey.startsWith('sk-or-')
+        ? undefined
+        : 'That does not look like an OpenRouter API key. Check the key and try again.';
+    case 'codex-subscription':
+    case 'openai-api':
+    case 'anthropic-api':
+    case 'skip':
+      return undefined;
   }
 }
 
@@ -861,7 +956,7 @@ async function askSetupProviderRoute(params: {
     const defaultIndex =
       params.choices.findIndex((choice) => choice.id === params.defaultRoute) + 1;
     while (true) {
-      const answer = await askSetupQuestion(ask, `Choose route [${defaultIndex}] `);
+      const answer = await ask(`Choose route [${defaultIndex}] `);
       if (answer === null) return 'cancel';
       const route = parseProviderRouteAnswer({
         answer,
@@ -884,8 +979,7 @@ async function resolveSetupProviderRoute(params: {
 }): Promise<SetupRouteResolution> {
   const codex = await diagnoseCodexCli(params.commandRunner);
   const choices = buildSetupProviderChoices(codex);
-  const defaultRoute =
-    params.ask === undefined && !params.isTTY ? 'skip' : defaultProviderRoute(codex);
+  const defaultRoute = params.ask === undefined && !params.isTTY ? 'skip' : defaultProviderRoute();
   params.write(formatSetupProviderChoices({ choices, defaultRoute }));
 
   if (params.ask === undefined && !params.isTTY) {
@@ -901,6 +995,7 @@ async function resolveSetupProviderRoute(params: {
   return { route, codex };
 }
 
+/** @internal */
 export async function runSetupDryRun(options: RunSetupDryRunOptions = {}): Promise<0 | 1> {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? osHomedir();
@@ -920,6 +1015,7 @@ export async function runSetupDryRun(options: RunSetupDryRunOptions = {}): Promi
   return doctorExitCode(report);
 }
 
+/** @internal */
 export async function runSetupInteractive(
   options: RunSetupInteractiveOptions = {},
 ): Promise<0 | 1> {
@@ -941,8 +1037,13 @@ export async function runSetupInteractive(
   write(formatInteractiveDoctorSummary(report));
   if (report.blockers > 0) return 1;
 
-  const friendlyName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
-  write(`Hi ${friendlyName}.\n`);
+  const detectedName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
+  const displayName = await resolveSetupDisplayName({
+    write,
+    defaultName: detectedName,
+    isTTY: options.isTTY === true,
+    ...(options.ask !== undefined ? { ask: options.ask } : {}),
+  });
   const selected = await resolveSetupProviderRoute({
     write,
     commandRunner: options.commandRunner ?? runCommandProbe,
@@ -957,7 +1058,26 @@ export async function runSetupInteractive(
 
   write(formatRouteSelectionResult(selected.route));
   if (options.launchSelectedRoute !== undefined && options.isTTY === true) {
-    const launched = await options.launchSelectedRoute(selected.route, { codex: selected.codex });
+    let apiKey: string | undefined;
+    if (routeNeedsSetupApiKey(selected.route)) {
+      const askSecret = options.askSecret;
+      const answer = (await askSecret?.(routeSecretPrompt(selected.route)))?.trim();
+      if (answer === undefined || answer === '') {
+        write('OpenRouter key was not entered. Run rizz setup when ready.\n');
+        return 0;
+      }
+      const validationMessage = validateSetupApiKey(selected.route, answer);
+      if (validationMessage !== undefined) {
+        write(`${validationMessage}\n`);
+        return 1;
+      }
+      apiKey = answer;
+    }
+    const launched = await options.launchSelectedRoute(selected.route, {
+      codex: selected.codex,
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      displayName,
+    });
     if (!launched.ok) {
       write(`Could not start rizz: ${launched.message}\n`);
       return 1;

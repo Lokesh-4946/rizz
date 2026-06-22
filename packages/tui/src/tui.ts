@@ -37,14 +37,16 @@ import { PROVIDER_CATALOG } from './catalog.js';
 import { parseCommand, parseThemeArg } from './commands.js';
 import {
   type PickerModel,
-  renderComingSoon,
   renderEmptyState,
   renderHeader,
   renderHint,
   renderModelPicker,
+  renderNotConnected,
   renderPlanStub,
   renderStatusBar,
+  renderStillWaiting,
   renderThemeList,
+  renderThinking,
 } from './render.js';
 import { BUILTIN_THEMES, THEME_NAMES, type Theme, createTheme, detectColorDepth } from './theme.js';
 
@@ -63,6 +65,8 @@ export interface TuiOptions {
   readonly notice?: string;
   /** Setup launches use in-memory sessions so route selection does not silently write session files. */
   readonly persistSession?: boolean;
+  /** Launch-only preferred display name from setup. It is not persisted by Agent Light. */
+  readonly displayName?: string;
 }
 
 /** Where sessions persist. Local-first; no cloud (D-011). */
@@ -124,6 +128,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   // The BYOK key entered via /login, held in memory only (never logged). Lets /model switch models even
   // when the keychain write failed — so a model switch never silently downgrades a live session to demo.
   let sessionApiKey: string | undefined;
+  let sessionApiKeyProvider: string | undefined;
   const cwd = process.cwd();
 
   const store: SessionStore | undefined =
@@ -135,17 +140,26 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       ? { session: createSession(), sessionId: undefined, notice: undefined }
       : await openSession(store, activeProvider.label, options.resumeId);
   const { session, sessionId, notice } = opened;
-
+  const modelDisplay = (): string => {
+    if (activeAuth === 'subscription' && activeProvider.id === 'codex') {
+      return activeModel?.label ?? 'Codex · model not reported';
+    }
+    if (activeAuth === 'demo') return 'no model';
+    return activeModel?.label ?? activeProvider.label;
+  };
   const writeLine = (s: string): void => {
     process.stdout.write(`${s}\n`);
   };
 
-  writeLine(renderHeader(theme, activeProvider.label));
+  writeLine(renderHeader(theme, modelDisplay()));
   writeLine('');
+  if (options.displayName !== undefined) {
+    writeLine(theme.system(`  ${options.displayName}, rizz is ready.`));
+  }
   if (options.notice !== undefined) writeLine(theme.alert(`  ⚠ ${options.notice}`));
   if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
   if (activeAuth === 'subscription') {
-    writeLine(theme.dim('  Codex subscription active.'));
+    writeLine(theme.dim('  Codex subscription active. Model is managed by Codex.'));
   }
   if (activeAuth === 'demo') {
     writeLine(theme.dim('  No model connected. Use /login or /model when ready.'));
@@ -197,10 +211,25 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
 
   // One controller per in-flight turn. Ctrl+C aborts a running turn; when idle, it quits.
   let inFlight: AbortController | null = null;
+  let progressTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearProgressTimers = (): void => {
+    if (progressTimer !== undefined) clearTimeout(progressTimer);
+    progressTimer = undefined;
+  };
+  const beginTurnProgress = (): void => {
+    clearProgressTimers();
+    const label =
+      activeAuth === 'subscription' && activeProvider.id === 'codex'
+        ? 'Codex'
+        : activeProvider.label;
+    writeLine(renderThinking(theme));
+    progressTimer = setTimeout(() => writeLine(renderStillWaiting(theme, label)), 8_000);
+  };
   rl.on('SIGINT', () => {
     if (inFlight) {
       inFlight.abort();
       inFlight = null;
+      clearProgressTimers();
       writeLine(theme.alert('  ⛌ interrupted'));
       return;
     }
@@ -208,6 +237,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   });
 
   const renderEvent = (event: TurnEvent): void => {
+    clearProgressTimers();
     switch (event.type) {
       case 'assistant':
         writeLine(theme.text(`  ${event.content}`));
@@ -220,8 +250,11 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       case 'fallback':
         writeLine(theme.alert(`  ↻ ${event.note}`));
         break;
+      case 'compacting':
+        writeLine(theme.dim('  compacting context...'));
+        break;
       case 'compacted':
-        writeLine(theme.dim(`  ⤵ ${event.note}`));
+        writeLine(theme.dim(`  context compacted: ${event.note}`));
         break;
       case 'approval-denied':
         writeLine(theme.dim(`  ${theme.glyphs.cross} denied: ${event.command}`));
@@ -249,16 +282,16 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     const ctxPct = Math.min(100, Math.round((used / DEFAULT_COMPRESS.contextWindow) * 100));
     // $0.00 (sub) on the subscription/demo path; the real running spend on a metered BYOK key.
     const cost = activeSubscription ? '$0.00 (sub)' : `$${budgetState.costUsd.toFixed(2)}`;
+    const authDisplay = activeAuth === 'demo' ? 'not connected' : activeAuth;
     return renderStatusBar(theme, {
-      model: activeProvider.label,
-      auth: activeAuth,
+      model: modelDisplay(),
+      auth: authDisplay,
       ctxPct,
       tokens: budgetState.tokens,
       cost,
       branch: 'dev', // TODO: read the active git branch once the workspace service lands.
     });
   };
-
   /** Apply a resolved provider as the new active model (shared by /login and /model). */
   const adopt = (resolved: ResolvedProvider): void => {
     activeProvider = resolved.provider;
@@ -269,17 +302,22 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   };
 
   const handleLogin = async (): Promise<void> => {
+    const loginProvider = activeModel?.provider ?? 'anthropic';
+    const loginModelId = activeModel?.id;
     const key = (
-      await askSecret(theme.accent('  paste your Anthropic API key (hidden): '))
+      await askSecret(theme.accent(`  paste your ${loginProvider} API key (hidden): `))
     )?.trim();
     if (key === undefined || key === '') {
       writeLine(theme.dim('  login cancelled.'));
       return;
     }
-    const { resolved, persisted } = await loginWithApiKey(secrets, key);
+    const { resolved, persisted } = await loginWithApiKey(secrets, key, {
+      ...(loginModelId !== undefined ? { modelId: loginModelId } : {}),
+    });
     adopt(resolved);
     if (resolved.auth === 'api-key') {
       sessionApiKey = key; // held in memory so /model can switch models without the keychain
+      sessionApiKeyProvider = resolved.model?.provider;
       writeLine(theme.system(`  ${theme.glyphs.check} signed in — ${activeProvider.label}`));
       if (!persisted) writeLine(theme.dim('  (key not saved to the keychain — this session only)'));
     } else {
@@ -288,7 +326,15 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   };
 
   const handleModel = async (): Promise<void> => {
-    const models: PickerModel[] = listToolCapable(DEFAULT_REGISTRY).map((m) => ({
+    if (activeAuth === 'subscription' && activeProvider.id === 'codex') {
+      writeLine(theme.accent('  Codex subscription'));
+      writeLine(theme.text(`  current: ${modelDisplay()}`));
+      writeLine(theme.dim('  Codex manages the model for this subscription route.'));
+      writeLine(theme.dim('  Use OpenRouter direct for selectable models.'));
+      return;
+    }
+    const modelEntries = listToolCapable(DEFAULT_REGISTRY);
+    const models: PickerModel[] = modelEntries.map((m) => ({
       id: m.id,
       label: m.label,
       active: m.id === activeModel?.id,
@@ -302,15 +348,16 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       writeLine(theme.alert('  no such model.'));
       return;
     }
+    const chosenModel = modelEntries[index];
     if (activeAuth !== 'api-key') {
-      writeLine(renderComingSoon(theme, chosen.label));
+      writeLine(renderNotConnected(theme, chosen.label));
       writeLine(theme.dim('  run /login first to connect a key, then pick a model.'));
       return;
     }
     // Build from the in-memory key when we have it (covers a session-only login); otherwise re-read
     // the keychain/env. Guard against a silent downgrade: never overwrite a live session with demo.
     const resolved =
-      sessionApiKey !== undefined
+      sessionApiKey !== undefined && chosenModel?.provider === sessionApiKeyProvider
         ? providerFromKey(sessionApiKey, { modelId: chosen.id })
         : await resolveProvider({ secrets, modelId: chosen.id });
     if (resolved.auth !== 'api-key') {
@@ -339,6 +386,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
 
   const handleChat = async (text: string): Promise<void> => {
     inFlight = new AbortController();
+    beginTurnProgress();
     const result = await runTurn({
       provider: activeProvider,
       session,
@@ -354,6 +402,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       onEvent: renderEvent,
       onApprovalNeeded: approve,
     });
+    clearProgressTimers();
     inFlight = null;
     if (!result.ok && result.error.code !== 'INTERRUPTED') {
       writeLine(theme.alert(`  ${result.error.code}: ${result.error.message}`));
@@ -378,6 +427,12 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       case 'model':
         await handleModel();
         return true;
+      case 'status':
+        writeLine(statusLine());
+        if (activeAuth === 'subscription' && activeProvider.id === 'codex') {
+          writeLine(theme.dim('  Codex manages the model for this subscription route.'));
+        }
+        return true;
       case 'theme':
         handleTheme(command.arg);
         return true;
@@ -385,9 +440,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
         writeLine(renderPlanStub(theme));
         return true;
       case 'workspace':
-        writeLine(
-          theme.dim('  /workspace (multi-agent mode) is opt-in and arrives in a later milestone.'),
-        );
+        writeLine(theme.dim('  workspace mode is opt-in and not connected yet.'));
         return true;
       case 'unknown':
         writeLine(theme.alert(`  unknown command /${command.name} — try /help`));

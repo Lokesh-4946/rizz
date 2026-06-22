@@ -282,7 +282,7 @@ describe('setup dependency doctor', () => {
     }
   });
 
-  it('interactive setup selects Codex when the local Codex route is ready', async () => {
+  it('interactive setup defaults to OpenRouter when the local Codex route is ready', async () => {
     const answers = [''];
     const output: string[] = [];
     const code = await runSetupInteractive({
@@ -305,7 +305,10 @@ describe('setup dependency doctor', () => {
         [HOME]: { exists: true, writable: true },
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
-      ask: async () => answers.shift() ?? '',
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
       write: (text) => output.push(text),
     });
 
@@ -313,13 +316,15 @@ describe('setup dependency doctor', () => {
     expect(code).toBe(0);
     expect(text).toContain('rizz setup');
     expect(text).toContain('ready: no blockers');
-    expect(text).toContain('Hi Lokesh.');
+    expect(text).toContain("Hey. How're you doing?");
+    expect(text).toContain('What should I call you? [Lokesh]');
     expect(text).toContain('Choose how rizz should talk to a model:');
+    expect(text).toContain('> 1. OpenRouter direct');
     expect(text).toContain('Codex subscription');
     expect(text).toContain('detected through local Codex CLI');
     expect(text).toContain('OpenRouter direct');
-    expect(text).toContain('Codex subscription selected.');
-    expect(text).toContain('Starting rizz with Codex.');
+    expect(text).toContain('OpenRouter direct selected.');
+    expect(text).not.toContain('Codex subscription selected.');
     expect(text).not.toContain('[pi]');
     expect(text).not.toContain('Name this launch');
     expect(text).not.toContain('local demo mode');
@@ -328,7 +333,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('detects Codex through the macOS app CLI when plain codex is not on PATH', async () => {
-    const answers = [''];
+    const answers = ['', '2'];
     const output: string[] = [];
     const doctorJson = JSON.stringify({
       overallStatus: 'fail',
@@ -368,7 +373,10 @@ describe('setup dependency doctor', () => {
         [HOME]: { exists: true, writable: true },
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
-      ask: async () => answers.shift() ?? '',
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
       write: (text) => output.push(text),
     });
 
@@ -380,8 +388,8 @@ describe('setup dependency doctor', () => {
     expect(text).not.toContain('not detected; install or open Codex first');
   });
 
-  it('can select OpenRouter without requesting a key in this setup slice', async () => {
-    const answers = ['2'];
+  it('can select OpenRouter without launching when setup is not interactive', async () => {
+    const answers = ['', '1'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -401,7 +409,10 @@ describe('setup dependency doctor', () => {
         [HOME]: { exists: true, writable: true },
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
-      ask: async () => answers.shift() ?? '',
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
       write: (text) => output.push(text),
     });
 
@@ -409,14 +420,168 @@ describe('setup dependency doctor', () => {
     expect(code).toBe(0);
     expect(text).toContain('OpenRouter direct');
     expect(text).toContain('OpenRouter direct selected.');
-    expect(text).toContain('No model connected yet.');
-    expect(text).toContain('No credentials were read or written by rizz.');
+    expect(text).not.toContain('No model connected yet.');
+    expect(text).not.toContain('No credentials were read or written yet.');
     expect(text).not.toContain('Key connection lands next');
     expect(text).not.toContain('setup selected');
   });
 
+  it('passes a hidden OpenRouter setup key to the launcher without echoing it', async () => {
+    const answers = ['Rizzy', ''];
+    const output: string[] = [];
+    let launchedRoute = '';
+    let launchedKey = '';
+    let launchedDisplayName = '';
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: true,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
+      askSecret: async () => 'sk-or-secret',
+      launchSelectedRoute: async (route, context) => {
+        launchedRoute = route;
+        launchedKey = context.apiKey ?? '';
+        launchedDisplayName = context.displayName ?? '';
+        return { ok: true };
+      },
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(launchedRoute).toBe('openrouter-api');
+    expect(launchedKey).toBe('sk-or-secret');
+    expect(launchedDisplayName).toBe('Rizzy');
+    expect(text).toContain('OpenRouter direct selected.');
+    expect(text).toContain('What should I call you? [Rizz Home]');
+    expect(text).not.toContain('sk-or-secret');
+  });
+
+  it('strips control characters from the setup display name', async () => {
+    const answers = ['Rizzy\u001b[31m Name', ''];
+    let launchedDisplayName = '';
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: true,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => answers.shift() ?? '',
+      askSecret: async () => 'sk-or-secret',
+      launchSelectedRoute: async (_route, context) => {
+        launchedDisplayName = context.displayName ?? '';
+        return { ok: true };
+      },
+      write: () => undefined,
+    });
+
+    expect(code).toBe(0);
+    expect(launchedDisplayName).toBe('Rizzy Name');
+  });
+
+  it('rejects a non-OpenRouter setup key before launch without echoing it', async () => {
+    const output: string[] = [];
+    let launched = false;
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: true,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => '',
+      askSecret: async () => 'sk-ant-wrong-provider',
+      launchSelectedRoute: async () => {
+        launched = true;
+        return { ok: true };
+      },
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(1);
+    expect(launched).toBe(false);
+    expect(text).toContain('does not look like an OpenRouter API key');
+    expect(text).not.toContain('sk-ant-wrong-provider');
+  });
+
+  it('does not collect OpenRouter keys through a visible setup prompt', async () => {
+    const output: string[] = [];
+    let launched = false;
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: true,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async () => '',
+      launchSelectedRoute: async () => {
+        launched = true;
+        return { ok: true };
+      },
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(launched).toBe(false);
+    expect(text).toContain('OpenRouter key was not entered');
+  });
+
   it('does not treat a generic successful Codex doctor as subscription-ready', async () => {
-    const answers = [''];
+    const answers = ['', ''];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -444,7 +609,7 @@ describe('setup dependency doctor', () => {
     expect(code).toBe(0);
     expect(text).toContain('Codex subscription');
     expect(text).toContain('installed; open Codex and sign in');
-    expect(text).toContain('> 2. OpenRouter direct');
+    expect(text).toContain('> 1. OpenRouter direct');
     expect(text).toContain('OpenRouter direct selected.');
     expect(text).not.toContain('Codex subscription selected.');
   });
@@ -510,6 +675,7 @@ describe('setup dependency doctor', () => {
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
       ask: async () => '',
+      askSecret: async () => 'sk-or-secret',
       write: () => undefined,
       launchSelectedRoute: async () => {
         launchCount += 1;
@@ -524,7 +690,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('interactive setup can cancel before choosing a route', async () => {
-    const answers = ['cancel'];
+    const answers = ['', 'cancel'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -558,7 +724,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('interactive setup retries invalid route choices', async () => {
-    const answers = ['maybe', '5'];
+    const answers = ['', 'maybe', '5'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',

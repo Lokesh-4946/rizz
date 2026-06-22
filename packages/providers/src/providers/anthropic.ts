@@ -55,6 +55,7 @@ interface WireMessage {
   readonly content: ContentBlock[];
 }
 
+/** @internal */
 export interface AnthropicRequestBody {
   readonly model: string;
   readonly max_tokens: number;
@@ -99,6 +100,7 @@ function blocksFor(message: Message): ContentBlock[] {
  * history (e.g. an interrupted turn that is then resumed) gets a synthesized error tool_result, so a
  * resumed session never sends an invalid request that the API would reject (a real-world resume bug).
  */
+/** @internal */
 export function buildAnthropicRequest(
   messages: readonly Message[],
   options: { model: string; maxTokens: number; tools?: readonly ToolSpec[]; stream: boolean },

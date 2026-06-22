@@ -36,6 +36,7 @@ export interface SecretStore {
 }
 
 /** Result of one spawned helper command. */
+/** @internal */
 export interface RunResult {
   readonly code: number;
   readonly stdout: string;
@@ -43,11 +44,13 @@ export interface RunResult {
 }
 
 /** Spawns a helper (e.g. `security`, `secret-tool`). Injected so backends are testable. */
+/** @internal */
 export type Runner = (file: string, args: readonly string[], input?: string) => Promise<RunResult>;
 
 // --- Command builders (pure: ref → argv). Kept separate from exec so they can be asserted directly. ---
 
 /** macOS `security` argv for get/set/delete of a generic password. */
+/** @internal */
 export const macosArgs = {
   get(ref: SecretRef): readonly string[] {
     return ['find-generic-password', '-s', ref.service, '-a', ref.account, '-w'];
@@ -63,6 +66,7 @@ export const macosArgs = {
 };
 
 /** libsecret `secret-tool` argv. `store` reads the secret from stdin (no argv exposure). */
+/** @internal */
 export const libsecretArgs = {
   lookup(ref: SecretRef): readonly string[] {
     return ['lookup', 'service', ref.service, 'account', ref.account];

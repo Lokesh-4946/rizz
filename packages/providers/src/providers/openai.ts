@@ -44,6 +44,7 @@ interface WireMessage {
   readonly tool_call_id?: string;
 }
 
+/** @internal */
 export interface OpenAiRequestBody {
   readonly model: string;
   readonly max_tokens: number;
@@ -74,6 +75,7 @@ function wireMessage(message: Message): WireMessage {
 }
 
 /** Build the Chat Completions request body from neutral messages (no coalescing needed). */
+/** @internal */
 export function buildOpenAiRequest(
   messages: readonly Message[],
   options: { model: string; maxTokens: number; tools?: readonly ToolSpec[]; stream: boolean },

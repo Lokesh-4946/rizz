@@ -1,5 +1,6 @@
 import {
   type ModelRegistry,
+  OPENROUTER_DEFAULT_MODEL_ID,
   type Result,
   RizzError,
   type SecretRef,
@@ -18,16 +19,19 @@ import {
 /** A secret store that records the last set() and can be made to fail the write. */
 function recordingStore(opts?: { failSet?: boolean }): {
   store: SecretStore;
+  account: () => string | undefined;
   saved: () => string | undefined;
 } {
+  let savedAccount: string | undefined;
   let savedKey: string | undefined;
   const store: SecretStore = {
     backend: 'file',
     async get() {
       return ok(savedKey ?? null);
     },
-    async set(_ref: SecretRef, secret: string): Promise<Result<void>> {
+    async set(ref: SecretRef, secret: string): Promise<Result<void>> {
       if (opts?.failSet) return err(new RizzError('TOOL_IO', 'no disk'));
+      savedAccount = ref.account;
       savedKey = secret;
       return ok(undefined);
     },
@@ -35,7 +39,7 @@ function recordingStore(opts?: { failSet?: boolean }): {
       return ok(undefined);
     },
   };
-  return { store, saved: () => savedKey };
+  return { store, account: () => savedAccount, saved: () => savedKey };
 }
 
 /** An in-memory secret store for tests. */
@@ -45,6 +49,22 @@ function fakeStore(stored?: string, opts?: { failGet?: boolean }): SecretStore {
     async get(_ref: SecretRef): Promise<Result<string | null>> {
       if (opts?.failGet) return err(new RizzError('TOOL_IO', 'boom'));
       return ok(stored ?? null);
+    },
+    async set() {
+      return ok(undefined);
+    },
+    async delete() {
+      return ok(undefined);
+    },
+  };
+}
+
+/** Provider-aware in-memory store keyed by SecretRef.account. */
+function providerStore(keys: Readonly<Record<string, string>>): SecretStore {
+  return {
+    backend: 'file',
+    async get(ref: SecretRef): Promise<Result<string | null>> {
+      return ok(keys[ref.account] ?? null);
     },
     async set() {
       return ok(undefined);
@@ -79,6 +99,18 @@ describe('resolveProvider (BYOK)', () => {
     const resolved = await resolveProvider({ env: {}, secrets: fakeStore('sk-ant-stored') });
     expect(resolved.auth).toBe('api-key');
     expect(resolved.provider.id).toBe('anthropic');
+  });
+
+  it('discovers a saved OpenRouter key on default launch when Anthropic is not configured', async () => {
+    const resolved = await resolveProvider({
+      env: {},
+      secrets: providerStore({ openrouter: 'sk-or-stored' }),
+    });
+
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.model?.id).toBe(OPENROUTER_DEFAULT_MODEL_ID);
+    expect(resolved.model?.provider).toBe('openrouter');
+    expect(resolved.provider.label).toContain('OpenRouter');
   });
 
   it('does not read the keychain when an env key is present', async () => {
@@ -145,13 +177,28 @@ describe('resolveCodexSubscriptionProvider', () => {
 
 describe('loginWithApiKey (/login)', () => {
   it('persists the entered key and builds the live provider from it', async () => {
-    const { store, saved } = recordingStore();
+    const { store, account, saved } = recordingStore();
     const { resolved, persisted } = await loginWithApiKey(store, 'sk-ant-fresh');
     expect(persisted).toBe(true);
+    expect(account()).toBe('anthropic');
     expect(saved()).toBe('sk-ant-fresh');
     expect(resolved.auth).toBe('api-key');
     expect(resolved.subscription).toBe(false);
     expect(resolved.provider.id).toBe('anthropic');
+  });
+
+  it('persists an OpenRouter setup key under the OpenRouter account', async () => {
+    const { store, account, saved } = recordingStore();
+    const { resolved, persisted } = await loginWithApiKey(store, 'sk-or-fresh', {
+      modelId: OPENROUTER_DEFAULT_MODEL_ID,
+    });
+
+    expect(persisted).toBe(true);
+    expect(account()).toBe('openrouter');
+    expect(saved()).toBe('sk-or-fresh');
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.model?.id).toBe(OPENROUTER_DEFAULT_MODEL_ID);
+    expect(resolved.provider.label).toContain('OpenRouter');
   });
 
   it('still returns a working provider (session-only) when the keychain write fails', async () => {
@@ -169,6 +216,13 @@ describe('providerFromKey (model switch without the keychain)', () => {
     expect(resolved.auth).toBe('api-key');
     expect(resolved.provider.id).toBe('anthropic');
     expect(resolved.model?.id).toBe('claude-haiku-4-5');
+  });
+
+  it('builds a live OpenRouter provider from an in-memory setup key', () => {
+    const resolved = providerFromKey('sk-or-mem', { modelId: OPENROUTER_DEFAULT_MODEL_ID });
+    expect(resolved.auth).toBe('api-key');
+    expect(resolved.provider.id).toBe('openai');
+    expect(resolved.model?.provider).toBe('openrouter');
   });
 });
 

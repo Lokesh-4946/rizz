@@ -15,6 +15,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "removeComments": true,
+    "stripInternal": true,
     "composite": true,
     "incremental": true,
     "skipLibCheck": true,
