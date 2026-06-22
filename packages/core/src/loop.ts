@@ -38,6 +38,7 @@ export type TurnEvent =
   | { readonly type: 'assistant'; readonly content: string }
   | { readonly type: 'tool'; readonly display: string; readonly ok: boolean }
   | { readonly type: 'fallback'; readonly note: string }
+  | { readonly type: 'compacting' }
   | { readonly type: 'compacted'; readonly note: string }
   | { readonly type: 'approval-denied'; readonly command: string }
   | { readonly type: 'notice'; readonly message: string };
@@ -178,6 +179,7 @@ export async function runTurn(options: RunTurnOptions): Promise<Result<TurnResul
     if (isExhausted(budgetState, budget)) return err(budgetExceeded(budgetState));
 
     if (compressConfig && shouldCompress(session.messages, compressConfig)) {
+      emit({ type: 'compacting' });
       const compacted = await maybeCompress(
         session.messages,
         compressConfig,

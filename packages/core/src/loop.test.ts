@@ -261,4 +261,25 @@ describe('runTurn — agentic loop', () => {
     expect(result.ok).toBe(true);
     expect(events.some((e) => e.type === 'approval-denied')).toBe(true);
   });
+
+  it('emits a compacting event before the compacted note', async () => {
+    const session = createSession();
+    session.messages.push({ role: 'user', content: 'a'.repeat(2000) });
+    const events: TurnEvent[] = [];
+    const result = await runTurn({
+      provider: scripted([final('summary'), final('done')]),
+      session,
+      input: 'continue',
+      cwd: process.cwd(),
+      compress: { contextWindow: 100, triggerRatio: 0.01, keepHead: 1, keepTail: 1 },
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(result.ok).toBe(true);
+    const compactingIndex = events.findIndex((e) => e.type === 'compacting');
+    const compactedIndex = events.findIndex((e) => e.type === 'compacted');
+    expect(compactingIndex).toBeGreaterThanOrEqual(0);
+    expect(compactedIndex).toBeGreaterThan(compactingIndex);
+    expect(events.some((e) => e.type === 'compacted')).toBe(true);
+  });
 });

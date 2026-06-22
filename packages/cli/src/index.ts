@@ -37,8 +37,8 @@ Usage:
   rizz --help            show this help
 
 Single-agent and minimal by default. Use setup to choose a model route. OpenRouter BYOK starts
-directly from setup; a signed-in Codex CLI can start a subscription-backed beta route.
-The /workspace multi-agent mode arrives in a later milestone. The headless contract is in
+directly from setup; a signed-in Codex CLI can start a subscription-backed route.
+Workspace mode is opt-in and stays off unless you turn it on. The headless contract is in
 runbooks/headless.md.`;
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
@@ -50,13 +50,14 @@ interface SelectOpts {
   readonly capability?: string;
 }
 
-async function startNoModelTui(notice: string): Promise<void> {
+async function startNoModelTui(notice: string, displayName?: string): Promise<void> {
   await startTui({
     provider: new StubProvider(),
     subscription: false,
     auth: 'demo',
     notice,
     persistSession: false,
+    ...(displayName !== undefined ? { displayName } : {}),
   });
 }
 
@@ -234,6 +235,7 @@ async function main(argv: readonly string[]): Promise<number> {
                 cwd: process.cwd(),
               }),
               persistSession: false,
+              ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
             });
             return { ok: true };
           }
@@ -258,18 +260,28 @@ async function main(argv: readonly string[]): Promise<number> {
             process.stdout.write(
               'OpenRouter connected.\nStarting rizz with OpenRouter GPT-4o mini.\n',
             );
-            await startTui({ ...resolved, persistSession: false });
+            await startTui({
+              ...resolved,
+              persistSession: false,
+              ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
+            });
             return { ok: true };
           }
           if (route === 'openai-api') {
-            await startNoModelTui('OpenAI selected. No model connected yet.');
+            await startNoModelTui('OpenAI selected. No model connected yet.', context.displayName);
             return { ok: true };
           }
           if (route === 'anthropic-api') {
-            await startNoModelTui('Anthropic selected. No model connected yet.');
+            await startNoModelTui(
+              'Anthropic selected. No model connected yet.',
+              context.displayName,
+            );
             return { ok: true };
           }
-          await startNoModelTui('No model connected. Use /login or /model when ready.');
+          await startNoModelTui(
+            'No model connected. Use /login or /model when ready.',
+            context.displayName,
+          );
           return { ok: true };
         },
       });

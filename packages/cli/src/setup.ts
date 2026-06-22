@@ -151,6 +151,7 @@ type SetupLaunchResult =
 interface SetupLaunchContext {
   readonly codex?: CodexCliDiagnostic;
   readonly apiKey?: string;
+  readonly displayName?: string;
 }
 
 type SetupLauncher = (
@@ -688,6 +689,21 @@ function detectFriendlyDisplayName(env: Readonly<NodeJS.ProcessEnv>, homeDir: st
   );
 }
 
+function preferredDisplayName(answer: string | null, fallback: string): string {
+  const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+  const trimmed = answer
+    ?.replace(ansi, ' ')
+    .split('')
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code < 32 || code === 127 ? ' ' : char;
+    })
+    .join('')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return trimmed === undefined || trimmed === '' ? fallback : trimmed;
+}
+
 function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly close: () => void } {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return {
@@ -706,10 +722,25 @@ function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly clo
   };
 }
 
-async function askSetupQuestion(ask: SetupQuestion, question: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    void ask(question).then(resolve);
-  });
+async function resolveSetupDisplayName(params: {
+  readonly ask?: SetupQuestion;
+  readonly isTTY: boolean;
+  readonly defaultName: string;
+  readonly write: (text: string) => void;
+}): Promise<string> {
+  if (params.ask === undefined && !params.isTTY) return params.defaultName;
+
+  const prompt = params.ask === undefined ? createDefaultSetupPrompt() : undefined;
+  const ask = params.ask ?? prompt?.ask;
+  if (ask === undefined) return params.defaultName;
+
+  try {
+    params.write("Hey. How're you doing?\n");
+    const answer = await ask(`What should I call you? [${params.defaultName}] `);
+    return preferredDisplayName(answer, params.defaultName);
+  } finally {
+    prompt?.close();
+  }
 }
 
 function summarizeCodexDoctorOutput(stdout: string): string {
@@ -925,7 +956,7 @@ async function askSetupProviderRoute(params: {
     const defaultIndex =
       params.choices.findIndex((choice) => choice.id === params.defaultRoute) + 1;
     while (true) {
-      const answer = await askSetupQuestion(ask, `Choose route [${defaultIndex}] `);
+      const answer = await ask(`Choose route [${defaultIndex}] `);
       if (answer === null) return 'cancel';
       const route = parseProviderRouteAnswer({
         answer,
@@ -1006,8 +1037,13 @@ export async function runSetupInteractive(
   write(formatInteractiveDoctorSummary(report));
   if (report.blockers > 0) return 1;
 
-  const friendlyName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
-  write(`Hi ${friendlyName}.\n`);
+  const detectedName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
+  const displayName = await resolveSetupDisplayName({
+    write,
+    defaultName: detectedName,
+    isTTY: options.isTTY === true,
+    ...(options.ask !== undefined ? { ask: options.ask } : {}),
+  });
   const selected = await resolveSetupProviderRoute({
     write,
     commandRunner: options.commandRunner ?? runCommandProbe,
@@ -1040,6 +1076,7 @@ export async function runSetupInteractive(
     const launched = await options.launchSelectedRoute(selected.route, {
       codex: selected.codex,
       ...(apiKey !== undefined ? { apiKey } : {}),
+      displayName,
     });
     if (!launched.ok) {
       write(`Could not start rizz: ${launched.message}\n`);

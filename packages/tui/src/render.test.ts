@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { PROVIDER_CATALOG } from './catalog.js';
 import {
   type PickerModel,
-  renderComingSoon,
   renderEmptyState,
   renderHeader,
+  renderHint,
   renderModelPicker,
+  renderNotConnected,
   renderPlanStub,
   renderStatusBar,
+  renderStillWaiting,
   renderThemeList,
+  renderThinking,
 } from './render.js';
 import { THEME_NAMES, createTheme } from './theme.js';
 
@@ -29,7 +32,7 @@ describe('tui render (plain theme)', () => {
   it('status bar shows model, tokens, cost, branch', () => {
     const bar = renderStatusBar(plain, {
       model: 'stub',
-      auth: 'demo',
+      auth: 'not connected',
       ctxPct: 0,
       tokens: 12,
       cost: '$0.00 (sub)',
@@ -54,6 +57,18 @@ describe('tui render (plain theme)', () => {
     expect(bar).not.toContain('(sub)');
   });
 
+  it('hint includes status without internal setup language', () => {
+    const out = renderHint(plain);
+    expect(out).toContain('/status');
+    expect(out).not.toContain('sandbox');
+    expect(out).not.toContain('ephemeral');
+  });
+
+  it('progress copy is sparse and provider-specific', () => {
+    expect(renderThinking(plain)).toContain('thinking...');
+    expect(renderStillWaiting(plain, 'Codex')).toContain('still waiting on Codex...');
+  });
+
   it('color theme wraps text in truecolor ANSI (valoir gold)', () => {
     const colored = createTheme({ color: true }).accent('x');
     expect(colored).toContain('\x1b[38;2;227;179;65m');
@@ -72,13 +87,15 @@ describe('model picker (D-029)', () => {
     expect(out).toContain('2. Claude Haiku 4.5');
   });
 
-  it('lists unwired providers as dimmed "coming soon", never as selectable', () => {
+  it('lists unwired providers as dimmed routes, never as selectable', () => {
     const out = renderModelPicker(plain, models, PROVIDER_CATALOG);
-    expect(out).toContain('coming soon');
+    expect(out).toContain('not connected');
     expect(out).toContain('Codex');
     // The wired provider (Anthropic) is not shown in the coming-soon section.
-    expect(out).not.toContain('Anthropic — Claude — API key (BYOK) · coming soon');
-    expect(out).not.toContain('OpenRouter — any model, one key · coming soon');
+    expect(out).not.toContain('Anthropic — Claude — API key (BYOK) · not connected');
+    expect(out).not.toContain('OpenRouter — any model, one key · not connected');
+    expect(out).not.toContain('coming soon');
+    expect(out).not.toContain('alpha');
   });
 });
 
@@ -89,10 +106,12 @@ describe('theme list + stubs', () => {
   });
 
   it('plan stub is honest, not a fake UI', () => {
-    expect(renderPlanStub(plain)).toContain('plan-mode is coming');
+    expect(renderPlanStub(plain)).toContain('plan mode is not connected yet');
+    expect(renderPlanStub(plain)).not.toContain('alpha');
   });
 
-  it('coming-soon hint names the provider', () => {
-    expect(renderComingSoon(plain, 'Codex')).toContain('Codex');
+  it('not-connected hint names the provider', () => {
+    expect(renderNotConnected(plain, 'Codex')).toContain('Codex');
+    expect(renderNotConnected(plain, 'Codex')).not.toContain('alpha');
   });
 });

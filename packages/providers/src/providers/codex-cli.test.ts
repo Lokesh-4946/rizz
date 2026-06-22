@@ -67,6 +67,29 @@ describe('createCodexCliProvider', () => {
     }
   });
 
+  it('does not surface internal Codex invocation switches in failures', async () => {
+    const provider = createCodexCliProvider({
+      runner: async () => ({
+        status: 1,
+        stdout: '',
+        stderr:
+          'codex exec --ephemeral --sandbox read-only --ignore-user-config --ignore-rules --skip-git-repo-check stdin prompt failed',
+      }),
+    });
+
+    const result = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).not.toContain('--ephemeral');
+      expect(result.error.message).not.toContain('--sandbox');
+      expect(result.error.message).not.toContain('--ignore-user-config');
+      expect(result.error.message).not.toContain('--ignore-rules');
+      expect(result.error.message).not.toContain('--skip-git-repo-check');
+      expect(result.error.message).not.toContain('stdin prompt');
+    }
+  });
+
   it('returns INTERRUPTED when the signal is already aborted', async () => {
     const provider = createCodexCliProvider({
       runner: async () => {

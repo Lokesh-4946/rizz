@@ -3,6 +3,7 @@
 // without a TTY, and so commands route to their handler in demo mode instead of being echoed as user
 // text (D-032). Unknown `/x` is reported, not silently treated as chat.
 
+/** @internal */
 export type Command =
   | { readonly kind: 'chat'; readonly text: string }
   | { readonly kind: 'empty' }
@@ -10,11 +11,13 @@ export type Command =
   | { readonly kind: 'help' }
   | { readonly kind: 'login' }
   | { readonly kind: 'model' }
+  | { readonly kind: 'status' }
   | { readonly kind: 'theme'; readonly arg?: string }
   | { readonly kind: 'plan' }
   | { readonly kind: 'workspace' }
   | { readonly kind: 'unknown'; readonly name: string };
 
+/** @internal */
 export function parseCommand(line: string): Command {
   const input = line.trim();
   if (input === '') return { kind: 'empty' };
@@ -34,6 +37,8 @@ export function parseCommand(line: string): Command {
       return { kind: 'login' };
     case 'model':
       return { kind: 'model' };
+    case 'status':
+      return { kind: 'status' };
     case 'theme':
       return arg === '' ? { kind: 'theme' } : { kind: 'theme', arg };
     case 'plan':
@@ -46,6 +51,7 @@ export function parseCommand(line: string): Command {
 }
 
 /** `/theme set <name>` → the name; `/theme <name>` is also accepted. Returns undefined for a bare list. */
+/** @internal */
 export function parseThemeArg(arg: string | undefined): string | undefined {
   if (arg === undefined || arg === '') return undefined;
   const parts = arg.split(/\s+/);
