@@ -1,6 +1,6 @@
 import type { Message } from '@rizz/providers';
 
-/** In-memory conversation state. Persistence (SQLite + resume) lands in a later milestone. */
+/** In-memory conversation state. Persistence (SQLite + resume) is handled by the session store. */
 export interface Session {
   readonly messages: Message[];
 }

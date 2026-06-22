@@ -305,7 +305,10 @@ describe('setup dependency doctor', () => {
         [HOME]: { exists: true, writable: true },
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
-      ask: async () => answers.shift() ?? '',
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
       write: (text) => output.push(text),
     });
 
@@ -313,7 +316,8 @@ describe('setup dependency doctor', () => {
     expect(code).toBe(0);
     expect(text).toContain('rizz setup');
     expect(text).toContain('ready: no blockers');
-    expect(text).toContain('Hi Lokesh.');
+    expect(text).toContain("Hey. How're you doing?");
+    expect(text).toContain('What should I call you? [Lokesh]');
     expect(text).toContain('Choose how rizz should talk to a model:');
     expect(text).toContain('> 1. OpenRouter direct');
     expect(text).toContain('Codex subscription');
@@ -329,7 +333,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('detects Codex through the macOS app CLI when plain codex is not on PATH', async () => {
-    const answers = ['2'];
+    const answers = ['', '2'];
     const output: string[] = [];
     const doctorJson = JSON.stringify({
       overallStatus: 'fail',
@@ -369,7 +373,10 @@ describe('setup dependency doctor', () => {
         [HOME]: { exists: true, writable: true },
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
-      ask: async () => answers.shift() ?? '',
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
       write: (text) => output.push(text),
     });
 
@@ -382,7 +389,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('can select OpenRouter without launching when setup is not interactive', async () => {
-    const answers = ['1'];
+    const answers = ['', '1'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -402,7 +409,10 @@ describe('setup dependency doctor', () => {
         [HOME]: { exists: true, writable: true },
         [RIZZ_HOME]: { exists: false, writable: false },
       }).pathAccess,
-      ask: async () => answers.shift() ?? '',
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
       write: (text) => output.push(text),
     });
 
@@ -417,10 +427,56 @@ describe('setup dependency doctor', () => {
   });
 
   it('passes a hidden OpenRouter setup key to the launcher without echoing it', async () => {
-    const answers = [''];
+    const answers = ['Rizzy', ''];
     const output: string[] = [];
     let launchedRoute = '';
     let launchedKey = '';
+    let launchedDisplayName = '';
+    const code = await runSetupInteractive({
+      nodeVersion: '24.0.0',
+      platform: 'linux',
+      env: {},
+      homeDir: HOME,
+      rizzHomeDir: RIZZ_HOME,
+      isTTY: true,
+      commandRunner: commandFixture({
+        'pnpm --version': { ok: true, stdout: '11.6.0' },
+        'git --version': { ok: true, stdout: 'git version 2.45.0' },
+        'which secret-tool': { ok: false, reason: 'ENOENT' },
+        'codex doctor --json': { ok: false, reason: 'ENOENT' },
+        'codex --version': { ok: false, reason: 'ENOENT' },
+      }).runner,
+      pathAccess: accessFixture({
+        [HOME]: { exists: true, writable: true },
+        [RIZZ_HOME]: { exists: false, writable: false },
+      }).pathAccess,
+      ask: async (question) => {
+        output.push(question);
+        return answers.shift() ?? '';
+      },
+      askSecret: async () => 'sk-or-secret',
+      launchSelectedRoute: async (route, context) => {
+        launchedRoute = route;
+        launchedKey = context.apiKey ?? '';
+        launchedDisplayName = context.displayName ?? '';
+        return { ok: true };
+      },
+      write: (text) => output.push(text),
+    });
+
+    const text = output.join('');
+    expect(code).toBe(0);
+    expect(launchedRoute).toBe('openrouter-api');
+    expect(launchedKey).toBe('sk-or-secret');
+    expect(launchedDisplayName).toBe('Rizzy');
+    expect(text).toContain('OpenRouter direct selected.');
+    expect(text).toContain('What should I call you? [Rizz Home]');
+    expect(text).not.toContain('sk-or-secret');
+  });
+
+  it('strips control characters from the setup display name', async () => {
+    const answers = ['Rizzy\u001b[31m Name', ''];
+    let launchedDisplayName = '';
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
       platform: 'linux',
@@ -441,20 +497,15 @@ describe('setup dependency doctor', () => {
       }).pathAccess,
       ask: async () => answers.shift() ?? '',
       askSecret: async () => 'sk-or-secret',
-      launchSelectedRoute: async (route, context) => {
-        launchedRoute = route;
-        launchedKey = context.apiKey ?? '';
+      launchSelectedRoute: async (_route, context) => {
+        launchedDisplayName = context.displayName ?? '';
         return { ok: true };
       },
-      write: (text) => output.push(text),
+      write: () => undefined,
     });
 
-    const text = output.join('');
     expect(code).toBe(0);
-    expect(launchedRoute).toBe('openrouter-api');
-    expect(launchedKey).toBe('sk-or-secret');
-    expect(text).toContain('OpenRouter direct selected.');
-    expect(text).not.toContain('sk-or-secret');
+    expect(launchedDisplayName).toBe('Rizzy Name');
   });
 
   it('rejects a non-OpenRouter setup key before launch without echoing it', async () => {
@@ -530,7 +581,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('does not treat a generic successful Codex doctor as subscription-ready', async () => {
-    const answers = [''];
+    const answers = ['', ''];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -639,7 +690,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('interactive setup can cancel before choosing a route', async () => {
-    const answers = ['cancel'];
+    const answers = ['', 'cancel'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',
@@ -673,7 +724,7 @@ describe('setup dependency doctor', () => {
   });
 
   it('interactive setup retries invalid route choices', async () => {
-    const answers = ['maybe', '5'];
+    const answers = ['', 'maybe', '5'];
     const output: string[] = [];
     const code = await runSetupInteractive({
       nodeVersion: '24.0.0',

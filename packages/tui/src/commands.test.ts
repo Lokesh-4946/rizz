@@ -13,6 +13,7 @@ describe('parseCommand', () => {
   it.each([
     ['/login', 'login'],
     ['/model', 'model'],
+    ['/status', 'status'],
     ['/plan', 'plan'],
     ['/workspace', 'workspace'],
     ['/help', 'help'],

@@ -22,7 +22,7 @@ export const renderEmptyState = (theme: Theme): string =>
   `${theme.dim('  type to start, or ')}${theme.accent('/help')}${theme.dim(' for commands.')}`;
 
 export const renderHint = (theme: Theme): string =>
-  theme.dim('  /login · /model · /theme · /workspace · /help');
+  theme.dim('  /status · /login · /model · /theme · /workspace · /help');
 
 // Always-visible status line: model · auth │ ctx% │ tokens · cost │ branch (spec §8).
 export const renderStatusBar = (theme: Theme, info: StatusInfo): string => {
@@ -35,15 +35,21 @@ export const renderStatusBar = (theme: Theme, info: StatusInfo): string => {
   return theme.system(`  ${parts.join('  │  ')}`);
 };
 
-/** One selectable model row for the picker. */
+/** @internal */
+export const renderThinking = (theme: Theme): string => theme.dim('  thinking...');
+
+/** @internal */
+export const renderStillWaiting = (theme: Theme, provider: string): string =>
+  theme.dim(`  still waiting on ${provider}...`);
+
+/** @internal */
 export interface PickerModel {
   readonly id: string;
   readonly label: string;
   readonly active: boolean;
 }
 
-// The /model picker (spec §4, D-029): numbered selectable models, then the full catalog with
-// unwired providers dimmed + a "coming soon" label so the roadmap is honest without faking capability.
+/** @internal */
 export const renderModelPicker = (
   theme: Theme,
   models: readonly PickerModel[],
@@ -54,16 +60,16 @@ export const renderModelPicker = (
     const marker = m.active ? theme.accent(theme.glyphs.star) : ' ';
     lines.push(`  ${marker} ${theme.text(`${i + 1}. ${m.label}`)}`);
   });
-  lines.push(theme.dim('  ─ also on the roadmap (not yet selectable) ─'));
+  lines.push(theme.dim('  ─ other routes ─'));
   for (const p of catalog) {
     if (p.wired) continue;
-    lines.push(theme.dim(`    ${theme.glyphs.bulletOpen} ${p.label} — ${p.blurb} · coming soon`));
+    lines.push(theme.dim(`    ${theme.glyphs.bulletOpen} ${p.label} — ${p.blurb} · not connected`));
   }
   lines.push(theme.dim('  type a number to switch, or press enter to cancel'));
   return lines.join('\n');
 };
 
-// The /theme list (spec §2.1): each built-in with a live swatch; the active one marked.
+/** @internal */
 export const renderThemeList = (
   theme: Theme,
   names: readonly string[],
@@ -79,10 +85,10 @@ export const renderThemeList = (
   return lines.join('\n');
 };
 
-// /plan is a visible stub at M3 (D-030): reserve the verb honestly, don't fake a planning UI.
+/** @internal */
 export const renderPlanStub = (theme: Theme): string =>
-  theme.dim("  plan-mode is coming — for now, just describe the task and I'll work it directly.");
+  theme.dim("  plan mode is not connected yet — describe the task and I'll work it directly.");
 
-// Selecting a not-yet-wired provider (D-029): a one-line honest hint, never a fake flow.
-export const renderComingSoon = (theme: Theme, label: string): string =>
-  theme.dim(`  ${label} isn't wired yet — BYOK/login for more providers lands in M4.`);
+/** @internal */
+export const renderNotConnected = (theme: Theme, label: string): string =>
+  theme.dim(`  ${label} is not connected yet.`);

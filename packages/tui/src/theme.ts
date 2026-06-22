@@ -40,6 +40,7 @@ export interface ThemeSpec {
 const rgb = (r: number, g: number, b: number): Rgb => ({ r, g, b });
 
 // The five built-ins (spec §2.1). Values are the locked palette; non-valoir themes tuned by eye.
+/** @internal */
 export const BUILTIN_THEMES: Readonly<Record<string, ThemeSpec>> = {
   valoir: {
     name: 'valoir',
@@ -99,6 +100,7 @@ export const BUILTIN_THEMES: Readonly<Record<string, ThemeSpec>> = {
   },
 };
 
+/** @internal */
 export const THEME_NAMES: readonly string[] = Object.keys(BUILTIN_THEMES);
 
 // --- Glyphs (spec §2.2): Unicode by default, ASCII fallback on the 16-color / no-color rungs. ---
@@ -244,6 +246,7 @@ export const createTheme = (options: CreateThemeOptions = {}): Theme => {
 };
 
 /** Detect the terminal's color depth once at startup (spec §1.2). NO_COLOR / non-TTY → 'none'. */
+/** @internal */
 export const detectColorDepth = (): ColorDepth => {
   if (process.env.NO_COLOR !== undefined || process.stdout.isTTY !== true) return 'none';
   const colorterm = process.env.COLORTERM ?? '';

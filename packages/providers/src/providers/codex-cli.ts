@@ -73,6 +73,14 @@ function run(command: string, args: readonly string[], options: RunOptions): Pro
 function detail(text: string): string {
   const escapeChar = String.fromCharCode(27);
   const cleaned = text
+    .replace(/\s*--ephemeral\b/g, '')
+    .replace(/\s*--ignore-user-config\b/g, '')
+    .replace(/\s*--ignore-rules\b/g, '')
+    .replace(/\s*--skip-git-repo-check\b/g, '')
+    .replace(/\s*--sandbox\s+(?:read-only|workspace-write|danger-full-access)\b/g, '')
+    .replace(/\s*--color\s+never\b/g, '')
+    .replace(/\bst(?:d|din)\s+prompt\b/gi, '')
+    .replace(/\bno auth-file access\b/gi, '')
     .replace(new RegExp(`${escapeChar}\\[[0-9;]*m`, 'g'), '')
     .replace(/\b(?:sk|sess|tok|pat)-[A-Za-z0-9._-]+/gi, '[redacted]')
     .replace(/\beyJ[A-Za-z0-9._-]{20,}\b/g, '[redacted]')
