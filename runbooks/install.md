@@ -62,7 +62,7 @@ Expected flow:
 3. rizz shows model routes.
 4. Choose `OpenRouter direct` for the private alpha fast path.
 5. Paste the OpenRouter API key only into the hidden prompt.
-6. rizz starts the TUI with OpenRouter GPT-4o mini.
+6. rizz starts the TUI with OpenRouter North Mini Code (free).
 
 Do not paste provider keys into chat, GitHub, screenshots, shell history, or logs.
 
@@ -96,7 +96,7 @@ If setup says Codex is installed but not signed in:
 3. Rerun `rizz setup`.
 
 Codex manages its own model for this route. Use OpenRouter direct when you need the private alpha
-fast route and selectable BYOK models.
+free BYOK route and selectable BYOK models.
 
 ## Secret Storage
 

@@ -258,7 +258,7 @@ async function main(argv: readonly string[]): Promise<number> {
               };
             }
             process.stdout.write(
-              'OpenRouter connected.\nStarting rizz with OpenRouter GPT-4o mini.\n',
+              'OpenRouter connected.\nStarting rizz with OpenRouter North Mini Code (free).\n',
             );
             await startTui({
               ...resolved,

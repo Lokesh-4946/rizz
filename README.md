@@ -66,7 +66,7 @@ Recommended private alpha route:
 1. Choose `OpenRouter direct` or press Enter when it is the default.
 2. Paste an OpenRouter API key only into the hidden prompt.
 3. rizz stores the key under the provider account `openrouter`.
-4. rizz launches the TUI with OpenRouter GPT-4o mini.
+4. rizz launches the TUI with OpenRouter North Mini Code (free).
 
 Never paste provider keys into chat, GitHub issues, screenshots, shell history, or logs.
 
@@ -102,8 +102,8 @@ If setup says Codex is installed but not signed in, open Codex, sign in, and rer
 rizz setup
 ```
 
-Codex manages its own model for this route. Use OpenRouter direct when you need selectable BYOK
-models in this alpha.
+Codex manages its own model for this route. Use OpenRouter direct when you need the private-alpha
+free BYOK route or selectable BYOK models.
 
 ## Verification
 

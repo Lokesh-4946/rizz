@@ -41,7 +41,7 @@ export interface ModelRegistry {
   readonly models: readonly ModelInfo[];
 }
 
-export const OPENROUTER_DEFAULT_MODEL_ID = 'openai/gpt-4o-mini';
+export const OPENROUTER_DEFAULT_MODEL_ID = 'cohere/north-mini-code:free';
 
 // Curated snapshot. Order is the natural default → fallback order, but bootstrap can pick a later
 // model when it is the first one with an available provider credential.
@@ -106,11 +106,11 @@ export const DEFAULT_REGISTRY: ModelRegistry = {
     {
       id: OPENROUTER_DEFAULT_MODEL_ID,
       provider: 'openrouter',
-      label: 'OpenRouter GPT-4o mini',
-      capabilities: ['code', 'cheap'],
-      contextWindow: 128_000,
-      priceInputPerM: 0.15,
-      priceOutputPerM: 0.6,
+      label: 'OpenRouter North Mini Code (free)',
+      capabilities: ['code', 'cheap', 'long-context'],
+      contextWindow: 256_000,
+      priceInputPerM: 0,
+      priceOutputPerM: 0,
       latencyHint: 'fast',
       toolCapable: true,
       baseUrl: 'https://openrouter.ai/api/v1',
