@@ -293,10 +293,11 @@ describe('resolveProvider — opt-in capability route (D-023)', () => {
   it('routes a capability to the best model + surfaces the choice', async () => {
     const resolved = await resolveProvider({
       env,
+      secrets: fakeStore(),
       readRegistryFile: noFile,
       capability: 'long-context',
     });
-    expect(resolved.model?.id).toBe('claude-opus-4-8'); // only long-context model
+    expect(resolved.model?.id).toBe('claude-opus-4-8'); // credentialed fallback after free OpenRouter has no key
     expect(resolved.notice).toContain('capability "long-context"');
   });
 
@@ -310,7 +311,7 @@ describe('resolveProvider — opt-in capability route (D-023)', () => {
     });
     expect(resolved.auth).toBe('api-key');
     expect(resolved.model?.id).toBe('claude-haiku-4-5');
-    expect(resolved.notice).toContain('GPT-4o mini has no credential');
+    expect(resolved.notice).toContain('OpenRouter North Mini Code (free) has no credential');
   });
 
   it('preferCheap can choose OpenAI when the OpenAI key is present', async () => {
