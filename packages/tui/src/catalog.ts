@@ -2,7 +2,7 @@
 // shown so the route surface is honest, but only providers with a wired, verified adapter are selectable;
 // the rest render dimmed with a "not connected" label (text, not color-only — accessibility §10). At
 // M3-finish only the first BYOK adapters are wired (D-002/D-033). This is display-only metadata —
-// the selectable models themselves come from the model registry (@rizz/providers).
+// the selectable models themselves come from the model registry (@valoir/rizz-providers).
 
 /** @internal */
 export type ProviderGroup = 'subscription' | 'api' | 'local';

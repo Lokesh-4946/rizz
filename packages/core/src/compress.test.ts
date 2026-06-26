@@ -1,4 +1,4 @@
-import { type Message, ok } from '@rizz/providers';
+import { type Message, ok } from '@valoir/rizz-providers';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_COMPRESS, maybeCompress, shouldCompress } from './compress.js';
 

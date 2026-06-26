@@ -1,17 +1,34 @@
-# Install rizz for Private Alpha
+# Install rizz
 
-This runbook is for local dogfooding from the repo checkout. Public npm/Homebrew installers are not
-part of the private alpha.
+This runbook covers public npm install and local development installs from the repo checkout.
 
 ## Requirements
 
 - Node >= 22
-- pnpm 11+
-- git
+- npm for public install
+- pnpm 11+ and git for local development
 - a real terminal for interactive setup
-- OpenRouter API key for the recommended fast route
+- OpenRouter API key for the recommended free route
 
-## Local Install
+## Public Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Lokesh-4946/rizz/develop/scripts/install.sh | sh
+rizz setup
+rizz
+```
+
+The installer checks Node/npm, installs the public package, verifies `rizz --version`, and points the
+user to setup. It does not ask for provider keys.
+
+If you prefer npm directly:
+
+```sh
+npm install -g @valoir/rizz
+rizz setup
+```
+
+## Local Development Install
 
 ```sh
 cd /Users/lokesh/Downloads/rizz
@@ -57,10 +74,10 @@ rizz setup
 
 Expected flow:
 
-1. Dependency doctor checks Node, pnpm/corepack, git, `~/.rizz`, terminal, and keychain helper.
+1. Dependency doctor checks Node, npm, git, `~/.rizz`, terminal, and keychain helper.
 2. rizz asks what it should call you.
 3. rizz shows model routes.
-4. Choose `OpenRouter direct` for the private alpha fast path.
+4. Choose `OpenRouter direct` for the public preview route.
 5. Paste the OpenRouter API key only into the hidden prompt.
 6. rizz starts the TUI with OpenRouter North Mini Code (free).
 
@@ -95,8 +112,8 @@ If setup says Codex is installed but not signed in:
 2. Sign in.
 3. Rerun `rizz setup`.
 
-Codex manages its own model for this route. Use OpenRouter direct when you need the private alpha
-free BYOK route and selectable BYOK models.
+Codex manages its own model for this route. Use OpenRouter direct when you need the free BYOK route
+and selectable BYOK models.
 
 ## Secret Storage
 
@@ -120,21 +137,21 @@ This runs:
 - install-local smoke
 - footprint check
 
-Latest merged-develop private alpha gate:
+Latest merged-develop public preview gate:
 
 - `pnpm check` passed
-- Vitest: 29 files / 272 tests
+- Vitest: 29 files / 273 tests
 - eval: 6/6
 - install-local: 5/5
-- footprint: 50ms cold start / 200KB core
+- footprint: 53ms cold start / 200KB core
 
 ## Known Limits
 
-- private checkout install only; no public package release yet
+- Homebrew is not available yet
 - OpenAI direct and Anthropic direct setup entries are not full first-run credential flows yet
 - OpenRouter setup validates key shape; first real model turn proves live provider access
 - Codex route depends on local Codex auth and is not the fast persistent Codex bridge
-- no Workspace Mode, Repo Brain, OS/Jarvis connectors, custom skills, enterprise providers, or public npm release in Agent Light
+- no Workspace Mode, Repo Brain, OS/Jarvis connectors, custom skills, or enterprise providers in Agent Light
 - TUI branch display currently uses a simple `dev` label
 
 ## Remove The Local Shim

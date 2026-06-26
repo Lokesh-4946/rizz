@@ -1,33 +1,69 @@
-#!/usr/bin/env bash
-# One-command install for rizz (M2). Builds the monorepo and puts `rizz` on your PATH.
-#
-#   curl -fsSL .../install.sh | bash      # (once published)
-#   ./scripts/install.sh                  # from a checkout
-#
-# Lightweight by design: no global npm package yet (repo is private during the build), so this
-# builds locally and symlinks the CLI. Re-run any time to update.
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+PACKAGE="${RIZZ_PACKAGE:-@valoir/rizz@0.1.0}"
+EXTRA_PACKAGES="${RIZZ_EXTRA_PACKAGES:-}"
+NPM_PREFIX="${RIZZ_NPM_PREFIX:-}"
 
-echo "› installing dependencies…"
-pnpm install --frozen-lockfile
+say() {
+  printf '%s\n' "$*"
+}
 
-echo "› building…"
-pnpm build
+fail() {
+  say "rizz install: $*" >&2
+  exit 1
+}
 
-# Link the cli's bin into ~/.local/bin (usually on PATH). If it isn't on PATH, we print a note below.
-BIN_SRC="$ROOT/packages/cli/dist/index.js"
-chmod +x "$BIN_SRC"
+need() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
 
-TARGET_DIR="$HOME/.local/bin"
-mkdir -p "$TARGET_DIR"
-ln -sf "$BIN_SRC" "$TARGET_DIR/rizz"
+need node
+need npm
 
-echo "✓ installed: $TARGET_DIR/rizz -> $BIN_SRC"
-if ! command -v rizz >/dev/null 2>&1; then
-  echo "  note: add $TARGET_DIR to your PATH, then run: rizz"
+NODE_MAJOR="$(node -p "Number(process.versions.node.split('.')[0])")"
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  fail "Node >= 22 is required; found $(node --version)"
+fi
+
+set -- install -g
+if [ -n "$NPM_PREFIX" ]; then
+  set -- "$@" --prefix "$NPM_PREFIX"
+fi
+
+say "rizz install"
+say "package: $PACKAGE"
+
+if [ -n "$EXTRA_PACKAGES" ]; then
+  # Space-separated package list for local smoke tests; normal public installs do not need this.
+  # shellcheck disable=SC2086
+  npm "$@" $EXTRA_PACKAGES "$PACKAGE"
 else
-  echo "  run: rizz"
+  npm "$@" "$PACKAGE"
+fi
+
+if [ -n "$NPM_PREFIX" ] && [ -x "$NPM_PREFIX/bin/rizz" ]; then
+  say ""
+  "$NPM_PREFIX/bin/rizz" --version
+  say "run: $NPM_PREFIX/bin/rizz setup"
+  exit 0
+fi
+
+if command -v rizz >/dev/null 2>&1; then
+  say ""
+  rizz --version
+  say "run: rizz setup"
+  exit 0
+fi
+
+GLOBAL_PREFIX="$(npm prefix -g 2>/dev/null || npm config get prefix 2>/dev/null || true)"
+say ""
+say "installed, but rizz is not on PATH yet."
+if [ -n "$GLOBAL_PREFIX" ]; then
+  GLOBAL_BIN="$GLOBAL_PREFIX/bin"
+  say "Add this to PATH:"
+  say "  export PATH=\"$GLOBAL_BIN:\$PATH\""
+else
+  say "Check your npm global prefix:"
+  say "  npm prefix -g"
 fi

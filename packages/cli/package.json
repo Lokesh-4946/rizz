@@ -1,17 +1,27 @@
 {
-  "name": "@rizz/cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@valoir/rizz",
+  "version": "0.1.0",
   "type": "module",
   "bin": { "rizz": "./dist/index.js" },
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map",
+    "!dist/**/*.test.*",
+    "package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
-    "@rizz/core": "workspace:*",
-    "@rizz/providers": "workspace:*",
-    "@rizz/tui": "workspace:*"
+    "@valoir/rizz-core": "workspace:^",
+    "@valoir/rizz-providers": "workspace:^",
+    "@valoir/rizz-tui": "workspace:^"
   }
 }

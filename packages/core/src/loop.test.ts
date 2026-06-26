@@ -14,7 +14,7 @@ import {
   getModel,
   ok,
   openSessionStore,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 import { describe, expect, it } from 'vitest';
 import { type TurnEvent, runTurn } from './loop.js';
 import { createSession } from './session.js';

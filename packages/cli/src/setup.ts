@@ -174,9 +174,9 @@ export type SetupArgsResult =
 
 /** @internal */
 export const SETUP_USAGE = `Usage:
-  rizz setup             choose a model route for this workspace
-  rizz setup --dry-run   check local readiness without connecting a provider
-  rizz setup --help      show setup help`;
+  rizz setup            choose model route
+  rizz setup --dry-run  readiness check
+  rizz setup --help     show setup help`;
 
 function probeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return {
@@ -272,9 +272,19 @@ export function classifyNode(version: string): DependencyDoctorCheck {
 
 /** @internal */
 export function classifyPackageManager(params: {
+  readonly npm: CommandProbeResult;
   readonly pnpm: CommandProbeResult;
   readonly corepack?: CommandProbeResult;
 }): DependencyDoctorCheck {
+  if (params.npm.ok) {
+    return makeCheck({
+      id: 'package-manager',
+      label: 'package manager',
+      severity: 'ok',
+      summary: 'npm is available',
+      observed: normalizeObservedVersion('npm', params.npm.stdout),
+    });
+  }
   if (params.pnpm.ok) {
     return makeCheck({
       id: 'package-manager',
@@ -297,8 +307,8 @@ export function classifyPackageManager(params: {
     id: 'package-manager',
     label: 'package manager',
     severity: 'warn',
-    summary: 'pnpm and corepack were not found',
-    fix: 'Enable corepack or install pnpm before running the full setup wizard.',
+    summary: 'npm, pnpm, and corepack were not found',
+    fix: 'Install Node with npm, then rerun rizz setup --dry-run.',
   });
 }
 
@@ -585,12 +595,17 @@ export async function buildDependencyDoctorReport(
 ): Promise<DependencyDoctorReport> {
   const checks: DependencyDoctorCheck[] = [classifyNode(params.nodeVersion)];
 
-  const pnpm = await params.commandRunner('pnpm', ['--version']);
+  const npm = await params.commandRunner('npm', ['--version']);
+  const pnpm = npm.ok
+    ? ({ ok: false, reason: 'not-needed' } as const)
+    : await params.commandRunner('pnpm', ['--version']);
   let corepack: CommandProbeResult | undefined;
-  if (!pnpm.ok) {
+  if (!npm.ok && !pnpm.ok) {
     corepack = await params.commandRunner('corepack', ['--version']);
   }
-  checks.push(classifyPackageManager({ pnpm, ...(corepack !== undefined ? { corepack } : {}) }));
+  checks.push(
+    classifyPackageManager({ npm, pnpm, ...(corepack !== undefined ? { corepack } : {}) }),
+  );
 
   const git = await params.commandRunner('git', ['--version']);
   checks.push(classifyGit(git));

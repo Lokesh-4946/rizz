@@ -20,7 +20,7 @@ import {
   providerFromKey,
   resolveProvider,
   runTurn,
-} from '@rizz/core';
+} from '@valoir/rizz-core';
 import {
   DEFAULT_REGISTRY,
   type ModelInfo,
@@ -32,7 +32,7 @@ import {
   listToolCapable,
   openSecretStore,
   openSessionStore,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 import { PROVIDER_CATALOG } from './catalog.js';
 import { parseCommand, parseThemeArg } from './commands.js';
 import {

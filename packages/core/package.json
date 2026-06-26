@@ -1,14 +1,24 @@
 {
-  "name": "@rizz/core",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@valoir/rizz-core",
+  "version": "0.1.0",
   "type": "module",
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map",
+    "!dist/**/*.test.*",
+    "package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
-    "@rizz/providers": "workspace:*"
+    "@valoir/rizz-providers": "workspace:^"
   }
 }

@@ -5,7 +5,7 @@ import {
   RizzError,
   err,
   getModel,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 import { describe, expect, it } from 'vitest';
 import { classifyFailure, runFallback } from './fallback.js';
 

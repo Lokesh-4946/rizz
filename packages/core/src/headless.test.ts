@@ -6,7 +6,7 @@ import {
   RizzError,
   err,
   ok,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 import { describe, expect, it } from 'vitest';
 import { createRpcServer, runJsonTurn } from './headless.js';
 

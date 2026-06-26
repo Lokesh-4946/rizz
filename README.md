@@ -6,9 +6,9 @@
 rizz is a tiny coding-agent CLI for one user and one project: choose a model route, launch the TUI,
 approve risky actions, see status/cost, and keep the default path lightweight.
 
-## Private Alpha Status
+## Public Preview Status
 
-Agent Light is the current private alpha surface:
+Agent Light is the current public preview surface:
 
 - local CLI and TUI
 - `rizz setup` dependency doctor and provider route picker
@@ -16,35 +16,43 @@ Agent Light is the current private alpha surface:
 - Codex subscription route as a secondary local Codex CLI route
 - OpenAI/Anthropic route placeholders for later setup wiring
 - visible `/status`, `/model`, `/theme`, `/workspace`, and `/help`
-- no Workspace Mode, Repo Brain, OS connectors, custom skills, enterprise providers, or public npm release in the default install
+- no Workspace Mode, Repo Brain, OS connectors, custom skills, or enterprise providers in the default install
 
-The latest merged alpha baseline is `develop` at `ece8b48`.
+The current release baseline is `0.1.0`.
 
 ## Requirements
 
 - Node >= 22
-- pnpm 11+
+- npm
 - git
 - macOS Keychain or Linux `secret-tool` for keychain storage when available
 
-CI currently runs on Node 24.
+Development from source also needs pnpm 11+. CI currently runs on Node 24.
 
-## Install From This Checkout
+## Install
 
 ```sh
-cd /Users/lokesh/Downloads/rizz
-pnpm install
-pnpm link:local
-rizz --help
+curl -fsSL https://raw.githubusercontent.com/Lokesh-4946/rizz/develop/scripts/install.sh | sh
 ```
 
-`pnpm link:local` builds the workspace and installs a tiny local shim at `~/.local/bin/rizz` that
-points at this checkout.
-
-If `~/.local/bin` is not on your PATH:
+Then run:
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
+rizz setup
+rizz
+```
+
+If you prefer npm directly:
+
+```sh
+npm install -g @valoir/rizz
+```
+
+For local development from this checkout:
+
+```sh
+pnpm install
+pnpm link:local
 ```
 
 ## Setup
@@ -61,7 +69,7 @@ Then choose a model route:
 rizz setup
 ```
 
-Recommended private alpha route:
+Recommended public preview route:
 
 1. Choose `OpenRouter direct` or press Enter when it is the default.
 2. Paste an OpenRouter API key only into the hidden prompt.
@@ -89,7 +97,7 @@ Useful commands inside the TUI:
 ```
 
 `/workspace` is visible but not connected in Agent Light. Workspace Mode is an opt-in future track,
-not part of the default alpha path.
+not part of the default path.
 
 ## Codex Route
 
@@ -102,8 +110,8 @@ If setup says Codex is installed but not signed in, open Codex, sign in, and rer
 rizz setup
 ```
 
-Codex manages its own model for this route. Use OpenRouter direct when you need the private-alpha
-free BYOK route or selectable BYOK models.
+Codex manages its own model for this route. Use OpenRouter direct when you need the free BYOK route
+or selectable BYOK models.
 
 ## Verification
 
@@ -118,14 +126,14 @@ This runs lint, type-check, tests, eval smoke, install smoke, and the footprint 
 Current merged-develop verification:
 
 - Biome: 94 files
-- Vitest: 29 files / 272 tests
+- Vitest: 29 files / 273 tests
 - eval: 6/6 CLI process smokes
 - install-local: 5/5 shim smokes
-- footprint: 50ms cold start / 200KB core
+- footprint: 53ms cold start / 200KB core
 
 ## Known Limits
 
-- private checkout install only; no public npm/Homebrew release yet
+- Homebrew is not available yet
 - no Workspace Mode in default install
 - no Repo Brain, Company Brain, memory indexing, OS/Jarvis connectors, or custom skills yet
 - OpenAI direct and Anthropic direct setup entries are listed but do not collect first-run credentials yet

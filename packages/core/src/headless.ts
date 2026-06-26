@@ -7,7 +7,7 @@
 // driver must answer it; destructive/networked commands are NEVER auto-approved (one-shot JSON denies
 // them outright, since there is no channel to ask). Core-light: no new deps, JSON only.
 
-import type { ModelInfo, Provider, SessionStore } from '@rizz/providers';
+import type { ModelInfo, Provider, SessionStore } from '@valoir/rizz-providers';
 import { type BudgetState, newBudgetState } from './budget.js';
 import { type StopReason, type TurnEvent, runTurn } from './loop.js';
 import { type Session, createSession } from './session.js';
