@@ -56,13 +56,14 @@ if command -v rizz >/dev/null 2>&1; then
   exit 0
 fi
 
-GLOBAL_BIN="$(npm bin -g 2>/dev/null || true)"
+GLOBAL_PREFIX="$(npm prefix -g 2>/dev/null || npm config get prefix 2>/dev/null || true)"
 say ""
 say "installed, but rizz is not on PATH yet."
-if [ -n "$GLOBAL_BIN" ]; then
+if [ -n "$GLOBAL_PREFIX" ]; then
+  GLOBAL_BIN="$GLOBAL_PREFIX/bin"
   say "Add this to PATH:"
   say "  export PATH=\"$GLOBAL_BIN:\$PATH\""
 else
-  say "Check your npm global bin path:"
-  say "  npm bin -g"
+  say "Check your npm global prefix:"
+  say "  npm prefix -g"
 fi
