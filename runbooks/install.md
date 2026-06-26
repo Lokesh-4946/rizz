@@ -13,20 +13,13 @@ This runbook covers public npm install and local development installs from the r
 ## Public Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lokesh-4946/rizz/develop/scripts/install.sh | sh
+npm install -g @valoir/rizz
 rizz setup
 rizz
 ```
 
-The installer checks Node/npm, installs the public package, verifies `rizz --version`, and points the
-user to setup. It does not ask for provider keys.
-
-If you prefer npm directly:
-
-```sh
-npm install -g @valoir/rizz
-rizz setup
-```
+The npm installer installs the public package and exposes the `rizz` command. It does not ask for
+provider keys; keys are entered only in `rizz setup`.
 
 ## Local Development Install
 

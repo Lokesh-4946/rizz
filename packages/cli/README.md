@@ -5,12 +5,6 @@ The lightest, most connectable coding agent harness by Valoir.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lokesh-4946/rizz/develop/scripts/install.sh | sh
-```
-
-Or install directly with npm:
-
-```sh
 npm install -g @valoir/rizz
 ```
 

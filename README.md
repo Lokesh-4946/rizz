@@ -32,7 +32,7 @@ Development from source also needs pnpm 11+. CI currently runs on Node 24.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lokesh-4946/rizz/develop/scripts/install.sh | sh
+npm install -g @valoir/rizz
 ```
 
 Then run:
@@ -40,12 +40,6 @@ Then run:
 ```sh
 rizz setup
 rizz
-```
-
-If you prefer npm directly:
-
-```sh
-npm install -g @valoir/rizz
 ```
 
 For local development from this checkout:
