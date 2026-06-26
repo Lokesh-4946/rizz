@@ -7,7 +7,7 @@ import {
   type SecretStore,
   err,
   ok,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 import { describe, expect, it } from 'vitest';
 import {
   loginWithApiKey,

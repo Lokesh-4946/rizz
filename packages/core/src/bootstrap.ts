@@ -28,7 +28,7 @@ import {
   openSecretStore,
   resolveProfile,
   selectByCapability,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 
 const isCapability = (value: string): value is Capability =>
   (CAPABILITIES as readonly string[]).includes(value);

@@ -1,4 +1,4 @@
-import type { Message } from '@rizz/providers';
+import type { Message } from '@valoir/rizz-providers';
 
 /** In-memory conversation state. Persistence (SQLite + resume) is handled by the session store. */
 export interface Session {

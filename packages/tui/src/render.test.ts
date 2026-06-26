@@ -50,7 +50,7 @@ describe('tui render (plain theme)', () => {
       ctxPct: 1,
       tokens: 42,
       cost: '$0.01',
-      branch: 'alpha',
+      branch: 'preview',
     });
     expect(bar).toContain('OpenRouter GPT-4o mini · api-key');
     expect(bar).toContain('42 tok · $0.01');
@@ -95,7 +95,7 @@ describe('model picker (D-029)', () => {
     expect(out).not.toContain('Anthropic — Claude — API key (BYOK) · not connected');
     expect(out).not.toContain('OpenRouter — any model, one key · not connected');
     expect(out).not.toContain('coming soon');
-    expect(out).not.toContain('alpha');
+    expect(out).not.toContain('sandbox');
   });
 });
 
@@ -107,11 +107,11 @@ describe('theme list + stubs', () => {
 
   it('plan stub is honest, not a fake UI', () => {
     expect(renderPlanStub(plain)).toContain('plan mode is not connected yet');
-    expect(renderPlanStub(plain)).not.toContain('alpha');
+    expect(renderPlanStub(plain)).not.toContain('fake');
   });
 
   it('not-connected hint names the provider', () => {
     expect(renderNotConnected(plain, 'Codex')).toContain('Codex');
-    expect(renderNotConnected(plain, 'Codex')).not.toContain('alpha');
+    expect(renderNotConnected(plain, 'Codex')).not.toContain('fake');
   });
 });

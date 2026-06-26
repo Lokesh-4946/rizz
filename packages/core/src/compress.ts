@@ -1,5 +1,5 @@
 // maybeCompress — the compression TRIGGER (orchestration). It decides *when* to compress; the *how*
-// is the compressContext service (@rizz/providers). Default trigger at 70% of the model's window
+// is the compressContext service (@valoir/rizz-providers). Default trigger at 70% of the model's window
 // (D-019) — compacting too late loses the thread (latent-demands §3) — and it is user-configurable.
 // Head (system + task intent) and tail (recent work) are protected by the service.
 
@@ -10,7 +10,7 @@ import {
   compressContext,
   estimateMessagesTokens,
   ok,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 
 export interface CompressConfig {
   /** Fraction of the context window that triggers compaction. Default 0.70 (D-019), configurable. */

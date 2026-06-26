@@ -20,7 +20,7 @@ import {
   err,
   estimateCostUsd,
   ok,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 import {
   type Budget,
   type BudgetState,

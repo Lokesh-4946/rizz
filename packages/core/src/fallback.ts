@@ -14,7 +14,7 @@ import {
   err,
   ok,
   resolveModelRoute,
-} from '@rizz/providers';
+} from '@valoir/rizz-providers';
 
 export type FailureAction = 'fallback' | 'surface' | 'stop' | 'repair';
 

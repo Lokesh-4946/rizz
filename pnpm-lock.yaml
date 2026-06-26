@@ -23,31 +23,31 @@ importers:
 
   packages/cli:
     dependencies:
-      '@rizz/core':
-        specifier: workspace:*
+      '@valoir/rizz-core':
+        specifier: workspace:^
         version: link:../core
-      '@rizz/providers':
-        specifier: workspace:*
+      '@valoir/rizz-providers':
+        specifier: workspace:^
         version: link:../providers
-      '@rizz/tui':
-        specifier: workspace:*
+      '@valoir/rizz-tui':
+        specifier: workspace:^
         version: link:../tui
 
   packages/core:
     dependencies:
-      '@rizz/providers':
-        specifier: workspace:*
+      '@valoir/rizz-providers':
+        specifier: workspace:^
         version: link:../providers
 
   packages/providers: {}
 
   packages/tui:
     dependencies:
-      '@rizz/core':
-        specifier: workspace:*
+      '@valoir/rizz-core':
+        specifier: workspace:^
         version: link:../core
-      '@rizz/providers':
-        specifier: workspace:*
+      '@valoir/rizz-providers':
+        specifier: workspace:^
         version: link:../providers
 
 packages:

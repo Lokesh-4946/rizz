@@ -24,8 +24,8 @@ shipped. A new dependency in `core` or `providers` must be justified in the PR d
 
 ## Imports & package boundaries
 
-- Workspace packages import each other **only through the package entrypoint** (`@rizz/core`,
-  `@rizz/providers`, …) — never deep-import another package's `src/`.
+- Workspace packages import each other **only through the package entrypoint** (`@valoir/rizz-core`,
+  `@valoir/rizz-providers`, …) — never deep-import another package's `src/`.
 - **Named exports only.** `noDefaultExport` is enforced by Biome. One concept per file where it
   reads better; do not pre-split files that belong together.
 - Dependency direction is **one-way**: `cli → tui → core → providers`. Lower layers never import

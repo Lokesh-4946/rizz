@@ -79,6 +79,7 @@ async function buildReportFixture(options: ReportFixtureOptions = {}): Promise<{
   readonly accessCalls: ReadonlyArray<{ readonly path: string; readonly mode: number }>;
 }> {
   const commands = commandFixture({
+    'npm --version': { ok: true, stdout: '11.5.1' },
     'pnpm --version': { ok: true, stdout: '11.6.0' },
     'git --version': { ok: true, stdout: 'git version 2.45.0' },
     'which secret-tool': { ok: true, stdout: '/usr/bin/secret-tool' },
@@ -120,18 +121,33 @@ describe('setup dependency doctor', () => {
     expect(doctorExitCode(report)).toBe(1);
   });
 
-  it('passes when pnpm is present without checking corepack', async () => {
+  it('passes when npm is present without checking pnpm or corepack', async () => {
     const { report, commandCalls } = await buildReportFixture();
+
+    expect(findCheck(report, 'package-manager')).toMatchObject({
+      severity: 'ok',
+      summary: 'npm is available',
+    });
+    expect(commandCalls).not.toContain('pnpm --version');
+    expect(commandCalls).not.toContain('corepack --version');
+  });
+
+  it('passes when npm is absent but pnpm is present without checking corepack', async () => {
+    const { report, commandCalls } = await buildReportFixture({
+      commandResults: { 'npm --version': { ok: false, reason: 'ENOENT' } },
+    });
 
     expect(findCheck(report, 'package-manager')).toMatchObject({
       severity: 'ok',
       summary: 'pnpm is available',
     });
+    expect(commandCalls).toContain('pnpm --version');
     expect(commandCalls).not.toContain('corepack --version');
   });
 
   it('passes when pnpm is absent but corepack is present', () => {
     const check = classifyPackageManager({
+      npm: { ok: false, reason: 'ENOENT' },
       pnpm: { ok: false, reason: 'ENOENT' },
       corepack: { ok: true, stdout: '0.31.0' },
     });
@@ -142,9 +158,10 @@ describe('setup dependency doctor', () => {
     });
   });
 
-  it('warns, without exit 1, when both pnpm and corepack are absent', async () => {
+  it('warns, without exit 1, when npm, pnpm, and corepack are absent', async () => {
     const { report } = await buildReportFixture({
       commandResults: {
+        'npm --version': { ok: false, reason: 'ENOENT' },
         'pnpm --version': { ok: false, reason: 'ENOENT' },
         'corepack --version': { ok: false, reason: 'ENOENT' },
       },

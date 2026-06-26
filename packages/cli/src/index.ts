@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @rizz/cli — the `rizz` entrypoint. Orchestration: parse the command, then hand off to tui/core.
+// @valoir/rizz — the `rizz` entrypoint. Orchestration: parse the command, then hand off to tui/core.
 // No args + a TTY → the interactive TUI; no args + piped stdin → one print-mode turn (scriptable,
 // job #3). Kept dependency-light so cold start stays fast (the footprint gate measures this binary).
 
@@ -15,31 +15,28 @@ import {
   resolveProvider,
   runJsonTurn,
   runTurn,
-} from '@rizz/core';
-import { StubProvider, openSecretStore, openSessionStore } from '@rizz/providers';
-import { startTui } from '@rizz/tui';
+} from '@valoir/rizz-core';
+import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-providers';
+import { startTui } from '@valoir/rizz-tui';
 
-const VERSION = '0.0.0';
+const VERSION = '0.1.0';
 
-const USAGE = `rizz — the lightest, most connectable coding agent harness
+const USAGE = `rizz - lightweight local coding agent harness
 
 Usage:
-  rizz                   launch the interactive TUI
-  rizz setup             choose a model route for this workspace
-  rizz --profile <p>     pick a model profile (default · deep · fast · cheap · local)
-  rizz --capability <c>  pick the best model for a capability (code · plan · cheap · long-context)
-  rizz --resume <id>     resume a saved session by id (rehydrates its full history)
-  rizz < file            run one turn on piped input and print the reply (print mode)
-  rizz --json < file     one-shot turn, structured JSON result on stdout (scriptable)
-  rizz --rpc             stdin/stdout JSON line protocol for tools to drive rizz (job #3)
-  rizz setup --dry-run   check local readiness without connecting a provider
-  rizz --version         print the rizz version
-  rizz --help            show this help
+  rizz                  launch TUI
+  rizz setup            choose model route
+  rizz --profile <p>    profile: default | deep | fast | cheap | local
+  rizz --capability <c> capability: code | plan | cheap | long-context
+  rizz --resume <id>    resume session
+  rizz < file           one turn, plain text
+  rizz --json < file    one turn, JSON
+  rizz --rpc            JSONL RPC
+  rizz setup --dry-run  readiness check
+  rizz --version        print version
+  rizz --help           show help
 
-Single-agent and minimal by default. Use setup to choose a model route. OpenRouter BYOK starts
-directly from setup; a signed-in Codex CLI can start a subscription-backed route.
-Workspace mode is opt-in and stays off unless you turn it on. The headless contract is in
-runbooks/headless.md.`;
+Run rizz setup to connect OpenRouter BYOK or a signed-in Codex route.`;
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
