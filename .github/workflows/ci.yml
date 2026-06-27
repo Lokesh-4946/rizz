@@ -14,6 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  branch-policy:
+    name: branch policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce PR base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.base_ref }}"
+          head="${{ github.head_ref }}"
+
+          case "$base" in
+            develop)
+              ;;
+            main)
+              case "$head" in
+                develop|release/*)
+                  ;;
+                *)
+                  echo "Only release PRs from develop or release/* may target main."
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "PRs must target develop, or main for release promotion."
+              exit 1
+              ;;
+          esac
+
   check:
     name: ${{ matrix.os }} · lint · type-check · test · eval · footprint
     runs-on: ${{ matrix.os }}
@@ -52,3 +83,27 @@ jobs:
 
       - name: Footprint / cold-start budget
         run: pnpm footprint
+
+  pack-public-check:
+    name: public package contents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check public package contents
+        run: pnpm pack:check
