@@ -5,14 +5,7 @@
   "bin": { "rizz": "./dist/index.js" },
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist/**/*.js",
-    "dist/**/*.js.map",
-    "dist/**/*.d.ts",
-    "dist/**/*.d.ts.map",
-    "!dist/**/*.test.*",
-    "package.json"
-  ],
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "package.json"],
   "publishConfig": {
     "access": "public"
   },

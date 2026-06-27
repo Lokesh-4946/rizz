@@ -115,12 +115,13 @@ Run the full local gate:
 pnpm check
 ```
 
-This runs lint, type-check, tests, eval smoke, install smoke, and the footprint budget.
+This runs lint, type-check, tests, eval smoke, install smoke, and the footprint budget. Release
+checks also run `pnpm pack:check` to verify public package contents.
 
 Current merged-develop verification:
 
-- Biome: 94 files
-- Vitest: 29 files / 273 tests
+- Biome: 95 files
+- Vitest: 29 files / 279 tests
 - eval: 6/6 CLI process smokes
 - install-local: 5/5 shim smokes
 - footprint: 53ms cold start / 200KB core

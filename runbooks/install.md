@@ -130,10 +130,16 @@ This runs:
 - install-local smoke
 - footprint check
 
+Release-facing changes should also run:
+
+```sh
+pnpm pack:check
+```
+
 Latest merged-develop public preview gate:
 
 - `pnpm check` passed
-- Vitest: 29 files / 273 tests
+- Vitest: 29 files / 279 tests
 - eval: 6/6
 - install-local: 5/5
 - footprint: 53ms cold start / 200KB core

@@ -32,28 +32,20 @@ path, which never imports them. They still appear in the per-package breakdown, 
 
 ## The drift rule (must stay in sync)
 
-When a package is published (today all are `private: true`; publishing is deferred per D-031 step 3),
-**the npm tarball must exclude exactly the same set the gate excludes**, or the measured footprint and
-the real install size diverge.
+When a package is published, **the npm tarball must exclude exactly the same set the gate excludes**,
+or the measured footprint and the real install size diverge.
 
-**At publish time, for each package that flips `private: false`:**
+**For each public package:**
 
-1. Set `"files": ["dist"]` (ship only the build output — not `src`).
-2. Add a package `.npmignore` (or rely on `files` + an ignore) that drops the gate-excluded patterns.
-   Use the `*.test.*` glob so it matches the gate's `/\.test\./` regex exactly (incl. `.test.cjs` /
-   `.test.mjs`, not just `.test.js` / `.test.d.ts`):
-   ```
-   *.map
-   *.test.*
-   ```
-3. Verify with `npm pack --dry-run` that the tarball contains **no** `*.map` and **no** `*.test.*`,
-   matching `isShipped()` in `scripts/footprint-check.mjs` (the single source of truth for the
-   exclusion list).
+1. Keep package `"files"` entries limited to `dist/**/*.js`, `dist/**/*.d.ts`, and `package.json`.
+2. Keep compiled tests and maps out of `"files"`.
+3. Verify with `pnpm pack:check` that the tarball contains **no** `*.map`, **no** `*.test.*`, and no
+   source files, matching `isShipped()` in `scripts/footprint-check.mjs`.
 
 If `scripts/footprint-check.mjs`'s `isShipped()` filter changes, update this list and every package's
 ignore in the same PR — they are a matched pair and must not drift.
 
 ## Current status
 
-- All packages are `private: true`; no tarball is produced yet, so there is nothing to diverge **today**.
-- The exclusion contract above is the gate that prevents drift the moment publishing starts (M4+).
+- Public packages are publish-configured under the `@valoir` scope.
+- `pnpm pack:check` is the release gate that prevents tarball/footprint drift.
