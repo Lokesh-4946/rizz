@@ -11,6 +11,14 @@ export interface StatusInfo {
   readonly tokens: number;
   readonly cost: string;
   readonly branch: string;
+  readonly permissions: string;
+}
+
+const SECRET_LIKE = /(?:sk|sess|tok|pat|npm)[_-]|eyJ|token|bearer|authorization/i;
+
+/** @internal */
+export function redactSecrets(text: string): string {
+  return SECRET_LIKE.test(text) ? '[redacted]' : text;
 }
 
 // Internal name only (decision D-010 — no hardcoded public product name yet).
@@ -26,13 +34,8 @@ export const renderHint = (theme: Theme): string =>
 
 // Always-visible status line: model · auth │ ctx% │ tokens · cost │ branch (spec §8).
 export const renderStatusBar = (theme: Theme, info: StatusInfo): string => {
-  const parts = [
-    `${info.model} · ${info.auth}`,
-    `ctx ${info.ctxPct}%`,
-    `${info.tokens} tok · ${info.cost}`,
-    `⎇${info.branch}`,
-  ];
-  return theme.system(`  ${parts.join('  │  ')}`);
+  const text = `model ${redactSecrets(info.model)}  │  auth ${redactSecrets(info.auth)}  │  billing ${info.cost}  │  context ${info.ctxPct}%  │  tokens ${info.tokens}  │  branch ${redactSecrets(info.branch)}  │  permissions ${redactSecrets(info.permissions)}`;
+  return theme.system(`  ${text}`);
 };
 
 /** @internal */
@@ -40,7 +43,7 @@ export const renderThinking = (theme: Theme): string => theme.dim('  thinking...
 
 /** @internal */
 export const renderStillWaiting = (theme: Theme, provider: string): string =>
-  theme.dim(`  still waiting on ${provider}...`);
+  theme.dim(`  still waiting on ${redactSecrets(provider)}...`);
 
 /** @internal */
 export interface PickerModel {
@@ -58,12 +61,14 @@ export const renderModelPicker = (
   const lines: string[] = [theme.accent('  Select a model')];
   models.forEach((m, i) => {
     const marker = m.active ? theme.accent(theme.glyphs.star) : ' ';
-    lines.push(`  ${marker} ${theme.text(`${i + 1}. ${m.label}`)}`);
+    lines.push(`  ${marker} ${theme.text(`${i + 1}. ${redactSecrets(m.label)}`)}`);
   });
   lines.push(theme.dim('  ─ other routes ─'));
   for (const p of catalog) {
     if (p.wired) continue;
-    lines.push(theme.dim(`    ${theme.glyphs.bulletOpen} ${p.label} — ${p.blurb} · not connected`));
+    lines.push(
+      theme.dim(`    ${theme.glyphs.bulletOpen} ${redactSecrets(p.label)} · not connected`),
+    );
   }
   lines.push(theme.dim('  type a number to switch, or press enter to cancel'));
   return lines.join('\n');
@@ -91,4 +96,4 @@ export const renderPlanStub = (theme: Theme): string =>
 
 /** @internal */
 export const renderNotConnected = (theme: Theme, label: string): string =>
-  theme.dim(`  ${label} is not connected yet.`);
+  theme.dim(`  ${redactSecrets(label)} is not connected yet.`);

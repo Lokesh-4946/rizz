@@ -47,7 +47,11 @@ interface SelectOpts {
   readonly capability?: string;
 }
 
-async function startNoModelTui(notice: string, displayName?: string): Promise<void> {
+async function startNoModelTui(
+  notice: string,
+  displayName?: string,
+  agentName?: string,
+): Promise<void> {
   await startTui({
     provider: new StubProvider(),
     subscription: false,
@@ -55,6 +59,7 @@ async function startNoModelTui(notice: string, displayName?: string): Promise<vo
     notice,
     persistSession: false,
     ...(displayName !== undefined ? { displayName } : {}),
+    ...(agentName !== undefined ? { agentName } : {}),
   });
 }
 
@@ -233,6 +238,7 @@ async function main(argv: readonly string[]): Promise<number> {
               }),
               persistSession: false,
               ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
+              ...(context.agentName !== undefined ? { agentName: context.agentName } : {}),
             });
             return { ok: true };
           }
@@ -261,23 +267,30 @@ async function main(argv: readonly string[]): Promise<number> {
               ...resolved,
               persistSession: false,
               ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
+              ...(context.agentName !== undefined ? { agentName: context.agentName } : {}),
             });
             return { ok: true };
           }
           if (route === 'openai-api') {
-            await startNoModelTui('OpenAI selected. No model connected yet.', context.displayName);
+            await startNoModelTui(
+              'OpenAI selected. No model connected yet.',
+              context.displayName,
+              context.agentName,
+            );
             return { ok: true };
           }
           if (route === 'anthropic-api') {
             await startNoModelTui(
               'Anthropic selected. No model connected yet.',
               context.displayName,
+              context.agentName,
             );
             return { ok: true };
           }
           await startNoModelTui(
             'No model connected. Use /login or /model when ready.',
             context.displayName,
+            context.agentName,
           );
           return { ok: true };
         },

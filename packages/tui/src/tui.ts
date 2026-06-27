@@ -1,10 +1,3 @@
-// Simple-mode interactive TUI (UI/UX spec §4/§5). Zero runtime dependencies — built on node:readline
-// + the theme's ANSI (decision D-015). It renders streamed turn events (tool lines, visible fallback,
-// compaction notes), prompts inline for command approval, shows the live budget, and routes the slash
-// commands `/login` (BYOK key → keychain, D-033), `/model` (picker + hot-swap, D-029), `/theme`
-// (hot-swap across the color-depth ladder), and `/plan` (visible stub, D-030). Demo mode is a single
-// quiet banner; commands route to their handler rather than being echoed back as chat (D-032).
-
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -37,6 +30,7 @@ import { PROVIDER_CATALOG } from './catalog.js';
 import { parseCommand, parseThemeArg } from './commands.js';
 import {
   type PickerModel,
+  redactSecrets,
   renderEmptyState,
   renderHeader,
   renderHint,
@@ -67,6 +61,8 @@ export interface TuiOptions {
   readonly persistSession?: boolean;
   /** Launch-only preferred display name from setup. It is not persisted by Agent Light. */
   readonly displayName?: string;
+  /** Launch-only preferred agent name from setup. It is not persisted by Agent Light. */
+  readonly agentName?: string;
 }
 
 /** Where sessions persist. Local-first; no cloud (D-011). */
@@ -142,7 +138,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   const { session, sessionId, notice } = opened;
   const modelDisplay = (): string => {
     if (activeAuth === 'subscription' && activeProvider.id === 'codex') {
-      return activeModel?.label ?? 'Codex · model not reported';
+      return activeModel?.label ?? 'Codex · GPT-5';
     }
     if (activeAuth === 'demo') return 'no model';
     return activeModel?.label ?? activeProvider.label;
@@ -154,12 +150,12 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   writeLine(renderHeader(theme, modelDisplay()));
   writeLine('');
   if (options.displayName !== undefined) {
-    writeLine(theme.system(`  ${options.displayName}, rizz is ready.`));
+    writeLine(theme.system(`  ${options.displayName}, ${options.agentName ?? 'rizz'} is ready.`));
   }
   if (options.notice !== undefined) writeLine(theme.alert(`  ⚠ ${options.notice}`));
   if (notice !== undefined) writeLine(theme.alert(`  ⚠ ${notice}`));
   if (activeAuth === 'subscription') {
-    writeLine(theme.dim('  Codex subscription active. Model is managed by Codex.'));
+    writeLine(theme.dim('  Codex subscription active. Model selection happens in Codex.'));
   }
   if (activeAuth === 'demo') {
     writeLine(theme.dim('  No model connected. Use /login or /model when ready.'));
@@ -180,20 +176,14 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
       });
     });
 
-  // Read a secret with the echo suppressed so the key never lands in the terminal/scrollback (§3.6).
-  // readline has no built-in masked input; overriding `_writeToOutput` is the standard approach. We
-  // print the prompt ourselves and then mute EVERYTHING except newlines — robust across Node versions
-  // (no reliance on readline echoing the prompt back in a single, exact-match call).
   const askSecret = (question: string): Promise<string | null> =>
     new Promise((resolve) => {
       process.stdout.write(question);
-      // reason: `_writeToOutput` is a readline internal — the only hook for muting echo in core Node.
       const internal = rl as unknown as { _writeToOutput?: ((s: string) => void) | undefined };
       const original = internal._writeToOutput;
       const restore = (): void => {
         internal._writeToOutput = original;
       };
-      // Swallow keystroke echoes; let newlines through so Enter still advances the line.
       internal._writeToOutput = (s: string): void => {
         if (s.includes('\n')) original?.call(rl, '\n');
       };
@@ -254,7 +244,7 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
         writeLine(theme.dim('  compacting context...'));
         break;
       case 'compacted':
-        writeLine(theme.dim(`  context compacted: ${event.note}`));
+        writeLine(theme.dim(`  context compacted: ${redactSecrets(event.note)}`));
         break;
       case 'approval-denied':
         writeLine(theme.dim(`  ${theme.glyphs.cross} denied: ${event.command}`));
@@ -277,21 +267,22 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
     return answer === 'y' || answer === 'yes' ? { approved: true } : { approved: false };
   };
 
-  const statusLine = (): string => {
+  const statusInfo = () => {
     const used = estimateMessagesTokens(session.messages);
     const ctxPct = Math.min(100, Math.round((used / DEFAULT_COMPRESS.contextWindow) * 100));
-    // $0.00 (sub) on the subscription/demo path; the real running spend on a metered BYOK key.
     const cost = activeSubscription ? '$0.00 (sub)' : `$${budgetState.costUsd.toFixed(2)}`;
     const authDisplay = activeAuth === 'demo' ? 'not connected' : activeAuth;
-    return renderStatusBar(theme, {
+    return {
       model: modelDisplay(),
       auth: authDisplay,
       ctxPct,
       tokens: budgetState.tokens,
       cost,
-      branch: 'dev', // TODO: read the active git branch once the workspace service lands.
-    });
+      branch: 'dev',
+      permissions: 'ask',
+    };
   };
+  const statusLine = (): string => renderStatusBar(theme, statusInfo());
   /** Apply a resolved provider as the new active model (shared by /login and /model). */
   const adopt = (resolved: ResolvedProvider): void => {
     activeProvider = resolved.provider;
@@ -328,9 +319,8 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
   const handleModel = async (): Promise<void> => {
     if (activeAuth === 'subscription' && activeProvider.id === 'codex') {
       writeLine(theme.accent('  Codex subscription'));
-      writeLine(theme.text(`  current: ${modelDisplay()}`));
-      writeLine(theme.dim('  Codex manages the model for this subscription route.'));
-      writeLine(theme.dim('  Use OpenRouter direct for selectable models.'));
+      writeLine(theme.text(`  current: ${redactSecrets(modelDisplay())}`));
+      writeLine(theme.dim('  Codex model switching is not available in this alpha.'));
       return;
     }
     const modelEntries = listToolCapable(DEFAULT_REGISTRY);
@@ -429,9 +419,6 @@ export async function startTui(options: TuiOptions = {}): Promise<void> {
         return true;
       case 'status':
         writeLine(statusLine());
-        if (activeAuth === 'subscription' && activeProvider.id === 'codex') {
-          writeLine(theme.dim('  Codex manages the model for this subscription route.'));
-        }
         return true;
       case 'theme':
         handleTheme(command.arg);
