@@ -5,15 +5,9 @@
 // the selectable models themselves come from the model registry (@valoir/rizz-providers).
 
 /** @internal */
-export type ProviderGroup = 'subscription' | 'api' | 'local';
-
-/** @internal */
 export interface CatalogProvider {
   readonly id: string;
   readonly label: string;
-  readonly group: ProviderGroup;
-  readonly blurb: string;
-  /** True once a verified adapter exists. Only wired providers are selectable. */
   readonly wired: boolean;
 }
 
@@ -23,34 +17,26 @@ export const PROVIDER_CATALOG: readonly CatalogProvider[] = [
   {
     id: 'anthropic-api',
     label: 'Anthropic',
-    group: 'api',
-    blurb: 'Claude — API key (BYOK)',
     wired: true,
   },
   {
     id: 'claude-sub',
     label: 'Claude',
-    group: 'subscription',
-    blurb: 'Claude Code · Pro · Max',
     wired: false,
   },
-  { id: 'codex', label: 'Codex', group: 'subscription', blurb: 'ChatGPT Plus · Pro', wired: false },
-  { id: 'copilot', label: 'Copilot', group: 'subscription', blurb: 'GitHub Copilot', wired: false },
+  { id: 'codex', label: 'Codex', wired: false },
+  { id: 'copilot', label: 'Copilot', wired: false },
   {
     id: 'openrouter',
     label: 'OpenRouter',
-    group: 'api',
-    blurb: 'any model, one key',
     wired: true,
   },
   {
     id: 'bedrock',
     label: 'Amazon Bedrock',
-    group: 'api',
-    blurb: 'governed · AWS creds',
     wired: false,
   },
-  { id: 'openai', label: 'OpenAI', group: 'api', blurb: 'direct API', wired: false },
-  { id: 'google', label: 'Google', group: 'api', blurb: 'Gemini', wired: false },
-  { id: 'ollama', label: 'Ollama', group: 'local', blurb: 'offline fallback', wired: false },
+  { id: 'openai', label: 'OpenAI', wired: false },
+  { id: 'google', label: 'Google', wired: false },
+  { id: 'ollama', label: 'Ollama', wired: false },
 ];

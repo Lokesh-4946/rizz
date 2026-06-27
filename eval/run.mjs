@@ -346,16 +346,18 @@ async function runHeadlessSmoke() {
       name: 'rizz setup shows route picker without provider credentials or config writes',
       run() {
         const secret = 'sk-ant-eval-interactive-setup-secret';
-        const { configExists, result } = withTempHomeSync((home) => {
+        const { configExists, envUser, result } = withTempHomeSync((home) => {
+          const env = setupSmokeEnv(home, secret);
           const child = spawnSync(process.execPath, [cliBin, 'setup'], {
             cwd: repoRoot,
             input: '',
             encoding: 'utf8',
-            env: setupSmokeEnv(home, secret),
+            env,
             timeout: 5_000,
           });
           return {
             configExists: existsSync(join(home, '.rizz', 'config.json')),
+            envUser: env.USER,
             result: child,
           };
         });
@@ -376,6 +378,17 @@ async function runHeadlessSmoke() {
           'expected setup to skip model route in isolated env',
         );
         assert(!result.stdout.includes('Name this launch?'), 'old launch-name prompt remained');
+        assert(
+          !result.stdout.includes("Hey. How're you doing?"),
+          'non-interactive setup printed the first-run greeting',
+        );
+        assert(
+          !result.stdout.includes('What should I call you?'),
+          'non-interactive setup printed the nickname prompt',
+        );
+        if (envUser) {
+          assert(!result.stdout.includes(envUser), 'non-interactive setup echoed the system user');
+        }
         assert(!result.stdout.includes('[pi]'), 'old pi default remained');
         assert(!result.stdout.includes('local demo mode'), 'old local demo copy remained');
         assert(!result.stdout.includes('Demo / Harness'), 'old demo harness copy remained');

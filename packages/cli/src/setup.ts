@@ -152,6 +152,7 @@ interface SetupLaunchContext {
   readonly codex?: CodexCliDiagnostic;
   readonly apiKey?: string;
   readonly displayName?: string;
+  readonly agentName?: string;
 }
 
 type SetupLauncher = (
@@ -704,19 +705,23 @@ function detectFriendlyDisplayName(env: Readonly<NodeJS.ProcessEnv>, homeDir: st
   );
 }
 
-function preferredDisplayName(answer: string | null, fallback: string): string {
+const SECRET_LIKE = /(?:sk|sess|tok|pat|npm)[_-]|eyJ|token|bearer|authorization/i;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: setup strips terminal controls from names.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
+function redactSecretLike(text: string): string {
+  return SECRET_LIKE.test(text) ? '[redacted]' : text;
+}
+
+function cleanSetupAnswer(answer: string | null): string | undefined {
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
   const trimmed = answer
     ?.replace(ansi, ' ')
-    .split('')
-    .map((char) => {
-      const code = char.charCodeAt(0);
-      return code < 32 || code === 127 ? ' ' : char;
-    })
-    .join('')
+    .replace(CONTROL_CHARS, ' ')
     .trim()
     .replace(/\s+/g, ' ');
-  return trimmed === undefined || trimmed === '' ? fallback : trimmed;
+  if (trimmed === undefined || trimmed === '') return undefined;
+  return redactSecretLike(trimmed);
 }
 
 function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly close: () => void } {
@@ -737,22 +742,30 @@ function createDefaultSetupPrompt(): { readonly ask: SetupQuestion; readonly clo
   };
 }
 
-async function resolveSetupDisplayName(params: {
+async function resolveSetupNames(params: {
   readonly ask?: SetupQuestion;
   readonly isTTY: boolean;
   readonly defaultName: string;
   readonly write: (text: string) => void;
-}): Promise<string> {
-  if (params.ask === undefined && !params.isTTY) return params.defaultName;
+}): Promise<{ readonly displayName?: string; readonly agentName?: string }> {
+  if (params.ask === undefined && !params.isTTY) return {};
 
   const prompt = params.ask === undefined ? createDefaultSetupPrompt() : undefined;
   const ask = params.ask ?? prompt?.ask;
-  if (ask === undefined) return params.defaultName;
+  if (ask === undefined) return {};
 
   try {
     params.write("Hey. How're you doing?\n");
-    const answer = await ask(`What should I call you? [${params.defaultName}] `);
-    return preferredDisplayName(answer, params.defaultName);
+    const displayAnswer = await ask(
+      `What should I call you? [suggestion: ${redactSecretLike(params.defaultName)}] `,
+    );
+    const agentAnswer = await ask('What should I call the agent? [rizz] ');
+    const displayName = cleanSetupAnswer(displayAnswer);
+    const agentName = cleanSetupAnswer(agentAnswer) ?? 'rizz';
+    return {
+      ...(displayName !== undefined ? { displayName } : {}),
+      agentName,
+    };
   } finally {
     prompt?.close();
   }
@@ -1053,7 +1066,7 @@ export async function runSetupInteractive(
   if (report.blockers > 0) return 1;
 
   const detectedName = options.defaultUserName ?? detectFriendlyDisplayName(env, homeDir);
-  const displayName = await resolveSetupDisplayName({
+  const setupNames = await resolveSetupNames({
     write,
     defaultName: detectedName,
     isTTY: options.isTTY === true,
@@ -1091,7 +1104,7 @@ export async function runSetupInteractive(
     const launched = await options.launchSelectedRoute(selected.route, {
       codex: selected.codex,
       ...(apiKey !== undefined ? { apiKey } : {}),
-      displayName,
+      ...setupNames,
     });
     if (!launched.ok) {
       write(`Could not start rizz: ${launched.message}\n`);
