@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { generateProjectBrain, reviewProjectChanges } from './index.js';
+import { explainProjectTarget, generateProjectBrain, reviewProjectChanges } from './index.js';
 
 async function withTempProject<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'rizz-brain-test-'));
@@ -15,6 +15,15 @@ async function withTempProject<T>(run: (dir: string) => Promise<T>): Promise<T> 
 
 async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf8')) as T;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readTreeText(dir: string): Promise<string> {
@@ -323,6 +332,8 @@ describe('project brain generation', () => {
       );
       expect(report).toContain('href="#evidence-file-packages--cli--package-json"');
       expect(report).toContain('id="evidence-file-packages--cli--package-json"');
+      expect(report).toContain('Explain this: <code>rizz explain packages/cli</code>');
+      expect(report).toContain('Explain this: <code>rizz explain packages/cli/package.json</code>');
       expect(report.indexOf('<h2>Start Here</h2>')).toBeLessThan(
         report.indexOf('<h2>Component Intelligence</h2>'),
       );
@@ -331,6 +342,175 @@ describe('project brain generation', () => {
       expect(report).not.toContain('fetch(');
       expect(report).not.toContain('https://');
       expect(report).not.toContain('http://');
+    });
+  });
+
+  it('explains components, files, folders, fuzzy targets, missing targets, and reports', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'brain', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'brain', 'package.json'),
+        JSON.stringify({
+          name: '@sample/brain',
+          scripts: { build: 'tsc -b', test: 'vitest run packages/brain' },
+          dependencies: { zod: '^3.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 1;');
+      await writeFile(
+        join(dir, 'packages', 'brain', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("works", () => {});',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:00:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+
+      const notFoundBeforeReport = await explainProjectTarget({
+        rootDir: dir,
+        target: 'not-a-real-target',
+      });
+      expect(notFoundBeforeReport).toMatchObject({
+        ok: false,
+        error: { code: 'EXPLAIN_TARGET_NOT_FOUND' },
+      });
+      expect(await fileExists(join(dir, '.rizz', 'reports', 'explain.html'))).toBe(false);
+
+      const component = await explainProjectTarget({
+        rootDir: dir,
+        target: 'component:packages--brain',
+        now: new Date('2026-06-28T11:01:00.000Z'),
+      });
+      expect(component.ok).toBe(true);
+      if (!component.ok) return;
+      expect(component.value.explanation).toMatchObject({
+        target: 'component:packages--brain',
+        resolved_entity_id: 'component:packages--brain',
+        entity_type: 'component',
+        purpose: expect.stringContaining('Project understanding layer'),
+        dependencies: expect.arrayContaining(['zod']),
+        entry_points: expect.arrayContaining(['packages/brain/src/index.ts']),
+        tests: expect.arrayContaining(['packages/brain/src/index.test.ts']),
+        configs: expect.arrayContaining(['packages/brain/package.json']),
+        confidence: 'inferred',
+      });
+      expect(component.value.explanation.evidence_ids).toContain(
+        'evidence:file-packages--brain--package.json',
+      );
+
+      const file = await explainProjectTarget({
+        rootDir: dir,
+        target: 'packages/brain/src/index.ts',
+        now: new Date('2026-06-28T11:02:00.000Z'),
+      });
+      expect(file.ok).toBe(true);
+      if (!file.ok) return;
+      expect(file.value.explanation).toMatchObject({
+        resolved_entity_id: 'file:packages--brain--src--index.ts',
+        entity_type: 'file',
+      });
+      expect(file.value.explanation.read_first).toContain('packages/brain/src/index.ts');
+
+      const folder = await explainProjectTarget({
+        rootDir: dir,
+        target: 'packages/brain',
+        now: new Date('2026-06-28T11:03:00.000Z'),
+      });
+      expect(folder.ok).toBe(true);
+      if (!folder.ok) return;
+      expect(folder.value.explanation.resolved_entity_id).toBe('component:packages--brain');
+
+      const fuzzy = await explainProjectTarget({
+        rootDir: dir,
+        target: 'brain',
+        now: new Date('2026-06-28T11:04:00.000Z'),
+      });
+      expect(fuzzy.ok).toBe(true);
+      if (!fuzzy.ok) return;
+      expect(fuzzy.value.explanation.resolved_entity_id).toBe('component:packages--brain');
+
+      const ambiguous = await explainProjectTarget({
+        rootDir: dir,
+        target: 'index',
+      });
+      expect(ambiguous).toMatchObject({
+        ok: false,
+        error: { code: 'EXPLAIN_TARGET_AMBIGUOUS' },
+      });
+      if (!ambiguous.ok) expect(ambiguous.error.message).toContain('file:packages--brain--src');
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(report).toContain('rizz explain');
+      expect(report).toContain('component:packages--brain');
+      expect(report).toContain('What Breaks If Changed');
+      expect(report).toContain('Evidence');
+      expect(report).not.toContain('sk-or-v1-');
+    });
+  });
+
+  it('fails explain clearly when the project brain is missing', async () => {
+    await withTempProject(async (dir) => {
+      const result = await explainProjectTarget({ rootDir: dir, target: 'packages/brain' });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: 'BRAIN_MISSING',
+          message: 'Project brain not found. Run rizz brain, then rerun rizz explain.',
+        },
+      });
+    });
+  });
+
+  it('fails explain clearly when required entity stores are missing', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, '.rizz', 'brain'), { recursive: true });
+      await writeFile(
+        join(dir, '.rizz', 'brain', 'latest.json'),
+        JSON.stringify({
+          generated_at: '2026-06-28T11:05:00.000Z',
+          latest_component_map: [],
+        }),
+      );
+      await writeFile(join(dir, '.rizz', 'brain', 'graph.json'), '{"relationships":[]}');
+
+      const result = await explainProjectTarget({ rootDir: dir, target: 'packages/brain' });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'BRAIN_SCHEMA_INVALID' },
+      });
+      if (!result.ok) expect(result.error.message).toContain('components.json missing');
+    });
+  });
+
+  it('redacts secret-like path-derived ids from explain output and report', async () => {
+    await withTempProject(async (dir) => {
+      await writeFile(
+        join(dir, 'sk-or-v1-brainsecret0000000000000000.ts'),
+        'export const ok = true;',
+      );
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:06:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+
+      const result = await explainProjectTarget({
+        rootDir: dir,
+        target: 'sk-or-v1-brainsecret0000000000000000.ts',
+        now: new Date('2026-06-28T11:07:00.000Z'),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const output = JSON.stringify(result.value.explanation);
+      expect(output).not.toContain('sk-or-v1-brainsecret');
+      const report = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(report).not.toContain('sk-or-v1-brainsecret');
     });
   });
 

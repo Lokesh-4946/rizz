@@ -191,6 +191,30 @@ interface ReviewSummaryData {
   readonly recommended_action: RecommendedAction;
 }
 
+interface ExplainSummaryData {
+  readonly generated_at: string;
+  readonly target: string;
+  readonly resolved_entity_id: string;
+  readonly entity_type: EntityType;
+  readonly summary: string;
+  readonly purpose: string;
+  readonly responsibilities: readonly string[];
+  readonly dependencies: readonly string[];
+  readonly consumers: readonly string[];
+  readonly important_files: readonly string[];
+  readonly entry_points: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly breaks_if_changed: readonly string[];
+  readonly risks: readonly string[];
+  readonly read_first: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly depends_on: readonly string[];
+  readonly depended_on_by: readonly string[];
+  readonly confidence: Confidence;
+  readonly unknowns: readonly string[];
+}
+
 export interface GenerateProjectBrainOptions {
   readonly rootDir: string;
   readonly now?: Date;
@@ -237,6 +261,25 @@ export interface ReviewProjectChangesSummary {
 
 export type ReviewProjectChangesResult =
   | { readonly ok: true; readonly value: ReviewProjectChangesSummary }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
+export interface ExplainProjectTargetOptions {
+  readonly rootDir: string;
+  readonly target: string;
+  readonly now?: Date;
+}
+
+export interface ExplainProjectTargetSummary {
+  readonly rootDir: string;
+  readonly latestPath: string;
+  readonly reportPath: string;
+  readonly targetId: string;
+  readonly confidence: Confidence;
+  readonly explanation: ExplainSummaryData;
+}
+
+export type ExplainProjectTargetResult =
+  | { readonly ok: true; readonly value: ExplainProjectTargetSummary }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
 const ENTITY_FILES: ReadonlyArray<readonly [keyof BrainBuckets, string, EntityType]> = [
@@ -482,6 +525,12 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
   } catch {
     return undefined;
   }
+}
+
+async function writeVerifiedFile(path: string, contents: string): Promise<void> {
+  await writeFile(path, contents);
+  const written = await readFile(path, 'utf8');
+  if (written !== contents) throw new Error(`write verification failed for ${path}`);
 }
 
 async function scanFiles(
@@ -1302,6 +1351,7 @@ function renderComponentCards(
       )}" data-criticality="${htmlEscape(criticality)}">
         <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)}</div>
         <h3>${htmlEscape(component.name)}</h3>
+        <p class="muted">Explain this: <code>rizz explain ${htmlEscape(component.name)}</code></p>
         <p>${htmlEscape(purpose)}</p>
         <h4>Responsibilities</h4>
         ${renderListWithEvidence(
@@ -1447,6 +1497,7 @@ function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
       )}">
         <div class="badge">${htmlEscape(entity.confidence)} · ${htmlEscape(kind)}</div>
         <h3>${htmlEscape(path)}</h3>
+        <p class="muted">Explain this: <code>rizz explain ${htmlEscape(path)}</code></p>
         <p class="muted">${htmlEscape(entity.id)}</p>
         <p>hash: <code>${htmlEscape(hash)}</code>${size === undefined ? '' : ` · size: ${size}`}</p>
       </article>`;
@@ -1530,7 +1581,7 @@ function renderReport(params: {
       <h1>Mission Control · ${htmlEscape(params.projectName)}</h1>
       <p class="muted">Static local view generated from <code>.rizz/brain</code>. No server. No network. No model call.</p>
       <p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      <p class="muted">Generated ${htmlEscape(generatedAt)} · Brain v1 · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
+      <p class="muted">Generated ${htmlEscape(generatedAt)} · Project Intelligence Store · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
         <span class="badge warn">${params.buckets.risks.length} risks</span>
@@ -2369,6 +2420,453 @@ export async function reviewProjectChanges(
   }
 }
 
+export async function explainProjectTarget(
+  options: ExplainProjectTargetOptions,
+): Promise<ExplainProjectTargetResult> {
+  try {
+    const rootDir = options.rootDir;
+    if (!(await hasProjectBrain(rootDir))) {
+      return {
+        ok: false,
+        error: {
+          code: 'BRAIN_MISSING',
+          message: 'Project brain not found. Run rizz brain, then rerun rizz explain.',
+        },
+      };
+    }
+
+    const schemaErrors = await validateBrainSchema(rootDir);
+    if (schemaErrors.length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'BRAIN_SCHEMA_INVALID',
+          message: `${schemaErrors.slice(0, 4).join('; ')}. Run rizz brain to refresh.`,
+        },
+      };
+    }
+
+    const brainDir = join(rootDir, '.rizz', 'brain');
+    const entitiesDir = join(brainDir, 'entities');
+
+    const latestPath = join(brainDir, 'latest.json');
+    const graphPath = join(brainDir, 'graph.json');
+    const latest = (await readJsonFile<Record<string, unknown>>(latestPath)) ?? {};
+    const graph =
+      (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
+      {};
+    const entitySets = await readExplainEntitySets(entitiesDir);
+    const explainableEntities = [
+      ...entitySets.components,
+      ...entitySets.files,
+      ...entitySets.folders,
+    ];
+    const resolved = resolveExplainTarget(options.target, explainableEntities);
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+
+    const now = (options.now ?? new Date()).toISOString();
+    const explanation = buildExplanation({
+      now,
+      query: options.target,
+      target: resolved.value,
+      latest,
+      relationships: graph.relationships ?? [],
+      entitySets,
+    });
+    const reportsDir = join(rootDir, '.rizz', 'reports');
+    await mkdir(reportsDir, { recursive: true });
+    const reportPath = join(reportsDir, 'explain.html');
+    await writeVerifiedFile(reportPath, renderExplainReport(explanation, entitySets.evidence));
+
+    return {
+      ok: true,
+      value: {
+        rootDir,
+        latestPath,
+        reportPath,
+        targetId: explanation.resolved_entity_id,
+        confidence: explanation.confidence,
+        explanation,
+      },
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'EXPLAIN_FAILED', message } };
+  }
+}
+
+async function readExplainEntitySets(entitiesDir: string): Promise<{
+  readonly files: readonly BrainEntity[];
+  readonly folders: readonly BrainEntity[];
+  readonly components: readonly BrainEntity[];
+  readonly configs: readonly BrainEntity[];
+  readonly commands: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly dependencies: readonly BrainEntity[];
+  readonly risks: readonly BrainEntity[];
+  readonly evidence: readonly BrainEntity[];
+}> {
+  const [files, folders, components, configs, commands, tests, dependencies, risks, evidence] =
+    await Promise.all([
+      readEntityFile(entitiesDir, 'files.json'),
+      readEntityFile(entitiesDir, 'folders.json'),
+      readEntityFile(entitiesDir, 'components.json'),
+      readEntityFile(entitiesDir, 'configs.json'),
+      readEntityFile(entitiesDir, 'commands.json'),
+      readEntityFile(entitiesDir, 'tests.json'),
+      readEntityFile(entitiesDir, 'dependencies.json'),
+      readEntityFile(entitiesDir, 'risks.json'),
+      readEntityFile(entitiesDir, 'evidence.json'),
+    ]);
+  return { files, folders, components, configs, commands, tests, dependencies, risks, evidence };
+}
+
+function resolveExplainTarget(
+  target: string,
+  entities: readonly BrainEntity[],
+):
+  | { readonly ok: true; readonly value: BrainEntity }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
+  const query = normalizeExplainQuery(target);
+  if (query === '') {
+    return {
+      ok: false,
+      error: {
+        code: 'EXPLAIN_TARGET_REQUIRED',
+        message: 'Usage: rizz explain <component-or-file>',
+      },
+    };
+  }
+
+  const scored = entities
+    .map((entity) => ({ entity, score: explainMatchScore(query, entity) }))
+    .filter((match) => match.score > 0)
+    .sort((a, b) => b.score - a.score || a.entity.id.localeCompare(b.entity.id));
+  if (scored.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'EXPLAIN_TARGET_NOT_FOUND',
+        message: `Could not resolve "${safeText(target)}" from the project brain. Run rizz brain if the repo changed.`,
+      },
+    };
+  }
+
+  const bestScore = scored[0]?.score ?? 0;
+  const best = scored.filter((match) => match.score === bestScore).slice(0, 8);
+  if (best.length > 1) {
+    const candidates = best.map((match) => `${match.entity.id} (${match.entity.name})`).join(', ');
+    return {
+      ok: false,
+      error: {
+        code: 'EXPLAIN_TARGET_AMBIGUOUS',
+        message: `Target "${safeText(target)}" is ambiguous. Try one of: ${safeText(candidates)}`,
+      },
+    };
+  }
+
+  const resolved = scored[0];
+  if (resolved === undefined) {
+    return {
+      ok: false,
+      error: {
+        code: 'EXPLAIN_TARGET_NOT_FOUND',
+        message: `Could not resolve "${safeText(target)}" from the project brain.`,
+      },
+    };
+  }
+  return { ok: true, value: resolved.entity };
+}
+
+function normalizeExplainQuery(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/g, '').toLowerCase();
+}
+
+function explainMatchScore(query: string, entity: BrainEntity): number {
+  const name = normalizeExplainQuery(entity.name);
+  const id = normalizeExplainQuery(entity.id);
+  const relativePath = normalizeExplainQuery(stringData(entity, 'relativePath') ?? '');
+  const sources = entity.source_files.map(normalizeExplainQuery);
+  const slug = stableSlug(query);
+  const typeBonus = entity.type === 'component' ? 5 : entity.type === 'folder' ? 4 : 3;
+
+  if (id === query || id === `${entity.type}:${slug}`) return 100 + typeBonus;
+  if (name === query || relativePath === query) return 90 + typeBonus;
+  if (sources.includes(query)) return 85 + typeBonus;
+  if (name.endsWith(`/${query}`) || relativePath.endsWith(`/${query}`)) return 75 + typeBonus;
+  if (id.includes(slug) || name.includes(query) || relativePath.includes(query)) {
+    return 50 + typeBonus;
+  }
+  if (sources.some((source) => source.includes(query))) return 45 + typeBonus;
+  return 0;
+}
+
+function buildExplanation(params: {
+  readonly now: string;
+  readonly query: string;
+  readonly target: BrainEntity;
+  readonly latest: Record<string, unknown>;
+  readonly relationships: readonly BrainRelationship[];
+  readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
+}): ExplainSummaryData {
+  const target = params.target;
+  const relatedComponents = relatedComponentContext(target, params.entitySets.components);
+  const primaryComponent = target.type === 'component' ? target : relatedComponents[0];
+  const relationshipContext = explainRelationshipContext(target, params.relationships);
+  const componentData = primaryComponent?.data ?? {};
+  const targetData = target.data ?? {};
+  const purpose =
+    stringData(target, 'purpose') ??
+    (typeof componentData.purpose === 'string' ? componentData.purpose : undefined) ??
+    target.description;
+  const responsibilities = explainArray(
+    targetData.responsibilities,
+    componentData.responsibilities,
+  );
+  const dependencies = unique([
+    ...explainArray(targetData.dependencies, componentData.dependencies),
+    ...relationshipContext.dependsOn,
+  ]);
+  const consumers = unique([
+    ...explainArray(targetData.consumers, componentData.consumers),
+    ...relationshipContext.dependedOnBy,
+  ]);
+  const importantFiles = unique([
+    ...explainArray(targetData.important_files, componentData.important_files),
+    ...target.source_files,
+  ]).slice(0, 12);
+  const entryPoints = explainArray(targetData.entry_points, componentData.entry_points).slice(
+    0,
+    12,
+  );
+  const tests = unique([
+    ...explainArray(targetData.tests, componentData.tests),
+    ...relatedTestPaths(target, params.entitySets.tests),
+  ]);
+  const configs = unique([
+    ...explainArray(targetData.configs, componentData.configs),
+    ...relatedConfigPaths(target, params.entitySets.configs),
+  ]);
+  const breaksIfChanged = unique([
+    ...explainArray(targetData.what_breaks_if_removed, componentData.what_breaks_if_removed),
+    ...relationshipContext.dependedOnBy.map((item) => `Dependent entity may need review: ${item}.`),
+  ]);
+  const risks = unique([
+    ...explainArray(targetData.known_risks, componentData.known_risks),
+    ...relatedRisks(target, relatedComponents, params.entitySets.risks),
+  ]);
+  const readFirst = unique([...entryPoints, ...importantFiles, ...target.source_files]).slice(0, 8);
+  const evidenceIds = unique([
+    ...target.evidence_ids,
+    ...(primaryComponent?.evidence_ids ?? []),
+    ...relationshipContext.evidenceIds,
+  ]);
+  const confidence = weakestConfidence([
+    target.confidence,
+    ...(primaryComponent === undefined ? [] : [primaryComponent.confidence]),
+  ]);
+  const unknowns = explainUnknowns({
+    target,
+    confidence,
+    responsibilities,
+    dependencies,
+    consumers,
+    tests,
+    risks,
+    latest: params.latest,
+  });
+
+  return {
+    generated_at: params.now,
+    target: safeText(params.query),
+    resolved_entity_id: safeText(target.id),
+    entity_type: target.type,
+    summary: safeText(target.description),
+    purpose: safeText(purpose),
+    responsibilities: responsibilities.map(safeText),
+    dependencies: dependencies.map(safeText),
+    consumers: consumers.map(safeText),
+    important_files: importantFiles.map(safeText),
+    entry_points: entryPoints.map(safeText),
+    tests: tests.map(safeText),
+    configs: configs.map(safeText),
+    breaks_if_changed: breaksIfChanged.map(safeText),
+    risks: risks.map(safeText),
+    read_first: readFirst.map(safeText),
+    evidence_ids: evidenceIds.map(safeText),
+    depends_on: relationshipContext.dependsOn.map(safeText),
+    depended_on_by: relationshipContext.dependedOnBy.map(safeText),
+    confidence,
+    unknowns: unknowns.map(safeText),
+  };
+}
+
+function explainArray(...values: readonly unknown[]): string[] {
+  return unique(values.flatMap(asStringArray));
+}
+
+function relatedComponentContext(
+  target: BrainEntity,
+  components: readonly BrainEntity[],
+): readonly BrainEntity[] {
+  if (target.type === 'component') return [target];
+  const relativePath = stringData(target, 'relativePath') ?? target.name;
+  const sourceFiles = new Set([relativePath, ...target.source_files]);
+  return components.filter((component) =>
+    component.source_files.some((file) => {
+      if (sourceFiles.has(file)) return true;
+      if (target.type === 'folder') return file.startsWith(`${target.name}/`);
+      return false;
+    }),
+  );
+}
+
+function explainRelationshipContext(
+  target: BrainEntity,
+  relationships: readonly BrainRelationship[],
+): {
+  readonly dependsOn: readonly string[];
+  readonly dependedOnBy: readonly string[];
+  readonly evidenceIds: readonly string[];
+} {
+  const dependencyRelations = new Set(['depends_on', 'calls', 'imports', 'configures']);
+  const outbound = relationships.filter(
+    (rel) => rel.from === target.id && dependencyRelations.has(rel.relation),
+  );
+  const inbound = relationships.filter(
+    (rel) => rel.to === target.id && dependencyRelations.has(rel.relation),
+  );
+  return {
+    dependsOn: unique(outbound.map((rel) => `${rel.relation}: ${rel.to}`)),
+    dependedOnBy: unique(inbound.map((rel) => `${rel.relation}: ${rel.from}`)),
+    evidenceIds: unique([...outbound, ...inbound].flatMap((rel) => rel.evidence_ids)),
+  };
+}
+
+function relatedTestPaths(target: BrainEntity, tests: readonly BrainEntity[]): string[] {
+  const sourceFiles = new Set(target.source_files);
+  return tests
+    .filter((test) => test.source_files.some((file) => sourceFiles.has(file)))
+    .flatMap((test) => test.source_files);
+}
+
+function relatedConfigPaths(target: BrainEntity, configs: readonly BrainEntity[]): string[] {
+  const sourceFiles = new Set(target.source_files);
+  return configs
+    .filter((config) => config.source_files.some((file) => sourceFiles.has(file)))
+    .flatMap((config) => config.source_files);
+}
+
+function relatedRisks(
+  target: BrainEntity,
+  components: readonly BrainEntity[],
+  risks: readonly BrainEntity[],
+): string[] {
+  const relatedIds = new Set([target.id, ...components.map((component) => component.id)]);
+  const sourceFiles = new Set([
+    ...target.source_files,
+    ...components.flatMap((item) => item.source_files),
+  ]);
+  return risks
+    .filter(
+      (risk) =>
+        risk.related_entity_ids.some((id) => relatedIds.has(id)) ||
+        risk.source_files.some((file) => sourceFiles.has(file)),
+    )
+    .map((risk) => risk.description);
+}
+
+function weakestConfidence(confidences: readonly Confidence[]): Confidence {
+  if (confidences.includes('uncertain')) return 'uncertain';
+  if (confidences.includes('inferred')) return 'inferred';
+  return 'verified';
+}
+
+function explainUnknowns(params: {
+  readonly target: BrainEntity;
+  readonly confidence: Confidence;
+  readonly responsibilities: readonly string[];
+  readonly dependencies: readonly string[];
+  readonly consumers: readonly string[];
+  readonly tests: readonly string[];
+  readonly risks: readonly string[];
+  readonly latest: Record<string, unknown>;
+}): string[] {
+  const unknowns: string[] = [];
+  if (params.confidence !== 'verified') {
+    unknowns.push(
+      `Target confidence is ${params.confidence}; confirm with source evidence before relying on it.`,
+    );
+  }
+  if (params.target.latest_status === 'stale')
+    unknowns.push('Brain marks this target stale. Run rizz brain.');
+  if (params.responsibilities.length === 0) unknowns.push('No responsibilities are recorded yet.');
+  if (params.dependencies.length === 0) unknowns.push('No dependencies are recorded yet.');
+  if (params.consumers.length === 0) unknowns.push('No consumers are recorded yet.');
+  if (params.tests.length === 0) unknowns.push('No directly related tests are recorded yet.');
+  if (params.risks.length === 0) unknowns.push('No target-specific risks are recorded yet.');
+  const latestGaps = Array.isArray(params.latest.latest_confidence_gaps)
+    ? params.latest.latest_confidence_gaps.filter(
+        (item): item is string => typeof item === 'string',
+      )
+    : [];
+  return unique([...unknowns, ...latestGaps.slice(0, 5)]).slice(0, 10);
+}
+
+function renderExplainReport(
+  explanation: ExplainSummaryData,
+  evidence: readonly BrainEntity[],
+): string {
+  const evidenceById = new Map(evidence.map((entity) => [entity.id, entity]));
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rizz explain · ${htmlEscape(explanation.resolved_entity_id)}</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
+    h1 { font-size: clamp(32px, 6vw, 56px); margin: 0 0 8px; letter-spacing: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .muted { color: var(--muted); }
+    code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="badge">rizz explain</p>
+      <h1>${htmlEscape(explanation.resolved_entity_id)}</h1>
+      <p>${htmlEscape(explanation.summary)}</p>
+      <p class="muted">${htmlEscape(explanation.entity_type)} · ${htmlEscape(explanation.confidence)} · latest explain report · generated ${htmlEscape(explanation.generated_at)}</p>
+    </header>
+    <section class="card"><h2>What This Is</h2><p>${htmlEscape(explanation.purpose)}</p></section>
+    <section class="grid">
+      <article class="card"><h2>Responsibilities</h2>${renderList(explanation.responsibilities)}</article>
+      <article class="card"><h2>Entry Points</h2>${renderList(explanation.entry_points)}</article>
+      <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>
+      <article class="card"><h2>Dependencies</h2>${renderList(explanation.dependencies)}</article>
+      <article class="card"><h2>Consumers</h2>${renderList(explanation.consumers)}</article>
+      <article class="card"><h2>Tests</h2>${renderList(explanation.tests)}</article>
+      <article class="card"><h2>Configs</h2>${renderList(explanation.configs)}</article>
+      <article class="card"><h2>What Breaks If Changed</h2>${renderList(explanation.breaks_if_changed)}</article>
+      <article class="card"><h2>Risks</h2>${renderList(explanation.risks)}</article>
+      <article class="card"><h2>Read First</h2>${renderList(explanation.read_first)}</article>
+      <article class="card"><h2>Unknowns</h2>${renderList(explanation.unknowns)}</article>
+      <article class="card"><h2>Evidence</h2>${renderEvidenceLinks(explanation.evidence_ids, evidenceById)}</article>
+    </section>
+  </main>
+</body>
+</html>
+`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -2959,6 +3457,25 @@ async function validateBrainSchema(rootDir: string): Promise<string[]> {
     for (const [index, rel] of graph.relationships.entries()) {
       if (!isRecord(rel) || typeof rel.from !== 'string' || typeof rel.to !== 'string') {
         errors.push(`graph.json relationship ${index} is invalid`);
+        break;
+      }
+    }
+  }
+
+  for (const fileName of ['components.json', 'files.json', 'folders.json']) {
+    const path = join(entitiesDir, fileName);
+    if (!(await exists(path))) {
+      errors.push(`${fileName} missing entities array`);
+      continue;
+    }
+    const file = await readJsonFile<unknown>(path);
+    if (!isRecord(file) || !Array.isArray(file.entities)) {
+      errors.push(`${fileName} missing entities array`);
+      continue;
+    }
+    for (const [index, entity] of file.entities.entries()) {
+      if (!isBrainEntityShape(entity)) {
+        errors.push(`${fileName} entity ${index} is invalid`);
         break;
       }
     }

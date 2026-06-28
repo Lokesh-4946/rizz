@@ -26,6 +26,7 @@ const USAGE = `rizz - understand a software system
 Usage:
   rizz               generate .rizz/brain and .rizz/reports
   rizz brain         refresh project brain
+  rizz explain <x>   explain a component or file from the project brain
   rizz review        review current git diff with the project brain
   rizz chat          launch model TUI
   rizz setup         choose model route
@@ -130,6 +131,57 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     }
   }
   return 0;
+}
+
+async function runExplainCommand(options: {
+  readonly target: string;
+  readonly json: boolean;
+}): Promise<number> {
+  const { explainProjectTarget } = await import('@valoir/rizz-brain');
+  const result = await explainProjectTarget({ rootDir: process.cwd(), target: options.target });
+  if (!result.ok) {
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    }
+    return result.error.code === 'EXPLAIN_TARGET_REQUIRED' ? 2 : 1;
+  }
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result.value.explanation)}\n`);
+    return 0;
+  }
+
+  const explanation = result.value.explanation;
+  process.stdout.write(`rizz explained ${explanation.resolved_entity_id}\n`);
+  process.stdout.write(`  type: ${explanation.entity_type}\n`);
+  process.stdout.write(`  confidence: ${explanation.confidence}\n`);
+  process.stdout.write(`  latest report: ${result.value.reportPath}\n`);
+  process.stdout.write(`\nWhat this is\n  ${explanation.purpose}\n`);
+  writeSection('Responsibilities', explanation.responsibilities);
+  writeSection('Entry points', explanation.entry_points);
+  writeSection('Important files', explanation.important_files);
+  writeSection('Dependencies', explanation.dependencies);
+  writeSection('Consumers', explanation.consumers);
+  writeSection('Tests', explanation.tests);
+  writeSection('Configs', explanation.configs);
+  writeSection('What breaks if changed', explanation.breaks_if_changed);
+  writeSection('Risks', explanation.risks);
+  writeSection('Read first', explanation.read_first);
+  writeSection('Unknowns', explanation.unknowns);
+  writeSection('Evidence', explanation.evidence_ids);
+  return 0;
+}
+
+function writeSection(title: string, items: readonly string[]): void {
+  process.stdout.write(`\n${title}\n`);
+  if (items.length === 0) {
+    process.stdout.write('  none recorded yet\n');
+    return;
+  }
+  for (const item of items.slice(0, 12)) {
+    process.stdout.write(`  - ${item}\n`);
+  }
 }
 
 async function askHidden(question: string): Promise<string | null> {
@@ -384,6 +436,44 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     }
     return runReviewCommand({ json: reviewArgs.includes('--json') });
+  }
+  if (c.rest[0] === 'explain') {
+    const explainArgs = c.rest.slice(1);
+    const wantsJson = explainArgs.includes('--json');
+    const allowed = new Set(['--json']);
+    const unknownFlag = explainArgs.find((arg) => arg.startsWith('-') && !allowed.has(arg));
+    if (unknownFlag !== undefined) {
+      const error = {
+        ok: false,
+        error: {
+          code: 'UNKNOWN_EXPLAIN_OPTION',
+          message: `Unknown explain option '${unknownFlag}'.`,
+        },
+      };
+      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      else
+        process.stderr.write(
+          `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
+        );
+      return 2;
+    }
+    const targets = explainArgs.filter((arg) => !allowed.has(arg));
+    if (targets.length !== 1) {
+      const error = {
+        ok: false,
+        error: {
+          code: 'EXPLAIN_TARGET_REQUIRED',
+          message: 'Explain needs exactly one component or file target.',
+        },
+      };
+      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      else
+        process.stderr.write(
+          `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
+        );
+      return 2;
+    }
+    return runExplainCommand({ target: targets[0] ?? '', json: wantsJson });
   }
   // Headless modes (job #3) consume the remaining args as boolean flags; --rpc wins over --json.
   const rest = c.rest.filter((a) => a !== '--json' && a !== '--rpc');
