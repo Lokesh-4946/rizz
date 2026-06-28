@@ -166,6 +166,163 @@ describe('project brain generation', () => {
     });
   });
 
+  it('writes deterministic research artifacts with metrics, coverage, confidence, evidence quality, and incremental update data', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'brain', 'src'), { recursive: true });
+      const packagePath = join(dir, 'packages', 'brain', 'package.json');
+      await writeFile(
+        packagePath,
+        JSON.stringify({
+          name: '@sample/brain',
+          scripts: { test: 'vitest run packages/brain', build: 'tsc -b' },
+          dependencies: { zod: '^3.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 1;');
+      await writeFile(
+        join(dir, 'packages', 'brain', 'src', 'index.test.ts'),
+        'import { it } from "vitest";',
+      );
+
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:00:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+
+      await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 2;');
+      const second = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:01:00.000Z'),
+      });
+
+      expect(second).toMatchObject({
+        ok: true,
+        value: { scannedFiles: 3, changedFiles: 1, staleFiles: 0 },
+      });
+      if (!second.ok) return;
+
+      const researchDir = second.value.researchDir;
+      const artifactNames = [
+        'metrics.json',
+        'coverage.json',
+        'confidence.json',
+        'evidence_quality.json',
+        'incremental_update.json',
+      ].sort((a, b) => a.localeCompare(b));
+      expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
+        artifactNames,
+      );
+
+      const metrics = await readJson<{
+        generated_at: string;
+        scanned_files: number;
+        changed_files: number;
+        components: number;
+        entity_counts: { component: number; evidence: number; test: number };
+        relationship_counts: { owns: number; depends_on: number; tests: number };
+      }>(join(researchDir, 'metrics.json'));
+      expect(metrics).toMatchObject({
+        generated_at: '2026-06-28T12:01:00.000Z',
+        scanned_files: 3,
+        changed_files: 1,
+        components: 1,
+      });
+      expect(metrics.entity_counts.component).toBe(1);
+      expect(metrics.entity_counts.evidence).toBe(3);
+      expect(metrics.entity_counts.test).toBe(1);
+      expect(metrics.relationship_counts.owns).toBeGreaterThan(0);
+      expect(metrics.relationship_counts.depends_on).toBeGreaterThan(0);
+      expect(metrics.relationship_counts.tests).toBeGreaterThan(0);
+
+      const coverage = await readJson<{
+        files_by_kind: Record<string, number>;
+        components_with_tests: number;
+        component_file_coverage_ratio: number;
+        component_coverage: Array<{ id: string; tests: string[]; configs: string[] }>;
+      }>(join(researchDir, 'coverage.json'));
+      expect(coverage.files_by_kind).toEqual({ 'package-manifest': 1, source: 1, test: 1 });
+      expect(coverage.components_with_tests).toBe(1);
+      expect(coverage.component_file_coverage_ratio).toBe(1);
+      expect(coverage.component_coverage).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--brain',
+          tests: ['packages/brain/src/index.test.ts'],
+          configs: ['packages/brain/package.json'],
+        }),
+      );
+
+      const confidence = await readJson<{
+        entity_confidence_counts: { verified: number; inferred: number; uncertain: number };
+        relationship_confidence_counts: { verified: number; inferred: number; uncertain: number };
+        component_confidence: Array<{ id: string; confidence: string; evidence_ids: string[] }>;
+      }>(join(researchDir, 'confidence.json'));
+      expect(confidence.entity_confidence_counts.verified).toBeGreaterThan(0);
+      expect(confidence.entity_confidence_counts.inferred).toBeGreaterThan(0);
+      expect(confidence.relationship_confidence_counts.verified).toBeGreaterThan(0);
+      expect(confidence.component_confidence).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--brain',
+          confidence: 'inferred',
+          evidence_ids: expect.arrayContaining([
+            'evidence:file-packages--brain--package.json',
+            'evidence:file-packages--brain--src--index.ts',
+          ]),
+        }),
+      );
+
+      const evidenceQuality = await readJson<{
+        evidence_records: number;
+        referenced_evidence_ids: number;
+        entity_evidence_coverage_ratio: number;
+        relationship_evidence_coverage_ratio: number;
+        missing_evidence_references: string[];
+        component_field_evidence: Array<{
+          id: string;
+          fields: { dependencies?: number; tests?: number; configs?: number };
+        }>;
+      }>(join(researchDir, 'evidence_quality.json'));
+      expect(evidenceQuality.evidence_records).toBe(3);
+      expect(evidenceQuality.referenced_evidence_ids).toBe(3);
+      expect(evidenceQuality.entity_evidence_coverage_ratio).toBeGreaterThan(0);
+      expect(evidenceQuality.relationship_evidence_coverage_ratio).toBeGreaterThan(0);
+      expect(evidenceQuality.missing_evidence_references).toEqual([]);
+      expect(evidenceQuality.component_field_evidence).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--brain',
+          fields: expect.objectContaining({ dependencies: 1, tests: 1, configs: 1 }),
+        }),
+      );
+
+      const incremental = await readJson<{
+        scanned_files: number;
+        changed_files: string[];
+        stale_files: string[];
+        reused_files: number;
+        recomputed_files: number;
+        file_reuse_ratio: number;
+        file_status_counts: { changed: number; current: number };
+      }>(join(researchDir, 'incremental_update.json'));
+      expect(incremental).toMatchObject({
+        scanned_files: 3,
+        changed_files: ['packages/brain/src/index.ts'],
+        stale_files: [],
+        reused_files: 2,
+        recomputed_files: 1,
+        file_reuse_ratio: 0.6667,
+        file_status_counts: { changed: 1, current: 2 },
+      });
+
+      const index = await readJson<{
+        research_paths: { metrics: string; incremental_update: string };
+      }>(join(dir, '.rizz', 'brain', 'index.json'));
+      expect(index.research_paths).toMatchObject({
+        metrics: '.rizz/research/metrics.json',
+        incremental_update: '.rizz/research/incremental_update.json',
+      });
+    });
+  });
+
   it('enriches components with purpose, interfaces, criticality, dependencies, and removal impact', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
@@ -511,6 +668,9 @@ describe('project brain generation', () => {
       expect(output).not.toContain('sk-or-v1-brainsecret');
       const report = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
       expect(report).not.toContain('sk-or-v1-brainsecret');
+      const research = await readTreeText(join(dir, '.rizz', 'research'));
+      expect(research).not.toContain('sk-or-v1-brainsecret');
+      expect(research).toContain('[redacted secret]');
     });
   });
 

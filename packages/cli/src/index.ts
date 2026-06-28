@@ -84,6 +84,7 @@ async function runBrainCommand(): Promise<number> {
   const summary = result.value;
   process.stdout.write(`rizz understood ${summary.scannedFiles} file(s)\n`);
   process.stdout.write(`  brain: ${summary.latestPath}\n`);
+  process.stdout.write(`  research: ${summary.researchDir}\n`);
   process.stdout.write(`  report: ${summary.reportPath}\n`);
   process.stdout.write(`  components: ${summary.components}\n`);
   process.stdout.write(`  commands: ${summary.commands}\n`);

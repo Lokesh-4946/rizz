@@ -456,6 +456,21 @@ async function runHeadlessSmoke() {
             existsSync(join(dir, '.rizz', 'brain', 'entities', 'files.json')),
             'missing files entity store',
           );
+          const researchDir = join(dir, '.rizz', 'research');
+          for (const fileName of [
+            'metrics.json',
+            'coverage.json',
+            'confidence.json',
+            'evidence_quality.json',
+            'incremental_update.json',
+          ]) {
+            const artifactPath = join(researchDir, fileName);
+            assert(existsSync(artifactPath), `missing research artifact ${fileName}`);
+            JSON.parse(readFileSync(artifactPath, 'utf8'));
+          }
+          const metrics = JSON.parse(readFileSync(join(researchDir, 'metrics.json'), 'utf8'));
+          assert(metrics.scanned_files === 2, 'research metrics missed scanned files');
+          assert(metrics.evidence_records === 2, 'research metrics missed evidence records');
           const reportPath = join(dir, '.rizz', 'reports', 'index.html');
           assert(existsSync(reportPath), 'missing HTML report');
           const report = readFileSync(reportPath, 'utf8');

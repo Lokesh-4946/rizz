@@ -224,6 +224,7 @@ export interface GenerateProjectBrainOptions {
 export interface GenerateProjectBrainSummary {
   readonly rootDir: string;
   readonly brainDir: string;
+  readonly researchDir: string;
   readonly latestPath: string;
   readonly reportPath: string;
   readonly scannedFiles: number;
@@ -306,6 +307,14 @@ const ENTITY_FILES: ReadonlyArray<readonly [keyof BrainBuckets, string, EntityTy
   ['evidence', 'evidence.json', 'evidence'],
   ['status', 'status.json', 'status'],
 ];
+
+const RESEARCH_ARTIFACT_FILES = {
+  metrics: 'metrics.json',
+  coverage: 'coverage.json',
+  confidence: 'confidence.json',
+  evidenceQuality: 'evidence_quality.json',
+  incrementalUpdate: 'incremental_update.json',
+} as const;
 
 const IGNORED_DIRS = new Set([
   '.agents',
@@ -500,6 +509,15 @@ function redactSecrets(value: string): string {
 
 function safeText(value: string): string {
   return redactSecrets(value);
+}
+
+function safeResearchValue(value: unknown): unknown {
+  if (typeof value === 'string') return safeText(value);
+  if (Array.isArray(value)) return value.map(safeResearchValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [safeText(key), safeResearchValue(item)]),
+  );
 }
 
 function sorted<T>(items: readonly T[], key: (item: T) => string): T[] {
@@ -1129,6 +1147,204 @@ function classifySourceKind(file: FileFact): string {
   if (file.extension === '.ts' || file.extension === '.js') return 'source';
   if (file.extension === '.md') return 'documentation';
   return file.extension === '' ? 'file' : file.extension.slice(1);
+}
+
+function allBucketEntities(buckets: BrainBuckets): BrainEntity[] {
+  return ENTITY_FILES.flatMap(([bucket]) => buckets[bucket]);
+}
+
+function countByValue(values: readonly string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
+  return Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function countByConfidence(values: readonly Confidence[]): Record<Confidence, number> {
+  const counts: Record<Confidence, number> = { verified: 0, inferred: 0, uncertain: 0 };
+  for (const value of values) counts[value] += 1;
+  return counts;
+}
+
+function ratio(numerator: number, denominator: number): number {
+  if (denominator === 0) return 0;
+  return Number((numerator / denominator).toFixed(4));
+}
+
+function buildResearchArtifacts(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly stack: readonly string[];
+  readonly packageManager: string;
+  readonly changedFiles: readonly string[];
+  readonly staleFiles: readonly string[];
+}): Record<keyof typeof RESEARCH_ARTIFACT_FILES, unknown> {
+  const entities = allBucketEntities(params.buckets);
+  const entityCounts = Object.fromEntries(
+    ENTITY_FILES.map(([bucket, , entityType]) => [entityType, params.buckets[bucket].length]),
+  );
+  const activeFileEntities = params.buckets.files.filter((file) => file.latest_status !== 'stale');
+  const referencedEvidenceIds = unique([
+    ...entities.flatMap((entity) => entity.evidence_ids),
+    ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+  ]);
+  const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
+  const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
+  const filesByStatus = countByValue(params.buckets.files.map((file) => file.latest_status));
+  const changedFiles = unique(params.changedFiles);
+  const staleFiles = unique(params.staleFiles);
+  const componentSourceFiles = new Set(
+    params.buckets.components.flatMap((component) => component.source_files),
+  );
+  const mappedActiveFiles = activeFileEntities.filter((file) =>
+    componentSourceFiles.has(file.name),
+  );
+  const entitiesWithEvidence = entities.filter((entity) => entity.evidence_ids.length > 0);
+  const entitiesWithoutEvidence = entities.filter((entity) => entity.evidence_ids.length === 0);
+  const relationshipsWithEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length > 0,
+  );
+  const relationshipsWithoutEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length === 0,
+  );
+  const currentFiles = activeFileEntities.filter((file) => file.latest_status === 'current');
+  const newFiles = activeFileEntities.filter((file) => file.latest_status === 'new');
+
+  return {
+    metrics: {
+      generated_at: params.now,
+      project_id: entityId('project', params.projectName),
+      project_name: params.projectName,
+      scanned_files: params.files.length,
+      active_file_entities: activeFileEntities.length,
+      stale_file_entities: staleFiles.length,
+      changed_files: changedFiles.length,
+      components: params.buckets.components.length,
+      commands: params.buckets.commands.length,
+      tests: params.buckets.tests.length,
+      evidence_records: params.buckets.evidence.length,
+      relationships: params.relationships.length,
+      unknown_areas: {
+        confidence_gaps: params.buckets.risks.filter((risk) => risk.confidence !== 'verified')
+          .length,
+        components_without_tests: params.buckets.components.filter(
+          (component) => stringArrayData(component, 'tests').length === 0,
+        ).length,
+        components_without_consumers: params.buckets.components.filter(
+          (component) => stringArrayData(component, 'consumers').length === 0,
+        ).length,
+      },
+      entity_counts: entityCounts,
+      relationship_counts: countByValue(
+        params.relationships.map((relationship) => relationship.relation),
+      ),
+      tech_stack: params.stack,
+      package_manager: params.packageManager,
+    },
+    coverage: {
+      generated_at: params.now,
+      scanned_files: params.files.length,
+      active_file_entities: activeFileEntities.length,
+      files_by_kind: countByValue(params.files.map(classifySourceKind)),
+      files_by_status: filesByStatus,
+      files_with_evidence: activeFileEntities.filter((file) => file.evidence_ids.length > 0).length,
+      files_mapped_to_components: mappedActiveFiles.length,
+      component_file_coverage_ratio: ratio(mappedActiveFiles.length, activeFileEntities.length),
+      components_with_tests: params.buckets.components.filter(
+        (component) => stringArrayData(component, 'tests').length > 0,
+      ).length,
+      components_with_configs: params.buckets.components.filter(
+        (component) => stringArrayData(component, 'configs').length > 0,
+      ).length,
+      component_coverage: params.buckets.components.map((component) => ({
+        id: component.id,
+        name: component.name,
+        source_files: component.source_files.length,
+        evidence_ids: component.evidence_ids.length,
+        tests: stringArrayData(component, 'tests'),
+        configs: stringArrayData(component, 'configs'),
+        dependencies: stringArrayData(component, 'dependencies'),
+        confidence: component.confidence,
+      })),
+    },
+    confidence: {
+      generated_at: params.now,
+      entity_confidence_counts: countByConfidence(entities.map((entity) => entity.confidence)),
+      relationship_confidence_counts: countByConfidence(
+        params.relationships.map((relationship) => relationship.confidence),
+      ),
+      component_confidence: params.buckets.components.map((component) => ({
+        id: component.id,
+        name: component.name,
+        confidence: component.confidence,
+        criticality: stringData(component, 'criticality') ?? 'unknown',
+        evidence_ids: component.evidence_ids,
+        source_files: component.source_files,
+      })),
+      confidence_gaps: params.buckets.risks
+        .filter((risk) => risk.confidence !== 'verified')
+        .map((risk) => ({
+          id: risk.id,
+          confidence: risk.confidence,
+          description: risk.description,
+          evidence_ids: risk.evidence_ids,
+        })),
+    },
+    evidenceQuality: {
+      generated_at: params.now,
+      evidence_records: params.buckets.evidence.length,
+      referenced_evidence_ids: referencedEvidenceIds.length,
+      missing_evidence_references: missingEvidenceReferences,
+      entities_with_evidence: entitiesWithEvidence.length,
+      entities_without_evidence: entitiesWithoutEvidence.length,
+      entity_evidence_coverage_ratio: ratio(entitiesWithEvidence.length, entities.length),
+      entities_without_evidence_by_type: countByValue(
+        entitiesWithoutEvidence.map((entity) => entity.type),
+      ),
+      relationships_with_evidence: relationshipsWithEvidence.length,
+      relationships_without_evidence: relationshipsWithoutEvidence.length,
+      relationship_evidence_coverage_ratio: ratio(
+        relationshipsWithEvidence.length,
+        params.relationships.length,
+      ),
+      component_field_evidence: params.buckets.components.map((component) => ({
+        id: component.id,
+        confidence: component.confidence,
+        fields: Object.fromEntries(
+          Object.entries(recordStringArrayData(component, 'field_evidence')).map(([field, ids]) => [
+            field,
+            ids.length,
+          ]),
+        ),
+      })),
+    },
+    incrementalUpdate: {
+      generated_at: params.now,
+      scanned_files: params.files.length,
+      changed_files: changedFiles,
+      stale_files: staleFiles,
+      file_status_counts: filesByStatus,
+      reused_files: currentFiles.length,
+      recomputed_files: changedFiles.length + newFiles.length,
+      file_reuse_ratio: ratio(currentFiles.length, params.files.length),
+      current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
+      new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
+    },
+  };
+}
+
+async function writeResearchArtifacts(
+  researchDir: string,
+  artifacts: Record<keyof typeof RESEARCH_ARTIFACT_FILES, unknown>,
+): Promise<void> {
+  for (const [key, fileName] of Object.entries(RESEARCH_ARTIFACT_FILES)) {
+    await writeVerifiedFile(
+      join(researchDir, fileName),
+      jsonString(safeResearchValue(artifacts[key as keyof typeof RESEARCH_ARTIFACT_FILES])),
+    );
+  }
 }
 
 function buildLatest(params: {
@@ -2167,9 +2383,11 @@ export async function generateProjectBrain(
     const brainDir = join(rootDir, '.rizz', 'brain');
     const entitiesDir = join(brainDir, 'entities');
     const snapshotsDir = join(brainDir, 'snapshots');
+    const researchDir = join(rootDir, '.rizz', 'research');
     const reportsDir = join(rootDir, '.rizz', 'reports');
     await mkdir(entitiesDir, { recursive: true });
     await mkdir(snapshotsDir, { recursive: true });
+    await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
 
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
@@ -2205,11 +2423,29 @@ export async function generateProjectBrain(
       latest_path: '.rizz/brain/latest.json',
       graph_path: '.rizz/brain/graph.json',
       report_path: '.rizz/reports/index.html',
+      research_paths: {
+        metrics: '.rizz/research/metrics.json',
+        coverage: '.rizz/research/coverage.json',
+        confidence: '.rizz/research/confidence.json',
+        evidence_quality: '.rizz/research/evidence_quality.json',
+        incremental_update: '.rizz/research/incremental_update.json',
+      },
     };
     const graph = {
       generated_at: now,
       relationships: sorted(built.relationships, (rel) => `${rel.from}:${rel.relation}:${rel.to}`),
     };
+    const researchArtifacts = buildResearchArtifacts({
+      projectName,
+      now,
+      files,
+      buckets: built.buckets,
+      relationships: graph.relationships,
+      stack: built.stack,
+      packageManager: built.packageManager,
+      changedFiles: built.changedFiles,
+      staleFiles: built.staleFiles,
+    });
     const report = renderReport({
       projectName,
       latest,
@@ -2245,6 +2481,7 @@ export async function generateProjectBrain(
     for (const [bucket, fileName, entityType] of ENTITY_FILES) {
       await writeEntityFile(entitiesDir, fileName, entityType, now, built.buckets[bucket]);
     }
+    await writeResearchArtifacts(researchDir, researchArtifacts);
     await writeFile(join(reportsDir, 'index.html'), report);
 
     return {
@@ -2252,6 +2489,7 @@ export async function generateProjectBrain(
       value: {
         rootDir,
         brainDir,
+        researchDir,
         latestPath: join(brainDir, 'latest.json'),
         reportPath: join(reportsDir, 'index.html'),
         scannedFiles: files.length,
