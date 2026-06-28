@@ -526,6 +526,80 @@ async function runHeadlessSmoke() {
         });
       },
     },
+    {
+      name: 'rizz explain explains a component from the local project brain',
+      run() {
+        withTempDirSync('rizz-explain-smoke-', (dir) => {
+          mkdirSync(join(dir, 'packages', 'brain', 'src'), { recursive: true });
+          writeFileSync(
+            join(dir, 'package.json'),
+            JSON.stringify({ name: 'explain-smoke', scripts: { test: 'vitest run' } }),
+          );
+          writeFileSync(
+            join(dir, 'packages', 'brain', 'package.json'),
+            JSON.stringify({
+              name: '@smoke/brain',
+              scripts: { test: 'vitest run packages/brain' },
+              dependencies: { zod: '^3.0.0' },
+            }),
+          );
+          writeFileSync(
+            join(dir, 'packages', 'brain', 'src', 'index.ts'),
+            'export const ok = 1;\n',
+          );
+          writeFileSync(
+            join(dir, 'packages', 'brain', 'src', 'index.test.ts'),
+            'import { it } from "vitest"; it("works", () => {});\n',
+          );
+
+          const brain = runCliInCwdSync(dir, ['brain'], '');
+          assert(brain.status === 0, `expected brain exit 0, got ${brain.status}: ${brain.stderr}`);
+
+          const result = runCliInCwdSync(dir, ['explain', 'packages/brain', '--json'], '');
+          assert(
+            result.status === 0,
+            `expected explain exit 0, got ${result.status}: ${result.stderr}`,
+          );
+          assert(!result.stdout.includes('sk-or-v1-'), 'explain output leaked secret-like text');
+          const explanation = JSON.parse(result.stdout);
+          assert(
+            explanation.resolved_entity_id === 'component:packages--brain',
+            'explain resolved the wrong entity',
+          );
+          assert(explanation.entity_type === 'component', 'explain returned the wrong entity type');
+          assert(
+            explanation.dependencies.includes('zod'),
+            'explain missed component dependency evidence',
+          );
+          assert(
+            explanation.read_first.includes('packages/brain/src/index.ts'),
+            'explain missed read-first file',
+          );
+          assert(
+            existsSync(join(dir, '.rizz', 'reports', 'explain.html')),
+            'missing explain report',
+          );
+
+          const missingTarget = runCliInCwdSync(dir, ['explain', '--json'], '');
+          assert(missingTarget.status === 2, 'expected missing explain target to exit 2');
+          assert(missingTarget.stderr === '', 'expected JSON explain error to keep stderr empty');
+          const missingTargetError = JSON.parse(missingTarget.stdout);
+          assert(
+            missingTargetError.error.code === 'EXPLAIN_TARGET_REQUIRED',
+            'missing target JSON error code mismatch',
+          );
+
+          const ambiguous = runCliInCwdSync(dir, ['explain', 'index', '--json'], '');
+          assert(ambiguous.status === 1, 'expected ambiguous explain target to exit 1');
+          assert(ambiguous.stderr === '', 'expected ambiguous JSON explain error stderr empty');
+          const ambiguousError = JSON.parse(ambiguous.stdout);
+          assert(
+            ambiguousError.error.code === 'EXPLAIN_TARGET_AMBIGUOUS',
+            'ambiguous target JSON error code mismatch',
+          );
+        });
+      },
+    },
   ];
 
   for (const check of checks) {
