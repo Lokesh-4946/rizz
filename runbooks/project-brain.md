@@ -71,6 +71,25 @@ Every scan hashes source files and compares them to the previous file entities.
 
 Generated `.rizz` output is ignored by git by default.
 
+## Scan Scope
+
+The first scanner is intentionally conservative. It skips generated output, local agent operating
+folders, package artifacts, binary media, private env files, key material, and TypeScript build-info
+files by default. That keeps the brain focused on source, manifests, tests, docs, and operational
+runbooks instead of local machine noise.
+
+Projects can tune scan scope with a root `.rizzignore` file. Supported patterns are intentionally
+small and dependency-free:
+
+```text
+tmp/
+*.generated.ts
+private-notes.md
+```
+
+Never rely on `.rizzignore` to protect secrets. Private `.env`, `.env.*`, `.pem`, `.key`, and `.p12`
+files are skipped even without a project ignore file.
+
 ## Launch Gate
 
 Before releasing a brain change:

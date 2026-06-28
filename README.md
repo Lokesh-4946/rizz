@@ -85,6 +85,15 @@ evidence before rereading source files.
 The brain is meant to be a local interoperability contract: other agents can read stable entity IDs,
 relationships, evidence, sessions, handoffs, findings, and status without scraping a chat log.
 
+By default, the scanner skips generated output, local agent operating folders, package archives,
+binary media, private env files, key material, and TypeScript build-info. Add a root `.rizzignore`
+when a project needs more exclusions:
+
+```text
+tmp/
+*.generated.ts
+```
+
 ## Model Setup
 
 Run the read-only readiness check first:

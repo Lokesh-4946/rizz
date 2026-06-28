@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -197,6 +197,99 @@ describe('project brain generation', () => {
       expect(generated).not.toContain('server.key');
       expect(generated).not.toContain('private key sentinel');
       expect(generated).toContain('.env.example');
+    });
+  });
+
+  it('skips default local agent, build, binary, and tsbuildinfo noise', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await mkdir(join(dir, '.agents', 'handoffs'), { recursive: true });
+      await mkdir(join(dir, '.codex'), { recursive: true });
+      await mkdir(join(dir, 'dist-pack'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'sample-app' }));
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const ok = true;');
+      await writeFile(join(dir, '.agents', 'handoffs', 'handoff.md'), 'local agent memory');
+      await writeFile(join(dir, '.codex', 'config.toml'), 'model = "test"');
+      await writeFile(join(dir, 'dist-pack', 'sample.tgz'), 'packed package');
+      await writeFile(join(dir, 'tsconfig.tsbuildinfo'), '{}');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:34:00.000Z'),
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: { scannedFiles: 2, changedFiles: 2 },
+      });
+      const generated = await readTreeText(join(dir, '.rizz'));
+      expect(generated).toContain('src/index.ts');
+      expect(generated).not.toContain('local agent memory');
+      expect(generated).not.toContain('.codex/config.toml');
+      expect(generated).not.toContain('sample.tgz');
+      expect(generated).not.toContain('tsconfig.tsbuildinfo');
+    });
+  });
+
+  it('honors project .rizzignore patterns for user-controlled scan scope', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await mkdir(join(dir, 'tmp'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'sample-app' }));
+      await writeFile(join(dir, '.rizzignore'), 'tmp/\n*.generated.ts\n');
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const ok = true;');
+      await writeFile(join(dir, 'src', 'client.generated.ts'), 'export const generated = true;');
+      await writeFile(join(dir, 'tmp', 'notes.md'), 'scratch');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:35:00.000Z'),
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: { scannedFiles: 3, changedFiles: 3 },
+      });
+      const generated = await readTreeText(join(dir, '.rizz'));
+      expect(generated).toContain('.rizzignore');
+      expect(generated).toContain('src/index.ts');
+      expect(generated).not.toContain('client.generated.ts');
+      expect(generated).not.toContain('tmp/notes.md');
+    });
+  });
+
+  it('drops previously known files from active state when they become ignored', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'tmp'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'sample-app' }));
+      await writeFile(join(dir, 'tmp', 'notes.md'), 'scratch');
+
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:36:00.000Z'),
+      });
+      expect(first).toMatchObject({
+        ok: true,
+        value: { scannedFiles: 2, staleFiles: 0 },
+      });
+
+      await writeFile(join(dir, '.rizzignore'), 'tmp/\n');
+      const second = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:37:00.000Z'),
+      });
+      expect(second).toMatchObject({
+        ok: true,
+        value: { scannedFiles: 2, staleFiles: 0 },
+      });
+
+      const files = await readJson<{ entities: Array<{ name: string; latest_status: string }> }>(
+        join(dir, '.rizz', 'brain', 'entities', 'files.json'),
+      );
+      expect(files.entities).not.toContainEqual(expect.objectContaining({ name: 'tmp/notes.md' }));
+      expect(files.entities).not.toContainEqual(
+        expect.objectContaining({ latest_status: 'stale' }),
+      );
     });
   });
 });

@@ -77,6 +77,11 @@ interface FileFact {
   readonly hash: string;
 }
 
+interface IgnorePattern {
+  readonly pattern: string;
+  readonly negated: boolean;
+}
+
 interface PackageJsonFact {
   readonly relativePath: string;
   readonly name?: string;
@@ -166,6 +171,9 @@ const ENTITY_FILES: ReadonlyArray<readonly [keyof BrainBuckets, string, EntityTy
 ];
 
 const IGNORED_DIRS = new Set([
+  '.agents',
+  '.claude',
+  '.codex',
   '.git',
   '.rizz',
   '.next',
@@ -173,9 +181,36 @@ const IGNORED_DIRS = new Set([
   'build',
   'coverage',
   'dist',
+  'dist-pack',
   'node_modules',
   'out',
   'target',
+]);
+
+const IGNORED_FILE_NAMES = new Set(['.DS_Store', 'tsconfig.tsbuildinfo']);
+
+const IGNORED_EXTENSIONS = new Set([
+  '.7z',
+  '.avif',
+  '.bin',
+  '.bmp',
+  '.class',
+  '.dmg',
+  '.exe',
+  '.gif',
+  '.gz',
+  '.ico',
+  '.jpeg',
+  '.jpg',
+  '.mov',
+  '.mp4',
+  '.pdf',
+  '.png',
+  '.pyo',
+  '.tar',
+  '.tgz',
+  '.webp',
+  '.zip',
 ]);
 
 const CONFIG_FILES = new Set([
@@ -195,7 +230,74 @@ function shouldSkipFile(name: string): boolean {
   if (name === '.env') return true;
   if (name.startsWith('.env.') && name !== '.env.example') return true;
   if (name.endsWith('.pem') || name.endsWith('.key') || name.endsWith('.p12')) return true;
+  if (IGNORED_FILE_NAMES.has(name)) return true;
+  if (IGNORED_EXTENSIONS.has(extname(name).toLowerCase())) return true;
   return false;
+}
+
+function shouldSkipRelativePath(
+  relativePath: string,
+  ignorePatterns: readonly IgnorePattern[],
+): boolean {
+  const parts = relativePath.split('/');
+  if (parts.some((part) => IGNORED_DIRS.has(part))) return true;
+  const name = parts[parts.length - 1] ?? relativePath;
+  if (shouldSkipFile(name)) return true;
+  return isIgnoredByPatterns(relativePath, ignorePatterns);
+}
+
+function parseIgnoreFile(content: string): IgnorePattern[] {
+  const patterns: IgnorePattern[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const negated = trimmed.startsWith('!');
+    const pattern = (negated ? trimmed.slice(1) : trimmed).replace(/\\/g, '/').replace(/^\//, '');
+    if (pattern !== '') patterns.push({ pattern, negated });
+  }
+  return patterns;
+}
+
+async function readRizzIgnore(rootDir: string): Promise<IgnorePattern[]> {
+  try {
+    return parseIgnoreFile(await readFile(join(rootDir, '.rizzignore'), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function patternMatches(pattern: string, relativePath: string): boolean {
+  const normalized = pattern.replace(/\\/g, '/').replace(/^\//, '');
+  if (normalized.endsWith('/')) {
+    const prefix = normalized.slice(0, -1);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  if (!normalized.includes('*')) {
+    if (!normalized.includes('/')) return relativePath.split('/').includes(normalized);
+    return relativePath === normalized || relativePath.startsWith(`${normalized}/`);
+  }
+  const regex = new RegExp(
+    `^${normalized
+      .split('*')
+      .map((part) => escapeRegex(part))
+      .join('.*')}$`,
+  );
+  if (regex.test(relativePath)) return true;
+  if (!normalized.includes('/')) return regex.test(basename(relativePath));
+  return false;
+}
+
+function isIgnoredByPatterns(relativePath: string, patterns: readonly IgnorePattern[]): boolean {
+  let ignored = false;
+  for (const pattern of patterns) {
+    if (!patternMatches(pattern.pattern, relativePath)) continue;
+    ignored = !pattern.negated;
+  }
+  return ignored;
 }
 
 function emptyBuckets(): BrainBuckets {
@@ -284,7 +386,11 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
   }
 }
 
-async function scanFiles(rootDir: string, maxFiles: number): Promise<FileFact[]> {
+async function scanFiles(
+  rootDir: string,
+  maxFiles: number,
+  ignorePatterns: readonly IgnorePattern[],
+): Promise<FileFact[]> {
   const facts: FileFact[] = [];
 
   async function walk(dir: string): Promise<void> {
@@ -295,11 +401,11 @@ async function scanFiles(rootDir: string, maxFiles: number): Promise<FileFact[]>
       const absolutePath = join(dir, entry.name);
       const rel = relative(rootDir, absolutePath).split(sep).join('/');
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) await walk(absolutePath);
+        if (!shouldSkipRelativePath(rel, ignorePatterns)) await walk(absolutePath);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (shouldSkipFile(entry.name)) continue;
+      if (shouldSkipRelativePath(rel, ignorePatterns)) continue;
       const fileStat = await stat(absolutePath);
       if (fileStat.size > 1_000_000) continue;
       const content = await readFile(absolutePath);
@@ -1077,8 +1183,12 @@ export async function generateProjectBrain(
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'files.json'),
     );
+    const ignorePatterns = await readRizzIgnore(rootDir);
     const previousFiles = previousFileFacts(previous?.entities);
-    const files = await scanFiles(rootDir, options.maxFiles ?? 5_000);
+    for (const relativePath of previousFiles.keys()) {
+      if (shouldSkipRelativePath(relativePath, ignorePatterns)) previousFiles.delete(relativePath);
+    }
+    const files = await scanFiles(rootDir, options.maxFiles ?? 5_000, ignorePatterns);
     const packageFacts = await readPackageJsonFacts(rootDir, files);
     const built = buildBrain({ rootDir, projectName, now, files, previousFiles, packageFacts });
     const latest = buildLatest({
