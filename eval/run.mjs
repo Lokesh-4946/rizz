@@ -456,7 +456,29 @@ async function runHeadlessSmoke() {
             existsSync(join(dir, '.rizz', 'brain', 'entities', 'files.json')),
             'missing files entity store',
           );
-          assert(existsSync(join(dir, '.rizz', 'reports', 'index.html')), 'missing HTML report');
+          const reportPath = join(dir, '.rizz', 'reports', 'index.html');
+          assert(existsSync(reportPath), 'missing HTML report');
+          const report = readFileSync(reportPath, 'utf8');
+          assert(report.includes('Mission Control ·'), 'missing Mission Control title');
+          assert(report.includes('local project intelligence'), 'missing portal positioning');
+          assert(report.includes('<h2>Start Here</h2>'), 'missing Start Here section');
+          assert(report.includes('<h2>Risk Areas</h2>'), 'missing risk section');
+          assert(report.includes('<h2>Unknowns</h2>'), 'missing unknowns section');
+          assert(report.includes('<h2>Evidence</h2>'), 'missing evidence section');
+          assert(
+            report.includes('placeholder="Search components, files, risks, commands, evidence..."'),
+            'missing global portal search',
+          );
+          assert(report.includes('href="#evidence-file-package-json"'), 'missing evidence link');
+          assert(report.includes('id="evidence-file-package-json"'), 'missing evidence anchor');
+          assert(!report.includes('<script src='), 'portal references external script');
+          assert(
+            !report.includes('<link rel="stylesheet"'),
+            'portal references external stylesheet',
+          );
+          assert(!report.includes('fetch('), 'portal uses fetch');
+          assert(!report.includes('http://'), 'portal references http URL');
+          assert(!report.includes('https://'), 'portal references https URL');
         });
       },
     },

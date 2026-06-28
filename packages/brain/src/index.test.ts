@@ -97,7 +97,7 @@ describe('project brain generation', () => {
       expect(files.entities.every((entity) => typeof entity.data?.hash === 'string')).toBe(true);
 
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
-      expect(report).toContain('rizz project brain');
+      expect(report).toContain('Mission Control · rizz-brain-test-');
       expect(report).toContain('Dependency Graph');
 
       const snapshot = await readJson<Record<string, unknown>>(
@@ -301,11 +301,36 @@ describe('project brain generation', () => {
       );
 
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('<title>Mission Control · rizz-brain-test-');
+      expect(report).toContain('local project intelligence');
+      expect(report).toContain('Static local view generated from <code>.rizz/brain</code>');
+      expect(report).toContain('No server. No network. No model call.');
+      expect(report).toContain('<h2>Start Here</h2>');
       expect(report).toContain('Responsibilities');
       expect(report).toContain('If Removed');
       expect(report).toContain('Important Files');
       expect(report).toContain('Evidence');
       expect(report).toContain('Command-line surface');
+      expect(report).toContain('Search components, files, risks, commands, evidence...');
+      expect(report).toContain(
+        '<label class="sr-only" for="global-filter">Search project intelligence</label>',
+      );
+      expect(report).toContain("document.querySelectorAll('[data-search]')");
+      expect(report).toContain('data-filter="unknown"');
+      expect(report).toContain('data-kind="unknown"');
+      expect(report).toContain(
+        'No risk records detected yet. This does not mean the project is risk-free.',
+      );
+      expect(report).toContain('href="#evidence-file-packages--cli--package-json"');
+      expect(report).toContain('id="evidence-file-packages--cli--package-json"');
+      expect(report.indexOf('<h2>Start Here</h2>')).toBeLessThan(
+        report.indexOf('<h2>Component Intelligence</h2>'),
+      );
+      expect(report).not.toContain('<script src=');
+      expect(report).not.toContain('<link rel="stylesheet"');
+      expect(report).not.toContain('fetch(');
+      expect(report).not.toContain('https://');
+      expect(report).not.toContain('http://');
     });
   });
 
