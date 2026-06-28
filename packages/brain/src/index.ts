@@ -1581,7 +1581,7 @@ function renderReport(params: {
       <h1>Mission Control · ${htmlEscape(params.projectName)}</h1>
       <p class="muted">Static local view generated from <code>.rizz/brain</code>. No server. No network. No model call.</p>
       <p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      <p class="muted">Generated ${htmlEscape(generatedAt)} · Brain v1 · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
+      <p class="muted">Generated ${htmlEscape(generatedAt)} · Project Intelligence Store · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
         <span class="badge warn">${params.buckets.risks.length} risks</span>
