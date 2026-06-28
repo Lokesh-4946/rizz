@@ -1,16 +1,22 @@
 # rizz
 
-> The lightest, most connectable coding agent harness. Single-agent and local-first by default;
-> bigger workspace power stays opt-in.
+> The fastest way to understand a software system. Local-first by default; model-backed chat and
+> bigger workspace power stay opt-in.
 
-rizz is a tiny coding-agent CLI for one user and one project: choose a model route, launch the TUI,
-approve risky actions, see status/cost, and keep the default path lightweight.
+rizz is a tiny repo-understanding CLI for one project: run it in a repository, generate a
+project-scoped relational brain, open a local HTML intelligence portal, and keep evidence close to
+the source files.
 
 ## Public Preview Status
 
 Agent Light is the current public preview surface:
 
 - local CLI and TUI
+- `rizz` / `rizz understand` project scan
+- `.rizz/brain/latest.json` structured current-state summary
+- `.rizz/brain/entities/*.json` relational entity stores with stable IDs
+- `.rizz/brain/graph.json` relationships with evidence and confidence
+- `.rizz/reports/index.html` local architecture intelligence portal
 - `rizz setup` dependency doctor and provider route picker
 - OpenRouter BYOK as the primary fast route
 - Codex subscription route as a secondary local Codex CLI route
@@ -38,8 +44,16 @@ npm install -g @valoir/rizz
 Then run:
 
 ```sh
-rizz setup
 rizz
+```
+
+`rizz` scans the current repository and writes:
+
+```text
+.rizz/brain/latest.json
+.rizz/brain/entities/
+.rizz/brain/graph.json
+.rizz/reports/index.html
 ```
 
 For local development from this checkout:
@@ -49,12 +63,34 @@ pnpm install
 pnpm link:local
 ```
 
-## Setup
+## Understand A Repo
+
+```sh
+cd path/to/your/repo
+rizz
+```
+
+Power-user aliases:
+
+```sh
+rizz understand
+rizz brain
+rizz report
+```
+
+Open `.rizz/reports/index.html` in your browser for the local intelligence portal. Agents and tools
+should read `.rizz/brain/latest.json` first, then relevant entity files, graph relationships, and
+evidence before rereading source files.
+
+The brain is meant to be a local interoperability contract: other agents can read stable entity IDs,
+relationships, evidence, sessions, handoffs, findings, and status without scraping a chat log.
+
+## Model Setup
 
 Run the read-only readiness check first:
 
 ```sh
-rizz setup --dry-run
+rizz doctor
 ```
 
 Then choose a model route:
@@ -72,12 +108,12 @@ Recommended public preview route:
 
 Never paste provider keys into chat, GitHub issues, screenshots, shell history, or logs.
 
-## Start rizz
+## Start Model Chat
 
 After setup:
 
 ```sh
-rizz
+rizz chat
 ```
 
 Useful commands inside the TUI:

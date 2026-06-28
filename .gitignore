@@ -8,3 +8,4 @@ coverage
 dist-pack
 *.tsbuildinfo
 .footprint-actual.json
+.rizz

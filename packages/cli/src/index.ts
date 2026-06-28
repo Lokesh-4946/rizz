@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   OPENROUTER_DEFAULT_MODEL_ID,
+  type ResolvedProvider,
   createRpcServer,
   createSession,
   loginWithApiKey,
@@ -17,29 +18,32 @@ import {
   runTurn,
 } from '@valoir/rizz-core';
 import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-providers';
-import { startTui } from '@valoir/rizz-tui';
 
 const VERSION = '0.1.0';
 
-const USAGE = `rizz - lightweight local coding agent harness
+const USAGE = `rizz - understand a software system
 
 Usage:
-  rizz                  launch TUI
-  rizz setup            choose model route
-  rizz --profile <p>    profile: default | deep | fast | cheap | local
-  rizz --capability <c> capability: code | plan | cheap | long-context
-  rizz --resume <id>    resume session
-  rizz < file           one turn, plain text
-  rizz --json < file    one turn, JSON
-  rizz --rpc            JSONL RPC
-  rizz setup --dry-run  readiness check
-  rizz --version        print version
-  rizz --help           show help
-
-Run rizz setup to connect OpenRouter BYOK or a signed-in Codex route.`;
+  rizz               generate .rizz/brain and .rizz/reports
+  rizz brain         refresh project brain
+  rizz chat          launch model TUI
+  rizz setup         choose model route
+  rizz doctor        readiness check
+  rizz --json < file one turn, JSON
+  rizz --rpc         JSONL RPC
+  rizz --version     print version
+  rizz --help        show help`;
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
+
+type StartTuiOptions = ResolvedProvider & {
+  readonly notice?: string;
+  readonly persistSession?: boolean;
+  readonly displayName?: string;
+  readonly agentName?: string;
+  readonly resumeId?: string;
+};
 
 /** Model-selection options pulled from the CLI; composes with any mode. */
 interface SelectOpts {
@@ -52,7 +56,7 @@ async function startNoModelTui(
   displayName?: string,
   agentName?: string,
 ): Promise<void> {
-  await startTui({
+  await startTuiLazy({
     provider: new StubProvider(),
     subscription: false,
     auth: 'demo',
@@ -61,6 +65,30 @@ async function startNoModelTui(
     ...(displayName !== undefined ? { displayName } : {}),
     ...(agentName !== undefined ? { agentName } : {}),
   });
+}
+
+async function startTuiLazy(options: StartTuiOptions): Promise<void> {
+  const { startTui } = await import('@valoir/rizz-tui');
+  await startTui(options);
+}
+
+async function runBrainCommand(): Promise<number> {
+  const { generateProjectBrain } = await import('@valoir/rizz-brain');
+  const result = await generateProjectBrain({ rootDir: process.cwd() });
+  if (!result.ok) {
+    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    return 1;
+  }
+  const summary = result.value;
+  process.stdout.write(`rizz understood ${summary.scannedFiles} file(s)\n`);
+  process.stdout.write(`  brain: ${summary.latestPath}\n`);
+  process.stdout.write(`  report: ${summary.reportPath}\n`);
+  process.stdout.write(`  components: ${summary.components}\n`);
+  process.stdout.write(`  commands: ${summary.commands}\n`);
+  process.stdout.write(`  tests: ${summary.tests}\n`);
+  process.stdout.write(`  changed: ${summary.changedFiles}\n`);
+  process.stdout.write(`  stale: ${summary.staleFiles}\n`);
+  return 0;
 }
 
 async function askHidden(question: string): Promise<string | null> {
@@ -231,7 +259,7 @@ async function main(argv: readonly string[]): Promise<number> {
                   'Codex is not signed in yet. Open the Codex app and sign in, then rerun rizz setup.',
               };
             }
-            await startTui({
+            await startTuiLazy({
               ...resolveCodexSubscriptionProvider({
                 command: context.codex.command,
                 cwd: process.cwd(),
@@ -263,7 +291,7 @@ async function main(argv: readonly string[]): Promise<number> {
             process.stdout.write(
               'OpenRouter connected.\nStarting rizz with OpenRouter North Mini Code (free).\n',
             );
-            await startTui({
+            await startTuiLazy({
               ...resolved,
               persistSession: false,
               ...(context.displayName !== undefined ? { displayName: context.displayName } : {}),
@@ -312,6 +340,25 @@ async function main(argv: readonly string[]): Promise<number> {
   if (c.rest.includes('--json')) return runJson(select);
   const arg = rest[0];
   switch (arg) {
+    case 'understand':
+    case 'brain':
+    case 'report':
+      return runBrainCommand();
+    case 'doctor': {
+      const { runSetupDryRun } = await import('./setup.js');
+      return runSetupDryRun({
+        env: process.env,
+        nodeVersion: process.versions.node,
+        platform: process.platform,
+        homeDir: homedir(),
+        isTTY: process.stdout.isTTY === true,
+        ...(process.stdout.columns !== undefined ? { columns: process.stdout.columns } : {}),
+        write: (text) => process.stdout.write(text),
+      });
+    }
+    case 'chat':
+      await startTuiLazy(await resolveProvider(select));
+      return 0;
     case '-v':
     case '--version':
       process.stdout.write(`${VERSION}\n`);
@@ -326,13 +373,12 @@ async function main(argv: readonly string[]): Promise<number> {
         process.stderr.write("rizz: --resume needs a session id\nTry 'rizz --help'.\n");
         return 2;
       }
-      await startTui({ ...(await resolveProvider(select)), resumeId });
+      await startTuiLazy({ ...(await resolveProvider(select)), resumeId });
       return 0;
     }
     case undefined:
       if (process.stdin.isTTY) {
-        await startTui(await resolveProvider(select));
-        return 0;
+        return runBrainCommand();
       }
       return runPrint(select);
     default:

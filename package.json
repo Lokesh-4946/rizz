@@ -19,7 +19,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval && pnpm footprint",
     "pack:check": "node scripts/pack-public-check.mjs",
     "link:local": "pnpm build && node scripts/install-local.mjs",
-    "pack:public": "pnpm build && rm -rf dist-pack && mkdir -p dist-pack && pnpm --filter @valoir/rizz-providers pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz-core pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz-tui pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz pack --pack-destination ./dist-pack"
+    "pack:public": "pnpm build && rm -rf dist-pack && mkdir -p dist-pack && pnpm --filter @valoir/rizz-brain pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz-providers pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz-core pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz-tui pack --pack-destination ./dist-pack && pnpm --filter @valoir/rizz pack --pack-destination ./dist-pack"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
