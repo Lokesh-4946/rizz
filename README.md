@@ -13,10 +13,12 @@ Agent Light is the current public preview surface:
 
 - local CLI and TUI
 - `rizz` / `rizz understand` project scan
+- `rizz review` git-diff review using the local project brain
 - `.rizz/brain/latest.json` structured current-state summary
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
 - `.rizz/brain/graph.json` relationships with evidence and confidence
 - `.rizz/reports/index.html` local architecture intelligence portal
+- `.rizz/reports/review.html` local risk/blast-radius review report
 - `rizz setup` dependency doctor and provider route picker
 - OpenRouter BYOK as the primary fast route
 - Codex subscription route as a secondary local Codex CLI route
@@ -93,6 +95,35 @@ when a project needs more exclusions:
 tmp/
 *.generated.ts
 ```
+
+## Review A Change
+
+Run this before asking an agent to edit more code or before merging a branch:
+
+```sh
+rizz review
+```
+
+`rizz review` reads the local brain, graph, relevant entity files, and the current git diff. If the
+brain does not exist yet, it creates a lightweight brain first. The review writes:
+
+```text
+.rizz/brain/entities/reviews.json
+.rizz/brain/entities/findings.json
+.rizz/brain/latest.json
+.rizz/reports/review.html
+```
+
+For automation:
+
+```sh
+rizz review --json
+```
+
+The review is intentionally skeptical. It reports overall risk, surgicality, blast radius, required
+tests, reviewer focus areas, and findings across correctness, regression risk, architecture drift,
+hidden coupling, missing tests, security, performance, maintainability, backward compatibility, and
+overengineering.
 
 ## Model Setup
 
