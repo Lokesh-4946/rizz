@@ -2,5 +2,5 @@
   "$comment": "Hard lightweight constraint (brief §2). CI fails if actuals exceed these. Raising a budget is a deliberate, reviewed decision — justify it in the PR. distKb measures the CORE/default packages only; optInPackages are summoned (D-001), not on the default path, so they don't count toward the core budget (they may carry their own budget later).",
   "coldStartMs": 250,
   "distKb": 200,
-  "optInPackages": ["workspace", "mcp"]
+  "optInPackages": ["brain", "tui", "workspace", "mcp"]
 }

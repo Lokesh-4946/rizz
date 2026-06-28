@@ -4,6 +4,7 @@
 import { spawnSync } from 'node:child_process';
 
 const packages = [
+  '@valoir/rizz-brain',
   '@valoir/rizz-providers',
   '@valoir/rizz-core',
   '@valoir/rizz-tui',

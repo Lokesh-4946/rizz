@@ -1,8 +1,7 @@
 {
-  "name": "@valoir/rizz",
+  "name": "@valoir/rizz-brain",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "rizz": "./dist/index.js" },
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
   "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "package.json"],
@@ -11,11 +10,5 @@
   },
   "scripts": {
     "build": "tsc -b"
-  },
-  "dependencies": {
-    "@valoir/rizz-brain": "workspace:^",
-    "@valoir/rizz-core": "workspace:^",
-    "@valoir/rizz-providers": "workspace:^",
-    "@valoir/rizz-tui": "workspace:^"
   }
 }

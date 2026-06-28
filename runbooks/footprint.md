@@ -18,10 +18,11 @@ package that grew.
 
 ## Opt-in packages don't count toward the core budget (D-001)
 
-`/workspace` (multi-agent) and `/mcp` are **summoned, not shipped on the default path** (D-001). Their
-packages (`optInPackages` in `.footprint-budget.json`, currently `["workspace", "mcp"]`) are **excluded
-from the core `distKb` budget** — the lightweight constraint is about the default single-agent cold
-path, which never imports them. They still appear in the per-package breakdown, marked `opt-in`.
+Project brain/report generation, the TUI/chat surface, `/workspace` (multi-agent), and `/mcp` are
+**summoned, not shipped on the default counted core path** (D-001). Their packages (`optInPackages`
+in `.footprint-budget.json`, currently `["brain", "tui", "workspace", "mcp"]`) are **excluded from
+the core `distKb` budget** — the lightweight constraint is about the default counted harness core.
+They still appear in the per-package breakdown, marked `opt-in`.
 
 **Rules:**
 - A capability that must load on the default path belongs in a core package and **counts** — keep it lean.

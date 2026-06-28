@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "packages/brain" },
     { "path": "packages/providers" },
     { "path": "packages/core" },
     { "path": "packages/tui" },

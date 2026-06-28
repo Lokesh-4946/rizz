@@ -116,6 +116,18 @@ function runCliSync(args, input) {
   );
 }
 
+function runCliInCwdSync(cwd, args, input) {
+  return withTempHomeSync((home) =>
+    spawnSync(process.execPath, [cliBin, ...args], {
+      cwd,
+      input,
+      encoding: 'utf8',
+      env: isolatedEnv(home),
+      timeout: 5_000,
+    }),
+  );
+}
+
 function setupSmokeEnv(home, secret) {
   return {
     ...isolatedEnv(home),
@@ -394,6 +406,30 @@ async function runHeadlessSmoke() {
         assert(!result.stdout.includes('Demo / Harness'), 'old demo harness copy remained');
         assert(!combinedOutput.includes(secret), 'fake provider key was echoed');
         assert(!configExists, 'interactive setup wrote temp HOME/.rizz/config.json');
+      },
+    },
+    {
+      name: 'rizz brain writes local project brain without provider credentials',
+      run() {
+        withTempDirSync('rizz-brain-smoke-', (dir) => {
+          writeFileSync(
+            join(dir, 'package.json'),
+            JSON.stringify({ name: 'brain-smoke', scripts: { test: 'vitest run' } }),
+          );
+          writeFileSync(join(dir, 'index.ts'), 'export const ok = true;\n');
+
+          const result = runCliInCwdSync(dir, ['brain'], '');
+          assert(result.error === undefined, String(result.error));
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          assert(result.stdout.includes('rizz understood 2 file(s)'), 'expected brain summary');
+          assert(existsSync(join(dir, '.rizz', 'brain', 'latest.json')), 'missing latest.json');
+          assert(existsSync(join(dir, '.rizz', 'brain', 'graph.json')), 'missing graph.json');
+          assert(
+            existsSync(join(dir, '.rizz', 'brain', 'entities', 'files.json')),
+            'missing files entity store',
+          );
+          assert(existsSync(join(dir, '.rizz', 'reports', 'index.html')), 'missing HTML report');
+        });
       },
     },
   ];

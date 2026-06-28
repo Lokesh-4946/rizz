@@ -21,8 +21,13 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.13.2)
 
+  packages/brain: {}
+
   packages/cli:
     dependencies:
+      '@valoir/rizz-brain':
+        specifier: workspace:^
+        version: link:../brain
       '@valoir/rizz-core':
         specifier: workspace:^
         version: link:../core
