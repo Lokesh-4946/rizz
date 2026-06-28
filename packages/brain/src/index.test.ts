@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { generateProjectBrain } from './index.js';
+import { generateProjectBrain, reviewProjectChanges } from './index.js';
 
 async function withTempProject<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'rizz-brain-test-'));
@@ -28,6 +28,20 @@ async function readTreeText(dir: string): Promise<string> {
     if (entry.isFile()) out += await readFile(path, 'utf8');
   }
   return out;
+}
+
+async function git(dir: string, args: readonly string[]): Promise<void> {
+  const { spawnSync } = await import('node:child_process');
+  const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || `git ${args.join(' ')} failed`);
+  }
+}
+
+async function initGitProject(dir: string): Promise<void> {
+  await git(dir, ['init', '-b', 'develop']);
+  await git(dir, ['config', 'user.email', 'rizz@example.com']);
+  await git(dir, ['config', 'user.name', 'rizz test']);
 }
 
 describe('project brain generation', () => {
@@ -290,6 +304,184 @@ describe('project brain generation', () => {
       expect(files.entities).not.toContainEqual(
         expect.objectContaining({ latest_status: 'stale' }),
       );
+    });
+  });
+
+  it('reviews the current git diff and writes evidence-backed review artifacts', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'sample-app',
+          scripts: { check: 'vitest run && tsc -b', build: 'tsc -b' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'export const answer = 1;\n',
+      );
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:38:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'export const answer = 2;\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:39:00.000Z'),
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          changedFiles: 1,
+          affectedComponents: 1,
+          blastRadius: 'narrow',
+          recommendedAction: 'investigate',
+        },
+      });
+      if (!result.ok) return;
+      expect(result.value.review.changed_files).toEqual(['packages/cli/src/index.ts']);
+      expect(result.value.review.affected_components).toContain('component:packages--cli');
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({ category: 'Missing tests', severity: 'medium' }),
+      );
+
+      const reviews = await readJson<{
+        entities: Array<{ id: string; data?: { overall_risk?: string } }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'reviews.json'));
+      expect(reviews.entities).toContainEqual(
+        expect.objectContaining({
+          id: 'review:2026-06-28t10-39-00.000z-git-diff',
+          data: expect.objectContaining({ overall_risk: 'medium' }),
+        }),
+      );
+      const latest = await readJson<{
+        latest_review_status: { readonly status?: string; readonly findings?: number };
+      }>(join(dir, '.rizz', 'brain', 'latest.json'));
+      expect(latest.latest_review_status).toMatchObject({
+        status: 'investigate',
+      });
+      expect(Number(latest.latest_review_status.findings)).toBeGreaterThanOrEqual(1);
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('rizz review');
+      expect(report).toContain('Missing tests');
+    });
+  });
+
+  it('automatically creates a lightweight brain when review runs first', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'sample-app' }));
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(join(dir, 'README.md'), '# changed\n');
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:40:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      expect(await readFile(join(dir, '.rizz', 'brain', 'latest.json'), 'utf8')).toContain(
+        'latest_review_status',
+      );
+    });
+  });
+
+  it('fails review when required brain schema files are malformed', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, '.rizz', 'brain'), { recursive: true });
+      await writeFile(join(dir, '.rizz', 'brain', 'latest.json'), '{}');
+      await writeFile(join(dir, '.rizz', 'brain', 'graph.json'), '{"relationships":[]}');
+      await writeFile(join(dir, 'README.md'), '# sample\n');
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(join(dir, 'README.md'), '# changed\n');
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:41:00.000Z'),
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'BRAIN_SCHEMA_INVALID' },
+      });
+    });
+  });
+
+  it('redacts secret-like strings from review findings and reports', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'provider.ts'), 'export const key = "";\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:42:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'provider.ts'),
+        'export const key = "sk-or-v1-reviewsecret0000000000000000";\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:43:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      const generated = await readTreeText(join(dir, '.rizz'));
+      expect(generated).not.toContain('sk-or-v1-reviewsecret');
+      expect(generated).toContain('Security-sensitive surface changed');
+    });
+  });
+
+  it('detects secret-like strings in untracked files without persisting them', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run' } }),
+      );
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:44:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'scratch.ts'),
+        'export const key = "sk-or-v1-untrackedsecret0000000000000000";\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:45:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({ category: 'Security', severity: 'critical' }),
+      );
+      const generated = await readTreeText(join(dir, '.rizz'));
+      expect(generated).not.toContain('sk-or-v1-untrackedsecret');
+      expect(generated).toContain('Security-sensitive surface changed');
     });
   });
 });
