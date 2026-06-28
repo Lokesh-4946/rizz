@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, readFileSync, statSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 
@@ -77,6 +78,11 @@ interface FileFact {
   readonly hash: string;
 }
 
+interface IgnorePattern {
+  readonly pattern: string;
+  readonly negated: boolean;
+}
+
 interface PackageJsonFact {
   readonly relativePath: string;
   readonly name?: string;
@@ -117,6 +123,55 @@ interface BrainBuckets {
   readonly status: BrainEntity[];
 }
 
+type ReviewSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+type ReviewCategory =
+  | 'Correctness'
+  | 'Regression risk'
+  | 'Architecture drift'
+  | 'Hidden coupling'
+  | 'Missing tests'
+  | 'Security'
+  | 'Performance'
+  | 'Maintainability'
+  | 'Backward compatibility'
+  | 'Overengineering';
+
+type OverallRisk = 'low' | 'medium' | 'high' | 'critical';
+
+type BlastRadius = 'narrow' | 'moderate' | 'broad';
+
+type RecommendedAction = 'approve' | 'request changes' | 'investigate';
+
+interface ReviewFindingData {
+  readonly id: string;
+  readonly severity: ReviewSeverity;
+  readonly category: ReviewCategory;
+  readonly title: string;
+  readonly description: string;
+  readonly affected_files: readonly string[];
+  readonly affected_entities: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly recommendation: string;
+  readonly safer_alternative?: string;
+}
+
+interface ReviewSummaryData {
+  readonly id: string;
+  readonly generated_at: string;
+  readonly changed_files: readonly string[];
+  readonly affected_components: readonly string[];
+  readonly affected_entities: readonly string[];
+  readonly findings: readonly ReviewFindingData[];
+  readonly overall_risk: OverallRisk;
+  readonly surgicality_score: number;
+  readonly blast_radius: BlastRadius;
+  readonly required_tests: readonly string[];
+  readonly suggested_reviewer_focus_areas: readonly string[];
+  readonly recommended_action: RecommendedAction;
+}
+
 export interface GenerateProjectBrainOptions {
   readonly rootDir: string;
   readonly now?: Date;
@@ -138,6 +193,31 @@ export interface GenerateProjectBrainSummary {
 
 export type GenerateProjectBrainResult =
   | { readonly ok: true; readonly value: GenerateProjectBrainSummary }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
+export interface ReviewProjectChangesOptions {
+  readonly rootDir: string;
+  readonly now?: Date;
+  readonly json?: boolean;
+}
+
+export interface ReviewProjectChangesSummary {
+  readonly rootDir: string;
+  readonly reviewPath: string;
+  readonly latestPath: string;
+  readonly reportPath: string;
+  readonly changedFiles: number;
+  readonly affectedComponents: number;
+  readonly findings: number;
+  readonly overallRisk: OverallRisk;
+  readonly surgicalityScore: number;
+  readonly blastRadius: BlastRadius;
+  readonly recommendedAction: RecommendedAction;
+  readonly review: ReviewSummaryData;
+}
+
+export type ReviewProjectChangesResult =
+  | { readonly ok: true; readonly value: ReviewProjectChangesSummary }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
 const ENTITY_FILES: ReadonlyArray<readonly [keyof BrainBuckets, string, EntityType]> = [
@@ -166,6 +246,10 @@ const ENTITY_FILES: ReadonlyArray<readonly [keyof BrainBuckets, string, EntityTy
 ];
 
 const IGNORED_DIRS = new Set([
+  '.agents',
+  '.cache',
+  '.claude',
+  '.codex',
   '.git',
   '.rizz',
   '.next',
@@ -173,9 +257,37 @@ const IGNORED_DIRS = new Set([
   'build',
   'coverage',
   'dist',
+  'dist-pack',
+  'logs',
   'node_modules',
   'out',
   'target',
+]);
+
+const IGNORED_FILE_NAMES = new Set(['.DS_Store', 'tsconfig.tsbuildinfo']);
+
+const IGNORED_EXTENSIONS = new Set([
+  '.7z',
+  '.avif',
+  '.bin',
+  '.bmp',
+  '.class',
+  '.dmg',
+  '.exe',
+  '.gif',
+  '.gz',
+  '.ico',
+  '.jpeg',
+  '.jpg',
+  '.mov',
+  '.mp4',
+  '.pdf',
+  '.png',
+  '.pyo',
+  '.tar',
+  '.tgz',
+  '.webp',
+  '.zip',
 ]);
 
 const CONFIG_FILES = new Set([
@@ -194,8 +306,77 @@ const CONFIG_FILES = new Set([
 function shouldSkipFile(name: string): boolean {
   if (name === '.env') return true;
   if (name.startsWith('.env.') && name !== '.env.example') return true;
+  if (name.endsWith('.log')) return true;
   if (name.endsWith('.pem') || name.endsWith('.key') || name.endsWith('.p12')) return true;
+  if (name === 'secrets' || name.startsWith('secrets.')) return true;
+  if (IGNORED_FILE_NAMES.has(name)) return true;
+  if (IGNORED_EXTENSIONS.has(extname(name).toLowerCase())) return true;
   return false;
+}
+
+function shouldSkipRelativePath(
+  relativePath: string,
+  ignorePatterns: readonly IgnorePattern[],
+): boolean {
+  const parts = relativePath.split('/');
+  if (parts.some((part) => IGNORED_DIRS.has(part))) return true;
+  const name = parts[parts.length - 1] ?? relativePath;
+  if (shouldSkipFile(name)) return true;
+  return isIgnoredByPatterns(relativePath, ignorePatterns);
+}
+
+function parseIgnoreFile(content: string): IgnorePattern[] {
+  const patterns: IgnorePattern[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const negated = trimmed.startsWith('!');
+    const pattern = (negated ? trimmed.slice(1) : trimmed).replace(/\\/g, '/').replace(/^\//, '');
+    if (pattern !== '') patterns.push({ pattern, negated });
+  }
+  return patterns;
+}
+
+async function readRizzIgnore(rootDir: string): Promise<IgnorePattern[]> {
+  try {
+    return parseIgnoreFile(await readFile(join(rootDir, '.rizzignore'), 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function patternMatches(pattern: string, relativePath: string): boolean {
+  const normalized = pattern.replace(/\\/g, '/').replace(/^\//, '');
+  if (normalized.endsWith('/')) {
+    const prefix = normalized.slice(0, -1);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  if (!normalized.includes('*')) {
+    if (!normalized.includes('/')) return relativePath.split('/').includes(normalized);
+    return relativePath === normalized || relativePath.startsWith(`${normalized}/`);
+  }
+  const regex = new RegExp(
+    `^${normalized
+      .split('*')
+      .map((part) => escapeRegex(part))
+      .join('.*')}$`,
+  );
+  if (regex.test(relativePath)) return true;
+  if (!normalized.includes('/')) return regex.test(basename(relativePath));
+  return false;
+}
+
+function isIgnoredByPatterns(relativePath: string, patterns: readonly IgnorePattern[]): boolean {
+  let ignored = false;
+  for (const pattern of patterns) {
+    if (!patternMatches(pattern.pattern, relativePath)) continue;
+    ignored = !pattern.negated;
+  }
+  return ignored;
 }
 
 function emptyBuckets(): BrainBuckets {
@@ -284,7 +465,11 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
   }
 }
 
-async function scanFiles(rootDir: string, maxFiles: number): Promise<FileFact[]> {
+async function scanFiles(
+  rootDir: string,
+  maxFiles: number,
+  ignorePatterns: readonly IgnorePattern[],
+): Promise<FileFact[]> {
   const facts: FileFact[] = [];
 
   async function walk(dir: string): Promise<void> {
@@ -295,11 +480,11 @@ async function scanFiles(rootDir: string, maxFiles: number): Promise<FileFact[]>
       const absolutePath = join(dir, entry.name);
       const rel = relative(rootDir, absolutePath).split(sep).join('/');
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) await walk(absolutePath);
+        if (!shouldSkipRelativePath(rel, ignorePatterns)) await walk(absolutePath);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (shouldSkipFile(entry.name)) continue;
+      if (shouldSkipRelativePath(rel, ignorePatterns)) continue;
       const fileStat = await stat(absolutePath);
       if (fileStat.size > 1_000_000) continue;
       const content = await readFile(absolutePath);
@@ -1077,8 +1262,12 @@ export async function generateProjectBrain(
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'files.json'),
     );
+    const ignorePatterns = await readRizzIgnore(rootDir);
     const previousFiles = previousFileFacts(previous?.entities);
-    const files = await scanFiles(rootDir, options.maxFiles ?? 5_000);
+    for (const relativePath of previousFiles.keys()) {
+      if (shouldSkipRelativePath(relativePath, ignorePatterns)) previousFiles.delete(relativePath);
+    }
+    const files = await scanFiles(rootDir, options.maxFiles ?? 5_000, ignorePatterns);
     const packageFacts = await readPackageJsonFacts(rootDir, files);
     const built = buildBrain({ rootDir, projectName, now, files, previousFiles, packageFacts });
     const latest = buildLatest({
@@ -1168,4 +1357,785 @@ export async function generateProjectBrain(
 
 export async function hasProjectBrain(rootDir: string): Promise<boolean> {
   return exists(join(rootDir, '.rizz', 'brain', 'latest.json'));
+}
+
+export async function reviewProjectChanges(
+  options: ReviewProjectChangesOptions,
+): Promise<ReviewProjectChangesResult> {
+  try {
+    const rootDir = options.rootDir;
+    if (!(await hasProjectBrain(rootDir))) {
+      const generated = await generateProjectBrain({
+        rootDir,
+        ...(options.now !== undefined ? { now: options.now } : {}),
+      });
+      if (!generated.ok) return generated;
+    }
+
+    const brainDir = join(rootDir, '.rizz', 'brain');
+    const entitiesDir = join(brainDir, 'entities');
+    const reportsDir = join(rootDir, '.rizz', 'reports');
+    await mkdir(entitiesDir, { recursive: true });
+    await mkdir(reportsDir, { recursive: true });
+
+    const schemaErrors = await validateBrainSchema(rootDir);
+    if (schemaErrors.length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'BRAIN_SCHEMA_INVALID',
+          message: schemaErrors.slice(0, 4).join('; '),
+        },
+      };
+    }
+
+    const now = (options.now ?? new Date()).toISOString();
+    const latestPath = join(brainDir, 'latest.json');
+    const graphPath = join(brainDir, 'graph.json');
+    const latest = (await readJsonFile<Record<string, unknown>>(latestPath)) ?? {};
+    const graph =
+      (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
+      {};
+    const entitySets = await readReviewEntitySets(entitiesDir);
+    const gitChanges = readGitChanges(rootDir);
+    if (!gitChanges.ok) return { ok: false, error: gitChanges.error };
+
+    const review = buildReview({
+      rootDir,
+      now,
+      latest,
+      relationships: graph.relationships ?? [],
+      entitySets,
+      changedFiles: gitChanges.value.changedFiles,
+      diffText: gitChanges.value.diffText,
+    });
+
+    const reviewEntity = makeEntity({
+      id: review.id,
+      type: 'review',
+      name: `git diff review ${now}`,
+      description: `Review produced ${review.findings.length} finding(s), overall risk ${review.overall_risk}.`,
+      now,
+      confidence: review.findings.length === 0 ? 'verified' : 'inferred',
+      evidenceIds: review.findings.flatMap((finding) => finding.evidence_ids),
+      relatedEntityIds: review.affected_entities,
+      sourceFiles: review.changed_files,
+      latestStatus: 'completed',
+      data: review as unknown as Record<string, unknown>,
+    });
+    const findingEntities = review.findings.map((finding) =>
+      makeEntity({
+        id: finding.id,
+        type: 'finding',
+        name: finding.title,
+        description: finding.description,
+        now,
+        confidence: finding.confidence,
+        evidenceIds: finding.evidence_ids,
+        relatedEntityIds: finding.affected_entities,
+        sourceFiles: finding.affected_files,
+        latestStatus: review.recommended_action === 'approve' ? 'completed' : 'open',
+        data: finding as unknown as Record<string, unknown>,
+      }),
+    );
+
+    const existingReviews = await readEntityFile(entitiesDir, 'reviews.json');
+    const existingFindings = await readEntityFile(entitiesDir, 'findings.json');
+    await writeEntityFile(entitiesDir, 'reviews.json', 'review', now, [
+      ...dropEntityById(existingReviews, reviewEntity.id),
+      reviewEntity,
+    ]);
+    await writeEntityFile(entitiesDir, 'findings.json', 'finding', now, [
+      ...dropEntitiesByIds(existingFindings, new Set(findingEntities.map((finding) => finding.id))),
+      ...findingEntities,
+    ]);
+
+    const updatedLatest = {
+      ...latest,
+      generated_at: now,
+      latest_review_status: {
+        status: review.recommended_action,
+        review_id: review.id,
+        overall_risk: review.overall_risk,
+        surgicality_score: review.surgicality_score,
+        blast_radius: review.blast_radius,
+        findings: review.findings.length,
+        changed_files: review.changed_files,
+      },
+      latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
+      latest_open_questions: mergeStrings(latest.latest_open_questions, [
+        ...review.findings
+          .filter((finding) => finding.confidence !== 'verified')
+          .map((finding) => `Review uncertainty: ${finding.title}`),
+      ]),
+      latest_recommended_next_actions: mergeStrings(latest.latest_recommended_next_actions, [
+        ...review.required_tests.map((command) => `Run ${command}`),
+        `Reviewer focus: ${review.suggested_reviewer_focus_areas.join(', ')}`,
+      ]),
+      project_state: {
+        ...(isRecord(latest.project_state) ? latest.project_state : {}),
+        last_reviewed_files: review.changed_files,
+        last_review_risk: review.overall_risk,
+      },
+    };
+    await writeFile(latestPath, jsonString(updatedLatest));
+
+    const reviewReport = renderReviewReport(review);
+    const reportPath = join(reportsDir, 'review.html');
+    await writeFile(reportPath, reviewReport);
+
+    return {
+      ok: true,
+      value: {
+        rootDir,
+        reviewPath: join(entitiesDir, 'reviews.json'),
+        latestPath,
+        reportPath,
+        changedFiles: review.changed_files.length,
+        affectedComponents: review.affected_components.length,
+        findings: review.findings.length,
+        overallRisk: review.overall_risk,
+        surgicalityScore: review.surgicality_score,
+        blastRadius: review.blast_radius,
+        recommendedAction: review.recommended_action,
+        review,
+      },
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'REVIEW_FAILED', message } };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function readEntityFile(entitiesDir: string, fileName: string): Promise<readonly BrainEntity[]> {
+  return readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
+    join(entitiesDir, fileName),
+  ).then((file) => file?.entities ?? []);
+}
+
+async function readReviewEntitySets(entitiesDir: string): Promise<{
+  readonly files: readonly BrainEntity[];
+  readonly components: readonly BrainEntity[];
+  readonly configs: readonly BrainEntity[];
+  readonly commands: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly dependencies: readonly BrainEntity[];
+  readonly risks: readonly BrainEntity[];
+}> {
+  const [files, components, configs, commands, tests, dependencies, risks] = await Promise.all([
+    readEntityFile(entitiesDir, 'files.json'),
+    readEntityFile(entitiesDir, 'components.json'),
+    readEntityFile(entitiesDir, 'configs.json'),
+    readEntityFile(entitiesDir, 'commands.json'),
+    readEntityFile(entitiesDir, 'tests.json'),
+    readEntityFile(entitiesDir, 'dependencies.json'),
+    readEntityFile(entitiesDir, 'risks.json'),
+  ]);
+  return { files, components, configs, commands, tests, dependencies, risks };
+}
+
+function dropEntityById(entities: readonly BrainEntity[], id: string): BrainEntity[] {
+  return entities.filter((entity) => entity.id !== id);
+}
+
+function dropEntitiesByIds(
+  entities: readonly BrainEntity[],
+  ids: ReadonlySet<string>,
+): BrainEntity[] {
+  return entities.filter((entity) => !ids.has(entity.id));
+}
+
+function runGit(
+  rootDir: string,
+  args: readonly string[],
+): { readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly error: string } {
+  const result = spawnSync('git', args, {
+    cwd: rootDir,
+    encoding: 'utf8',
+    maxBuffer: 5_000_000,
+  });
+  if (result.status === 0) return { ok: true, stdout: result.stdout };
+  return { ok: false, error: result.stderr.trim() || result.stdout.trim() || 'git command failed' };
+}
+
+function readGitChanges(rootDir: string):
+  | {
+      readonly ok: true;
+      readonly value: { readonly changedFiles: readonly string[]; readonly diffText: string };
+    }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
+  const inside = runGit(rootDir, ['rev-parse', '--is-inside-work-tree']);
+  if (!inside.ok || inside.stdout.trim() !== 'true') {
+    return {
+      ok: false,
+      error: { code: 'GIT_REQUIRED', message: 'rizz review needs to run inside a git worktree.' },
+    };
+  }
+
+  const worktreeFiles = runGit(rootDir, ['diff', '--name-only', 'HEAD', '--']);
+  if (!worktreeFiles.ok) {
+    return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: worktreeFiles.error } };
+  }
+  const untrackedFiles = runGit(rootDir, ['ls-files', '--others', '--exclude-standard']);
+  const worktreeChanged = unique(
+    [
+      ...worktreeFiles.stdout.split(/\r?\n/),
+      ...(untrackedFiles.ok ? untrackedFiles.stdout.split(/\r?\n/) : []),
+    ].filter((line) => line.trim() !== ''),
+  );
+  if (worktreeChanged.length > 0) {
+    const diff = runGit(rootDir, ['diff', '--no-ext-diff', '--find-renames', 'HEAD', '--']);
+    const untrackedDiffText = untrackedFiles.ok
+      ? readUntrackedFileText(rootDir, untrackedFiles.stdout)
+      : '';
+    return {
+      ok: true,
+      value: {
+        changedFiles: worktreeChanged,
+        diffText: `${diff.ok ? diff.stdout : ''}\n${untrackedDiffText}`,
+      },
+    };
+  }
+
+  const base = runGit(rootDir, ['merge-base', 'HEAD', 'origin/develop']);
+  if (base.ok && base.stdout.trim() !== '') {
+    const baseSha = base.stdout.trim();
+    const branchFiles = runGit(rootDir, ['diff', '--name-only', baseSha, 'HEAD', '--']);
+    if (!branchFiles.ok) {
+      return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: branchFiles.error } };
+    }
+    const branchChanged = unique(
+      branchFiles.stdout.split(/\r?\n/).filter((line) => line.trim() !== ''),
+    );
+    const diff = runGit(rootDir, [
+      'diff',
+      '--no-ext-diff',
+      '--find-renames',
+      baseSha,
+      'HEAD',
+      '--',
+    ]);
+    return {
+      ok: true,
+      value: { changedFiles: branchChanged, diffText: diff.ok ? diff.stdout : '' },
+    };
+  }
+
+  return { ok: true, value: { changedFiles: [], diffText: '' } };
+}
+
+function readUntrackedFileText(rootDir: string, stdout: string): string {
+  const chunks: string[] = [];
+  const files = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !shouldSkipRelativePath(line, []));
+  for (const file of files) {
+    try {
+      const absolutePath = join(rootDir, file);
+      const fileStat = statSync(absolutePath);
+      if (!fileStat.isFile() || fileStat.size > 1_000_000) continue;
+      chunks.push(readFileSync(absolutePath, 'utf8'));
+    } catch {}
+  }
+  return chunks.join('\n');
+}
+
+function buildReview(params: {
+  readonly rootDir: string;
+  readonly now: string;
+  readonly latest: Record<string, unknown>;
+  readonly relationships: readonly BrainRelationship[];
+  readonly entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>;
+  readonly changedFiles: readonly string[];
+  readonly diffText: string;
+}): ReviewSummaryData {
+  const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
+  const changedFileSet = new Set(changedFiles);
+  const changedSourceFiles = changedFiles.filter((file) => isSourceFile(file));
+  const changedTestFiles = changedFiles.filter((file) => isTestPath(file));
+  const changedConfigFiles = changedFiles.filter((file) => isConfigPath(file));
+  const changedDependencyFiles = changedFiles.filter((file) => isDependencyPath(file));
+  const affectedComponents = affectedComponentEntities(changedFiles, params.entitySets.components);
+  const affectedComponentIds = affectedComponents.map((component) => component.id);
+  const directlyAffectedEntities = unique([
+    ...changedFiles.map((file) => entityId('file', file)),
+    ...affectedComponentIds,
+    ...params.entitySets.configs
+      .filter((config) => config.source_files.some((file) => changedFileSet.has(file)))
+      .map((config) => config.id),
+    ...params.entitySets.tests
+      .filter((test) => test.source_files.some((file) => changedFileSet.has(file)))
+      .map((test) => test.id),
+  ]);
+  const graphAffectedEntities = unique([
+    ...directlyAffectedEntities,
+    ...params.relationships
+      .filter(
+        (rel) =>
+          directlyAffectedEntities.includes(rel.from) || directlyAffectedEntities.includes(rel.to),
+      )
+      .flatMap((rel) => [rel.from, rel.to]),
+  ]);
+
+  const findings: ReviewFindingData[] = [];
+  const addFinding = (
+    params: Omit<ReviewFindingData, 'id' | 'evidence_ids'> & {
+      readonly slug: string;
+      readonly evidenceIds?: readonly string[];
+    },
+  ): void => {
+    findings.push({
+      id: entityId('finding', `review-${params.slug}-${findings.length + 1}`),
+      severity: params.severity,
+      category: params.category,
+      title: safeText(params.title),
+      description: safeText(params.description),
+      affected_files: unique(params.affected_files),
+      affected_entities: unique(params.affected_entities),
+      evidence_ids: unique(params.evidenceIds ?? params.affected_files.map(evidenceId)),
+      confidence: params.confidence,
+      recommendation: safeText(params.recommendation),
+      ...(params.safer_alternative !== undefined
+        ? { safer_alternative: safeText(params.safer_alternative) }
+        : {}),
+    });
+  };
+
+  if (changedFiles.length === 0) {
+    addFinding({
+      slug: 'no-diff',
+      severity: 'low',
+      category: 'Correctness',
+      title: 'No git diff detected',
+      description: 'No working tree or branch diff was found against origin/develop.',
+      affected_files: [],
+      affected_entities: [],
+      confidence: 'verified',
+      recommendation: 'Run rizz review on a branch or with local changes before merge review.',
+    });
+  }
+
+  const isBroad = changedFiles.length > 8 || affectedComponents.length > 3;
+  if (isBroad) {
+    addFinding({
+      slug: 'broad-change',
+      severity: changedFiles.length > 20 || affectedComponents.length > 5 ? 'high' : 'medium',
+      category: 'Regression risk',
+      title: 'Broad change crosses multiple brain boundaries',
+      description: `The diff touches ${changedFiles.length} file(s) across ${affectedComponents.length} inferred component(s).`,
+      affected_files: changedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Split unrelated changes or make the PR narrative explicitly map each touched component to test evidence.',
+      safer_alternative:
+        'Land mechanical/docs/config changes separately from runtime behavior changes.',
+    });
+  }
+
+  if (changedSourceFiles.length > 0 && changedTestFiles.length === 0) {
+    addFinding({
+      slug: 'missing-tests',
+      severity: changedSourceFiles.length > 4 ? 'high' : 'medium',
+      category: 'Missing tests',
+      title: 'Runtime files changed without test artifacts in the diff',
+      description: `${changedSourceFiles.length} source file(s) changed, but no test file changed with them.`,
+      affected_files: changedSourceFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'verified',
+      recommendation:
+        'Run the existing quality gate and add focused tests for the changed behavior or document why existing coverage is sufficient.',
+    });
+  }
+
+  if (changedConfigFiles.length > 0 || changedDependencyFiles.length > 0) {
+    addFinding({
+      slug: 'config-dependency-change',
+      severity: changedDependencyFiles.length > 0 ? 'medium' : 'low',
+      category: changedDependencyFiles.length > 0 ? 'Backward compatibility' : 'Architecture drift',
+      title: 'Configuration or dependency surface changed',
+      description: 'The diff touches setup, package, build, CI, or dependency metadata.',
+      affected_files: unique([...changedConfigFiles, ...changedDependencyFiles]),
+      affected_entities: graphAffectedEntities,
+      confidence: 'verified',
+      recommendation: 'Verify install, build, and public package contents before merge.',
+      safer_alternative:
+        'Keep package/config movement in a separate PR unless the runtime change depends on it.',
+    });
+  }
+
+  const secretRiskFiles = changedFiles.filter((file) =>
+    /auth|secret|token|keychain|credential|provider|login|env/i.test(file),
+  );
+  if (secretRiskFiles.length > 0 || containsSecretLikeValue(params.diffText)) {
+    addFinding({
+      slug: 'secret-sensitive-surface',
+      severity: containsSecretLikeValue(params.diffText) ? 'critical' : 'medium',
+      category: 'Security',
+      title: 'Security-sensitive surface changed',
+      description: containsSecretLikeValue(params.diffText)
+        ? 'The diff includes a secret-like string pattern and must be cleaned before merge.'
+        : 'The diff touches auth, provider, keychain, credential, or environment handling.',
+      affected_files: secretRiskFiles.length > 0 ? secretRiskFiles : changedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: containsSecretLikeValue(params.diffText) ? 'verified' : 'inferred',
+      recommendation:
+        'Audit redaction, storage boundaries, logs, and setup output. Never merge real keys or tokens.',
+    });
+  }
+
+  const publicCliFiles = changedFiles.filter(
+    (file) =>
+      file === 'packages/cli/src/index.ts' || file === 'README.md' || file.startsWith('runbooks/'),
+  );
+  if (publicCliFiles.length > 0) {
+    addFinding({
+      slug: 'public-contract',
+      severity: 'medium',
+      category: 'Backward compatibility',
+      title: 'Public CLI or documentation contract changed',
+      description: 'The diff touches user-facing commands, docs, or install/runbook surfaces.',
+      affected_files: publicCliFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'verified',
+      recommendation:
+        'Run CLI smoke tests and verify README/runbook examples still match the shipped command behavior.',
+    });
+  }
+
+  if (changedFiles.some((file) => file.includes('brain')) && affectedComponents.length > 1) {
+    addFinding({
+      slug: 'brain-contract-drift',
+      severity: 'medium',
+      category: 'Architecture drift',
+      title: 'Project brain contract may be drifting across package boundaries',
+      description:
+        'Brain-related changes touch additional inferred components, increasing interoperability risk for future agents.',
+      affected_files: changedFiles.filter((file) => file.includes('brain') || file.includes('cli')),
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Keep the brain schema stable and update tests for latest.json, graph.json, reviews.json, and evidence records.',
+    });
+  }
+
+  const overengineeringRisk = changedFiles.length > 12 && changedTestFiles.length < 2;
+  if (overengineeringRisk) {
+    addFinding({
+      slug: 'large-low-test-diff',
+      severity: 'medium',
+      category: 'Overengineering',
+      title: 'Large diff has little visible test movement',
+      description:
+        'The change may be carrying too much product surface for the amount of verification in the diff.',
+      affected_files: changedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Cut the PR to the smallest reviewable product slice or add stronger focused tests.',
+      safer_alternative: 'Ship schema/artifact writing first, then UX/reporting in the next PR.',
+    });
+  }
+
+  const requiredTests = requiredTestCommands(params.entitySets.commands, changedFiles);
+  const blastRadius = classifyBlastRadius(changedFiles.length, affectedComponents.length);
+  const surgicalityScore = scoreSurgicality(
+    changedFiles.length,
+    affectedComponents.length,
+    findings,
+  );
+  const overallRisk = classifyOverallRisk(findings, blastRadius);
+  return {
+    id: entityId('review', `${params.now}-git-diff`),
+    generated_at: params.now,
+    changed_files: changedFiles,
+    affected_components: affectedComponentIds,
+    affected_entities: graphAffectedEntities,
+    findings,
+    overall_risk: overallRisk,
+    surgicality_score: surgicalityScore,
+    blast_radius: blastRadius,
+    required_tests: requiredTests,
+    suggested_reviewer_focus_areas: suggestedFocusAreas(findings, changedFiles, affectedComponents),
+    recommended_action: recommendAction(overallRisk, findings),
+  };
+}
+
+function isSourceFile(path: string): boolean {
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php)$/.test(path) && !isTestPath(path);
+}
+
+function isTestPath(path: string): boolean {
+  return /(__tests__|\.test\.|\.spec\.)/.test(path);
+}
+
+function isConfigPath(path: string): boolean {
+  return (
+    path.startsWith('.github/') ||
+    CONFIG_FILES.has(basename(path)) ||
+    /(^|\/)(Dockerfile|Makefile|.*config\.(ts|js|mjs|cjs|json|yml|yaml))$/.test(path)
+  );
+}
+
+function isDependencyPath(path: string): boolean {
+  return /(^|\/)(package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?)$/.test(
+    path,
+  );
+}
+
+function affectedComponentEntities(
+  changedFiles: readonly string[],
+  components: readonly BrainEntity[],
+): BrainEntity[] {
+  return components.filter((component) => {
+    const componentPath =
+      typeof component.data?.purpose === 'string' ? component.name : component.name;
+    return changedFiles.some(
+      (file) => file === componentPath || file.startsWith(`${componentPath}/`),
+    );
+  });
+}
+
+function containsSecretLikeValue(value: string): boolean {
+  return redactSecrets(value) !== value;
+}
+
+function requiredTestCommands(
+  commands: readonly BrainEntity[],
+  changedFiles: readonly string[],
+): string[] {
+  const commandTexts = commands
+    .map((command) => {
+      const text = typeof command.data?.command === 'string' ? command.data.command : undefined;
+      return text === undefined ? undefined : `${command.name}: ${text}`;
+    })
+    .filter((command): command is string => command !== undefined);
+  const quality = commandTexts.filter((command) =>
+    /test|check|lint|typecheck|vitest/i.test(command),
+  );
+  if (quality.length > 0) return quality.slice(0, 5);
+  if (changedFiles.some(isSourceFile))
+    return ['Run the project test command; none was detected in the brain.'];
+  return ['Review-only change: verify docs/report output manually.'];
+}
+
+function classifyBlastRadius(fileCount: number, componentCount: number): BlastRadius {
+  if (fileCount > 12 || componentCount > 4) return 'broad';
+  if (fileCount > 4 || componentCount > 1) return 'moderate';
+  return 'narrow';
+}
+
+function scoreSurgicality(
+  fileCount: number,
+  componentCount: number,
+  findings: readonly ReviewFindingData[],
+): number {
+  const severityPenalty = findings.reduce((score, finding) => {
+    if (finding.severity === 'critical') return score + 5;
+    if (finding.severity === 'high') return score + 3;
+    if (finding.severity === 'medium') return score + 2;
+    return score + 1;
+  }, 0);
+  return Math.max(
+    1,
+    Math.min(10, 11 - Math.ceil(fileCount / 3) - componentCount - severityPenalty),
+  );
+}
+
+function classifyOverallRisk(
+  findings: readonly ReviewFindingData[],
+  blastRadius: BlastRadius,
+): OverallRisk {
+  if (findings.some((finding) => finding.severity === 'critical')) return 'critical';
+  if (findings.some((finding) => finding.severity === 'high')) return 'high';
+  if (blastRadius === 'broad' || findings.some((finding) => finding.severity === 'medium')) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function recommendAction(
+  risk: OverallRisk,
+  findings: readonly ReviewFindingData[],
+): RecommendedAction {
+  if (risk === 'critical' || risk === 'high') return 'request changes';
+  if (findings.some((finding) => finding.category === 'Missing tests')) return 'investigate';
+  if (risk === 'medium') return 'investigate';
+  return 'approve';
+}
+
+function suggestedFocusAreas(
+  findings: readonly ReviewFindingData[],
+  changedFiles: readonly string[],
+  components: readonly BrainEntity[],
+): string[] {
+  const categories = findings.map((finding) => finding.category);
+  const componentNames = components.map((component) => component.name);
+  return unique([
+    ...categories,
+    ...componentNames.map((name) => `component: ${name}`),
+    ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
+    ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
+  ]).slice(0, 8);
+}
+
+function mergeStrings(value: unknown, additions: readonly string[]): string[] {
+  return unique([...asStringArray(value), ...additions.filter((item) => item.trim() !== '')]).slice(
+    0,
+    20,
+  );
+}
+
+function mergeLatestRisks(value: unknown, findings: readonly ReviewFindingData[]): unknown[] {
+  const existing = Array.isArray(value)
+    ? value.filter((item): item is unknown => item !== null)
+    : [];
+  const reviewRisks = findings
+    .filter((finding) => finding.severity !== 'low')
+    .map((finding) => ({
+      id: finding.id,
+      name: finding.title,
+      description: finding.description,
+      confidence: finding.confidence,
+      evidence_ids: finding.evidence_ids,
+    }));
+  return [...existing, ...reviewRisks].slice(-20);
+}
+
+function renderReviewReport(review: ReviewSummaryData): string {
+  const findingRows = review.findings
+    .map(
+      (finding) => `<tr>
+        <td>${htmlEscape(finding.severity)}</td>
+        <td>${htmlEscape(finding.category)}</td>
+        <td><strong>${htmlEscape(finding.title)}</strong><br><span class="muted">${htmlEscape(finding.description)}</span></td>
+        <td>${renderList(finding.affected_files)}</td>
+        <td>${htmlEscape(finding.recommendation)}</td>
+      </tr>`,
+    )
+    .join('');
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rizz review</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
+    h1 { font-size: clamp(32px, 6vw, 64px); margin: 0 0 8px; letter-spacing: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .muted { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
+    ul { margin: 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="badge">rizz review</p>
+      <h1>${htmlEscape(review.overall_risk)} risk · ${htmlEscape(review.blast_radius)} blast radius</h1>
+      <p class="muted">${htmlEscape(review.id)} · ${htmlEscape(review.generated_at)}</p>
+    </header>
+    <section class="grid">
+      <article class="card"><h2>Action</h2><p>${htmlEscape(review.recommended_action)}</p></article>
+      <article class="card"><h2>Surgicality</h2><p>${review.surgicality_score}/10</p></article>
+      <article class="card"><h2>Files</h2><p>${review.changed_files.length}</p></article>
+      <article class="card"><h2>Findings</h2><p>${review.findings.length}</p></article>
+    </section>
+    <section>
+      <h2>Required Tests</h2>
+      ${renderList(review.required_tests)}
+    </section>
+    <section>
+      <h2>Reviewer Focus</h2>
+      ${renderList(review.suggested_reviewer_focus_areas)}
+    </section>
+    <section>
+      <h2>Findings</h2>
+      <table><thead><tr><th>Severity</th><th>Category</th><th>Finding</th><th>Files</th><th>Recommendation</th></tr></thead><tbody>${findingRows}</tbody></table>
+    </section>
+  </main>
+</body>
+</html>
+`;
+}
+
+async function validateBrainSchema(rootDir: string): Promise<string[]> {
+  const brainDir = join(rootDir, '.rizz', 'brain');
+  const entitiesDir = join(brainDir, 'entities');
+  const errors: string[] = [];
+  const latest = await readJsonFile<unknown>(join(brainDir, 'latest.json'));
+  if (!isRecord(latest)) {
+    errors.push('latest.json must be an object');
+  } else {
+    if (typeof latest.generated_at !== 'string') errors.push('latest.json missing generated_at');
+    if (!Array.isArray(latest.latest_component_map)) {
+      errors.push('latest.json missing latest_component_map array');
+    }
+  }
+
+  const graph = await readJsonFile<unknown>(join(brainDir, 'graph.json'));
+  if (!isRecord(graph) || !Array.isArray(graph.relationships)) {
+    errors.push('graph.json missing relationships array');
+  } else {
+    for (const [index, rel] of graph.relationships.entries()) {
+      if (!isRecord(rel) || typeof rel.from !== 'string' || typeof rel.to !== 'string') {
+        errors.push(`graph.json relationship ${index} is invalid`);
+        break;
+      }
+    }
+  }
+
+  for (const fileName of ['evidence.json', 'reviews.json']) {
+    const path = join(entitiesDir, fileName);
+    if (!(await exists(path))) continue;
+    const file = await readJsonFile<unknown>(path);
+    if (!isRecord(file) || !Array.isArray(file.entities)) {
+      errors.push(`${fileName} missing entities array`);
+      continue;
+    }
+    for (const [index, entity] of file.entities.entries()) {
+      if (!isBrainEntityShape(entity)) {
+        errors.push(`${fileName} entity ${index} is invalid`);
+        break;
+      }
+    }
+  }
+
+  return errors;
+}
+
+function isBrainEntityShape(value: unknown): value is BrainEntity {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.type === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.created_at === 'string' &&
+    typeof value.updated_at === 'string' &&
+    (value.confidence === 'verified' ||
+      value.confidence === 'inferred' ||
+      value.confidence === 'uncertain') &&
+    Array.isArray(value.evidence_ids) &&
+    Array.isArray(value.related_entity_ids) &&
+    Array.isArray(value.source_files) &&
+    typeof value.latest_status === 'string'
+  );
 }

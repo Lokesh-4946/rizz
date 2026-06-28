@@ -67,6 +67,13 @@ function isolatedEnv(home) {
   return env;
 }
 
+function isolatedEnvWithGit(home) {
+  return {
+    ...isolatedEnv(home),
+    PATH: process.env.PATH ?? '',
+  };
+}
+
 function redactOutput(output, secret) {
   return output.split(secret).join('[redacted secret]');
 }
@@ -126,6 +133,27 @@ function runCliInCwdSync(cwd, args, input) {
       timeout: 5_000,
     }),
   );
+}
+
+function runCliInCwdWithGitSync(cwd, args, input) {
+  return withTempHomeSync((home) =>
+    spawnSync(process.execPath, [cliBin, ...args], {
+      cwd,
+      input,
+      encoding: 'utf8',
+      env: isolatedEnvWithGit(home),
+      timeout: 5_000,
+    }),
+  );
+}
+
+function gitInCwd(cwd, args) {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  assert(result.status === 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
 }
 
 function setupSmokeEnv(home, secret) {
@@ -429,6 +457,50 @@ async function runHeadlessSmoke() {
             'missing files entity store',
           );
           assert(existsSync(join(dir, '.rizz', 'reports', 'index.html')), 'missing HTML report');
+        });
+      },
+    },
+    {
+      name: 'rizz review writes brain-backed review artifacts for current git diff',
+      run() {
+        withTempDirSync('rizz-review-smoke-', (dir) => {
+          gitInCwd(dir, ['init', '-b', 'develop']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'rizz eval']);
+          writeFileSync(
+            join(dir, 'package.json'),
+            JSON.stringify({ name: 'review-smoke', scripts: { test: 'vitest run' } }),
+          );
+          mkdirSync(join(dir, 'src'), { recursive: true });
+          writeFileSync(join(dir, 'src', 'index.ts'), 'export const ok = true;\n');
+          const brain = runCliInCwdSync(dir, ['brain'], '');
+          assert(brain.status === 0, `expected brain exit 0, got ${brain.status}: ${brain.stderr}`);
+          gitInCwd(dir, ['add', '.']);
+          gitInCwd(dir, ['commit', '-m', 'initial']);
+          writeFileSync(join(dir, 'src', 'index.ts'), 'export const ok = false;\n');
+
+          const result = runCliInCwdWithGitSync(dir, ['review', '--json'], '');
+          assert(result.error === undefined, String(result.error));
+          assert(
+            result.status === 0,
+            `expected review exit 0, got ${result.status}: ${result.stderr}`,
+          );
+          assert(!result.stdout.includes('sk-or-v1-'), 'review output leaked secret-like text');
+          const review = JSON.parse(result.stdout);
+          assert(
+            review.changed_files.includes('src/index.ts'),
+            'review missed changed source file',
+          );
+          assert(review.findings.length > 0, 'review produced no findings');
+          assert(
+            review.required_tests.some((command) => command.includes('vitest')),
+            'review missed test command',
+          );
+          assert(
+            existsSync(join(dir, '.rizz', 'brain', 'entities', 'reviews.json')),
+            'missing reviews entity store',
+          );
+          assert(existsSync(join(dir, '.rizz', 'reports', 'review.html')), 'missing review report');
         });
       },
     },

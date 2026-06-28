@@ -25,6 +25,7 @@ recover the current project state without depending on a hidden chat transcript.
 .rizz/brain/entities/
 .rizz/brain/snapshots/
 .rizz/reports/index.html
+.rizz/reports/review.html
 ```
 
 `latest.json` is the front door. It summarizes the latest architecture summary, component map,
@@ -42,6 +43,32 @@ risks, review status, open questions, handoffs, confidence gaps, and recommended
 
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
+
+## Review Flow
+
+`rizz review` is the first brain-backed merge/readiness check. It is deterministic and local in the
+first version; it does not post PR comments, edit code, call a cloud service, or approve changes.
+
+```sh
+rizz review
+rizz review --json
+```
+
+The command:
+
+1. Loads `.rizz/brain/latest.json`.
+2. Loads `.rizz/brain/graph.json`.
+3. Loads relevant entity stores under `.rizz/brain/entities/`.
+4. Reads the current git diff, including untracked files.
+5. Maps changed files to file/component/config/test/command entities.
+6. Produces skeptical findings for risk, drift, hidden coupling, missing tests, security,
+   performance, maintainability, backward compatibility, and overengineering.
+7. Writes first-class `review` and `finding` entities.
+8. Updates `latest_review_status`.
+9. Writes `.rizz/reports/review.html`.
+
+If no brain exists, `rizz review` creates a lightweight brain first. If required brain files are
+malformed, the review fails with `BRAIN_SCHEMA_INVALID` instead of writing partial review state.
 
 ## Agent Read Order
 
@@ -71,6 +98,25 @@ Every scan hashes source files and compares them to the previous file entities.
 
 Generated `.rizz` output is ignored by git by default.
 
+## Scan Scope
+
+The first scanner is intentionally conservative. It skips generated output, local agent operating
+folders, package artifacts, binary media, private env files, key material, and TypeScript build-info
+files by default. That keeps the brain focused on source, manifests, tests, docs, and operational
+runbooks instead of local machine noise.
+
+Projects can tune scan scope with a root `.rizzignore` file. Supported patterns are intentionally
+small and dependency-free:
+
+```text
+tmp/
+*.generated.ts
+private-notes.md
+```
+
+Never rely on `.rizzignore` to protect secrets. Private `.env`, `.env.*`, `.pem`, `.key`, and `.p12`
+files are skipped even without a project ignore file.
+
 ## Launch Gate
 
 Before releasing a brain change:
@@ -85,6 +131,8 @@ Smoke the command in a temporary repo and confirm:
 
 - `.rizz/brain/latest.json` exists
 - `.rizz/brain/entities/files.json` exists
+- `.rizz/brain/entities/reviews.json` exists after `rizz review`
 - `.rizz/brain/graph.json` exists
 - `.rizz/reports/index.html` exists
+- `.rizz/reports/review.html` exists after `rizz review`
 - no provider key, token, or user secret appears in generated output
