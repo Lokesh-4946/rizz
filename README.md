@@ -17,6 +17,7 @@ Agent Light is the current public preview surface:
 - `.rizz/brain/latest.json` structured current-state summary
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
 - `.rizz/brain/graph.json` relationships with evidence and confidence
+- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, and incremental understanding
 - `.rizz/reports/index.html` local architecture intelligence portal
 - `.rizz/reports/review.html` local risk/blast-radius review report
 - `rizz setup` dependency doctor and provider route picker
@@ -24,7 +25,7 @@ Agent Light is the current public preview surface:
 - Codex subscription route as a secondary local Codex CLI route
 - OpenAI/Anthropic route placeholders for later setup wiring
 - visible `/status`, `/model`, `/theme`, `/workspace`, and `/help`
-- no Workspace Mode, Repo Brain, OS connectors, custom skills, or enterprise providers in the default install
+- no workspace agents, cloud sync, custom skills, or enterprise providers in the default install
 
 The current release baseline is `0.1.0`.
 
@@ -55,6 +56,7 @@ rizz
 .rizz/brain/latest.json
 .rizz/brain/entities/
 .rizz/brain/graph.json
+.rizz/research/
 .rizz/reports/index.html
 ```
 
@@ -206,7 +208,7 @@ Current merged-develop verification:
 
 - Homebrew is not available yet
 - no Workspace Mode in default install
-- no Repo Brain, Company Brain, memory indexing, OS/Jarvis connectors, or custom skills yet
+- no team portal, cloud sync, browser extension, mobile app, or marketplace yet
 - OpenAI direct and Anthropic direct setup entries are listed but do not collect first-run credentials yet
 - OpenRouter setup validates key shape before launch; the first real model turn is the live provider proof
 - Codex route depends on local Codex CLI/app auth and is not the fast persistent Codex bridge

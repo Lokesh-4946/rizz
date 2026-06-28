@@ -24,6 +24,11 @@ recover the current project state without depending on a hidden chat transcript.
 .rizz/brain/changelog.json
 .rizz/brain/entities/
 .rizz/brain/snapshots/
+.rizz/research/metrics.json
+.rizz/research/coverage.json
+.rizz/research/confidence.json
+.rizz/research/evidence_quality.json
+.rizz/research/incremental_update.json
 .rizz/reports/index.html
 .rizz/reports/review.html
 ```
@@ -43,6 +48,23 @@ risks, review status, open questions, handoffs, confidence gaps, and recommended
 
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
+
+## Research Artifacts
+
+Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/research/`:
+
+- `metrics.json` summarizes scanned files, entity counts, relationship counts, commands, tests,
+  evidence records, package manager, and detected stack.
+- `coverage.json` summarizes file-kind/status coverage and per-component source, evidence, test,
+  config, dependency, and confidence fields.
+- `confidence.json` summarizes entity and relationship confidence counts plus component-level
+  confidence and evidence IDs.
+- `evidence_quality.json` summarizes referenced evidence IDs, missing evidence references,
+  evidence-backed entities/relationships, and component field-evidence counts.
+- `incremental_update.json` summarizes changed, current, new, and stale files for the latest scan.
+
+These artifacts are local scan output. They do not require a provider key, model call, cloud
+account, or external service.
 
 ## Review Flow
 
@@ -133,6 +155,11 @@ Smoke the command in a temporary repo and confirm:
 - `.rizz/brain/entities/files.json` exists
 - `.rizz/brain/entities/reviews.json` exists after `rizz review`
 - `.rizz/brain/graph.json` exists
+- `.rizz/research/metrics.json` exists
+- `.rizz/research/coverage.json` exists
+- `.rizz/research/confidence.json` exists
+- `.rizz/research/evidence_quality.json` exists
+- `.rizz/research/incremental_update.json` exists
 - `.rizz/reports/index.html` exists
 - `.rizz/reports/review.html` exists after `rizz review`
 - no provider key, token, or user secret appears in generated output
