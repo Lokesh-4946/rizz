@@ -1177,6 +1177,22 @@ function stringArrayData(entity: BrainEntity, key: string): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+function recordStringArrayData(
+  entity: BrainEntity,
+  key: string,
+): Readonly<Record<string, readonly string[]>> {
+  const value = entity.data?.[key];
+  if (!isRecord(value)) return {};
+  const entries: Array<[string, readonly string[]]> = [];
+  for (const [field, items] of Object.entries(value)) {
+    const strings = Array.isArray(items)
+      ? items.filter((item): item is string => typeof item === 'string')
+      : [];
+    if (strings.length > 0) entries.push([field, strings]);
+  }
+  return Object.fromEntries(entries) as Record<string, readonly string[]>;
+}
+
 function htmlEscape(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -1185,16 +1201,57 @@ function htmlEscape(value: string): string {
     .replace(/"/g, '&quot;');
 }
 
+function fragmentId(id: string): string {
+  return id
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function evidenceLabel(evidenceId: string, evidenceById: ReadonlyMap<string, BrainEntity>): string {
+  const evidence = evidenceById.get(evidenceId);
+  const path = evidence === undefined ? undefined : stringData(evidence, 'path');
+  return path ?? evidence?.name ?? evidenceId;
+}
+
+function renderEvidenceLinks(
+  evidenceIds: readonly string[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const uniqueIds = unique(evidenceIds);
+  if (uniqueIds.length === 0) return '<p class="muted">No direct evidence recorded yet.</p>';
+  return `<ul class="evidence-links">${uniqueIds
+    .map((id) => {
+      const label = evidenceLabel(id, evidenceById);
+      return `<li><a href="#${htmlEscape(fragmentId(id))}">${htmlEscape(label)}</a></li>`;
+    })
+    .join('')}</ul>`;
+}
+
 function renderList(items: readonly string[]): string {
   if (items.length === 0) return '<p class="muted">None detected yet.</p>';
   return `<ul>${items.map((item) => `<li>${htmlEscape(item)}</li>`).join('')}</ul>`;
+}
+
+function renderListWithEvidence(
+  items: readonly string[],
+  evidenceIds: readonly string[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  return `${renderList(items)}
+    <div class="evidence-block">
+      <p class="muted">Evidence</p>
+      ${renderEvidenceLinks(evidenceIds, evidenceById)}
+    </div>`;
 }
 
 function renderEntityCards(entities: readonly BrainEntity[]): string {
   if (entities.length === 0) return '<p class="muted">None detected yet.</p>';
   return entities
     .map(
-      (entity) => `<article class="card">
+      (entity) => `<article class="card" data-search="${htmlEscape(
+        `${entity.id} ${entity.name} ${entity.description} ${entity.confidence}`,
+      )}">
         <div class="badge">${htmlEscape(entity.confidence)}</div>
         <h3>${htmlEscape(entity.name)}</h3>
         <p>${htmlEscape(entity.description)}</p>
@@ -1204,7 +1261,32 @@ function renderEntityCards(entities: readonly BrainEntity[]): string {
     .join('');
 }
 
-function renderComponentCards(components: readonly BrainEntity[]): string {
+function renderRiskCards(
+  risks: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  if (risks.length === 0) {
+    return '<p class="muted">No risk records detected yet. This does not mean the project is risk-free.</p>';
+  }
+  return risks
+    .map(
+      (risk) => `<article class="card" data-search="${htmlEscape(
+        `${risk.id} ${risk.name} ${risk.description} ${risk.confidence} ${risk.source_files.join(' ')}`,
+      )}" data-kind="risk" data-confidence="${htmlEscape(risk.confidence)}">
+        <div class="badge">${htmlEscape(risk.confidence)}</div>
+        <h3>${htmlEscape(risk.name)}</h3>
+        <p>${htmlEscape(risk.description)}</p>
+        <p class="muted">Evidence count: ${risk.evidence_ids.length}</p>
+        ${renderEvidenceLinks(risk.evidence_ids, evidenceById)}
+      </article>`,
+    )
+    .join('');
+}
+
+function renderComponentCards(
+  components: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
   if (components.length === 0) return '<p class="muted">None detected yet.</p>';
   return components
     .map((component) => {
@@ -1212,29 +1294,161 @@ function renderComponentCards(components: readonly BrainEntity[]): string {
       const criticality = stringData(component, 'criticality') ?? 'unknown';
       const score = numberData(component, 'criticality_score');
       const scoreText = score === undefined ? '' : ` · ${score}/10`;
-      return `<article class="card">
+      const fieldEvidence = recordStringArrayData(component, 'field_evidence');
+      return `<article class="card" data-search="${htmlEscape(
+        `${component.id} ${component.name} ${purpose} ${criticality} ${component.confidence} ${component.source_files.join(' ')}`,
+      )}" data-kind="component" data-confidence="${htmlEscape(
+        component.confidence,
+      )}" data-criticality="${htmlEscape(criticality)}">
         <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)}</div>
         <h3>${htmlEscape(component.name)}</h3>
         <p>${htmlEscape(purpose)}</p>
         <h4>Responsibilities</h4>
-        ${renderList(stringArrayData(component, 'responsibilities'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'responsibilities'),
+          fieldEvidence.responsibilities ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Interfaces</h4>
-        ${renderList(stringArrayData(component, 'interfaces'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'interfaces'),
+          fieldEvidence.interfaces ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Entry Points</h4>
-        ${renderList(stringArrayData(component, 'entry_points'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'entry_points'),
+          fieldEvidence.entry_points ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Consumers</h4>
-        ${renderList(stringArrayData(component, 'consumers'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'consumers'),
+          fieldEvidence.consumers ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Dependencies</h4>
-        ${renderList(stringArrayData(component, 'dependencies'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'dependencies'),
+          fieldEvidence.dependencies ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Important Files</h4>
-        ${renderList(stringArrayData(component, 'important_files'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'important_files'),
+          fieldEvidence.important_files ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>If Removed</h4>
-        ${renderList(stringArrayData(component, 'what_breaks_if_removed'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'what_breaks_if_removed'),
+          fieldEvidence.what_breaks_if_removed ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Known Risks</h4>
-        ${renderList(stringArrayData(component, 'known_risks'))}
+        ${renderListWithEvidence(
+          stringArrayData(component, 'known_risks'),
+          fieldEvidence.known_risks ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Evidence</h4>
-        ${renderList(component.evidence_ids)}
+        ${renderEvidenceLinks(component.evidence_ids, evidenceById)}
         <p class="muted">${htmlEscape(component.id)}</p>
+      </article>`;
+    })
+    .join('');
+}
+
+function renderStartHere(
+  components: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const ranked = [...components].sort((a, b) => {
+    const aScore = numberData(a, 'criticality_score') ?? 0;
+    const bScore = numberData(b, 'criticality_score') ?? 0;
+    return bScore - aScore || a.name.localeCompare(b.name);
+  });
+  if (ranked.length === 0) return '<p class="muted">No component entry points detected yet.</p>';
+  return ranked
+    .slice(0, 5)
+    .map((component) => {
+      const entryPoints = stringArrayData(component, 'entry_points').slice(0, 3);
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${component.id} ${component.name} ${component.description}`,
+      )}" data-kind="component" data-confidence="${htmlEscape(
+        component.confidence,
+      )}" data-criticality="${htmlEscape(stringData(component, 'criticality') ?? 'unknown')}">
+        <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(
+          stringData(component, 'criticality') ?? 'unknown',
+        )}</div>
+        <h3>${htmlEscape(component.name)}</h3>
+        <p>${htmlEscape(stringData(component, 'purpose') ?? component.description)}</p>
+        <h4>Where to enter</h4>
+        ${renderListWithEvidence(entryPoints, component.evidence_ids, evidenceById)}
+      </article>`;
+    })
+    .join('');
+}
+
+function renderUnknowns(params: {
+  readonly latest: Record<string, unknown>;
+  readonly components: readonly BrainEntity[];
+}): string {
+  const openQuestions = Array.isArray(params.latest.latest_open_questions)
+    ? params.latest.latest_open_questions.filter((item): item is string => typeof item === 'string')
+    : [];
+  const confidenceGaps = Array.isArray(params.latest.latest_confidence_gaps)
+    ? params.latest.latest_confidence_gaps.filter(
+        (item): item is string => typeof item === 'string',
+      )
+    : [];
+  const inferredComponents = params.components
+    .filter((component) => component.confidence !== 'verified')
+    .slice(0, 5)
+    .map((component) => `Confirm whether ${component.name} is a true product boundary.`);
+  const unknowns = unique([...openQuestions, ...confidenceGaps, ...inferredComponents]);
+  if (unknowns.length === 0) return '<p class="muted">No open unknowns detected yet.</p>';
+  return unknowns
+    .map(
+      (unknown) => `<article class="card" data-search="${htmlEscape(
+        unknown,
+      )}" data-kind="unknown" data-confidence="uncertain">
+        <div class="badge">needs confirmation</div>
+        <h3>${htmlEscape(unknown)}</h3>
+        <p class="muted">Unknowns are work queues for better project intelligence. Verify with evidence before relying on inferred facts.</p>
+      </article>`,
+    )
+    .join('');
+}
+
+function renderLatestReview(latest: Record<string, unknown>): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+  }
+  const rows = Object.entries(status)
+    .map(
+      ([key, value]) => `<tr><th>${htmlEscape(key)}</th><td>${htmlEscape(String(value))}</td></tr>`,
+    )
+    .join('');
+  return `<table><tbody>${rows}</tbody></table>`;
+}
+
+function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
+  if (evidence.length === 0) return '<p class="muted">No evidence records detected yet.</p>';
+  return evidence
+    .map((entity) => {
+      const path = stringData(entity, 'path') ?? entity.name;
+      const kind = stringData(entity, 'kind') ?? 'evidence';
+      const hash = stringData(entity, 'hash')?.slice(0, 12) ?? '';
+      const size = numberData(entity, 'size');
+      return `<article class="card compact" id="${htmlEscape(fragmentId(entity.id))}" data-search="${htmlEscape(
+        `${entity.id} ${path} ${kind} ${hash}`,
+      )}">
+        <div class="badge">${htmlEscape(entity.confidence)} · ${htmlEscape(kind)}</div>
+        <h3>${htmlEscape(path)}</h3>
+        <p class="muted">${htmlEscape(entity.id)}</p>
+        <p>hash: <code>${htmlEscape(hash)}</code>${size === undefined ? '' : ` · size: ${size}`}</p>
       </article>`;
     })
     .join('');
@@ -1248,19 +1462,37 @@ function renderReport(params: {
   readonly packageManager: string;
   readonly stack: readonly string[];
 }): string {
+  const evidenceById = new Map(params.buckets.evidence.map((entity) => [entity.id, entity]));
   const commands = params.buckets.commands
     .map((command) => `${command.name}: ${String(command.data?.command ?? '')}`)
     .filter((line) => line.trim() !== '');
   const testCommands = commands.filter((command) => command.toLowerCase().includes('test'));
-  const risks = params.buckets.risks.map((risk) => risk.description);
+  const recommendedActions = Array.isArray(params.latest.latest_recommended_next_actions)
+    ? params.latest.latest_recommended_next_actions.filter(
+        (item): item is string => typeof item === 'string',
+      )
+    : [];
+  const openQuestions = Array.isArray(params.latest.latest_open_questions)
+    ? params.latest.latest_open_questions.filter((item): item is string => typeof item === 'string')
+    : [];
+  const confidenceGaps = Array.isArray(params.latest.latest_confidence_gaps)
+    ? params.latest.latest_confidence_gaps.filter(
+        (item): item is string => typeof item === 'string',
+      )
+    : [];
+  const unknownCount =
+    openQuestions.length +
+    confidenceGaps.length +
+    params.buckets.components.filter((component) => component.confidence !== 'verified').length;
+  const generatedAt = String(params.latest.generated_at ?? 'unknown');
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>rizz brain · ${htmlEscape(params.projectName)}</title>
+  <title>Mission Control · ${htmlEscape(params.projectName)}</title>
   <style>
-    :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
+    :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; --danger: #fda4af; }
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
@@ -1268,25 +1500,68 @@ function renderReport(params: {
     h2 { margin-top: 34px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
     .card, details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .compact { padding: 12px; }
     .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge.warn { color: var(--warn); }
+    .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .toolbar { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 92%, transparent); border-bottom: 1px solid var(--line); padding: 10px 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); padding: 6px 10px; cursor: pointer; }
+    .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
     .muted { color: var(--muted); }
+    .evidence-block { border-left: 2px solid var(--line); margin-top: 8px; padding-left: 10px; }
+    .evidence-links { padding-left: 18px; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
     h4 { margin: 16px 0 6px; }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
     input { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: #05070a; color: var(--text); margin: 8px 0 14px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
     summary { cursor: pointer; font-weight: 700; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+    @media (max-width: 520px) { main { padding: 20px 12px 48px; } table { display: block; overflow-x: auto; } }
+    @media print { .toolbar, script { display: none; } body { background: #fff; color: #000; } .card, details { break-inside: avoid; border-color: #999; } a { color: #000; } }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <p class="badge">rizz project brain</p>
-      <h1>${htmlEscape(params.projectName)}</h1>
-      <p class="muted">${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
+      <p class="badge">local project intelligence</p>
+      <h1>Mission Control · ${htmlEscape(params.projectName)}</h1>
+      <p class="muted">Static local view generated from <code>.rizz/brain</code>. No server. No network. No model call.</p>
+      <p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
+      <p class="muted">Generated ${htmlEscape(generatedAt)} · Brain v1 · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
+      <div class="stats">
+        <span class="badge">${params.buckets.components.length} components</span>
+        <span class="badge warn">${params.buckets.risks.length} risks</span>
+        <span class="badge warn">${unknownCount} unknowns</span>
+        <span class="badge">${params.buckets.evidence.length} evidence records</span>
+        <span class="badge">${params.relationships.length} relationships</span>
+      </div>
     </header>
+    <section class="toolbar" aria-label="Portal filters">
+      <label class="sr-only" for="global-filter">Search project intelligence</label>
+      <input id="global-filter" placeholder="Search components, files, risks, commands, evidence..." autocomplete="off">
+      <div class="chips" aria-label="Filter chips">
+        <button class="chip" type="button" data-filter="all" aria-pressed="true">All</button>
+        <button class="chip" type="button" data-filter="critical">High criticality</button>
+        <button class="chip" type="button" data-filter="risk">Risks</button>
+        <button class="chip" type="button" data-filter="unknown">Unknowns</button>
+        <button class="chip" type="button" data-filter="verified">Verified</button>
+        <button class="chip" type="button" data-filter="inferred">Inferred</button>
+        <button class="chip" type="button" data-filter="uncertain">Uncertain</button>
+      </div>
+      <p class="muted" id="filter-count">Showing all local intelligence.</p>
+    </section>
     <section>
-      <h2>Executive Summary</h2>
+      <h2>Start Here</h2>
+      <p class="muted">Read this first. Open high-criticality components before editing, then check risks and unknowns before trusting inferred facts.</p>
+      <div class="grid">${renderStartHere(params.buckets.components, evidenceById)}</div>
+      <h3>Recommended Next Actions</h3>
+      ${renderList(recommendedActions.slice(0, 5))}
+    </section>
+    <section>
+      <h2>Overview</h2>
       <div class="grid">
         <article class="card"><h3>Tech Stack</h3>${renderList(params.stack)}</article>
         <article class="card"><h3>Package Manager</h3><p>${htmlEscape(params.packageManager)}</p></article>
@@ -1303,8 +1578,18 @@ function renderReport(params: {
       ${renderList(testCommands)}
     </section>
     <section>
+      <h2>Risk Areas</h2>
+      <p class="muted">Known or inferred places where edits deserve extra attention.</p>
+      <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>
+    </section>
+    <section>
+      <h2>Latest Review</h2>
+      <p class="muted">Latest review reads the current git diff against the project brain.</p>
+      ${renderLatestReview(params.latest)}
+    </section>
+    <section>
       <h2>Component Intelligence</h2>
-      <div class="grid">${renderComponentCards(params.buckets.components)}</div>
+      <div class="grid">${renderComponentCards(params.buckets.components, evidenceById)}</div>
     </section>
     <section>
       <h2>Architecture Reasoning</h2>
@@ -1316,12 +1601,13 @@ function renderReport(params: {
     </section>
     <section>
       <h2>Dependency Graph</h2>
-      <input id="filter" placeholder="Search relationships, entities, or files">
-      <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th></tr></thead><tbody>
+      <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>
         ${params.relationships
           .map(
             (rel) =>
-              `<tr><td>${htmlEscape(rel.from)}</td><td>${htmlEscape(rel.relation)}</td><td>${htmlEscape(rel.to)}</td><td>${htmlEscape(rel.confidence)}</td></tr>`,
+              `<tr data-search="${htmlEscape(
+                `${rel.from} ${rel.relation} ${rel.to} ${rel.confidence}`,
+              )}" data-kind="relationship" data-confidence="${htmlEscape(rel.confidence)}"><td>${htmlEscape(rel.from)}</td><td>${htmlEscape(rel.relation)}</td><td>${htmlEscape(rel.to)}</td><td>${htmlEscape(rel.confidence)}</td><td>${renderEvidenceLinks(rel.evidence_ids, evidenceById)}</td></tr>`,
           )
           .join('')}
       </tbody></table>
@@ -1331,29 +1617,71 @@ function renderReport(params: {
       <div class="grid">${renderEntityCards(params.buckets.configs)}</div>
     </section>
     <section>
-      <h2>Risk Areas</h2>
-      ${renderList(risks)}
-    </section>
-    <section>
       <h2>New Developer Onboarding Guide</h2>
       <p>Start with the component map, then open the evidence index. Prefer verified facts before inferred facts.</p>
     </section>
     <section>
-      <h2>FAQ</h2>
-      <details><summary>Should agents reread every file?</summary><p>No. Agents should read <code>.rizz/brain/latest.json</code>, then relevant entities and evidence before opening source files.</p></details>
+      <h2>Unknowns</h2>
+      <p class="muted">Questions the brain cannot answer confidently yet. Treat these as read-before-edit prompts.</p>
+      <div class="grid">${renderUnknowns({
+        latest: params.latest,
+        components: params.buckets.components,
+      })}</div>
     </section>
     <section>
-      <h2>Evidence Index</h2>
-      <div class="grid">${renderEntityCards(params.buckets.evidence)}</div>
+      <h2>Confidence Guide</h2>
+      <div class="grid">
+        <article class="card"><h3>verified</h3><p>Backed by direct file or manifest evidence.</p></article>
+        <article class="card"><h3>inferred</h3><p>Derived from names, paths, scripts, or relationships.</p></article>
+        <article class="card"><h3>uncertain</h3><p>Weak or incomplete evidence. Confirm before relying on it.</p></article>
+      </div>
+    </section>
+    <section>
+      <h2>FAQ</h2>
+      <details><summary>Where did this come from?</summary><p>From <code>.rizz/brain</code>: deterministic local scan output and review artifacts.</p></details>
+      <details><summary>Should agents reread every file?</summary><p>No. Agents should read <code>.rizz/brain/latest.json</code>, then relevant entities and evidence before opening source files.</p></details>
+      <details><summary>Can I trust inferred facts?</summary><p>Use them for orientation. Depend on verified evidence for decisions.</p></details>
+      <details><summary>How do I refresh this?</summary><p>Run <code>rizz brain</code> after meaningful repo changes.</p></details>
+      <details><summary>How do reviews appear here?</summary><p>Run <code>rizz review</code>; the latest review status and findings are added to the brain.</p></details>
+    </section>
+    <section>
+      <h2>Evidence</h2>
+      <p class="muted">Facts are only useful when their source is visible. Prefer verified evidence before inferred claims.</p>
+      <div class="grid">${renderEvidenceIndex(params.buckets.evidence)}</div>
     </section>
   </main>
   <script>
-    const filter = document.getElementById('filter');
-    const rows = Array.from(document.querySelectorAll('#relationships tbody tr'));
-    filter?.addEventListener('input', () => {
-      const q = filter.value.toLowerCase();
-      for (const row of rows) row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
-    });
+    const filter = document.getElementById('global-filter');
+    const count = document.getElementById('filter-count');
+    const chips = Array.from(document.querySelectorAll('.chip'));
+    const items = Array.from(document.querySelectorAll('[data-search]'));
+    let activeFilter = 'all';
+    function matchesKind(item) {
+      if (activeFilter === 'all') return true;
+      if (activeFilter === 'critical') return item.dataset.criticality === 'high';
+      if (activeFilter === 'risk') return item.dataset.kind === 'risk';
+      if (activeFilter === 'unknown') return item.dataset.kind === 'unknown';
+      return item.dataset.confidence === activeFilter;
+    }
+    function applyFilter() {
+      const q = (filter?.value ?? '').toLowerCase();
+      let shown = 0;
+      for (const item of items) {
+        const ok = item.dataset.search.toLowerCase().includes(q) && matchesKind(item);
+        item.style.display = ok ? '' : 'none';
+        if (ok) shown += 1;
+      }
+      if (count) count.textContent = shown === 0 ? 'No local intelligence matches this filter.' : 'Showing ' + shown + ' of ' + items.length + ' items.';
+    }
+    filter?.addEventListener('input', applyFilter);
+    for (const chip of chips) {
+      chip.addEventListener('click', () => {
+        activeFilter = chip.dataset.filter ?? 'all';
+        for (const other of chips) other.setAttribute('aria-pressed', String(other === chip));
+        applyFilter();
+      });
+    }
+    applyFilter();
   </script>
 </body>
 </html>
