@@ -1327,7 +1327,7 @@ function buildResearchArtifacts(params: {
       stale_files: staleFiles,
       file_status_counts: filesByStatus,
       reused_files: currentFiles.length,
-      recomputed_files: changedFiles.length + newFiles.length,
+      recomputed_files: changedFiles.length,
       file_reuse_ratio: ratio(currentFiles.length, params.files.length),
       current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
       new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),

@@ -189,6 +189,32 @@ describe('project brain generation', () => {
         now: new Date('2026-06-28T12:00:00.000Z'),
       });
       expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const firstIncremental = await readJson<{
+        scanned_files: number;
+        changed_files: string[];
+        new_files: string[];
+        reused_files: number;
+        recomputed_files: number;
+        file_reuse_ratio: number;
+      }>(join(first.value.researchDir, 'incremental_update.json'));
+      expect(firstIncremental).toMatchObject({
+        scanned_files: 3,
+        changed_files: [
+          'packages/brain/package.json',
+          'packages/brain/src/index.test.ts',
+          'packages/brain/src/index.ts',
+        ],
+        new_files: [
+          'packages/brain/package.json',
+          'packages/brain/src/index.test.ts',
+          'packages/brain/src/index.ts',
+        ],
+        reused_files: 0,
+        recomputed_files: 3,
+        file_reuse_ratio: 0,
+      });
 
       await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 2;');
       const second = await generateProjectBrain({
@@ -311,6 +337,30 @@ describe('project brain generation', () => {
         recomputed_files: 1,
         file_reuse_ratio: 0.6667,
         file_status_counts: { changed: 1, current: 2 },
+      });
+
+      await writeFile(join(dir, 'packages', 'brain', 'src', 'extra.ts'), 'export const extra = 1;');
+      const third = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:02:00.000Z'),
+      });
+      expect(third.ok).toBe(true);
+      if (!third.ok) return;
+      const mixedIncremental = await readJson<{
+        scanned_files: number;
+        changed_files: string[];
+        new_files: string[];
+        reused_files: number;
+        recomputed_files: number;
+        file_reuse_ratio: number;
+      }>(join(third.value.researchDir, 'incremental_update.json'));
+      expect(mixedIncremental).toMatchObject({
+        scanned_files: 4,
+        changed_files: ['packages/brain/src/extra.ts'],
+        new_files: ['packages/brain/src/extra.ts'],
+        reused_files: 3,
+        recomputed_files: 1,
+        file_reuse_ratio: 0.75,
       });
 
       const index = await readJson<{
