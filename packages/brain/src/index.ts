@@ -91,6 +91,25 @@ interface PackageJsonFact {
   readonly devDependencies: Readonly<Record<string, string>>;
 }
 
+interface ComponentIntelligence {
+  readonly purpose: string;
+  readonly responsibilities: readonly string[];
+  readonly interfaces: readonly string[];
+  readonly entry_points: readonly string[];
+  readonly consumers: readonly string[];
+  readonly dependencies: readonly string[];
+  readonly exposed_apis: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly criticality: 'low' | 'medium' | 'high';
+  readonly criticality_score: number;
+  readonly what_breaks_if_removed: readonly string[];
+  readonly important_files: readonly string[];
+  readonly known_risks: readonly string[];
+  readonly field_evidence: Readonly<Record<string, readonly string[]>>;
+  readonly signals: readonly string[];
+}
+
 interface PreviousFileFact {
   readonly id: string;
   readonly relativePath: string;
@@ -641,6 +660,401 @@ function componentPaths(files: readonly FileFact[]): string[] {
   return [...folders].sort((a, b) => a.localeCompare(b));
 }
 
+function filesForComponent(files: readonly FileFact[], componentPath: string): FileFact[] {
+  return files.filter((file) => file.relativePath.startsWith(`${componentPath}/`));
+}
+
+function packageFactsForComponent(
+  packageFacts: readonly PackageJsonFact[],
+  componentPath: string,
+): PackageJsonFact[] {
+  return packageFacts.filter((pkg) => pkg.relativePath.startsWith(`${componentPath}/`));
+}
+
+function componentKind(componentPath: string): string {
+  const lower = componentPath.toLowerCase();
+  if (lower.includes('cli')) return 'cli';
+  if (lower.includes('tui') || lower.includes('ui')) return 'interface';
+  if (lower.includes('core')) return 'core';
+  if (lower.includes('provider')) return 'provider';
+  if (lower.includes('brain') || lower.includes('intelligence')) return 'intelligence';
+  if (lower.includes('script') || lower.includes('tool')) return 'automation';
+  if (lower.includes('doc') || lower.includes('runbook')) return 'documentation';
+  if (lower === 'src' || lower.endsWith('/src')) return 'source';
+  if (lower.includes('test') || lower.includes('eval')) return 'quality';
+  return 'component';
+}
+
+function purposeForComponent(componentPath: string, packages: readonly PackageJsonFact[]): string {
+  const kind = componentKind(componentPath);
+  const packageName = packages.find((pkg) => pkg.name !== undefined)?.name;
+  const namedSuffix =
+    packageName === undefined ? '' : ` Package identity: ${safeText(packageName)}.`;
+  switch (kind) {
+    case 'cli':
+      return `Command-line surface that turns user commands into local Rizz workflows.${namedSuffix}`;
+    case 'interface':
+      return `Terminal or user-interface surface for interacting with Rizz.${namedSuffix}`;
+    case 'core':
+      return `Core orchestration logic that coordinates the default lightweight harness.${namedSuffix}`;
+    case 'provider':
+      return `Provider integration layer for model routes and external model APIs.${namedSuffix}`;
+    case 'intelligence':
+      return `Project understanding layer that extracts, stores, and reports local repo intelligence.${namedSuffix}`;
+    case 'automation':
+      return `Automation and release tooling used to operate or package the project.${namedSuffix}`;
+    case 'documentation':
+      return `Documentation and operational guidance for users, contributors, and release owners.${namedSuffix}`;
+    case 'source':
+      return `Primary source tree for the application or package.${namedSuffix}`;
+    case 'quality':
+      return `Quality, eval, or test support surface for validating behavior.${namedSuffix}`;
+    default:
+      return `Repository component inferred from ${safeText(componentPath)}.${namedSuffix}`;
+  }
+}
+
+function responsibilitiesForComponent(
+  componentPath: string,
+  files: readonly FileFact[],
+  packages: readonly PackageJsonFact[],
+): string[] {
+  const responsibilities = new Set<string>();
+  const kind = componentKind(componentPath);
+  if (kind === 'cli')
+    responsibilities.add('Expose user-facing commands and route them to product flows.');
+  if (kind === 'interface')
+    responsibilities.add('Render interactive terminal/user interface behavior.');
+  if (kind === 'core')
+    responsibilities.add('Coordinate orchestration state, policies, and local harness behavior.');
+  if (kind === 'provider')
+    responsibilities.add('Resolve and call configured model providers through stable adapters.');
+  if (kind === 'intelligence')
+    responsibilities.add('Build and maintain structured project understanding with evidence.');
+  if (kind === 'automation')
+    responsibilities.add('Run repeatable local automation for packaging, checks, or release.');
+  if (kind === 'documentation')
+    responsibilities.add('Explain setup, operation, architecture, and release procedures.');
+  if (files.some((file) => classifySourceKind(file) === 'source')) {
+    responsibilities.add('Own runtime/source implementation files.');
+  }
+  if (files.some((file) => classifySourceKind(file) === 'test')) {
+    responsibilities.add('Own tests or executable validation artifacts.');
+  }
+  if (files.some((file) => classifySourceKind(file) === 'config')) {
+    responsibilities.add('Own configuration that can change local or CI behavior.');
+  }
+  if (files.some((file) => classifySourceKind(file) === 'documentation')) {
+    responsibilities.add('Own documentation or runbook knowledge.');
+  }
+  if (packages.length > 0) {
+    responsibilities.add('Declare package metadata, scripts, and dependency surface.');
+  }
+  return [...responsibilities];
+}
+
+function interfacesForComponent(
+  packages: readonly PackageJsonFact[],
+  files: readonly FileFact[],
+): string[] {
+  const interfaces = new Set<string>();
+  for (const pkg of packages) {
+    if (pkg.name !== undefined) interfaces.add(`package: ${safeText(pkg.name)}`);
+    for (const scriptName of Object.keys(pkg.scripts))
+      interfaces.add(`script: ${safeText(scriptName)}`);
+  }
+  for (const file of files) {
+    const name = basename(file.relativePath).toLowerCase();
+    if (name === 'index.ts' || name === 'index.js')
+      interfaces.add(`entry module: ${safeText(file.relativePath)}`);
+    if (name === 'readme.md') interfaces.add(`documentation: ${safeText(file.relativePath)}`);
+    if (file.relativePath.includes('/bin/') || name === 'cli.ts' || name === 'cli.js') {
+      interfaces.add(`command module: ${safeText(file.relativePath)}`);
+    }
+  }
+  return [...interfaces];
+}
+
+function entryPointsForComponent(
+  packages: readonly PackageJsonFact[],
+  files: readonly FileFact[],
+): string[] {
+  const entries = new Set<string>();
+  for (const pkg of packages) {
+    entries.add(safeText(pkg.relativePath));
+    for (const [scriptName, command] of Object.entries(pkg.scripts)) {
+      entries.add(`${safeText(pkg.relativePath)}#${safeText(scriptName)} -> ${safeText(command)}`);
+    }
+  }
+  for (const file of files) {
+    const name = basename(file.relativePath).toLowerCase();
+    if (
+      name === 'index.ts' ||
+      name === 'index.js' ||
+      name === 'main.ts' ||
+      name === 'main.js' ||
+      name === 'cli.ts' ||
+      name === 'cli.js'
+    ) {
+      entries.add(safeText(file.relativePath));
+    }
+  }
+  return [...entries].slice(0, 12);
+}
+
+function consumersForComponent(componentPath: string, files: readonly FileFact[]): string[] {
+  const consumers = new Set<string>();
+  const kind = componentKind(componentPath);
+  if (kind === 'cli') consumers.add('Developers invoking the rizz CLI.');
+  if (kind === 'interface') consumers.add('Users interacting through the terminal UI.');
+  if (kind === 'core') consumers.add('CLI and other orchestration surfaces.');
+  if (kind === 'provider') consumers.add('Core/model routing code that needs provider adapters.');
+  if (kind === 'intelligence')
+    consumers.add('CLI commands, review, report, and future explain/ask surfaces.');
+  if (kind === 'automation') consumers.add('Release, CI, and local maintenance workflows.');
+  if (kind === 'documentation')
+    consumers.add('Users, contributors, and future agents reading project context.');
+  if (files.some((file) => classifySourceKind(file) === 'test'))
+    consumers.add('Project test/QA workflows.');
+  if (consumers.size === 0)
+    consumers.add('Other project components; exact consumers need deeper flow analysis.');
+  return [...consumers];
+}
+
+function exposedApisForComponent(files: readonly FileFact[]): string[] {
+  const exposed = new Set<string>();
+  for (const file of files) {
+    const lower = file.relativePath.toLowerCase();
+    const name = basename(lower);
+    if (lower.includes('/api/') || lower.includes('/routes/') || lower.includes('/route.')) {
+      exposed.add(`route/API file: ${safeText(file.relativePath)}`);
+    }
+    if (lower.includes('/controller') || name.includes('controller')) {
+      exposed.add(`controller file: ${safeText(file.relativePath)}`);
+    }
+    if (name === 'index.ts' || name === 'index.js') {
+      exposed.add(`module export surface: ${safeText(file.relativePath)}`);
+    }
+  }
+  return [...exposed].slice(0, 12);
+}
+
+function dependenciesForComponent(packages: readonly PackageJsonFact[]): string[] {
+  return unique(
+    packages.flatMap((pkg) => [
+      ...Object.keys(pkg.dependencies).map((name) => safeText(name)),
+      ...Object.keys(pkg.devDependencies).map((name) => safeText(name)),
+    ]),
+  ).slice(0, 20);
+}
+
+function testPathsForComponent(files: readonly FileFact[]): string[] {
+  return files
+    .filter((file) => classifySourceKind(file) === 'test')
+    .map((file) => file.relativePath);
+}
+
+function configPathsForComponent(files: readonly FileFact[]): string[] {
+  return files
+    .filter(
+      (file) =>
+        classifySourceKind(file) === 'config' || classifySourceKind(file) === 'package-manifest',
+    )
+    .map((file) => file.relativePath);
+}
+
+function criticalityForComponent(
+  componentPath: string,
+  files: readonly FileFact[],
+  packages: readonly PackageJsonFact[],
+): { readonly label: 'low' | 'medium' | 'high'; readonly score: number } {
+  let score = 1;
+  const kind = componentKind(componentPath);
+  if (['cli', 'core', 'provider', 'intelligence'].includes(kind)) score += 3;
+  if (packages.length > 0) score += 2;
+  if (files.some((file) => classifySourceKind(file) === 'source')) score += 2;
+  if (files.some((file) => classifySourceKind(file) === 'config')) score += 1;
+  if (files.some((file) => classifySourceKind(file) === 'test')) score += 1;
+  const capped = Math.min(10, score);
+  if (capped >= 7) return { label: 'high', score: capped };
+  if (capped >= 4) return { label: 'medium', score: capped };
+  return { label: 'low', score: capped };
+}
+
+function whatBreaksIfRemovedForComponent(
+  componentPath: string,
+  intelligence: Pick<
+    ComponentIntelligence,
+    'criticality' | 'consumers' | 'interfaces' | 'entry_points' | 'exposed_apis'
+  >,
+): string[] {
+  const name = safeText(componentPath);
+  const breaks = new Set<string>();
+  if (intelligence.criticality === 'high') {
+    const affected =
+      intelligence.consumers
+        .slice(0, 2)
+        .map((consumer) => consumer.replace(/\.+$/, ''))
+        .join(', ') || 'primary project workflows';
+    breaks.add(`${name} is likely critical: removing it can affect ${affected}.`);
+  }
+  if (intelligence.criticality === 'medium') {
+    const affected = intelligence.interfaces.slice(0, 2).join(', ') || 'its package or files';
+    breaks.add(`${name} likely affects local workflows tied to ${affected}.`);
+  }
+  if (intelligence.entry_points.length > 0) {
+    breaks.add(
+      `Entry points may stop working: ${intelligence.entry_points.slice(0, 3).join(', ')}.`,
+    );
+  }
+  if (intelligence.exposed_apis.length > 0) {
+    breaks.add(
+      `Exposed module/API surfaces may change: ${intelligence.exposed_apis.slice(0, 3).join(', ')}.`,
+    );
+  }
+  if (breaks.size === 0) {
+    breaks.add(
+      `${name} may mostly affect documentation or local organization, but exact blast radius needs flow analysis.`,
+    );
+  }
+  return [...breaks];
+}
+
+function firstFilesToRead(files: readonly FileFact[]): string[] {
+  const ranked = [...files].sort((a, b) => {
+    const aName = basename(a.relativePath).toLowerCase();
+    const bName = basename(b.relativePath).toLowerCase();
+    const rank = (name: string): number => {
+      if (name === 'package.json') return 0;
+      if (name === 'readme.md') return 1;
+      if (name === 'index.ts' || name === 'index.js') return 2;
+      if (name.includes('test') || name.includes('spec')) return 4;
+      return 3;
+    };
+    return rank(aName) - rank(bName) || a.relativePath.localeCompare(b.relativePath);
+  });
+  return ranked.slice(0, 8).map((file) => file.relativePath);
+}
+
+function componentSignals(
+  files: readonly FileFact[],
+  packages: readonly PackageJsonFact[],
+): string[] {
+  const signals = new Set<string>();
+  if (packages.length > 0) signals.add('package manifest');
+  if (files.some((file) => classifySourceKind(file) === 'source')) signals.add('source files');
+  if (files.some((file) => classifySourceKind(file) === 'test')) signals.add('test files');
+  if (files.some((file) => classifySourceKind(file) === 'config')) signals.add('configuration');
+  if (files.some((file) => classifySourceKind(file) === 'documentation'))
+    signals.add('documentation');
+  return [...signals];
+}
+
+function knownRisksForComponent(
+  intelligence: Pick<
+    ComponentIntelligence,
+    'tests' | 'criticality' | 'dependencies' | 'exposed_apis' | 'consumers' | 'signals'
+  >,
+): string[] {
+  const risks = new Set<string>();
+  if (intelligence.tests.length === 0 && intelligence.criticality !== 'low') {
+    risks.add('No component-local tests detected for a medium/high criticality component.');
+  }
+  if (intelligence.dependencies.length > 10) {
+    risks.add('Large dependency surface may increase upgrade and security review scope.');
+  }
+  if (intelligence.exposed_apis.length > 0 && intelligence.consumers.length === 0) {
+    risks.add('Potential public interface with no inferred consumers.');
+  }
+  if (intelligence.signals.length <= 1) {
+    risks.add('Weak evidence: component understanding is mostly inferred from path structure.');
+  }
+  return [...risks];
+}
+
+function inferComponentIntelligence(
+  componentPath: string,
+  files: readonly FileFact[],
+  packageFacts: readonly PackageJsonFact[],
+): ComponentIntelligence {
+  const packages = packageFactsForComponent(packageFacts, componentPath);
+  const responsibilities = responsibilitiesForComponent(componentPath, files, packages);
+  const interfaces = interfacesForComponent(packages, files);
+  const entryPoints = entryPointsForComponent(packages, files);
+  const consumers = consumersForComponent(componentPath, files);
+  const dependencies = dependenciesForComponent(packages);
+  const exposedApis = exposedApisForComponent(files);
+  const tests = testPathsForComponent(files);
+  const configs = configPathsForComponent(files);
+  const criticality = criticalityForComponent(componentPath, files, packages);
+  const componentEvidenceIds = files.slice(0, 12).map((file) => evidenceId(file.relativePath));
+  const testEvidenceIds = tests.map(evidenceId);
+  const configEvidenceIds = configs.map(evidenceId);
+  const apiEvidenceIds = exposedApis
+    .map((api) => sourceFileFromSignal(api, new Set(files.map((file) => file.relativePath))))
+    .filter((file): file is string => file !== undefined)
+    .map(evidenceId);
+  const dependencyEvidenceIds = packages.map((pkg) => evidenceId(pkg.relativePath));
+  const partial = {
+    purpose: purposeForComponent(componentPath, packages),
+    responsibilities,
+    interfaces,
+    entry_points: entryPoints,
+    consumers,
+    dependencies,
+    exposed_apis: exposedApis,
+    tests,
+    configs,
+    criticality: criticality.label,
+    criticality_score: criticality.score,
+    important_files: firstFilesToRead(files),
+    signals: componentSignals(files, packages),
+  };
+  const whatBreaksIfRemoved = whatBreaksIfRemovedForComponent(componentPath, partial);
+  return {
+    ...partial,
+    what_breaks_if_removed: whatBreaksIfRemoved,
+    known_risks: knownRisksForComponent({
+      ...partial,
+    }),
+    field_evidence: {
+      purpose: componentEvidenceIds,
+      responsibilities: componentEvidenceIds,
+      interfaces: unique([...configEvidenceIds, ...apiEvidenceIds, ...componentEvidenceIds]),
+      entry_points: unique([...configEvidenceIds, ...apiEvidenceIds, ...componentEvidenceIds]),
+      consumers: componentEvidenceIds,
+      dependencies: dependencyEvidenceIds,
+      exposed_apis: apiEvidenceIds,
+      tests: testEvidenceIds,
+      configs: configEvidenceIds,
+      criticality: componentEvidenceIds,
+      what_breaks_if_removed: unique([
+        ...componentEvidenceIds,
+        ...configEvidenceIds,
+        ...apiEvidenceIds,
+      ]),
+      important_files: componentEvidenceIds,
+      known_risks: unique([...componentEvidenceIds, ...testEvidenceIds, ...dependencyEvidenceIds]),
+    },
+  };
+}
+
+function confidenceForComponent(intelligence: ComponentIntelligence): Confidence {
+  if (intelligence.signals.length <= 1) return 'uncertain';
+  if (
+    intelligence.signals.includes('package manifest') &&
+    intelligence.signals.includes('source files')
+  ) {
+    return 'inferred';
+  }
+  return 'inferred';
+}
+
+function sourceFileFromSignal(signal: string, knownFiles: ReadonlySet<string>): string | undefined {
+  const candidate = signal.slice(signal.indexOf(': ') + 2);
+  return knownFiles.has(candidate) ? candidate : undefined;
+}
+
 function configFiles(files: readonly FileFact[]): FileFact[] {
   return files.filter(
     (file) =>
@@ -684,6 +1098,20 @@ function buildLatest(params: {
     description: component.description,
     confidence: component.confidence,
     source_files: component.source_files,
+    purpose: stringData(component, 'purpose'),
+    responsibilities: stringArrayData(component, 'responsibilities'),
+    interfaces: stringArrayData(component, 'interfaces'),
+    entry_points: stringArrayData(component, 'entry_points'),
+    consumers: stringArrayData(component, 'consumers'),
+    dependencies: stringArrayData(component, 'dependencies'),
+    exposed_apis: stringArrayData(component, 'exposed_apis'),
+    tests: stringArrayData(component, 'tests'),
+    configs: stringArrayData(component, 'configs'),
+    criticality: stringData(component, 'criticality'),
+    criticality_score: numberData(component, 'criticality_score'),
+    what_breaks_if_removed: stringArrayData(component, 'what_breaks_if_removed'),
+    important_files: stringArrayData(component, 'important_files'),
+    known_risks: stringArrayData(component, 'known_risks'),
   }));
   const risks = params.buckets.risks.map((risk) => ({
     id: risk.id,
@@ -702,7 +1130,7 @@ function buildLatest(params: {
     latest_architecture_summary:
       params.buckets.components.length === 0
         ? 'No durable component map has been inferred yet.'
-        : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
+        : `${params.projectName} has ${params.buckets.components.length} inferred component(s) with purpose/responsibility signals, ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
     latest_component_map: componentMap,
     latest_risks: risks,
     latest_review_status: {
@@ -720,6 +1148,7 @@ function buildLatest(params: {
       'Review .rizz/brain/latest.json before reading source files.',
       'Open .rizz/reports/index.html for the local intelligence portal.',
       'Run rizz brain after meaningful file changes to refresh stale facts.',
+      'Use component purpose, criticality, and breaks-if-removed fields to orient before editing.',
       'Promote important human decisions into .rizz/brain/entities/decisions.json.',
     ],
     project_state: {
@@ -730,6 +1159,22 @@ function buildLatest(params: {
       relationship_count: params.relationships.length,
     },
   };
+}
+
+function stringData(entity: BrainEntity, key: string): string | undefined {
+  const value = entity.data?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function numberData(entity: BrainEntity, key: string): number | undefined {
+  const value = entity.data?.[key];
+  return typeof value === 'number' ? value : undefined;
+}
+
+function stringArrayData(entity: BrainEntity, key: string): string[] {
+  const value = entity.data?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
 }
 
 function htmlEscape(value: string): string {
@@ -756,6 +1201,42 @@ function renderEntityCards(entities: readonly BrainEntity[]): string {
         <p class="muted">${htmlEscape(entity.id)}</p>
       </article>`,
     )
+    .join('');
+}
+
+function renderComponentCards(components: readonly BrainEntity[]): string {
+  if (components.length === 0) return '<p class="muted">None detected yet.</p>';
+  return components
+    .map((component) => {
+      const purpose = stringData(component, 'purpose') ?? component.description;
+      const criticality = stringData(component, 'criticality') ?? 'unknown';
+      const score = numberData(component, 'criticality_score');
+      const scoreText = score === undefined ? '' : ` · ${score}/10`;
+      return `<article class="card">
+        <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)}</div>
+        <h3>${htmlEscape(component.name)}</h3>
+        <p>${htmlEscape(purpose)}</p>
+        <h4>Responsibilities</h4>
+        ${renderList(stringArrayData(component, 'responsibilities'))}
+        <h4>Interfaces</h4>
+        ${renderList(stringArrayData(component, 'interfaces'))}
+        <h4>Entry Points</h4>
+        ${renderList(stringArrayData(component, 'entry_points'))}
+        <h4>Consumers</h4>
+        ${renderList(stringArrayData(component, 'consumers'))}
+        <h4>Dependencies</h4>
+        ${renderList(stringArrayData(component, 'dependencies'))}
+        <h4>Important Files</h4>
+        ${renderList(stringArrayData(component, 'important_files'))}
+        <h4>If Removed</h4>
+        ${renderList(stringArrayData(component, 'what_breaks_if_removed'))}
+        <h4>Known Risks</h4>
+        ${renderList(stringArrayData(component, 'known_risks'))}
+        <h4>Evidence</h4>
+        ${renderList(component.evidence_ids)}
+        <p class="muted">${htmlEscape(component.id)}</p>
+      </article>`;
+    })
     .join('');
 }
 
@@ -789,6 +1270,7 @@ function renderReport(params: {
     .card, details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
     .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .muted { color: var(--muted); }
+    h4 { margin: 16px 0 6px; }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
     input { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: #05070a; color: var(--text); margin: 8px 0 14px; }
     table { width: 100%; border-collapse: collapse; }
@@ -821,8 +1303,8 @@ function renderReport(params: {
       ${renderList(testCommands)}
     </section>
     <section>
-      <h2>Component Map</h2>
-      <div class="grid">${renderEntityCards(params.buckets.components)}</div>
+      <h2>Component Intelligence</h2>
+      <div class="grid">${renderComponentCards(params.buckets.components)}</div>
     </section>
     <section>
       <h2>Architecture Reasoning</h2>
@@ -1032,26 +1514,28 @@ function buildBrain(params: {
   }
 
   for (const componentPath of componentPaths(params.files)) {
-    const sourceFiles = params.files
-      .filter((file) => file.relativePath.startsWith(`${componentPath}/`))
-      .map((file) => file.relativePath);
+    const componentFiles = filesForComponent(params.files, componentPath);
+    const sourceFiles = componentFiles.map((file) => file.relativePath);
+    const intelligence = inferComponentIntelligence(
+      componentPath,
+      componentFiles,
+      params.packageFacts,
+    );
     const componentId = entityId('component', componentPath);
+    const componentEvidenceIds = sourceFiles.slice(0, 12).map(evidenceId);
+    const componentConfidence = confidenceForComponent(intelligence);
+    const knownFileSet = new Set(sourceFiles);
     buckets.components.push(
       makeEntity({
         id: componentId,
         type: 'component',
         name: safeText(componentPath),
-        description: `Inferred component boundary based on files under ${safeText(componentPath)}.`,
+        description: intelligence.purpose,
         now: params.now,
-        confidence: 'inferred',
-        evidenceIds: sourceFiles.slice(0, 8).map(evidenceId),
+        confidence: componentConfidence,
+        evidenceIds: componentEvidenceIds,
         sourceFiles,
-        data: {
-          purpose: 'Folder-level component inferred from repository structure.',
-          dependsOn: [],
-          firstFilesToRead: sourceFiles.slice(0, 6),
-          breaksIfRemoved: 'Unknown until deeper semantic analysis runs.',
-        },
+        data: { ...intelligence },
       }),
     );
     addRelation(
@@ -1059,9 +1543,59 @@ function buildBrain(params: {
       projectId,
       'owns',
       componentId,
-      sourceFiles.slice(0, 8).map(evidenceId),
-      'inferred',
+      componentEvidenceIds,
+      componentConfidence,
     );
+    for (const file of componentFiles.slice(0, 20)) {
+      addRelation(relationships, componentId, 'owns', entityId('file', file.relativePath), [
+        evidenceId(file.relativePath),
+      ]);
+    }
+    for (const dependency of intelligence.dependencies) {
+      addRelation(
+        relationships,
+        componentId,
+        'depends_on',
+        entityId('dependency', dependency),
+        componentEvidenceIds,
+        'inferred',
+      );
+    }
+    for (const configPath of intelligence.configs) {
+      addRelation(relationships, componentId, 'configures', entityId('config', configPath), [
+        evidenceId(configPath),
+      ]);
+    }
+    for (const testPath of intelligence.tests) {
+      addRelation(relationships, entityId('test', testPath), 'tests', componentId, [
+        evidenceId(testPath),
+      ]);
+    }
+    for (const exposedApi of intelligence.exposed_apis) {
+      const sourceFile = sourceFileFromSignal(exposedApi, knownFileSet);
+      const apiId = entityId('api', `${componentPath}:${exposedApi}`);
+      buckets.apis.push(
+        makeEntity({
+          id: apiId,
+          type: 'api',
+          name: exposedApi,
+          description: `Exposed API or module surface inferred for ${safeText(componentPath)}.`,
+          now: params.now,
+          confidence: 'inferred',
+          evidenceIds: sourceFile === undefined ? componentEvidenceIds : [evidenceId(sourceFile)],
+          sourceFiles: sourceFile === undefined ? [] : [sourceFile],
+          relatedEntityIds: [componentId],
+        }),
+      );
+      addRelation(
+        relationships,
+        componentId,
+        'exposes',
+        apiId,
+        sourceFile === undefined ? componentEvidenceIds : [evidenceId(sourceFile)],
+        'inferred',
+      );
+    }
   }
 
   for (const config of configFiles(params.files)) {

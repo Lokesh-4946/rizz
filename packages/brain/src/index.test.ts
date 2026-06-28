@@ -157,6 +157,158 @@ describe('project brain generation', () => {
     });
   });
 
+  it('enriches components with purpose, interfaces, criticality, dependencies, and removal impact', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: { start: 'node dist/index.js', test: 'vitest run' },
+          dependencies: { commander: '^12.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'export function main() { return "ok"; }',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest";',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:31:30.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const components = await readJson<{
+        entities: Array<{
+          id: string;
+          description: string;
+          data?: {
+            purpose?: string;
+            responsibilities?: string[];
+            interfaces?: string[];
+            entry_points?: string[];
+            consumers?: string[];
+            dependencies?: string[];
+            exposed_apis?: string[];
+            tests?: string[];
+            configs?: string[];
+            criticality?: string;
+            criticality_score?: number;
+            what_breaks_if_removed?: string[];
+            important_files?: string[];
+            known_risks?: string[];
+            field_evidence?: Record<string, string[]>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'components.json'));
+      const cli = components.entities.find((entity) => entity.id === 'component:packages--cli');
+      expect(cli).toBeDefined();
+      expect(cli?.description).toContain('Command-line surface');
+      expect(cli?.data).toMatchObject({
+        purpose: expect.stringContaining('Command-line surface'),
+        criticality: 'high',
+      });
+      expect(cli?.data?.responsibilities).toContain(
+        'Expose user-facing commands and route them to product flows.',
+      );
+      expect(cli?.data?.interfaces).toEqual(
+        expect.arrayContaining(['package: @sample/cli', 'script: start', 'script: test']),
+      );
+      expect(cli?.data?.entry_points).toEqual(
+        expect.arrayContaining([
+          'packages/cli/package.json',
+          'packages/cli/package.json#start -> node dist/index.js',
+          'packages/cli/src/index.ts',
+        ]),
+      );
+      expect(cli?.data?.consumers).toContain('Developers invoking the rizz CLI.');
+      expect(cli?.data?.dependencies).toEqual(expect.arrayContaining(['commander', 'vitest']));
+      expect(cli?.data?.exposed_apis).toContain('module export surface: packages/cli/src/index.ts');
+      expect(cli?.data?.tests).toEqual(['packages/cli/src/index.test.ts']);
+      expect(cli?.data?.configs).toEqual(['packages/cli/package.json']);
+      expect(cli?.data?.criticality_score).toBeGreaterThanOrEqual(7);
+      expect(cli?.data?.what_breaks_if_removed).toContainEqual(
+        expect.stringContaining('likely critical'),
+      );
+      expect(cli?.data?.important_files).toEqual(
+        expect.arrayContaining(['packages/cli/package.json', 'packages/cli/src/index.ts']),
+      );
+      expect(cli?.data?.known_risks).toEqual([]);
+      expect(cli?.data?.field_evidence).toMatchObject({
+        purpose: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        dependencies: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        tests: ['evidence:file-packages--cli--src--index.test.ts'],
+        configs: ['evidence:file-packages--cli--package.json'],
+        exposed_apis: ['evidence:file-packages--cli--src--index.ts'],
+      });
+
+      const latest = await readJson<{ latest_component_map: Array<Record<string, unknown>> }>(
+        result.value.latestPath,
+      );
+      expect(latest.latest_component_map).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--cli',
+          purpose: expect.stringContaining('Command-line surface'),
+          responsibilities: expect.arrayContaining([
+            'Expose user-facing commands and route them to product flows.',
+          ]),
+          entry_points: expect.arrayContaining(['packages/cli/src/index.ts']),
+          criticality: 'high',
+          what_breaks_if_removed: expect.arrayContaining([
+            expect.stringContaining('likely critical'),
+          ]),
+          important_files: expect.arrayContaining(['packages/cli/package.json']),
+        }),
+      );
+
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'owns',
+          to: 'file:packages--cli--src--index.ts',
+        }),
+      );
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'depends_on',
+          to: 'dependency:commander',
+        }),
+      );
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'test:packages--cli--src--index.test.ts',
+          relation: 'tests',
+          to: 'component:packages--cli',
+        }),
+      );
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'exposes',
+        }),
+      );
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('Responsibilities');
+      expect(report).toContain('If Removed');
+      expect(report).toContain('Important Files');
+      expect(report).toContain('Evidence');
+      expect(report).toContain('Command-line surface');
+    });
+  });
+
   it('redacts secret-like strings from generated brain and report output', async () => {
     await withTempProject(async (dir) => {
       await writeFile(
