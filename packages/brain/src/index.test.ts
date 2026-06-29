@@ -437,6 +437,15 @@ describe('project brain generation', () => {
 
       const architectureReasoning = await readJson<{
         boundary_candidates: Array<{ component_id: string; flow_count: number }>;
+        coupling_hotspots: Array<{
+          component_id: string;
+          coupling_level: string;
+          static_import_count: number;
+        }>;
+        critical_paths: Array<{ component_id: string; blast_radius: string }>;
+        risky_seams: Array<{ component_id: string; seam: string }>;
+        tradeoff_matrix: Array<{ component_id: string; coupling_level: string }>;
+        what_breaks: Array<{ component_id: string; impacts: string[] }>;
         risk_concentrations: Array<{ entity_id: string; kind: string }>;
         review_hints: Array<{ reason: string; affected_flows: string[] }>;
         unknowns: string[];
@@ -451,6 +460,15 @@ describe('project brain generation', () => {
         expect.objectContaining({
           reason: expect.stringContaining('Low-confidence flows'),
           affected_flows: expect.arrayContaining(['flow:packages--brain--test']),
+        }),
+      );
+      expect(architectureReasoning.tradeoff_matrix).toContainEqual(
+        expect.objectContaining({ component_id: 'component:packages--brain' }),
+      );
+      expect(architectureReasoning.what_breaks).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--brain',
+          impacts: expect.arrayContaining([expect.stringContaining('Validation tied')]),
         }),
       );
       expect(architectureReasoning.unknowns).toContain(
@@ -869,12 +887,22 @@ describe('project brain generation', () => {
             exposed_apis?: string[];
             tests?: string[];
             configs?: string[];
+            coupling?: {
+              level?: string;
+              score?: number;
+              static_import_count?: number;
+              internal_imports?: string[];
+              external_imports?: string[];
+              reasons?: string[];
+            };
             criticality?: string;
             criticality_score?: number;
+            blast_radius?: string;
             ownership_confidence?: { score?: number; reason?: string; signals?: string[] };
             tradeoffs?: string[];
             failure_modes?: string[];
             what_breaks_if_removed?: string[];
+            risky_seams?: string[];
             important_files?: string[];
             read_first?: string[];
             known_risks?: string[];
@@ -891,6 +919,12 @@ describe('project brain generation', () => {
         boundary_type: 'entrypoint',
         criticality: 'high',
       });
+      expect(cli?.data?.coupling).toMatchObject({
+        level: 'low',
+        score: 0,
+        static_import_count: 0,
+      });
+      expect(cli?.data?.blast_radius).toBe('broad');
       expect(cli?.data?.responsibilities).toContain(
         'Expose user-facing commands and route them to product flows.',
       );
@@ -920,6 +954,9 @@ describe('project brain generation', () => {
       expect(cli?.data?.what_breaks_if_removed).toContainEqual(
         expect.stringContaining('likely critical'),
       );
+      expect(cli?.data?.risky_seams).toContain(
+        'Entrypoint depends on config; command behavior can drift without source changes.',
+      );
       expect(cli?.data?.important_files).toEqual(
         expect.arrayContaining(['packages/cli/package.json', 'packages/cli/src/index.ts']),
       );
@@ -935,9 +972,11 @@ describe('project brain generation', () => {
         dependencies: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         tests: ['evidence:file-packages--cli--src--index.test.ts'],
         configs: ['evidence:file-packages--cli--package.json'],
+        coupling: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         exposed_apis: ['evidence:file-packages--cli--src--index.ts'],
         tradeoffs: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         failure_modes: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        risky_seams: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         read_first: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
       });
 
@@ -955,6 +994,7 @@ describe('project brain generation', () => {
           dependency_roles: expect.arrayContaining(['runtime dependency: commander']),
           entry_points: expect.arrayContaining(['packages/cli/src/index.ts']),
           criticality: 'high',
+          blast_radius: 'broad',
           tradeoffs: expect.arrayContaining([
             'User-facing entrypoints improve reachability but make interface changes riskier.',
           ]),
@@ -1051,7 +1091,9 @@ describe('project brain generation', () => {
       expect(report).toContain('No server. No network. No model call.');
       expect(report).toContain('<h2>Start Here</h2>');
       expect(report).toContain('Responsibilities');
+      expect(report).toContain('Coupling');
       expect(report).toContain('If Removed');
+      expect(report).toContain('Risky Seams');
       expect(report).toContain('Important Files');
       expect(report).toContain('Evidence');
       expect(report).toContain('Command-line surface');
@@ -1069,6 +1111,10 @@ describe('project brain generation', () => {
       expect(report).toContain('id="evidence-file-packages--cli--package-json"');
       expect(report).toContain('Explain this: <code>rizz explain packages/cli</code>');
       expect(report).toContain('Explain this: <code>rizz explain packages/cli/package.json</code>');
+      expect(report).toContain('Coupling Hotspots');
+      expect(report).toContain('Critical Paths');
+      expect(report).toContain('Tradeoff Matrix');
+      expect(report).toContain('What Breaks');
       expect(report.indexOf('<h2>Start Here</h2>')).toBeLessThan(
         report.indexOf('<h2>Component Intelligence</h2>'),
       );
@@ -1077,6 +1123,177 @@ describe('project brain generation', () => {
       expect(report).not.toContain('fetch(');
       expect(report).not.toContain('https://');
       expect(report).not.toContain('http://');
+    });
+  });
+
+  it('detects deterministic local coupling, risky seams, and architecture reasoning hotspots', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'core', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'providers', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: { start: 'node dist/index.js', test: 'vitest run packages/cli' },
+          dependencies: { '@sample/providers': 'workspace:*' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@sample/core' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'providers', 'package.json'),
+        JSON.stringify({ name: '@sample/providers' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        [
+          'import { loop } from "../../core/src/index.js";',
+          'import { callModel } from "@sample/providers";',
+          'export function main(): string { return `${loop()} ${callModel()}`; }',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("starts", () => {});\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function loop(): string { return "loop"; }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'providers', 'src', 'index.ts'),
+        'export function callModel(): string { return "local"; }\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:10:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const components = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            coupling?: {
+              level?: string;
+              score?: number;
+              static_import_count?: number;
+              internal_imports?: string[];
+              external_imports?: string[];
+            };
+            tradeoffs?: string[];
+            failure_modes?: string[];
+            what_breaks_if_removed?: string[];
+            risky_seams?: string[];
+            blast_radius?: string;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'components.json'));
+      const cli = components.entities.find((entity) => entity.id === 'component:packages--cli');
+
+      expect(cli?.data?.coupling).toMatchObject({
+        level: 'medium',
+        score: 6,
+        static_import_count: 2,
+        internal_imports: ['component:packages--core', 'component:packages--providers'],
+        external_imports: [],
+      });
+      expect(cli?.data?.tradeoffs).toContain(
+        'Cross-component coupling improves reuse but widens review scope for local changes.',
+      );
+      expect(cli?.data?.failure_modes).toContain(
+        'Static cross-component imports can break when either side changes exports.',
+      );
+      expect(cli?.data?.what_breaks_if_removed).toContainEqual(
+        expect.stringContaining('Cross-component import consumers or callees need review'),
+      );
+      expect(cli?.data?.risky_seams).toContain(
+        'Static imports cross component boundaries; review both sides before changing exports.',
+      );
+      expect(cli?.data?.blast_radius).toBe('broad');
+
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'imports',
+          to: 'component:packages--core',
+        }),
+      );
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'imports',
+          to: 'component:packages--providers',
+        }),
+      );
+
+      const reasoning = await readJson<{
+        coupling_hotspots: Array<{
+          component_id: string;
+          coupling_level: string;
+          internal_imports: string[];
+        }>;
+        risky_seams: Array<{ component_id: string; seam: string }>;
+        critical_paths: Array<{ component_id: string; blast_radius: string }>;
+        tradeoff_matrix: Array<{ component_id: string; coupling_level: string }>;
+        what_breaks: Array<{ component_id: string; impacts: string[] }>;
+        review_hints: Array<{ reason: string; affected_components?: string[] }>;
+      }>(join(dir, '.rizz', 'research', 'architecture_reasoning.json'));
+      expect(reasoning.coupling_hotspots).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          coupling_level: 'medium',
+          internal_imports: ['component:packages--core', 'component:packages--providers'],
+        }),
+      );
+      expect(reasoning.risky_seams).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          seam: expect.stringContaining('Static imports cross component boundaries'),
+        }),
+      );
+      expect(reasoning.critical_paths).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          blast_radius: 'broad',
+        }),
+      );
+      expect(reasoning.tradeoff_matrix).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          coupling_level: 'medium',
+        }),
+      );
+      expect(reasoning.what_breaks).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          impacts: expect.arrayContaining([
+            expect.stringContaining('Cross-component import consumers or callees need review'),
+          ]),
+        }),
+      );
+      expect(reasoning.review_hints).toContainEqual(
+        expect.objectContaining({
+          reason: expect.stringContaining('Coupling hotspots'),
+          affected_components: expect.arrayContaining(['component:packages--cli']),
+        }),
+      );
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('Coupling Hotspots');
+      expect(report).toContain('Risky Seams');
+      expect(report).toContain('component:packages--cli: medium (6/10)');
+      expect(report).toContain('Static imports cross component boundaries');
     });
   });
 
