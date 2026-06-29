@@ -24,6 +24,10 @@ const repoRoot = dirname(evalDir);
 const tasksDir = join(evalDir, 'tasks');
 const cliBin = join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
 const installLocalScript = join(repoRoot, 'scripts', 'install-local.mjs');
+const PI_BENCH_TASK_SCHEMA_VERSION = 1;
+const PI_BENCH_TASK_SUITE = 'pi-bench-seed';
+const PI_BENCH_TASK_MODE = 'local';
+const COVERAGE_TARGETS = ['component', 'flow', 'evidence', 'unknown'];
 
 /** Load every *.task.json under eval/tasks. */
 function loadTasks() {
@@ -39,12 +43,107 @@ let passed = 0;
 for (const task of tasks) {
   // M5: drive the loop here and score the result. For now we validate the task schema so the
   // suite is real and the harness is wired into CI.
-  const valid = typeof task.id === 'string' && typeof task.prompt === 'string';
-  if (valid) passed++;
-  console.log(`  ${valid ? '✓' : '✗'} ${task.id ?? '(missing id)'}`);
+  const errors = validatePiBenchTask(task);
+  const valid = errors.length === 0;
+  if (valid) {
+    passed++;
+    console.log(`  ✓ ${task.id}`);
+  } else {
+    console.log(`  ✗ ${task?.id ?? '(missing id)'} — ${errors.join('; ')}`);
+  }
 }
 
 console.log(`\n${passed}/${tasks.length} task(s) valid`);
+if (passed !== tasks.length) process.exitCode = 1;
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function hasNonNegativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function validateFixture(fixture) {
+  const errors = [];
+  if (!isRecord(fixture)) return ['fixture must be an object'];
+  if (!isNonEmptyString(fixture.root)) errors.push('fixture.root must be a non-empty string');
+  if (!Array.isArray(fixture.files) || fixture.files.length === 0) {
+    errors.push('fixture.files must include at least one file');
+  } else {
+    for (const [index, file] of fixture.files.entries()) {
+      if (!isRecord(file)) {
+        errors.push(`fixture.files[${index}] must be an object`);
+        continue;
+      }
+      if (!isNonEmptyString(file.path)) {
+        errors.push(`fixture.files[${index}].path must be a non-empty string`);
+      }
+      if (typeof file.contents !== 'string') {
+        errors.push(`fixture.files[${index}].contents must be a string`);
+      }
+    }
+  }
+  return errors;
+}
+
+function validateCoverageTargets(targets) {
+  const errors = [];
+  if (!isRecord(targets)) return ['coverage_targets must be an object'];
+  for (const key of COVERAGE_TARGETS) {
+    const target = targets[key];
+    if (!isRecord(target)) {
+      errors.push(`coverage_targets.${key} must be an object`);
+      continue;
+    }
+    if (!hasNonNegativeNumber(target.minimum_total)) {
+      errors.push(`coverage_targets.${key}.minimum_total must be a non-negative number`);
+    }
+  }
+  return errors;
+}
+
+function validateRubric(rubric) {
+  if (!isRecord(rubric)) return ['rubric must be an object'];
+  const errors = [];
+  if (!isStringArray(rubric.pass) || rubric.pass.length === 0) {
+    errors.push('rubric.pass must include at least one string');
+  }
+  if (!isStringArray(rubric.fail) || rubric.fail.length === 0) {
+    errors.push('rubric.fail must include at least one string');
+  }
+  return errors;
+}
+
+function validatePiBenchTask(task) {
+  const errors = [];
+  if (!isRecord(task)) return ['task must be an object'];
+  if (task.schema_version !== PI_BENCH_TASK_SCHEMA_VERSION) {
+    errors.push(`schema_version must be ${PI_BENCH_TASK_SCHEMA_VERSION}`);
+  }
+  if (!isNonEmptyString(task.id) || !/^[a-z0-9][a-z0-9-]*$/.test(task.id)) {
+    errors.push('id must be kebab-case');
+  }
+  if (task.suite !== PI_BENCH_TASK_SUITE) errors.push(`suite must be ${PI_BENCH_TASK_SUITE}`);
+  if (task.mode !== PI_BENCH_TASK_MODE) errors.push(`mode must be ${PI_BENCH_TASK_MODE}`);
+  if (!isNonEmptyString(task.title)) errors.push('title must be a non-empty string');
+  if (!isNonEmptyString(task.prompt)) errors.push('prompt must be a non-empty string');
+  if (!isStringArray(task.expected_artifacts) || task.expected_artifacts.length === 0) {
+    errors.push('expected_artifacts must include at least one string');
+  }
+  errors.push(...validateFixture(task.fixture));
+  errors.push(...validateCoverageTargets(task.coverage_targets));
+  errors.push(...validateRubric(task.rubric));
+  return errors;
+}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -464,6 +563,7 @@ async function runHeadlessSmoke() {
             'component_intelligence.json',
             'evidence_quality.json',
             'incremental_update.json',
+            'benchmark_ready.json',
           ]) {
             const artifactPath = join(researchDir, fileName);
             assert(existsSync(artifactPath), `missing research artifact ${fileName}`);

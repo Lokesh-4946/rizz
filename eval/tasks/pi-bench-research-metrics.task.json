@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "id": "pi-bench-research-metrics",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "title": "Research metrics benchmark seed",
+  "prompt": "Build a local project brain for a small TypeScript package and report component, flow, evidence, and unknown coverage.",
+  "fixture": {
+    "root": "pi-bench-research-metrics",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-research-metrics\",\"scripts\":{\"test\":\"vitest run\",\"build\":\"tsc -b\"},\"dependencies\":{\"zod\":\"^3.0.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\",\"typescript\":\"^5.0.0\"}}\n"
+      },
+      {
+        "path": "src/index.ts",
+        "contents": "export function summarize(value: string): string {\n  return value.trim();\n}\n"
+      },
+      {
+        "path": "src/index.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { summarize } from \"./index.js\";\n\nit(\"summarizes local input\", () => {\n  expect(summarize(\" ok \")).toBe(\"ok\");\n});\n"
+      }
+    ]
+  },
+  "expected_artifacts": [
+    ".rizz/research/metrics.json",
+    ".rizz/research/coverage.json",
+    ".rizz/research/component_intelligence.json",
+    ".rizz/research/flow_coverage.json",
+    ".rizz/research/evidence_quality.json",
+    ".rizz/research/benchmark_ready.json"
+  ],
+  "coverage_targets": {
+    "component": { "minimum_total": 1 },
+    "flow": { "minimum_total": 1 },
+    "evidence": { "minimum_total": 3 },
+    "unknown": { "minimum_total": 0 }
+  },
+  "rubric": {
+    "pass": [
+      "The benchmark-ready JSON reports component, flow, evidence, and unknown coverage.",
+      "The output is deterministic for repeated runs with the same fixture and timestamp.",
+      "The task stays local and does not require credentials."
+    ],
+    "fail": [
+      "Coverage is inferred from a model call instead of local project facts.",
+      "Expected research artifact paths are missing.",
+      "The fixture requires network access."
+    ]
+  }
+}
