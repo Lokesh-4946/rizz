@@ -181,9 +181,12 @@ async function runExplainCommand(options: {
   writeSection('Entry points', explanation.entry_points);
   writeSection('Important files', explanation.important_files);
   writeSection('Dependencies', explanation.dependencies);
+  writeSection('Dependency roles', explanation.dependency_roles);
   writeSection('Consumers', explanation.consumers);
   writeSection('Tests', explanation.tests);
   writeSection('Configs', explanation.configs);
+  writeSection('Tradeoffs', explanation.tradeoffs);
+  writeSection('Failure modes', explanation.failure_modes);
   writeSection('What breaks if changed', explanation.breaks_if_changed);
   writeSection('Risks', explanation.risks);
   writeSection('Read first', explanation.read_first);

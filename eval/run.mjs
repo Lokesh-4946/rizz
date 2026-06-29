@@ -461,6 +461,7 @@ async function runHeadlessSmoke() {
             'metrics.json',
             'coverage.json',
             'confidence.json',
+            'component_intelligence.json',
             'evidence_quality.json',
             'incremental_update.json',
           ]) {
@@ -471,6 +472,17 @@ async function runHeadlessSmoke() {
           const metrics = JSON.parse(readFileSync(join(researchDir, 'metrics.json'), 'utf8'));
           assert(metrics.scanned_files === 2, 'research metrics missed scanned files');
           assert(metrics.evidence_records === 2, 'research metrics missed evidence records');
+          const componentIntelligence = JSON.parse(
+            readFileSync(join(researchDir, 'component_intelligence.json'), 'utf8'),
+          );
+          assert(
+            typeof componentIntelligence.component_understanding_score === 'number',
+            'component intelligence missing understanding score',
+          );
+          assert(
+            Array.isArray(componentIntelligence.components),
+            'component intelligence missing component rows',
+          );
           const reportPath = join(dir, '.rizz', 'reports', 'index.html');
           assert(existsSync(reportPath), 'missing HTML report');
           const report = readFileSync(reportPath, 'utf8');
@@ -585,6 +597,14 @@ async function runHeadlessSmoke() {
           assert(
             explanation.dependencies.includes('zod'),
             'explain missed component dependency evidence',
+          );
+          assert(
+            explanation.dependency_roles.includes('runtime dependency: zod'),
+            'explain missed dependency role evidence',
+          );
+          assert(
+            explanation.failure_modes.some((item) => item.includes('Dependency upgrades')),
+            'explain missed component failure mode evidence',
           );
           assert(
             explanation.read_first.includes('packages/brain/src/index.ts'),

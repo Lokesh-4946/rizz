@@ -252,6 +252,7 @@ describe('project brain generation', () => {
         'confidence.json',
         'evidence_quality.json',
         'architecture_reasoning.json',
+        'component_intelligence.json',
         'flow_confidence.json',
         'flow_coverage.json',
         'flow_understanding.json',
@@ -332,6 +333,43 @@ describe('project brain generation', () => {
           confidence: 'inferred',
         }),
       );
+
+      const componentIntelligence = await readJson<{
+        component_understanding_score: number;
+        field_coverage_score: number;
+        evidence_backed_field_score: number;
+        flow_coverage_score: number;
+        total_components: number;
+        fields: string[];
+        components: Array<{
+          id: string;
+          boundary_type: string;
+          flow_count: number;
+          field_coverage: Record<string, boolean>;
+          field_evidence: Record<string, number>;
+        }>;
+      }>(join(researchDir, 'component_intelligence.json'));
+      expect(componentIntelligence.total_components).toBe(1);
+      expect(componentIntelligence.component_understanding_score).toBeGreaterThan(0);
+      expect(componentIntelligence.field_coverage_score).toBeGreaterThan(0);
+      expect(componentIntelligence.evidence_backed_field_score).toBeGreaterThan(0);
+      expect(componentIntelligence.flow_coverage_score).toBe(100);
+      expect(componentIntelligence.fields).toContain('failure_modes');
+      const brainComponent = componentIntelligence.components.find(
+        (component) => component.id === 'component:packages--brain',
+      );
+      expect(brainComponent).toMatchObject({
+        id: 'component:packages--brain',
+        boundary_type: 'service',
+        flow_count: 2,
+        field_coverage: expect.objectContaining({
+          purpose: true,
+          tradeoffs: true,
+          failure_modes: true,
+        }),
+      });
+      expect(brainComponent?.field_evidence.purpose).toBeGreaterThan(0);
+      expect(brainComponent?.field_evidence.failure_modes).toBeGreaterThan(0);
 
       const evidenceQuality = await readJson<{
         evidence_records: number;
@@ -533,6 +571,7 @@ describe('project brain generation', () => {
         flow_index_path: string;
         research_paths: {
           metrics: string;
+          component_intelligence: string;
           incremental_update: string;
           flow_understanding: string;
           architecture_reasoning: string;
@@ -541,10 +580,55 @@ describe('project brain generation', () => {
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
       expect(index.research_paths).toMatchObject({
         metrics: '.rizz/research/metrics.json',
+        component_intelligence: '.rizz/research/component_intelligence.json',
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
       });
+    });
+  });
+
+  it('does not count absence-only component heuristics as evidence-backed fields', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'lib'), { recursive: true });
+      await writeFile(join(dir, 'lib', 'helper.ts'), 'const helper = 1;\n');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:05:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const componentIntelligence = await readJson<{
+        field_coverage_score: number;
+        evidence_backed_field_score: number;
+        evidence_coverage: Record<string, number>;
+        components: Array<{
+          id: string;
+          field_coverage: Record<string, boolean>;
+          field_evidence: Record<string, number>;
+        }>;
+      }>(join(result.value.researchDir, 'component_intelligence.json'));
+      const helperComponent = componentIntelligence.components.find(
+        (component) => component.id === 'component:lib',
+      );
+
+      expect(helperComponent?.field_coverage).toMatchObject({
+        tradeoffs: true,
+        failure_modes: true,
+        known_risks: true,
+      });
+      expect(helperComponent?.field_evidence.tradeoffs).toBe(0);
+      expect(helperComponent?.field_evidence.failure_modes).toBe(0);
+      expect(helperComponent?.field_evidence.known_risks).toBe(0);
+      expect(componentIntelligence.evidence_coverage.tradeoffs).toBe(0);
+      expect(componentIntelligence.evidence_coverage.failure_modes).toBe(0);
+      expect(componentIntelligence.evidence_coverage.known_risks).toBe(0);
+      expect(componentIntelligence.evidence_backed_field_score).toBeLessThan(
+        componentIntelligence.field_coverage_score,
+      );
     });
   });
 
@@ -583,19 +667,26 @@ describe('project brain generation', () => {
           description: string;
           data?: {
             purpose?: string;
+            boundary_type?: string;
             responsibilities?: string[];
             interfaces?: string[];
             entry_points?: string[];
             consumers?: string[];
             dependencies?: string[];
+            dependency_roles?: string[];
             exposed_apis?: string[];
             tests?: string[];
             configs?: string[];
             criticality?: string;
             criticality_score?: number;
+            ownership_confidence?: { score?: number; reason?: string; signals?: string[] };
+            tradeoffs?: string[];
+            failure_modes?: string[];
             what_breaks_if_removed?: string[];
             important_files?: string[];
+            read_first?: string[];
             known_risks?: string[];
+            unknowns?: string[];
             field_evidence?: Record<string, string[]>;
           };
         }>;
@@ -605,6 +696,7 @@ describe('project brain generation', () => {
       expect(cli?.description).toContain('Command-line surface');
       expect(cli?.data).toMatchObject({
         purpose: expect.stringContaining('Command-line surface'),
+        boundary_type: 'entrypoint',
         criticality: 'high',
       });
       expect(cli?.data?.responsibilities).toContain(
@@ -622,23 +714,39 @@ describe('project brain generation', () => {
       );
       expect(cli?.data?.consumers).toContain('Developers invoking the rizz CLI.');
       expect(cli?.data?.dependencies).toEqual(expect.arrayContaining(['commander', 'vitest']));
+      expect(cli?.data?.dependency_roles).toEqual(
+        expect.arrayContaining(['runtime dependency: commander', 'test dependency: vitest']),
+      );
       expect(cli?.data?.exposed_apis).toContain('module export surface: packages/cli/src/index.ts');
       expect(cli?.data?.tests).toEqual(['packages/cli/src/index.test.ts']);
       expect(cli?.data?.configs).toEqual(['packages/cli/package.json']);
       expect(cli?.data?.criticality_score).toBeGreaterThanOrEqual(7);
+      expect(cli?.data?.ownership_confidence?.score).toBeGreaterThanOrEqual(0.8);
+      expect(cli?.data?.ownership_confidence?.reason).toContain('Component boundary');
+      expect(cli?.data?.tradeoffs?.some((item) => item.includes('entrypoints'))).toBe(true);
+      expect(cli?.data?.failure_modes?.some((item) => item.includes('Entrypoints'))).toBe(true);
       expect(cli?.data?.what_breaks_if_removed).toContainEqual(
         expect.stringContaining('likely critical'),
       );
       expect(cli?.data?.important_files).toEqual(
         expect.arrayContaining(['packages/cli/package.json', 'packages/cli/src/index.ts']),
       );
+      expect(cli?.data?.read_first).toEqual(
+        expect.arrayContaining(['packages/cli/package.json', 'packages/cli/src/index.ts']),
+      );
       expect(cli?.data?.known_risks).toEqual([]);
+      expect(cli?.data?.unknowns).toEqual([]);
       expect(cli?.data?.field_evidence).toMatchObject({
+        boundary_type: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         purpose: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        dependency_roles: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         dependencies: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
         tests: ['evidence:file-packages--cli--src--index.test.ts'],
         configs: ['evidence:file-packages--cli--package.json'],
         exposed_apis: ['evidence:file-packages--cli--src--index.ts'],
+        tradeoffs: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        failure_modes: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        read_first: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
       });
 
       const latest = await readJson<{ latest_component_map: Array<Record<string, unknown>> }>(
@@ -648,15 +756,68 @@ describe('project brain generation', () => {
         expect.objectContaining({
           id: 'component:packages--cli',
           purpose: expect.stringContaining('Command-line surface'),
+          boundary_type: 'entrypoint',
           responsibilities: expect.arrayContaining([
             'Expose user-facing commands and route them to product flows.',
           ]),
+          dependency_roles: expect.arrayContaining(['runtime dependency: commander']),
           entry_points: expect.arrayContaining(['packages/cli/src/index.ts']),
           criticality: 'high',
+          tradeoffs: expect.arrayContaining([
+            'User-facing entrypoints improve reachability but make interface changes riskier.',
+          ]),
+          failure_modes: expect.arrayContaining([
+            'Entrypoints for packages/cli can fail if command, package, or module exports drift.',
+          ]),
           what_breaks_if_removed: expect.arrayContaining([
             expect.stringContaining('likely critical'),
           ]),
           important_files: expect.arrayContaining(['packages/cli/package.json']),
+          read_first: expect.arrayContaining(['packages/cli/package.json']),
+        }),
+      );
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'packages/cli',
+        now: new Date('2026-06-28T10:31:45.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.dependency_roles).toContain(
+        'runtime dependency: commander',
+      );
+      expect(
+        explained.value.explanation.tradeoffs.some((item) => item.includes('entrypoints')),
+      ).toBe(true);
+      expect(
+        explained.value.explanation.failure_modes.some((item) => item.includes('Entrypoints')),
+      ).toBe(true);
+      expect(explained.value.explanation.component).toMatchObject({
+        boundary_type: 'entrypoint',
+        criticality: 'high',
+      });
+
+      const research = await readJson<{
+        component_understanding_score: number;
+        components: Array<{
+          id: string;
+          boundary_type: string;
+          flow_count: number;
+          field_coverage: Record<string, boolean>;
+        }>;
+      }>(join(dir, '.rizz', 'research', 'component_intelligence.json'));
+      expect(research.component_understanding_score).toBeGreaterThan(70);
+      expect(research.components).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--cli',
+          boundary_type: 'entrypoint',
+          field_coverage: expect.objectContaining({
+            dependency_roles: true,
+            tradeoffs: true,
+            failure_modes: true,
+            read_first: true,
+          }),
         }),
       );
 
@@ -863,6 +1024,12 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
       expect(report).toContain('rizz explain');
       expect(report).toContain('component:packages--brain');
+      expect(report).toContain('Component Boundary');
+      expect(report).toContain('Boundary type: service');
+      expect(report).toContain('Dependency Roles');
+      expect(report).toContain('runtime dependency: zod');
+      expect(report).toContain('Tradeoffs');
+      expect(report).toContain('Failure Modes');
       expect(report).toContain('What Breaks If Changed');
       expect(report).toContain('Evidence');
       expect(report).not.toContain('sk-or-v1-');

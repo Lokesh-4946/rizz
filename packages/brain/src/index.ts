@@ -15,6 +15,18 @@ import {
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
+type ComponentBoundaryType =
+  | 'entrypoint'
+  | 'orchestration'
+  | 'service'
+  | 'adapter'
+  | 'interface'
+  | 'automation'
+  | 'knowledge'
+  | 'quality'
+  | 'source'
+  | 'unknown';
+
 type EntityType =
   | 'project'
   | 'file'
@@ -102,19 +114,30 @@ interface PackageJsonFact {
 
 interface ComponentIntelligence {
   readonly purpose: string;
+  readonly boundary_type: ComponentBoundaryType;
   readonly responsibilities: readonly string[];
   readonly interfaces: readonly string[];
   readonly entry_points: readonly string[];
   readonly consumers: readonly string[];
   readonly dependencies: readonly string[];
+  readonly dependency_roles: readonly string[];
   readonly exposed_apis: readonly string[];
   readonly tests: readonly string[];
   readonly configs: readonly string[];
   readonly criticality: 'low' | 'medium' | 'high';
   readonly criticality_score: number;
+  readonly ownership_confidence: {
+    readonly score: number;
+    readonly reason: string;
+    readonly signals: readonly string[];
+  };
+  readonly tradeoffs: readonly string[];
+  readonly failure_modes: readonly string[];
   readonly what_breaks_if_removed: readonly string[];
   readonly important_files: readonly string[];
+  readonly read_first: readonly string[];
   readonly known_risks: readonly string[];
+  readonly unknowns: readonly string[];
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
   readonly signals: readonly string[];
 }
@@ -300,11 +323,14 @@ interface ExplainSummaryData {
   readonly purpose: string;
   readonly responsibilities: readonly string[];
   readonly dependencies: readonly string[];
+  readonly dependency_roles: readonly string[];
   readonly consumers: readonly string[];
   readonly important_files: readonly string[];
   readonly entry_points: readonly string[];
   readonly tests: readonly string[];
   readonly configs: readonly string[];
+  readonly tradeoffs: readonly string[];
+  readonly failure_modes: readonly string[];
   readonly breaks_if_changed: readonly string[];
   readonly risks: readonly string[];
   readonly read_first: readonly string[];
@@ -313,6 +339,16 @@ interface ExplainSummaryData {
   readonly depended_on_by: readonly string[];
   readonly confidence: Confidence;
   readonly unknowns: readonly string[];
+  readonly component?: {
+    readonly boundary_type: string;
+    readonly criticality: string;
+    readonly criticality_score?: number;
+    readonly ownership_confidence?: {
+      readonly score?: number;
+      readonly reason?: string;
+      readonly signals?: readonly string[];
+    };
+  };
   readonly flow?: {
     readonly kind: FlowKind;
     readonly entrypoints: readonly FlowEntrypoint[];
@@ -427,6 +463,7 @@ const RESEARCH_ARTIFACT_FILES = {
   metrics: 'metrics.json',
   coverage: 'coverage.json',
   confidence: 'confidence.json',
+  componentIntelligence: 'component_intelligence.json',
   evidenceQuality: 'evidence_quality.json',
   incrementalUpdate: 'incremental_update.json',
   flowUnderstanding: 'flow_understanding.json',
@@ -946,6 +983,29 @@ function purposeForComponent(componentPath: string, packages: readonly PackageJs
   }
 }
 
+function boundaryTypeForComponent(
+  componentPath: string,
+  files: readonly FileFact[],
+  packages: readonly PackageJsonFact[],
+): ComponentBoundaryType {
+  const kind = componentKind(componentPath);
+  if (kind === 'cli') return 'entrypoint';
+  if (kind === 'interface') return 'interface';
+  if (kind === 'core') return 'orchestration';
+  if (kind === 'provider') return 'adapter';
+  if (kind === 'automation') return 'automation';
+  if (kind === 'documentation') return 'knowledge';
+  if (kind === 'quality') return 'quality';
+  if (kind === 'source') return 'source';
+  if (kind === 'intelligence') return 'service';
+  if (packages.some((pkg) => Object.keys(pkg.scripts).length > 0)) return 'entrypoint';
+  if (files.some((file) => isRouteLikeFile(file))) return 'entrypoint';
+  if (files.some((file) => basename(file.relativePath).toLowerCase() === 'index.ts')) {
+    return 'service';
+  }
+  return 'unknown';
+}
+
 function responsibilitiesForComponent(
   componentPath: string,
   files: readonly FileFact[],
@@ -1041,8 +1101,7 @@ function consumersForComponent(componentPath: string, files: readonly FileFact[]
   if (kind === 'interface') consumers.add('Users interacting through the terminal UI.');
   if (kind === 'core') consumers.add('CLI and other orchestration surfaces.');
   if (kind === 'provider') consumers.add('Core/model routing code that needs provider adapters.');
-  if (kind === 'intelligence')
-    consumers.add('CLI commands, review, report, and future explain/ask surfaces.');
+  if (kind === 'intelligence') consumers.add('CLI commands, Review, Portal, and Explain surfaces.');
   if (kind === 'automation') consumers.add('Release, CI, and local maintenance workflows.');
   if (kind === 'documentation')
     consumers.add('Users, contributors, and future agents reading project context.');
@@ -1078,6 +1137,22 @@ function dependenciesForComponent(packages: readonly PackageJsonFact[]): string[
       ...Object.keys(pkg.devDependencies).map((name) => safeText(name)),
     ]),
   ).slice(0, 20);
+}
+
+function dependencyRolesForComponent(packages: readonly PackageJsonFact[]): string[] {
+  const roles = new Set<string>();
+  for (const pkg of packages) {
+    for (const name of Object.keys(pkg.dependencies)) {
+      roles.add(`runtime dependency: ${safeText(name)}`);
+    }
+    for (const name of Object.keys(pkg.devDependencies)) {
+      const role = /test|vitest|jest|mocha|playwright|testing/i.test(name)
+        ? 'test dependency'
+        : 'development dependency';
+      roles.add(`${role}: ${safeText(name)}`);
+    }
+  }
+  return [...roles].sort((a, b) => a.localeCompare(b)).slice(0, 20);
 }
 
 function testPathsForComponent(files: readonly FileFact[]): string[] {
@@ -1168,6 +1243,30 @@ function firstFilesToRead(files: readonly FileFact[]): string[] {
   return ranked.slice(0, 8).map((file) => file.relativePath);
 }
 
+function ownershipConfidenceForComponent(params: {
+  readonly boundaryType: ComponentBoundaryType;
+  readonly files: readonly FileFact[];
+  readonly packages: readonly PackageJsonFact[];
+  readonly signals: readonly string[];
+  readonly entryPoints: readonly string[];
+  readonly tests: readonly string[];
+}): ComponentIntelligence['ownership_confidence'] {
+  let score = 0.2;
+  if (params.packages.length > 0) score += 0.25;
+  if (params.files.some((file) => classifySourceKind(file) === 'source')) score += 0.2;
+  if (params.entryPoints.length > 0) score += 0.15;
+  if (params.tests.length > 0) score += 0.1;
+  if (params.boundaryType !== 'unknown') score += 0.1;
+  const capped = Math.min(0.95, Number(score.toFixed(2)));
+  let reason = 'Component boundary is weak and mostly inferred from path structure.';
+  if (capped >= 0.75) {
+    reason = 'Component boundary is supported by package/source/test or entrypoint evidence.';
+  } else if (capped >= 0.5) {
+    reason = 'Component boundary is inferred from partial package or source evidence.';
+  }
+  return { score: capped, reason, signals: params.signals };
+}
+
 function componentSignals(
   files: readonly FileFact[],
   packages: readonly PackageJsonFact[],
@@ -1180,6 +1279,119 @@ function componentSignals(
   if (files.some((file) => classifySourceKind(file) === 'documentation'))
     signals.add('documentation');
   return [...signals];
+}
+
+function tradeoffsForComponent(params: {
+  readonly boundaryType: ComponentBoundaryType;
+  readonly dependencies: readonly string[];
+  readonly entryPoints: readonly string[];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly exposedApis: readonly string[];
+}): string[] {
+  const tradeoffs = new Set<string>();
+  if (params.boundaryType === 'entrypoint') {
+    tradeoffs.add(
+      'User-facing entrypoints improve reachability but make interface changes riskier.',
+    );
+  }
+  if (params.boundaryType === 'adapter') {
+    tradeoffs.add(
+      'Adapter boundary isolates external/provider behavior but concentrates compatibility risk.',
+    );
+  }
+  if (params.boundaryType === 'orchestration') {
+    tradeoffs.add(
+      'Orchestration boundary centralizes policy decisions but can become a coupling point.',
+    );
+  }
+  if (params.dependencies.length > 8) {
+    tradeoffs.add(
+      'Large dependency surface gives capability breadth at the cost of upgrade review scope.',
+    );
+  }
+  if (params.configs.length > 0) {
+    tradeoffs.add(
+      'Configuration-backed behavior is flexible but can fail through environment or CI drift.',
+    );
+  }
+  if (params.tests.length === 0) {
+    tradeoffs.add(
+      'Low local test evidence keeps the component lightweight but weakens change confidence.',
+    );
+  }
+  if (params.exposedApis.length > 0 && params.entryPoints.length === 0) {
+    tradeoffs.add('Exported surface is visible, but no explicit entrypoint was detected.');
+  }
+  return [...tradeoffs];
+}
+
+function failureModesForComponent(params: {
+  readonly componentPath: string;
+  readonly boundaryType: ComponentBoundaryType;
+  readonly dependencies: readonly string[];
+  readonly entryPoints: readonly string[];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly exposedApis: readonly string[];
+}): string[] {
+  const name = safeText(params.componentPath);
+  const failures = new Set<string>();
+  if (params.entryPoints.length > 0) {
+    failures.add(`Entrypoints for ${name} can fail if command, package, or module exports drift.`);
+  }
+  if (params.configs.length > 0) {
+    failures.add(
+      `Configuration changes can break ${name} before runtime code changes are touched.`,
+    );
+  }
+  if (params.dependencies.length > 0) {
+    failures.add(`Dependency upgrades can change ${name} behavior or install compatibility.`);
+  }
+  if (params.exposedApis.length > 0) {
+    failures.add('Consumers can break if exposed module/API surfaces change shape.');
+  }
+  if (params.tests.length === 0) {
+    failures.add('No component-local tests were detected, so regressions may escape local checks.');
+  }
+  if (params.boundaryType === 'unknown') {
+    failures.add(`Boundary role for ${name} is unclear; inspect read-first files before editing.`);
+  }
+  return [...failures];
+}
+
+function unknownsForComponent(params: {
+  readonly boundaryType: ComponentBoundaryType;
+  readonly signals: readonly string[];
+  readonly consumers: readonly string[];
+  readonly dependencies: readonly string[];
+  readonly entryPoints: readonly string[];
+  readonly tests: readonly string[];
+}): string[] {
+  const unknowns = new Set<string>();
+  if (params.boundaryType === 'unknown') {
+    unknowns.add('Component boundary type is inferred weakly from file organization.');
+  }
+  if (params.signals.length <= 1) {
+    unknowns.add('Component understanding is backed by limited static evidence.');
+  }
+  if (
+    params.consumers.some((consumer) =>
+      consumer.includes('exact consumers need deeper flow analysis'),
+    )
+  ) {
+    unknowns.add('Exact consumers are not fully known from static component evidence.');
+  }
+  if (params.dependencies.length === 0) {
+    unknowns.add('No package dependency evidence was detected for this component.');
+  }
+  if (params.entryPoints.length === 0) {
+    unknowns.add('No explicit entrypoint was detected for this component.');
+  }
+  if (params.tests.length === 0) {
+    unknowns.add('No component-local test evidence was detected.');
+  }
+  return [...unknowns];
 }
 
 function knownRisksForComponent(
@@ -1988,11 +2200,13 @@ function inferComponentIntelligence(
   packageFacts: readonly PackageJsonFact[],
 ): ComponentIntelligence {
   const packages = packageFactsForComponent(packageFacts, componentPath);
+  const boundaryType = boundaryTypeForComponent(componentPath, files, packages);
   const responsibilities = responsibilitiesForComponent(componentPath, files, packages);
   const interfaces = interfacesForComponent(packages, files);
   const entryPoints = entryPointsForComponent(packages, files);
   const consumers = consumersForComponent(componentPath, files);
   const dependencies = dependenciesForComponent(packages);
+  const dependencyRoles = dependencyRolesForComponent(packages);
   const exposedApis = exposedApisForComponent(files);
   const tests = testPathsForComponent(files);
   const configs = configPathsForComponent(files);
@@ -2005,20 +2219,83 @@ function inferComponentIntelligence(
     .filter((file): file is string => file !== undefined)
     .map(evidenceId);
   const dependencyEvidenceIds = packages.map((pkg) => evidenceId(pkg.relativePath));
+  const signals = componentSignals(files, packages);
+  const ownershipConfidence = ownershipConfidenceForComponent({
+    boundaryType,
+    files,
+    packages,
+    signals,
+    entryPoints,
+    tests,
+  });
+  const tradeoffs = tradeoffsForComponent({
+    boundaryType,
+    dependencies,
+    entryPoints,
+    configs,
+    tests,
+    exposedApis,
+  });
+  const failureModes = failureModesForComponent({
+    componentPath,
+    boundaryType,
+    dependencies,
+    entryPoints,
+    configs,
+    tests,
+    exposedApis,
+  });
+  const readFirst = firstFilesToRead(files);
+  const entryPointEvidenceIds = unique([
+    ...configEvidenceIds,
+    ...apiEvidenceIds,
+    ...componentEvidenceIds,
+  ]);
+  const tradeoffEvidenceIds = unique([
+    ...(entryPoints.length > 0 ? entryPointEvidenceIds : []),
+    ...(boundaryType === 'adapter' || boundaryType === 'orchestration' ? componentEvidenceIds : []),
+    ...(dependencies.length > 8 ? dependencyEvidenceIds : []),
+    ...(configs.length > 0 ? configEvidenceIds : []),
+    ...(exposedApis.length > 0 && entryPoints.length === 0 ? apiEvidenceIds : []),
+  ]);
+  const failureModeEvidenceIds = unique([
+    ...(entryPoints.length > 0 ? entryPointEvidenceIds : []),
+    ...(configs.length > 0 ? configEvidenceIds : []),
+    ...(dependencies.length > 0 ? dependencyEvidenceIds : []),
+    ...(exposedApis.length > 0 ? apiEvidenceIds : []),
+  ]);
+  const knownRiskEvidenceIds = unique([
+    ...(dependencies.length > 10 ? dependencyEvidenceIds : []),
+    ...(exposedApis.length > 0 && consumers.length === 0 ? apiEvidenceIds : []),
+  ]);
   const partial = {
     purpose: purposeForComponent(componentPath, packages),
+    boundary_type: boundaryType,
     responsibilities,
     interfaces,
     entry_points: entryPoints,
     consumers,
     dependencies,
+    dependency_roles: dependencyRoles,
     exposed_apis: exposedApis,
     tests,
     configs,
     criticality: criticality.label,
     criticality_score: criticality.score,
-    important_files: firstFilesToRead(files),
-    signals: componentSignals(files, packages),
+    ownership_confidence: ownershipConfidence,
+    tradeoffs,
+    failure_modes: failureModes,
+    important_files: readFirst,
+    read_first: readFirst,
+    unknowns: unknownsForComponent({
+      boundaryType,
+      signals,
+      consumers,
+      dependencies,
+      entryPoints,
+      tests,
+    }),
+    signals,
   };
   const whatBreaksIfRemoved = whatBreaksIfRemovedForComponent(componentPath, partial);
   return {
@@ -2029,28 +2306,47 @@ function inferComponentIntelligence(
     }),
     field_evidence: {
       purpose: componentEvidenceIds,
+      boundary_type: componentEvidenceIds,
       responsibilities: componentEvidenceIds,
       interfaces: unique([...configEvidenceIds, ...apiEvidenceIds, ...componentEvidenceIds]),
       entry_points: unique([...configEvidenceIds, ...apiEvidenceIds, ...componentEvidenceIds]),
       consumers: componentEvidenceIds,
       dependencies: dependencyEvidenceIds,
+      dependency_roles: dependencyEvidenceIds,
       exposed_apis: apiEvidenceIds,
       tests: testEvidenceIds,
       configs: configEvidenceIds,
       criticality: componentEvidenceIds,
+      ownership_confidence: unique([
+        ...componentEvidenceIds,
+        ...configEvidenceIds,
+        ...testEvidenceIds,
+      ]),
+      tradeoffs: tradeoffEvidenceIds,
+      failure_modes: failureModeEvidenceIds,
       what_breaks_if_removed: unique([
         ...componentEvidenceIds,
         ...configEvidenceIds,
         ...apiEvidenceIds,
       ]),
       important_files: componentEvidenceIds,
-      known_risks: unique([...componentEvidenceIds, ...testEvidenceIds, ...dependencyEvidenceIds]),
+      read_first: componentEvidenceIds,
+      known_risks: knownRiskEvidenceIds,
+      unknowns: componentEvidenceIds,
     },
   };
 }
 
 function confidenceForComponent(intelligence: ComponentIntelligence): Confidence {
+  if (intelligence.ownership_confidence.score < 0.5) return 'uncertain';
   if (intelligence.signals.length <= 1) return 'uncertain';
+  if (
+    intelligence.ownership_confidence.score >= 0.85 &&
+    intelligence.tests.length > 0 &&
+    intelligence.entry_points.length > 0
+  ) {
+    return 'inferred';
+  }
   if (
     intelligence.signals.includes('package manifest') &&
     intelligence.signals.includes('source files')
@@ -2277,6 +2573,187 @@ function redactedReferenceCountForBrain(params: {
     entities: params.entities,
     relationships: params.relationships,
   });
+}
+
+const COMPONENT_UNDERSTANDING_FIELDS = [
+  'purpose',
+  'boundary_type',
+  'responsibilities',
+  'interfaces',
+  'entry_points',
+  'consumers',
+  'dependencies',
+  'dependency_roles',
+  'criticality',
+  'ownership_confidence',
+  'tradeoffs',
+  'failure_modes',
+  'what_breaks_if_removed',
+  'important_files',
+  'read_first',
+  'known_risks',
+] as const;
+
+function componentFieldHasValue(component: BrainEntity, field: string): boolean {
+  if (field === 'ownership_confidence') return isRecord(component.data?.ownership_confidence);
+  if (field === 'purpose' || field === 'boundary_type' || field === 'criticality') {
+    return stringData(component, field) !== undefined;
+  }
+  return stringArrayData(component, field).length > 0;
+}
+
+function buildComponentIntelligenceArtifact(params: {
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+}): Record<string, unknown> {
+  const components = params.buckets.components.filter(
+    (component) => component.latest_status !== 'stale',
+  );
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const fieldSlots = components.length * COMPONENT_UNDERSTANDING_FIELDS.length;
+  const coveredFieldSlots = components.reduce(
+    (count, component) =>
+      count +
+      COMPONENT_UNDERSTANDING_FIELDS.filter((field) => componentFieldHasValue(component, field))
+        .length,
+    0,
+  );
+  const evidenceBackedFieldSlots = components.reduce((count, component) => {
+    const fieldEvidence = recordStringArrayData(component, 'field_evidence');
+    return (
+      count +
+      COMPONENT_UNDERSTANDING_FIELDS.filter(
+        (field) =>
+          componentFieldHasValue(component, field) && (fieldEvidence[field] ?? []).length > 0,
+      ).length
+    );
+  }, 0);
+  const flowsByComponent = new Map<string, BrainEntity[]>();
+  for (const flow of flows) {
+    for (const componentId of flowStringArray(flow, 'components')) {
+      const existing = flowsByComponent.get(componentId) ?? [];
+      flowsByComponent.set(componentId, [...existing, flow]);
+    }
+  }
+  const componentsWithFlows = components.filter(
+    (component) => (flowsByComponent.get(component.id) ?? []).length > 0,
+  );
+  const highCriticality = components.filter(
+    (component) => stringData(component, 'criticality') === 'high',
+  );
+  const highCriticalityWithoutTests = highCriticality.filter(
+    (component) => stringArrayData(component, 'tests').length === 0,
+  );
+  const fieldCoverageScore = scorePercent(coveredFieldSlots, fieldSlots);
+  const evidenceBackedFieldScore = scorePercent(evidenceBackedFieldSlots, fieldSlots);
+  const flowCoverageScore = scorePercent(componentsWithFlows.length, components.length);
+  const confidenceDistribution = countByConfidence(
+    components.map((component) => component.confidence),
+  );
+  const unknownComponentCount = components.filter(
+    (component) =>
+      component.confidence === 'uncertain' || stringArrayData(component, 'unknowns').length > 0,
+  ).length;
+  const componentUnderstandingScore = Math.round(
+    fieldCoverageScore * 0.45 + evidenceBackedFieldScore * 0.35 + flowCoverageScore * 0.2,
+  );
+  const couplingByComponent = components.map((component) => {
+    const inbound = params.relationships.filter(
+      (relationship) =>
+        relationship.to === component.id &&
+        relationship.from !== component.id &&
+        relationship.relation !== 'owns',
+    );
+    const outbound = params.relationships.filter(
+      (relationship) =>
+        relationship.from === component.id &&
+        relationship.to !== component.id &&
+        relationship.relation !== 'owns',
+    );
+    const relatedFlows = flowsByComponent.get(component.id) ?? [];
+    return {
+      id: component.id,
+      boundary_type: stringData(component, 'boundary_type') ?? 'unknown',
+      criticality: stringData(component, 'criticality') ?? 'unknown',
+      confidence: component.confidence,
+      ownership_confidence: isRecord(component.data?.ownership_confidence)
+        ? component.data.ownership_confidence
+        : undefined,
+      flow_count: relatedFlows.length,
+      flow_ids: relatedFlows.map((flow) => flow.id),
+      inbound_relationships: inbound.length,
+      outbound_relationships: outbound.length,
+      unknowns: stringArrayData(component, 'unknowns'),
+      read_first: stringArrayData(component, 'read_first'),
+      evidence_ids: component.evidence_ids,
+      field_coverage: Object.fromEntries(
+        COMPONENT_UNDERSTANDING_FIELDS.map((field) => [
+          field,
+          componentFieldHasValue(component, field),
+        ]),
+      ),
+      field_evidence: Object.fromEntries(
+        COMPONENT_UNDERSTANDING_FIELDS.map((field) => [
+          field,
+          componentFieldHasValue(component, field)
+            ? (recordStringArrayData(component, 'field_evidence')[field] ?? []).length
+            : 0,
+        ]),
+      ),
+    };
+  });
+
+  return {
+    generated_at: params.now,
+    total_components: components.length,
+    component_understanding_score: componentUnderstandingScore,
+    field_coverage_score: fieldCoverageScore,
+    evidence_backed_field_score: evidenceBackedFieldScore,
+    flow_coverage_score: flowCoverageScore,
+    confidence_distribution: confidenceDistribution,
+    high_criticality_components: highCriticality.length,
+    high_criticality_without_tests: highCriticalityWithoutTests.map((component) => component.id),
+    unknown_component_count: unknownComponentCount,
+    top_uncertain_components: components
+      .filter((component) => component.confidence === 'uncertain')
+      .slice(0, 10)
+      .map((component) => ({
+        id: component.id,
+        unknowns: stringArrayData(component, 'unknowns'),
+        evidence_ids: component.evidence_ids,
+      })),
+    fields: COMPONENT_UNDERSTANDING_FIELDS,
+    field_coverage: Object.fromEntries(
+      COMPONENT_UNDERSTANDING_FIELDS.map((field) => [
+        field,
+        components.filter((component) => componentFieldHasValue(component, field)).length,
+      ]),
+    ),
+    evidence_coverage: Object.fromEntries(
+      COMPONENT_UNDERSTANDING_FIELDS.map((field) => [
+        field,
+        components.filter(
+          (component) =>
+            componentFieldHasValue(component, field) &&
+            (recordStringArrayData(component, 'field_evidence')[field] ?? []).length > 0,
+        ).length,
+      ]),
+    ),
+    component_flow_coverage: couplingByComponent.map((component) => ({
+      id: component.id,
+      flow_count: component.flow_count,
+      flow_ids: component.flow_ids,
+      inbound_relationships: component.inbound_relationships,
+      outbound_relationships: component.outbound_relationships,
+    })),
+    components: couplingByComponent,
+    scoring_notes: [
+      'Component Intelligence measures deterministic static understanding, not runtime behavior.',
+      'Scores combine field coverage, evidence-backed fields, and reconstructed flow coverage.',
+      'Unknowns are intentional prompts for what a human or future reasoning pass should inspect next.',
+    ],
+  };
 }
 
 function buildArchitectureReasoningArtifact(params: {
@@ -2589,6 +3066,11 @@ function buildResearchArtifacts(params: {
           evidence_ids: risk.evidence_ids,
         })),
     },
+    componentIntelligence: buildComponentIntelligenceArtifact({
+      now: params.now,
+      buckets: params.buckets,
+      relationships: params.relationships,
+    }),
     evidenceQuality: buildEvidenceQualityArtifact({
       now: params.now,
       buckets: params.buckets,
@@ -2762,19 +3244,28 @@ function buildLatest(params: {
     confidence: component.confidence,
     source_files: component.source_files,
     purpose: stringData(component, 'purpose'),
+    boundary_type: stringData(component, 'boundary_type'),
     responsibilities: stringArrayData(component, 'responsibilities'),
     interfaces: stringArrayData(component, 'interfaces'),
     entry_points: stringArrayData(component, 'entry_points'),
     consumers: stringArrayData(component, 'consumers'),
     dependencies: stringArrayData(component, 'dependencies'),
+    dependency_roles: stringArrayData(component, 'dependency_roles'),
     exposed_apis: stringArrayData(component, 'exposed_apis'),
     tests: stringArrayData(component, 'tests'),
     configs: stringArrayData(component, 'configs'),
     criticality: stringData(component, 'criticality'),
     criticality_score: numberData(component, 'criticality_score'),
+    ownership_confidence: isRecord(component.data?.ownership_confidence)
+      ? component.data.ownership_confidence
+      : undefined,
+    tradeoffs: stringArrayData(component, 'tradeoffs'),
+    failure_modes: stringArrayData(component, 'failure_modes'),
     what_breaks_if_removed: stringArrayData(component, 'what_breaks_if_removed'),
     important_files: stringArrayData(component, 'important_files'),
+    read_first: stringArrayData(component, 'read_first'),
     known_risks: stringArrayData(component, 'known_risks'),
+    unknowns: stringArrayData(component, 'unknowns'),
   }));
   const flowMap = params.buckets.flows.map((flow) => ({
     id: flow.id,
@@ -2982,16 +3473,24 @@ function renderComponentCards(
   return components
     .map((component) => {
       const purpose = stringData(component, 'purpose') ?? component.description;
+      const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
       const criticality = stringData(component, 'criticality') ?? 'unknown';
       const score = numberData(component, 'criticality_score');
       const scoreText = score === undefined ? '' : ` · ${score}/10`;
+      const ownershipConfidence = isRecord(component.data?.ownership_confidence)
+        ? component.data.ownership_confidence
+        : {};
+      const ownershipScore =
+        typeof ownershipConfidence.score === 'number'
+          ? ` · ownership ${Math.round(ownershipConfidence.score * 100)}%`
+          : '';
       const fieldEvidence = recordStringArrayData(component, 'field_evidence');
       return `<article class="card" data-search="${htmlEscape(
-        `${component.id} ${component.name} ${purpose} ${criticality} ${component.confidence} ${component.source_files.join(' ')}`,
+        `${component.id} ${component.name} ${purpose} ${boundaryType} ${criticality} ${component.confidence} ${component.source_files.join(' ')}`,
       )}" data-kind="component" data-confidence="${htmlEscape(
         component.confidence,
       )}" data-criticality="${htmlEscape(criticality)}">
-        <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)}</div>
+        <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(boundaryType)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)}${htmlEscape(ownershipScore)}</div>
         <h3>${htmlEscape(component.name)}</h3>
         <p class="muted">Explain this: <code>rizz explain ${htmlEscape(component.name)}</code></p>
         <p>${htmlEscape(purpose)}</p>
@@ -3025,6 +3524,18 @@ function renderComponentCards(
           fieldEvidence.dependencies ?? component.evidence_ids,
           evidenceById,
         )}
+        <h4>Dependency Roles</h4>
+        ${renderListWithEvidence(
+          stringArrayData(component, 'dependency_roles'),
+          fieldEvidence.dependency_roles ?? component.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Read First</h4>
+        ${renderListWithEvidence(
+          stringArrayData(component, 'read_first'),
+          fieldEvidence.read_first ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Important Files</h4>
         ${renderListWithEvidence(
           stringArrayData(component, 'important_files'),
@@ -3037,10 +3548,28 @@ function renderComponentCards(
           fieldEvidence.what_breaks_if_removed ?? component.evidence_ids,
           evidenceById,
         )}
+        <h4>Tradeoffs</h4>
+        ${renderListWithEvidence(
+          stringArrayData(component, 'tradeoffs'),
+          fieldEvidence.tradeoffs ?? component.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Failure Modes</h4>
+        ${renderListWithEvidence(
+          stringArrayData(component, 'failure_modes'),
+          fieldEvidence.failure_modes ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Known Risks</h4>
         ${renderListWithEvidence(
           stringArrayData(component, 'known_risks'),
           fieldEvidence.known_risks ?? component.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Unknowns</h4>
+        ${renderListWithEvidence(
+          stringArrayData(component, 'unknowns'),
+          fieldEvidence.unknowns ?? component.evidence_ids,
           evidenceById,
         )}
         <h4>Evidence</h4>
@@ -4004,6 +4533,7 @@ export async function generateProjectBrain(
         metrics: '.rizz/research/metrics.json',
         coverage: '.rizz/research/coverage.json',
         confidence: '.rizz/research/confidence.json',
+        component_intelligence: '.rizz/research/component_intelligence.json',
         evidence_quality: '.rizz/research/evidence_quality.json',
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
@@ -4484,6 +5014,7 @@ function buildExplanation(params: {
     ...explainArray(targetData.dependencies, componentData.dependencies),
     ...relationshipContext.dependsOn,
   ]);
+  const dependencyRoles = explainArray(targetData.dependency_roles, componentData.dependency_roles);
   const consumers = unique([
     ...explainArray(targetData.consumers, componentData.consumers),
     ...relationshipContext.dependedOnBy,
@@ -4508,11 +5039,19 @@ function buildExplanation(params: {
     ...explainArray(targetData.what_breaks_if_removed, componentData.what_breaks_if_removed),
     ...relationshipContext.dependedOnBy.map((item) => `Dependent entity may need review: ${item}.`),
   ]);
+  const tradeoffs = explainArray(targetData.tradeoffs, componentData.tradeoffs);
+  const failureModes = explainArray(targetData.failure_modes, componentData.failure_modes);
   const risks = unique([
     ...explainArray(targetData.known_risks, componentData.known_risks),
+    ...failureModes,
     ...relatedRisks(target, relatedComponents, params.entitySets.risks),
   ]);
-  const readFirst = unique([...entryPoints, ...importantFiles, ...target.source_files]).slice(0, 8);
+  const readFirst = unique([
+    ...explainArray(targetData.read_first, componentData.read_first),
+    ...entryPoints,
+    ...importantFiles,
+    ...target.source_files,
+  ]).slice(0, 8);
   const evidenceIds = unique([
     ...target.evidence_ids,
     ...(primaryComponent?.evidence_ids ?? []),
@@ -4532,6 +5071,8 @@ function buildExplanation(params: {
     risks,
     latest: params.latest,
   });
+  const componentCriticalityScore =
+    primaryComponent === undefined ? undefined : numberData(primaryComponent, 'criticality_score');
 
   return {
     generated_at: params.now,
@@ -4542,11 +5083,14 @@ function buildExplanation(params: {
     purpose: safeText(purpose),
     responsibilities: responsibilities.map(safeText),
     dependencies: dependencies.map(safeText),
+    dependency_roles: dependencyRoles.map(safeText),
     consumers: consumers.map(safeText),
     important_files: importantFiles.map(safeText),
     entry_points: entryPoints.map(safeText),
     tests: tests.map(safeText),
     configs: configs.map(safeText),
+    tradeoffs: tradeoffs.map(safeText),
+    failure_modes: failureModes.map(safeText),
     breaks_if_changed: breaksIfChanged.map(safeText),
     risks: risks.map(safeText),
     read_first: readFirst.map(safeText),
@@ -4554,7 +5098,30 @@ function buildExplanation(params: {
     depends_on: relationshipContext.dependsOn.map(safeText),
     depended_on_by: relationshipContext.dependedOnBy.map(safeText),
     confidence,
-    unknowns: unknowns.map(safeText),
+    unknowns: unique([
+      ...unknowns,
+      ...explainArray(targetData.unknowns, componentData.unknowns),
+    ]).map(safeText),
+    ...(primaryComponent !== undefined
+      ? {
+          component: {
+            boundary_type: safeText(stringData(primaryComponent, 'boundary_type') ?? 'unknown'),
+            criticality: safeText(stringData(primaryComponent, 'criticality') ?? 'unknown'),
+            ...(componentCriticalityScore !== undefined
+              ? { criticality_score: componentCriticalityScore }
+              : {}),
+            ...(isRecord(primaryComponent.data?.ownership_confidence)
+              ? {
+                  ownership_confidence: primaryComponent.data.ownership_confidence as {
+                    readonly score?: number;
+                    readonly reason?: string;
+                    readonly signals?: readonly string[];
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -4626,11 +5193,14 @@ function buildFlowExplanation(params: {
       ...stepLabels.slice(0, 6),
     ]).map(safeText),
     dependencies,
+    dependency_roles: [],
     consumers: relationshipContext.dependedOnBy.map(safeText),
     important_files: files.slice(0, 12),
     entry_points: entrypointLabels.map(safeText),
     tests,
     configs,
+    tradeoffs: [],
+    failure_modes: [],
     breaks_if_changed: [
       `Review this flow when any mapped file changes: ${files.slice(0, 8).join(', ') || 'none recorded'}.`,
       ...relationshipContext.dependedOnBy.map(
@@ -4820,16 +5390,20 @@ function renderExplainReport(
     </header>
     <section class="card"><h2>What This Is</h2><p>${htmlEscape(explanation.purpose)}</p></section>
     <section class="grid">
-      <article class="card"><h2>Responsibilities</h2>${renderList(explanation.responsibilities)}</article>
-      <article class="card"><h2>Entry Points</h2>${renderList(explanation.entry_points)}</article>
-      ${renderFlowExplanationCards(explanation)}
-      <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>
-      <article class="card"><h2>Dependencies</h2>${renderList(explanation.dependencies)}</article>
-      <article class="card"><h2>Consumers</h2>${renderList(explanation.consumers)}</article>
-      <article class="card"><h2>Tests</h2>${renderList(explanation.tests)}</article>
-      <article class="card"><h2>Configs</h2>${renderList(explanation.configs)}</article>
-      <article class="card"><h2>What Breaks If Changed</h2>${renderList(explanation.breaks_if_changed)}</article>
-      <article class="card"><h2>Risks</h2>${renderList(explanation.risks)}</article>
+	      <article class="card"><h2>Responsibilities</h2>${renderList(explanation.responsibilities)}</article>
+	      <article class="card"><h2>Entry Points</h2>${renderList(explanation.entry_points)}</article>
+	      ${renderComponentExplanationCards(explanation)}
+	      ${renderFlowExplanationCards(explanation)}
+	      <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>
+	      <article class="card"><h2>Dependencies</h2>${renderList(explanation.dependencies)}</article>
+	      <article class="card"><h2>Dependency Roles</h2>${renderList(explanation.dependency_roles)}</article>
+	      <article class="card"><h2>Consumers</h2>${renderList(explanation.consumers)}</article>
+	      <article class="card"><h2>Tests</h2>${renderList(explanation.tests)}</article>
+	      <article class="card"><h2>Configs</h2>${renderList(explanation.configs)}</article>
+	      <article class="card"><h2>Tradeoffs</h2>${renderList(explanation.tradeoffs)}</article>
+	      <article class="card"><h2>Failure Modes</h2>${renderList(explanation.failure_modes)}</article>
+	      <article class="card"><h2>What Breaks If Changed</h2>${renderList(explanation.breaks_if_changed)}</article>
+	      <article class="card"><h2>Risks</h2>${renderList(explanation.risks)}</article>
       <article class="card"><h2>Read First</h2>${renderList(explanation.read_first)}</article>
       <article class="card"><h2>Unknowns</h2>${renderList(explanation.unknowns)}</article>
       <article class="card"><h2>Evidence</h2>${renderEvidenceLinks(explanation.evidence_ids, evidenceById)}</article>
@@ -4837,7 +5411,28 @@ function renderExplainReport(
   </main>
 </body>
 </html>
-`;
+	`;
+}
+
+function renderComponentExplanationCards(explanation: ExplainSummaryData): string {
+  if (explanation.component === undefined) return '';
+  const details = [
+    `Boundary type: ${explanation.component.boundary_type}`,
+    `Criticality: ${explanation.component.criticality}`,
+  ];
+  if (explanation.component.criticality_score !== undefined) {
+    details.push(`Criticality score: ${explanation.component.criticality_score}`);
+  }
+  if (explanation.component.ownership_confidence?.score !== undefined) {
+    details.push(`Ownership confidence: ${explanation.component.ownership_confidence.score}`);
+  }
+  if (explanation.component.ownership_confidence?.reason !== undefined) {
+    details.push(`Ownership basis: ${explanation.component.ownership_confidence.reason}`);
+  }
+  for (const signal of explanation.component.ownership_confidence?.signals ?? []) {
+    details.push(`Signal: ${signal}`);
+  }
+  return `<article class="card"><h2>Component Boundary</h2>${renderList(details)}</article>`;
 }
 
 function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
