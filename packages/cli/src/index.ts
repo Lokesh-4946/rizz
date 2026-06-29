@@ -27,6 +27,8 @@ Usage:
   rizz               generate .rizz/brain and .rizz/reports
   rizz brain         refresh project brain
   rizz explain <x>   explain a component or file from the project brain
+  rizz explain flow <id>
+                     explain a reconstructed flow from the project brain
   rizz review        review current git diff with the project brain
   rizz chat          launch model TUI
   rizz setup         choose model route
@@ -116,6 +118,7 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
   process.stdout.write(`  overall risk: ${summary.overallRisk}\n`);
   process.stdout.write(`  surgicality: ${summary.surgicalityScore}/10\n`);
   process.stdout.write(`  blast radius: ${summary.blastRadius}\n`);
+  process.stdout.write(`  affected flows: ${summary.review.affected_flows.length}\n`);
   process.stdout.write(`  findings: ${summary.findings}\n`);
   process.stdout.write(`  action: ${summary.recommendedAction}\n`);
   process.stdout.write(`  review: ${summary.reviewPath}\n`);
@@ -124,6 +127,14 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     process.stdout.write('  required tests:\n');
     for (const command of summary.review.required_tests) {
       process.stdout.write(`    - ${command}\n`);
+    }
+  }
+  if (summary.review.affected_flows.length > 0) {
+    process.stdout.write('  affected flows:\n');
+    for (const flow of summary.review.affected_flows.slice(0, 5)) {
+      process.stdout.write(
+        `    - ${flow.id} (${flow.kind}, ${flow.confidence}, ${flow.changed_files.length} changed file(s))\n`,
+      );
     }
   }
   if (summary.review.findings.length > 0) {
@@ -460,12 +471,18 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     }
     const targets = explainArgs.filter((arg) => !allowed.has(arg));
-    if (targets.length !== 1) {
+    let target = targets[0];
+    const isFlowTarget = targets.length === 2 && targets[0] === 'flow';
+    if (isFlowTarget) {
+      const flowId = targets[1] ?? '';
+      target = flowId.startsWith('flow:') ? flowId : `flow:${flowId}`;
+    }
+    if ((targets.length !== 1 && !isFlowTarget) || target === undefined) {
       const error = {
         ok: false,
         error: {
           code: 'EXPLAIN_TARGET_REQUIRED',
-          message: 'Explain needs exactly one component or file target.',
+          message: 'Explain needs exactly one component, file, or flow target.',
         },
       };
       if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
@@ -475,7 +492,7 @@ async function main(argv: readonly string[]): Promise<number> {
         );
       return 2;
     }
-    return runExplainCommand({ target: targets[0] ?? '', json: wantsJson });
+    return runExplainCommand({ target, json: wantsJson });
   }
   // Headless modes (job #3) consume the remaining args as boolean flags; --rpc wins over --json.
   const rest = c.rest.filter((a) => a !== '--json' && a !== '--rpc');

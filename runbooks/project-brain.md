@@ -34,6 +34,7 @@ recover the current project state without depending on a hidden chat transcript.
 .rizz/research/flow_understanding.json
 .rizz/research/flow_coverage.json
 .rizz/research/flow_confidence.json
+.rizz/research/architecture_reasoning.json
 .rizz/reports/index.html
 .rizz/reports/review.html
 ```
@@ -55,6 +56,10 @@ map, risks, review status, open questions, handoffs, confidence gaps, and recomm
 source of truth in `entities/flows.json`; the mirrors make flow details easier for portals, evals,
 and other tools to consume without inventing a second brain.
 
+Use `rizz explain flow <flow-id>` to inspect one reconstructed flow before editing. The explanation
+includes static entrypoints, ordered steps, mapped files/components, tests, configs, risks,
+confidence, unknowns, and evidence. It does not claim runtime trace coverage.
+
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
 
@@ -74,6 +79,9 @@ Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/res
 - `flow_understanding.json`, `flow_coverage.json`, and `flow_confidence.json` summarize flow count,
   kind distribution, test/config coverage, low-confidence flows, affected flows, and confidence
   calibration.
+- `architecture_reasoning.json` summarizes boundary candidates, cross-component flows, risk
+  concentrations, review hints, and unknowns from deterministic component, flow, relationship,
+  evidence, and confidence data.
 
 These artifacts are local scan output. They do not require a provider key, model call, cloud
 account, or external service.
@@ -94,7 +102,7 @@ The command:
 2. Loads `.rizz/brain/graph.json`.
 3. Loads relevant entity stores under `.rizz/brain/entities/`.
 4. Reads the current git diff, including untracked files.
-5. Maps changed files to file/component/config/test/command entities.
+5. Maps changed files to file/component/flow/config/test/command entities.
 6. Produces skeptical findings for risk, drift, hidden coupling, missing tests, security,
    performance, maintainability, backward compatibility, and overengineering.
 7. Writes first-class `review` and `finding` entities.
@@ -175,6 +183,7 @@ Smoke the command in a temporary repo and confirm:
 - `.rizz/research/flow_understanding.json` exists
 - `.rizz/research/flow_coverage.json` exists
 - `.rizz/research/flow_confidence.json` exists
+- `.rizz/research/architecture_reasoning.json` exists
 - `.rizz/brain/flows/index.json` exists
 - `.rizz/reports/index.html` exists
 - `.rizz/reports/review.html` exists after `rizz review`

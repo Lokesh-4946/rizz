@@ -252,11 +252,25 @@ interface ReviewFindingData {
   readonly safer_alternative?: string;
 }
 
+interface AffectedFlowData {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly confidence: Confidence;
+  readonly score: number;
+  readonly changed_files: readonly string[];
+  readonly components: readonly string[];
+  readonly tests: readonly string[];
+  readonly risks: number;
+  readonly evidence_ids: readonly string[];
+}
+
 interface ReviewSummaryData {
   readonly id: string;
   readonly generated_at: string;
   readonly changed_files: readonly string[];
   readonly affected_components: readonly string[];
+  readonly affected_flows: readonly AffectedFlowData[];
   readonly affected_entities: readonly string[];
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
@@ -289,6 +303,19 @@ interface ExplainSummaryData {
   readonly depended_on_by: readonly string[];
   readonly confidence: Confidence;
   readonly unknowns: readonly string[];
+  readonly flow?: {
+    readonly kind: FlowKind;
+    readonly entrypoints: readonly FlowEntrypoint[];
+    readonly steps: readonly FlowStep[];
+    readonly components: readonly string[];
+    readonly files: readonly string[];
+    readonly dependencies: readonly string[];
+    readonly tests: readonly string[];
+    readonly configs: readonly string[];
+    readonly risks: readonly FlowRisk[];
+    readonly confidence_score: number;
+    readonly confidence_reason: string;
+  };
 }
 
 export interface GenerateProjectBrainOptions {
@@ -329,6 +356,7 @@ export interface ReviewProjectChangesSummary {
   readonly reportPath: string;
   readonly changedFiles: number;
   readonly affectedComponents: number;
+  readonly affectedFlows: number;
   readonly findings: number;
   readonly overallRisk: OverallRisk;
   readonly surgicalityScore: number;
@@ -394,6 +422,7 @@ const RESEARCH_ARTIFACT_FILES = {
   flowUnderstanding: 'flow_understanding.json',
   flowCoverage: 'flow_coverage.json',
   flowConfidence: 'flow_confidence.json',
+  architectureReasoning: 'architecture_reasoning.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -1315,6 +1344,67 @@ function flowStringArray(entity: BrainEntity, key: string): string[] {
   return stringArrayData(entity, key);
 }
 
+function flowKind(entity: BrainEntity): FlowKind {
+  const kind = stringData(entity, 'kind');
+  if (
+    kind === 'api' ||
+    kind === 'cli' ||
+    kind === 'job' ||
+    kind === 'ui' ||
+    kind === 'config' ||
+    kind === 'test' ||
+    kind === 'unknown'
+  ) {
+    return kind;
+  }
+  return 'unknown';
+}
+
+function flowEntrypoints(entity: BrainEntity): FlowEntrypoint[] {
+  const entrypoints = entity.data?.entrypoints;
+  if (!Array.isArray(entrypoints)) return [];
+  return entrypoints.filter((entrypoint): entrypoint is FlowEntrypoint => {
+    if (!isRecord(entrypoint)) return false;
+    return (
+      typeof entrypoint.type === 'string' &&
+      typeof entrypoint.path === 'string' &&
+      (typeof entrypoint.symbol === 'string' || entrypoint.symbol === null) &&
+      Array.isArray(entrypoint.evidence) &&
+      entrypoint.evidence.every((item) => typeof item === 'string')
+    );
+  });
+}
+
+function safeFlowEntrypoints(entity: BrainEntity): FlowEntrypoint[] {
+  return flowEntrypoints(entity).map((entrypoint) => ({
+    type: entrypoint.type,
+    path: safeText(entrypoint.path),
+    symbol: entrypoint.symbol === null ? null : safeText(entrypoint.symbol),
+    evidence: entrypoint.evidence.map(safeText),
+  }));
+}
+
+function safeFlowSteps(entity: BrainEntity): FlowStep[] {
+  return flowSteps(entity).map((step) => ({
+    step_id: safeText(step.step_id),
+    order: step.order,
+    type: step.type,
+    path: safeText(step.path),
+    symbol: step.symbol === null ? null : safeText(step.symbol),
+    description: safeText(step.description),
+    evidence: step.evidence.map(safeText),
+  }));
+}
+
+function safeFlowRisks(entity: BrainEntity): FlowRisk[] {
+  return flowRisks(entity).map((risk) => ({
+    risk_id: safeText(risk.risk_id),
+    kind: risk.kind,
+    description: safeText(risk.description),
+    evidence: risk.evidence.map(safeText),
+  }));
+}
+
 function flowRisks(entity: BrainEntity): FlowRisk[] {
   const risks = entity.data?.risks;
   if (!Array.isArray(risks)) return [];
@@ -1324,7 +1414,8 @@ function flowRisks(entity: BrainEntity): FlowRisk[] {
       typeof risk.risk_id === 'string' &&
       typeof risk.kind === 'string' &&
       typeof risk.description === 'string' &&
-      Array.isArray(risk.evidence)
+      Array.isArray(risk.evidence) &&
+      risk.evidence.every((item) => typeof item === 'string')
     );
   });
 }
@@ -1339,8 +1430,10 @@ function flowSteps(entity: BrainEntity): FlowStep[] {
       typeof step.order === 'number' &&
       typeof step.type === 'string' &&
       typeof step.path === 'string' &&
+      (typeof step.symbol === 'string' || step.symbol === null) &&
       typeof step.description === 'string' &&
-      Array.isArray(step.evidence)
+      Array.isArray(step.evidence) &&
+      step.evidence.every((item) => typeof item === 'string')
     );
   });
 }
@@ -1970,6 +2063,163 @@ function ratio(numerator: number, denominator: number): number {
   return Number((numerator / denominator).toFixed(4));
 }
 
+function buildArchitectureReasoningArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly changedFiles: readonly string[];
+}): Record<string, unknown> {
+  const projectId = entityId('project', params.projectName);
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const changedFileSet = new Set(params.changedFiles);
+  const flowsByComponent = new Map<string, BrainEntity[]>();
+  for (const flow of flows) {
+    for (const componentId of flowStringArray(flow, 'components')) {
+      const existing = flowsByComponent.get(componentId) ?? [];
+      flowsByComponent.set(componentId, [...existing, flow]);
+    }
+  }
+  const boundaryCandidates = params.buckets.components
+    .map((component) => {
+      const componentFlows = flowsByComponent.get(component.id) ?? [];
+      const inboundCount = params.relationships.filter(
+        (relationship) => relationship.to === component.id && relationship.relation !== 'owns',
+      ).length;
+      const outboundCount = params.relationships.filter(
+        (relationship) => relationship.from === component.id && relationship.relation !== 'owns',
+      ).length;
+      return {
+        component_id: safeText(component.id),
+        name: safeText(component.name),
+        flow_count: componentFlows.length,
+        inbound_count: inboundCount,
+        outbound_count: outboundCount,
+        confidence: weakestConfidence([
+          component.confidence,
+          ...componentFlows.map((flow) => flow.confidence),
+        ]),
+        evidence_ids: unique([
+          ...component.evidence_ids,
+          ...componentFlows.flatMap((flow) => flow.evidence_ids),
+        ]).slice(0, 12),
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.flow_count - a.flow_count ||
+        b.inbound_count + b.outbound_count - (a.inbound_count + a.outbound_count) ||
+        a.component_id.localeCompare(b.component_id),
+    );
+  const crossComponentFlows = flows
+    .filter((flow) => flowStringArray(flow, 'components').length > 1)
+    .map((flow) => ({
+      flow_id: safeText(flow.id),
+      name: safeText(flow.name),
+      kind: flowKind(flow),
+      components: flowStringArray(flow, 'components').map(safeText),
+      files: flowStringArray(flow, 'files').map(safeText),
+      risks: flowRisks(flow).length,
+      confidence: flow.confidence,
+      evidence_ids: flow.evidence_ids.map(safeText),
+    }));
+  const riskConcentrations = [
+    ...params.buckets.components.map((component) => ({
+      entity_id: safeText(component.id),
+      kind: 'component',
+      risk_count: stringArrayData(component, 'known_risks').length,
+      changed_recently: component.source_files.some((file) => changedFileSet.has(file)),
+      evidence_ids: component.evidence_ids.map(safeText),
+    })),
+    ...flows.map((flow) => ({
+      entity_id: safeText(flow.id),
+      kind: 'flow',
+      risk_count: flowRisks(flow).length,
+      changed_recently: flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
+      evidence_ids: flow.evidence_ids.map(safeText),
+    })),
+  ]
+    .filter((item) => item.risk_count > 0 || item.changed_recently)
+    .sort(
+      (a, b) =>
+        Number(b.changed_recently) - Number(a.changed_recently) ||
+        b.risk_count - a.risk_count ||
+        a.entity_id.localeCompare(b.entity_id),
+    )
+    .slice(0, 20);
+  const changedFlows = flows.filter((flow) =>
+    flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
+  );
+  const lowConfidenceFlows = flows.filter((flow) => flow.confidence !== 'verified');
+  const reviewHints: Array<Record<string, unknown>> = [];
+  if (changedFlows.length > 0) {
+    reviewHints.push({
+      reason: 'Changed files overlap reconstructed flows.',
+      affected_flows: changedFlows.map((flow) => safeText(flow.id)),
+      suggested_tests: unique(changedFlows.flatMap((flow) => flowStringArray(flow, 'tests'))).map(
+        safeText,
+      ),
+      confidence: 'inferred',
+    });
+  }
+  if (crossComponentFlows.length > 0) {
+    reviewHints.push({
+      reason: 'Some reconstructed flows cross component boundaries.',
+      affected_flows: crossComponentFlows.map((flow) => flow.flow_id),
+      suggested_tests: unique(
+        flows
+          .filter((flow) => flowStringArray(flow, 'components').length > 1)
+          .flatMap((flow) => flowStringArray(flow, 'tests')),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
+  if (lowConfidenceFlows.length > 0) {
+    reviewHints.push({
+      reason:
+        'Low-confidence flows need evidence review before architectural decisions rely on them.',
+      affected_flows: lowConfidenceFlows.map((flow) => safeText(flow.id)),
+      suggested_tests: unique(
+        lowConfidenceFlows.flatMap((flow) => flowStringArray(flow, 'tests')),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
+  const componentsWithoutFlows = params.buckets.components.filter(
+    (component) => (flowsByComponent.get(component.id) ?? []).length === 0,
+  );
+  const relationshipsWithoutEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length === 0,
+  );
+  return {
+    generated_at: params.now,
+    project_id: projectId,
+    boundary_candidates: boundaryCandidates,
+    cross_component_flows: crossComponentFlows,
+    risk_concentrations: riskConcentrations,
+    review_hints: reviewHints,
+    unknowns: unique([
+      ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
+      ...(componentsWithoutFlows.length > 0
+        ? [
+            `${componentsWithoutFlows.length} component(s) are not covered by reconstructed flows yet.`,
+          ]
+        : []),
+      ...(relationshipsWithoutEvidence.length > 0
+        ? [
+            `${relationshipsWithoutEvidence.length} relationship(s) do not have direct evidence IDs yet.`,
+          ]
+        : []),
+      ...(lowConfidenceFlows.length > 0
+        ? [`${lowConfidenceFlows.length} reconstructed flow(s) are not verified yet.`]
+        : []),
+      ...(crossComponentFlows.length === 0 && flows.length > 0
+        ? ['No cross-component flows were reconstructed from static evidence yet.']
+        : []),
+    ]),
+  };
+}
+
 function buildResearchArtifacts(params: {
   readonly projectName: string;
   readonly now: string;
@@ -2264,6 +2514,13 @@ function buildResearchArtifacts(params: {
         })),
       })),
     },
+    architectureReasoning: buildArchitectureReasoningArtifact({
+      projectName: params.projectName,
+      now: params.now,
+      buckets: params.buckets,
+      relationships: params.relationships,
+      changedFiles,
+    }),
   };
 }
 
@@ -2370,6 +2627,13 @@ function buildLatest(params: {
     confidence: risk.confidence,
     evidence_ids: risk.evidence_ids,
   }));
+  const architectureReasoning = buildArchitectureReasoningArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+    changedFiles: params.changedFiles,
+  });
   const confidenceGaps = params.buckets.risks
     .filter((risk) => risk.confidence !== 'verified')
     .map((risk) => risk.description);
@@ -2383,6 +2647,7 @@ function buildLatest(params: {
         : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.flows.length} reconstructed flow(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
     latest_component_map: componentMap,
     latest_flow_map: flowMap,
+    latest_architecture_reasoning: architectureReasoning,
     latest_risks: risks,
     latest_review_status: {
       status: 'not_run',
@@ -2738,6 +3003,61 @@ function renderLatestReview(latest: Record<string, unknown>): string {
   return `<table><tbody>${rows}</tbody></table>`;
 }
 
+function renderArchitectureReasoning(value: unknown): string {
+  if (!isRecord(value)) {
+    return '<p class="muted">No architecture reasoning artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
+  }
+  const boundaryCandidates = Array.isArray(value.boundary_candidates)
+    ? value.boundary_candidates.filter(isRecord)
+    : [];
+  const crossComponentFlows = Array.isArray(value.cross_component_flows)
+    ? value.cross_component_flows.filter(isRecord)
+    : [];
+  const riskConcentrations = Array.isArray(value.risk_concentrations)
+    ? value.risk_concentrations.filter(isRecord)
+    : [];
+  const reviewHints = Array.isArray(value.review_hints) ? value.review_hints.filter(isRecord) : [];
+  const unknowns = asStringArray(value.unknowns);
+  const boundaryLabels = boundaryCandidates.slice(0, 5).map((candidate) => {
+    const componentId =
+      typeof candidate.component_id === 'string' ? candidate.component_id : 'unknown component';
+    const flowCount = typeof candidate.flow_count === 'number' ? candidate.flow_count : 0;
+    const inboundCount = typeof candidate.inbound_count === 'number' ? candidate.inbound_count : 0;
+    const outboundCount =
+      typeof candidate.outbound_count === 'number' ? candidate.outbound_count : 0;
+    const confidence =
+      typeof candidate.confidence === 'string' ? candidate.confidence : 'unknown confidence';
+    return `${componentId}: ${flowCount} flow(s), ${inboundCount} inbound, ${outboundCount} outbound, ${confidence}`;
+  });
+  const flowLabels = crossComponentFlows.slice(0, 5).map((flow) => {
+    const flowId = typeof flow.flow_id === 'string' ? flow.flow_id : 'unknown flow';
+    const components = Array.isArray(flow.components)
+      ? flow.components.filter((item): item is string => typeof item === 'string')
+      : [];
+    return `${flowId}: ${components.length} component(s)`;
+  });
+  const riskLabels = riskConcentrations.slice(0, 5).map((risk) => {
+    const entityId = typeof risk.entity_id === 'string' ? risk.entity_id : 'unknown entity';
+    const riskCount = typeof risk.risk_count === 'number' ? risk.risk_count : 0;
+    const changedRecently = risk.changed_recently === true ? 'changed recently' : 'not changed';
+    return `${entityId}: ${riskCount} risk signal(s), ${changedRecently}`;
+  });
+  const hintLabels = reviewHints.slice(0, 5).map((hint) => {
+    const reason = typeof hint.reason === 'string' ? hint.reason : 'Review architecture evidence.';
+    const affectedFlows = Array.isArray(hint.affected_flows)
+      ? hint.affected_flows.filter((item): item is string => typeof item === 'string').length
+      : 0;
+    return `${reason} (${affectedFlows} affected flow(s))`;
+  });
+  return `<div class="grid">
+    <article class="card"><h3>Boundary Candidates</h3>${renderList(boundaryLabels)}</article>
+    <article class="card"><h3>Cross-Component Flows</h3>${renderList(flowLabels)}</article>
+    <article class="card"><h3>Risk Concentrations</h3>${renderList(riskLabels)}</article>
+    <article class="card"><h3>Review Hints</h3>${renderList(hintLabels)}</article>
+    <article class="card"><h3>Unknowns</h3>${renderList(unknowns)}</article>
+  </div>`;
+}
+
 function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
   if (evidence.length === 0) return '<p class="muted">No evidence records detected yet.</p>';
   return evidence
@@ -2900,6 +3220,8 @@ function renderReport(params: {
     <section>
       <h2>Architecture Reasoning</h2>
       <details open><summary>Current reasoning</summary><p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p></details>
+      <p class="muted">Deterministic static reasoning from components, flows, relationships, evidence, and confidence. It is not runtime tracing.</p>
+      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}
     </section>
     <section>
       <h2>Flow Understanding</h2>
@@ -3465,6 +3787,7 @@ export async function generateProjectBrain(
         flow_understanding: '.rizz/research/flow_understanding.json',
         flow_coverage: '.rizz/research/flow_coverage.json',
         flow_confidence: '.rizz/research/flow_confidence.json',
+        architecture_reasoning: '.rizz/research/architecture_reasoning.json',
       },
     };
     const graph = {
@@ -3650,6 +3973,7 @@ export async function reviewProjectChanges(
         blast_radius: review.blast_radius,
         findings: review.findings.length,
         changed_files: review.changed_files,
+        affected_flows: review.affected_flows.map((flow) => flow.id),
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
       latest_open_questions: mergeStrings(latest.latest_open_questions, [
@@ -3664,14 +3988,15 @@ export async function reviewProjectChanges(
       project_state: {
         ...(isRecord(latest.project_state) ? latest.project_state : {}),
         last_reviewed_files: review.changed_files,
+        last_reviewed_flows: review.affected_flows.map((flow) => flow.id),
         last_review_risk: review.overall_risk,
       },
     };
-    await writeFile(latestPath, jsonString(updatedLatest));
+    await writeVerifiedFile(latestPath, jsonString(updatedLatest));
 
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
-    await writeFile(reportPath, reviewReport);
+    await writeVerifiedFile(reportPath, reviewReport);
 
     return {
       ok: true,
@@ -3682,6 +4007,7 @@ export async function reviewProjectChanges(
         reportPath,
         changedFiles: review.changed_files.length,
         affectedComponents: review.affected_components.length,
+        affectedFlows: review.affected_flows.length,
         findings: review.findings.length,
         overallRisk: review.overall_risk,
         surgicalityScore: review.surgicality_score,
@@ -3734,6 +4060,7 @@ export async function explainProjectTarget(
     const entitySets = await readExplainEntitySets(entitiesDir);
     const explainableEntities = [
       ...entitySets.components,
+      ...entitySets.flows,
       ...entitySets.files,
       ...entitySets.folders,
     ];
@@ -3775,6 +4102,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly folders: readonly BrainEntity[];
   readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
   readonly commands: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
@@ -3782,19 +4110,41 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
   readonly risks: readonly BrainEntity[];
   readonly evidence: readonly BrainEntity[];
 }> {
-  const [files, folders, components, configs, commands, tests, dependencies, risks, evidence] =
-    await Promise.all([
-      readEntityFile(entitiesDir, 'files.json'),
-      readEntityFile(entitiesDir, 'folders.json'),
-      readEntityFile(entitiesDir, 'components.json'),
-      readEntityFile(entitiesDir, 'configs.json'),
-      readEntityFile(entitiesDir, 'commands.json'),
-      readEntityFile(entitiesDir, 'tests.json'),
-      readEntityFile(entitiesDir, 'dependencies.json'),
-      readEntityFile(entitiesDir, 'risks.json'),
-      readEntityFile(entitiesDir, 'evidence.json'),
-    ]);
-  return { files, folders, components, configs, commands, tests, dependencies, risks, evidence };
+  const [
+    files,
+    folders,
+    components,
+    flows,
+    configs,
+    commands,
+    tests,
+    dependencies,
+    risks,
+    evidence,
+  ] = await Promise.all([
+    readEntityFile(entitiesDir, 'files.json'),
+    readEntityFile(entitiesDir, 'folders.json'),
+    readEntityFile(entitiesDir, 'components.json'),
+    readEntityFile(entitiesDir, 'flows.json'),
+    readEntityFile(entitiesDir, 'configs.json'),
+    readEntityFile(entitiesDir, 'commands.json'),
+    readEntityFile(entitiesDir, 'tests.json'),
+    readEntityFile(entitiesDir, 'dependencies.json'),
+    readEntityFile(entitiesDir, 'risks.json'),
+    readEntityFile(entitiesDir, 'evidence.json'),
+  ]);
+  return {
+    files,
+    folders,
+    components,
+    flows,
+    configs,
+    commands,
+    tests,
+    dependencies,
+    risks,
+    evidence,
+  };
 }
 
 function resolveExplainTarget(
@@ -3886,6 +4236,8 @@ function buildExplanation(params: {
   readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
 }): ExplainSummaryData {
   const target = params.target;
+  if (target.type === 'flow') return buildFlowExplanation(params);
+
   const relatedComponents = relatedComponentContext(target, params.entitySets.components);
   const primaryComponent = target.type === 'component' ? target : relatedComponents[0];
   const relationshipContext = explainRelationshipContext(target, params.relationships);
@@ -3975,6 +4327,121 @@ function buildExplanation(params: {
     confidence,
     unknowns: unknowns.map(safeText),
   };
+}
+
+function buildFlowExplanation(params: {
+  readonly now: string;
+  readonly query: string;
+  readonly target: BrainEntity;
+  readonly latest: Record<string, unknown>;
+  readonly relationships: readonly BrainRelationship[];
+  readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
+}): ExplainSummaryData {
+  const target = params.target;
+  const relationshipContext = explainRelationshipContext(target, params.relationships);
+  const entrypoints = safeFlowEntrypoints(target);
+  const steps = safeFlowSteps(target);
+  const flowRisksForTarget = safeFlowRisks(target);
+  const components = flowStringArray(target, 'components').map(safeText);
+  const files = unique([...flowStringArray(target, 'files'), ...target.source_files]).map(safeText);
+  const dependencies = flowStringArray(target, 'dependencies').map(safeText);
+  const configs = flowStringArray(target, 'configs').map(safeText);
+  const tests = flowStringArray(target, 'tests').map(safeText);
+  const entrypointLabels = entrypoints.map(formatFlowEntrypoint);
+  const stepLabels = steps.map(formatFlowStep);
+  const riskLabels = flowRisksForTarget.map(formatFlowRisk);
+  const confidenceScore = asFlowConfidenceScore(target);
+  const confidenceReason = safeText(flowConfidenceReason(target));
+  const evidenceIds = unique([
+    ...target.evidence_ids,
+    ...entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+    ...steps.flatMap((step) => step.evidence),
+    ...flowRisksForTarget.flatMap((risk) => risk.evidence),
+    ...relationshipContext.evidenceIds,
+  ]).map(safeText);
+  const flowUnknowns = unique([
+    ...stringArrayData(target, 'unknowns'),
+    ...(target.latest_status === 'stale'
+      ? ['Brain marks this flow stale. Run rizz brain before relying on it.']
+      : []),
+    ...(target.confidence === 'verified' ? [] : [`Flow confidence reason: ${confidenceReason}`]),
+    ...explainUnknowns({
+      target,
+      confidence: target.confidence,
+      responsibilities: stepLabels,
+      dependencies,
+      consumers: relationshipContext.dependedOnBy,
+      tests,
+      risks: riskLabels,
+      latest: params.latest,
+    }),
+  ]);
+  const readFirst = unique([
+    ...entrypoints.map((entrypoint) => entrypoint.path),
+    ...steps.map((step) => step.path),
+    ...files,
+  ]).slice(0, 10);
+
+  return {
+    generated_at: params.now,
+    target: safeText(params.query),
+    resolved_entity_id: safeText(target.id),
+    entity_type: target.type,
+    summary: safeText(target.description),
+    purpose: `${safeText(target.name)} is a ${flowKind(
+      target,
+    )} flow reconstructed from local static evidence. It is not a runtime trace.`,
+    responsibilities: unique([
+      `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
+      `Covers ${components.length} component(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      ...stepLabels.slice(0, 6),
+    ]).map(safeText),
+    dependencies,
+    consumers: relationshipContext.dependedOnBy.map(safeText),
+    important_files: files.slice(0, 12),
+    entry_points: entrypointLabels.map(safeText),
+    tests,
+    configs,
+    breaks_if_changed: [
+      `Review this flow when any mapped file changes: ${files.slice(0, 8).join(', ') || 'none recorded'}.`,
+      ...relationshipContext.dependedOnBy.map(
+        (item) => `Dependent entity may need review: ${item}.`,
+      ),
+    ].map(safeText),
+    risks: riskLabels.map(safeText),
+    read_first: readFirst.map(safeText),
+    evidence_ids: evidenceIds,
+    depends_on: relationshipContext.dependsOn.map(safeText),
+    depended_on_by: relationshipContext.dependedOnBy.map(safeText),
+    confidence: target.confidence,
+    unknowns: flowUnknowns.map(safeText),
+    flow: {
+      kind: flowKind(target),
+      entrypoints,
+      steps,
+      components,
+      files,
+      dependencies,
+      tests,
+      configs,
+      risks: flowRisksForTarget,
+      confidence_score: confidenceScore,
+      confidence_reason: confidenceReason,
+    },
+  };
+}
+
+function formatFlowEntrypoint(entrypoint: FlowEntrypoint): string {
+  const symbol = entrypoint.symbol === null ? '' : `#${entrypoint.symbol}`;
+  return `${entrypoint.type}: ${entrypoint.path}${symbol}`;
+}
+
+function formatFlowStep(step: FlowStep): string {
+  return `${step.order}. ${step.type}: ${step.path} - ${step.description}`;
+}
+
+function formatFlowRisk(risk: FlowRisk): string {
+  return `${risk.kind}: ${risk.description}`;
 }
 
 function explainArray(...values: readonly unknown[]): string[] {
@@ -4126,6 +4593,7 @@ function renderExplainReport(
     <section class="grid">
       <article class="card"><h2>Responsibilities</h2>${renderList(explanation.responsibilities)}</article>
       <article class="card"><h2>Entry Points</h2>${renderList(explanation.entry_points)}</article>
+      ${renderFlowExplanationCards(explanation)}
       <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>
       <article class="card"><h2>Dependencies</h2>${renderList(explanation.dependencies)}</article>
       <article class="card"><h2>Consumers</h2>${renderList(explanation.consumers)}</article>
@@ -4141,6 +4609,19 @@ function renderExplainReport(
 </body>
 </html>
 `;
+}
+
+function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
+  if (explanation.flow === undefined) return '';
+  return `<article class="card"><h2>Flow Steps</h2>${renderList(
+    explanation.flow.steps.map(formatFlowStep),
+  )}</article>
+      <article class="card"><h2>Flow Components</h2>${renderList(
+        explanation.flow.components,
+      )}</article>
+      <article class="card"><h2>Flow Confidence</h2>${renderList([
+        `${explanation.flow.confidence_score}: ${explanation.flow.confidence_reason}`,
+      ])}</article>`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -4161,22 +4642,25 @@ function readEntityFile(entitiesDir: string, fileName: string): Promise<readonly
 async function readReviewEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
   readonly commands: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly dependencies: readonly BrainEntity[];
   readonly risks: readonly BrainEntity[];
 }> {
-  const [files, components, configs, commands, tests, dependencies, risks] = await Promise.all([
-    readEntityFile(entitiesDir, 'files.json'),
-    readEntityFile(entitiesDir, 'components.json'),
-    readEntityFile(entitiesDir, 'configs.json'),
-    readEntityFile(entitiesDir, 'commands.json'),
-    readEntityFile(entitiesDir, 'tests.json'),
-    readEntityFile(entitiesDir, 'dependencies.json'),
-    readEntityFile(entitiesDir, 'risks.json'),
-  ]);
-  return { files, components, configs, commands, tests, dependencies, risks };
+  const [files, components, flows, configs, commands, tests, dependencies, risks] =
+    await Promise.all([
+      readEntityFile(entitiesDir, 'files.json'),
+      readEntityFile(entitiesDir, 'components.json'),
+      readEntityFile(entitiesDir, 'flows.json'),
+      readEntityFile(entitiesDir, 'configs.json'),
+      readEntityFile(entitiesDir, 'commands.json'),
+      readEntityFile(entitiesDir, 'tests.json'),
+      readEntityFile(entitiesDir, 'dependencies.json'),
+      readEntityFile(entitiesDir, 'risks.json'),
+    ]);
+  return { files, components, flows, configs, commands, tests, dependencies, risks };
 }
 
 function dropEntityById(entities: readonly BrainEntity[], id: string): BrainEntity[] {
@@ -4303,9 +4787,16 @@ function buildReview(params: {
   const changedDependencyFiles = changedFiles.filter((file) => isDependencyPath(file));
   const affectedComponents = affectedComponentEntities(changedFiles, params.entitySets.components);
   const affectedComponentIds = affectedComponents.map((component) => component.id);
+  const affectedFlows = affectedFlowEntities(
+    changedFiles,
+    affectedComponents,
+    params.entitySets.flows,
+  );
+  const affectedFlowIds = affectedFlows.map((flow) => flow.id);
   const directlyAffectedEntities = unique([
     ...changedFiles.map((file) => entityId('file', file)),
     ...affectedComponentIds,
+    ...affectedFlowIds,
     ...params.entitySets.configs
       .filter((config) => config.source_files.some((file) => changedFileSet.has(file)))
       .map((config) => config.id),
@@ -4430,6 +4921,25 @@ function buildReview(params: {
     });
   }
 
+  if (affectedFlows.length > 0) {
+    addFinding({
+      slug: 'affected-flows',
+      severity: affectedFlows.length > 3 ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'Known flows overlap the diff',
+      description: `The diff touches ${affectedFlows.length} reconstructed flow(s): ${affectedFlows
+        .map((flow) => flow.name)
+        .slice(0, 5)
+        .join(', ')}.`,
+      affected_files: unique(affectedFlows.flatMap((flow) => flow.changed_files)),
+      affected_entities: graphAffectedEntities,
+      evidenceIds: unique(affectedFlows.flatMap((flow) => flow.evidence_ids)),
+      confidence: 'inferred',
+      recommendation:
+        'Open the affected flow explanation and verify linked tests before relying on the change.',
+    });
+  }
+
   const publicCliFiles = changedFiles.filter(
     (file) =>
       file === 'packages/cli/src/index.ts' || file === 'README.md' || file.startsWith('runbooks/'),
@@ -4496,13 +5006,19 @@ function buildReview(params: {
     generated_at: params.now,
     changed_files: changedFiles,
     affected_components: affectedComponentIds,
+    affected_flows: affectedFlows,
     affected_entities: graphAffectedEntities,
     findings,
     overall_risk: overallRisk,
     surgicality_score: surgicalityScore,
     blast_radius: blastRadius,
     required_tests: requiredTests,
-    suggested_reviewer_focus_areas: suggestedFocusAreas(findings, changedFiles, affectedComponents),
+    suggested_reviewer_focus_areas: suggestedFocusAreas(
+      findings,
+      changedFiles,
+      affectedComponents,
+      affectedFlows,
+    ),
     recommended_action: recommendAction(overallRisk, findings),
   };
 }
@@ -4540,6 +5056,50 @@ function affectedComponentEntities(
       (file) => file === componentPath || file.startsWith(`${componentPath}/`),
     );
   });
+}
+
+function affectedFlowEntities(
+  changedFiles: readonly string[],
+  affectedComponents: readonly BrainEntity[],
+  flows: readonly BrainEntity[],
+): AffectedFlowData[] {
+  const affectedComponentIds = new Set(affectedComponents.map((component) => component.id));
+  const affectedComponentFiles = new Set(
+    affectedComponents.flatMap((component) => component.source_files),
+  );
+  const affectedFlows = flows.flatMap((flow): AffectedFlowData[] => {
+    if (flow.latest_status === 'stale') return [];
+    const flowFiles = unique([
+      ...flowStringArray(flow, 'files'),
+      ...flowStringArray(flow, 'configs'),
+      ...flowStringArray(flow, 'tests'),
+      ...flow.source_files,
+    ]);
+    const flowComponents = flowStringArray(flow, 'components');
+    const directChangedFiles = changedFiles.filter((file) => flowFiles.includes(file));
+    const componentChangedFiles = flowComponents.some((componentId) =>
+      affectedComponentIds.has(componentId),
+    )
+      ? changedFiles.filter((file) => affectedComponentFiles.has(file))
+      : [];
+    const matchedChangedFiles = unique([...directChangedFiles, ...componentChangedFiles]);
+    if (matchedChangedFiles.length === 0) return [];
+    return [
+      {
+        id: safeText(flow.id),
+        name: safeText(flow.name),
+        kind: flowKind(flow),
+        confidence: flow.confidence,
+        score: asFlowConfidenceScore(flow),
+        changed_files: matchedChangedFiles.map(safeText),
+        components: flowComponents.map(safeText),
+        tests: flowStringArray(flow, 'tests').map(safeText),
+        risks: flowRisks(flow).length,
+        evidence_ids: flow.evidence_ids.map(safeText),
+      },
+    ];
+  });
+  return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function containsSecretLikeValue(value: string): boolean {
@@ -4614,12 +5174,14 @@ function suggestedFocusAreas(
   findings: readonly ReviewFindingData[],
   changedFiles: readonly string[],
   components: readonly BrainEntity[],
+  affectedFlows: readonly AffectedFlowData[],
 ): string[] {
   const categories = findings.map((finding) => finding.category);
   const componentNames = components.map((component) => component.name);
   return unique([
     ...categories,
     ...componentNames.map((name) => `component: ${name}`),
+    ...affectedFlows.map((flow) => `flow: ${flow.name}`),
     ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
     ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
   ]).slice(0, 8);
@@ -4646,6 +5208,23 @@ function mergeLatestRisks(value: unknown, findings: readonly ReviewFindingData[]
       evidence_ids: finding.evidence_ids,
     }));
   return [...existing, ...reviewRisks].slice(-20);
+}
+
+function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
+  if (flows.length === 0) {
+    return '<p class="muted">No reconstructed flows overlap this diff.</p>';
+  }
+  return `<table><thead><tr><th>Flow</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Confidence</th></tr></thead><tbody>${flows
+    .map(
+      (flow) => `<tr>
+        <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(flow.id)} · ${htmlEscape(flow.kind)}</span></td>
+        <td>${renderList(flow.changed_files)}</td>
+        <td>${renderList(flow.components)}</td>
+        <td>${renderList(flow.tests)}</td>
+        <td>${htmlEscape(flow.confidence)} · ${flow.score}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
 }
 
 function renderReviewReport(review: ReviewSummaryData): string {
@@ -4692,7 +5271,12 @@ function renderReviewReport(review: ReviewSummaryData): string {
       <article class="card"><h2>Action</h2><p>${htmlEscape(review.recommended_action)}</p></article>
       <article class="card"><h2>Surgicality</h2><p>${review.surgicality_score}/10</p></article>
       <article class="card"><h2>Files</h2><p>${review.changed_files.length}</p></article>
+      <article class="card"><h2>Affected Flows</h2><p>${review.affected_flows.length}</p></article>
       <article class="card"><h2>Findings</h2><p>${review.findings.length}</p></article>
+    </section>
+    <section>
+      <h2>Affected Flows</h2>
+      ${renderAffectedFlowRows(review.affected_flows)}
     </section>
     <section>
       <h2>Required Tests</h2>
@@ -4724,6 +5308,9 @@ async function validateBrainSchema(rootDir: string): Promise<string[]> {
     if (!Array.isArray(latest.latest_component_map)) {
       errors.push('latest.json missing latest_component_map array');
     }
+    if (!Array.isArray(latest.latest_flow_map)) {
+      errors.push('latest.json missing latest_flow_map array');
+    }
   }
 
   const graph = await readJsonFile<unknown>(join(brainDir, 'graph.json'));
@@ -4738,7 +5325,12 @@ async function validateBrainSchema(rootDir: string): Promise<string[]> {
     }
   }
 
-  for (const fileName of ['components.json', 'files.json', 'folders.json']) {
+  const flowIndex = await readJsonFile<unknown>(join(brainDir, 'flows', 'index.json'));
+  if (!isRecord(flowIndex) || !Array.isArray(flowIndex.flows)) {
+    errors.push('flows/index.json missing flows array');
+  }
+
+  for (const fileName of ['components.json', 'files.json', 'folders.json', 'flows.json']) {
     const path = join(entitiesDir, fileName);
     if (!(await exists(path))) {
       errors.push(`${fileName} missing entities array`);
