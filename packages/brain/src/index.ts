@@ -124,8 +124,17 @@ interface ComponentIntelligence {
   readonly exposed_apis: readonly string[];
   readonly tests: readonly string[];
   readonly configs: readonly string[];
+  readonly coupling: {
+    readonly level: 'low' | 'medium' | 'high';
+    readonly score: number;
+    readonly static_import_count: number;
+    readonly internal_imports: readonly string[];
+    readonly external_imports: readonly string[];
+    readonly reasons: readonly string[];
+  };
   readonly criticality: 'low' | 'medium' | 'high';
   readonly criticality_score: number;
+  readonly blast_radius: BlastRadius;
   readonly ownership_confidence: {
     readonly score: number;
     readonly reason: string;
@@ -134,6 +143,7 @@ interface ComponentIntelligence {
   readonly tradeoffs: readonly string[];
   readonly failure_modes: readonly string[];
   readonly what_breaks_if_removed: readonly string[];
+  readonly risky_seams: readonly string[];
   readonly important_files: readonly string[];
   readonly read_first: readonly string[];
   readonly known_risks: readonly string[];
@@ -1155,6 +1165,98 @@ function dependencyRolesForComponent(packages: readonly PackageJsonFact[]): stri
   return [...roles].sort((a, b) => a.localeCompare(b)).slice(0, 20);
 }
 
+function packageNameFromSpecifier(specifier: string): string {
+  if (specifier.startsWith('@')) {
+    const [scope, name] = specifier.split('/');
+    return name === undefined ? specifier : `${scope}/${name}`;
+  }
+  return specifier.split('/')[0] ?? specifier;
+}
+
+function resolveRelativeImportTarget(params: {
+  readonly fromFile: string;
+  readonly specifier: string;
+  readonly componentPaths: readonly string[];
+}): string | undefined {
+  const importedPath = join(dirname(params.fromFile), params.specifier).split(sep).join('/');
+  const matches = params.componentPaths
+    .filter((componentPath) => {
+      return importedPath === componentPath || importedPath.startsWith(`${componentPath}/`);
+    })
+    .sort((a, b) => b.length - a.length || a.localeCompare(b));
+  return matches[0];
+}
+
+function couplingForComponent(params: {
+  readonly rootDir: string;
+  readonly componentPath: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly componentPaths: readonly string[];
+}): ComponentIntelligence['coupling'] {
+  const packageNameToComponent = new Map(
+    params.packageFacts
+      .filter((pkg) => pkg.name !== undefined && packageComponentPath(pkg) !== undefined)
+      .map((pkg) => [pkg.name ?? '', packageComponentPath(pkg) ?? '']),
+  );
+  const internalImports = new Set<string>();
+  const externalImports = new Set<string>();
+  let staticImportCount = 0;
+
+  for (const file of params.files.filter((item) => classifySourceKind(item) === 'source')) {
+    const text = readTextIfAvailable(params.rootDir, file.relativePath);
+    if (text === undefined) continue;
+    for (const specifier of importSpecifiersFromText(text)) {
+      staticImportCount += 1;
+      let targetPath: string | undefined;
+      if (specifier.startsWith('.')) {
+        targetPath = resolveRelativeImportTarget({
+          fromFile: file.relativePath,
+          specifier,
+          componentPaths: params.componentPaths,
+        });
+      } else {
+        const packageName = packageNameFromSpecifier(specifier);
+        targetPath = packageNameToComponent.get(packageName);
+        if (targetPath === undefined) externalImports.add(packageName);
+      }
+      if (targetPath !== undefined && targetPath !== params.componentPath) {
+        internalImports.add(entityId('component', targetPath));
+      }
+    }
+  }
+
+  const score = Math.min(
+    10,
+    internalImports.size * 3 + externalImports.size + (staticImportCount > 8 ? 2 : 0),
+  );
+  let level: ComponentIntelligence['coupling']['level'] = 'low';
+  if (score >= 7) level = 'high';
+  else if (score >= 3) level = 'medium';
+
+  const reasons = unique([
+    ...(internalImports.size > 0
+      ? [`${internalImports.size} cross-component static import target(s) detected.`]
+      : []),
+    ...(externalImports.size > 0
+      ? [`${externalImports.size} external import root(s) detected.`]
+      : []),
+    ...(staticImportCount > 8
+      ? ['Static import surface is broad enough to widen review scope.']
+      : []),
+    ...(staticImportCount === 0 ? ['No static imports detected in source files.'] : []),
+  ]);
+
+  return {
+    level,
+    score,
+    static_import_count: staticImportCount,
+    internal_imports: [...internalImports].sort((a, b) => a.localeCompare(b)),
+    external_imports: [...externalImports].sort((a, b) => a.localeCompare(b)).slice(0, 20),
+    reasons,
+  };
+}
+
 function testPathsForComponent(files: readonly FileFact[]): string[] {
   return files
     .filter((file) => classifySourceKind(file) === 'test')
@@ -1192,7 +1294,14 @@ function whatBreaksIfRemovedForComponent(
   componentPath: string,
   intelligence: Pick<
     ComponentIntelligence,
-    'criticality' | 'consumers' | 'interfaces' | 'entry_points' | 'exposed_apis'
+    | 'criticality'
+    | 'consumers'
+    | 'interfaces'
+    | 'entry_points'
+    | 'exposed_apis'
+    | 'dependencies'
+    | 'tests'
+    | 'coupling'
   >,
 ): string[] {
   const name = safeText(componentPath);
@@ -1217,6 +1326,25 @@ function whatBreaksIfRemovedForComponent(
   if (intelligence.exposed_apis.length > 0) {
     breaks.add(
       `Exposed module/API surfaces may change: ${intelligence.exposed_apis.slice(0, 3).join(', ')}.`,
+    );
+  }
+  if (intelligence.coupling.internal_imports.length > 0) {
+    breaks.add(
+      `Cross-component import consumers or callees need review: ${intelligence.coupling.internal_imports
+        .slice(0, 4)
+        .join(', ')}.`,
+    );
+  }
+  if (intelligence.dependencies.length > 0) {
+    breaks.add(
+      `Dependency install/runtime behavior can change for ${intelligence.dependencies
+        .slice(0, 4)
+        .join(', ')}.`,
+    );
+  }
+  if (intelligence.tests.length > 0) {
+    breaks.add(
+      `Validation tied to ${name} may fail: ${intelligence.tests.slice(0, 3).join(', ')}.`,
     );
   }
   if (breaks.size === 0) {
@@ -1288,6 +1416,7 @@ function tradeoffsForComponent(params: {
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly exposedApis: readonly string[];
+  readonly coupling: ComponentIntelligence['coupling'];
 }): string[] {
   const tradeoffs = new Set<string>();
   if (params.boundaryType === 'entrypoint') {
@@ -1308,6 +1437,11 @@ function tradeoffsForComponent(params: {
   if (params.dependencies.length > 8) {
     tradeoffs.add(
       'Large dependency surface gives capability breadth at the cost of upgrade review scope.',
+    );
+  }
+  if (params.coupling.level !== 'low') {
+    tradeoffs.add(
+      'Cross-component coupling improves reuse but widens review scope for local changes.',
     );
   }
   if (params.configs.length > 0) {
@@ -1334,6 +1468,7 @@ function failureModesForComponent(params: {
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly exposedApis: readonly string[];
+  readonly coupling: ComponentIntelligence['coupling'];
 }): string[] {
   const name = safeText(params.componentPath);
   const failures = new Set<string>();
@@ -1350,6 +1485,9 @@ function failureModesForComponent(params: {
   }
   if (params.exposedApis.length > 0) {
     failures.add('Consumers can break if exposed module/API surfaces change shape.');
+  }
+  if (params.coupling.internal_imports.length > 0) {
+    failures.add('Static cross-component imports can break when either side changes exports.');
   }
   if (params.tests.length === 0) {
     failures.add('No component-local tests were detected, so regressions may escape local checks.');
@@ -1397,7 +1535,7 @@ function unknownsForComponent(params: {
 function knownRisksForComponent(
   intelligence: Pick<
     ComponentIntelligence,
-    'tests' | 'criticality' | 'dependencies' | 'exposed_apis' | 'consumers' | 'signals'
+    'tests' | 'criticality' | 'dependencies' | 'exposed_apis' | 'consumers' | 'signals' | 'coupling'
   >,
 ): string[] {
   const risks = new Set<string>();
@@ -1413,7 +1551,66 @@ function knownRisksForComponent(
   if (intelligence.signals.length <= 1) {
     risks.add('Weak evidence: component understanding is mostly inferred from path structure.');
   }
+  if (intelligence.coupling.level === 'high') {
+    risks.add('High coupling score: cross-component edits need broader review.');
+  }
   return [...risks];
+}
+
+function blastRadiusForComponent(params: {
+  readonly criticality: 'low' | 'medium' | 'high';
+  readonly boundaryType: ComponentBoundaryType;
+  readonly coupling: ComponentIntelligence['coupling'];
+  readonly entryPoints: readonly string[];
+  readonly exposedApis: readonly string[];
+}): BlastRadius {
+  if (
+    params.criticality === 'high' ||
+    params.coupling.level === 'high' ||
+    params.boundaryType === 'orchestration'
+  ) {
+    return 'broad';
+  }
+  if (
+    params.criticality === 'medium' ||
+    params.coupling.level === 'medium' ||
+    params.entryPoints.length > 0 ||
+    params.exposedApis.length > 0
+  ) {
+    return 'moderate';
+  }
+  return 'narrow';
+}
+
+function riskySeamsForComponent(params: {
+  readonly boundaryType: ComponentBoundaryType;
+  readonly criticality: 'low' | 'medium' | 'high';
+  readonly coupling: ComponentIntelligence['coupling'];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly exposedApis: readonly string[];
+}): string[] {
+  const seams = new Set<string>();
+  if (params.coupling.internal_imports.length > 0) {
+    seams.add(
+      'Static imports cross component boundaries; review both sides before changing exports.',
+    );
+  }
+  if (params.boundaryType === 'entrypoint' && params.configs.length > 0) {
+    seams.add('Entrypoint depends on config; command behavior can drift without source changes.');
+  }
+  if (params.boundaryType === 'adapter') {
+    seams.add(
+      'Adapter boundary is a compatibility seam between local contracts and external behavior.',
+    );
+  }
+  if (params.exposedApis.length > 0 && params.coupling.level !== 'low') {
+    seams.add('Exposed API plus coupling means signature changes can cascade.');
+  }
+  if (params.criticality !== 'low' && params.tests.length === 0) {
+    seams.add('Critical component lacks local test evidence.');
+  }
+  return [...seams];
 }
 
 function packageComponentPath(pkg: PackageJsonFact): string | undefined {
@@ -2195,9 +2392,11 @@ function reconstructFlows(params: {
 }
 
 function inferComponentIntelligence(
+  rootDir: string,
   componentPath: string,
   files: readonly FileFact[],
   packageFacts: readonly PackageJsonFact[],
+  componentPaths: readonly string[],
 ): ComponentIntelligence {
   const packages = packageFactsForComponent(packageFacts, componentPath);
   const boundaryType = boundaryTypeForComponent(componentPath, files, packages);
@@ -2210,7 +2409,29 @@ function inferComponentIntelligence(
   const exposedApis = exposedApisForComponent(files);
   const tests = testPathsForComponent(files);
   const configs = configPathsForComponent(files);
+  const coupling = couplingForComponent({
+    rootDir,
+    componentPath,
+    files,
+    packageFacts,
+    componentPaths,
+  });
   const criticality = criticalityForComponent(componentPath, files, packages);
+  const blastRadius = blastRadiusForComponent({
+    criticality: criticality.label,
+    boundaryType,
+    coupling,
+    entryPoints,
+    exposedApis,
+  });
+  const riskySeams = riskySeamsForComponent({
+    boundaryType,
+    criticality: criticality.label,
+    coupling,
+    configs,
+    tests,
+    exposedApis,
+  });
   const componentEvidenceIds = files.slice(0, 12).map((file) => evidenceId(file.relativePath));
   const testEvidenceIds = tests.map(evidenceId);
   const configEvidenceIds = configs.map(evidenceId);
@@ -2235,6 +2456,7 @@ function inferComponentIntelligence(
     configs,
     tests,
     exposedApis,
+    coupling,
   });
   const failureModes = failureModesForComponent({
     componentPath,
@@ -2244,6 +2466,7 @@ function inferComponentIntelligence(
     configs,
     tests,
     exposedApis,
+    coupling,
   });
   const readFirst = firstFilesToRead(files);
   const entryPointEvidenceIds = unique([
@@ -2280,8 +2503,10 @@ function inferComponentIntelligence(
     exposed_apis: exposedApis,
     tests,
     configs,
+    coupling,
     criticality: criticality.label,
     criticality_score: criticality.score,
+    blast_radius: blastRadius,
     ownership_confidence: ownershipConfidence,
     tradeoffs,
     failure_modes: failureModes,
@@ -2301,6 +2526,7 @@ function inferComponentIntelligence(
   return {
     ...partial,
     what_breaks_if_removed: whatBreaksIfRemoved,
+    risky_seams: riskySeams,
     known_risks: knownRisksForComponent({
       ...partial,
     }),
@@ -2316,7 +2542,9 @@ function inferComponentIntelligence(
       exposed_apis: apiEvidenceIds,
       tests: testEvidenceIds,
       configs: configEvidenceIds,
+      coupling: componentEvidenceIds,
       criticality: componentEvidenceIds,
+      blast_radius: componentEvidenceIds,
       ownership_confidence: unique([
         ...componentEvidenceIds,
         ...configEvidenceIds,
@@ -2329,6 +2557,7 @@ function inferComponentIntelligence(
         ...configEvidenceIds,
         ...apiEvidenceIds,
       ]),
+      risky_seams: unique([...componentEvidenceIds, ...configEvidenceIds, ...apiEvidenceIds]),
       important_files: componentEvidenceIds,
       read_first: componentEvidenceIds,
       known_risks: knownRiskEvidenceIds,
@@ -2584,11 +2813,14 @@ const COMPONENT_UNDERSTANDING_FIELDS = [
   'consumers',
   'dependencies',
   'dependency_roles',
+  'coupling',
   'criticality',
+  'blast_radius',
   'ownership_confidence',
   'tradeoffs',
   'failure_modes',
   'what_breaks_if_removed',
+  'risky_seams',
   'important_files',
   'read_first',
   'known_risks',
@@ -2596,9 +2828,11 @@ const COMPONENT_UNDERSTANDING_FIELDS = [
 
 function componentFieldHasValue(component: BrainEntity, field: string): boolean {
   if (field === 'ownership_confidence') return isRecord(component.data?.ownership_confidence);
+  if (field === 'coupling') return isRecord(component.data?.coupling);
   if (field === 'purpose' || field === 'boundary_type' || field === 'criticality') {
     return stringData(component, field) !== undefined;
   }
+  if (field === 'blast_radius') return stringData(component, field) !== undefined;
   return stringArrayData(component, field).length > 0;
 }
 
@@ -2676,6 +2910,8 @@ function buildComponentIntelligenceArtifact(params: {
       id: component.id,
       boundary_type: stringData(component, 'boundary_type') ?? 'unknown',
       criticality: stringData(component, 'criticality') ?? 'unknown',
+      blast_radius: stringData(component, 'blast_radius') ?? 'unknown',
+      coupling: isRecord(component.data?.coupling) ? component.data.coupling : undefined,
       confidence: component.confidence,
       ownership_confidence: isRecord(component.data?.ownership_confidence)
         ? component.data.ownership_confidence
@@ -2684,6 +2920,7 @@ function buildComponentIntelligenceArtifact(params: {
       flow_ids: relatedFlows.map((flow) => flow.id),
       inbound_relationships: inbound.length,
       outbound_relationships: outbound.length,
+      risky_seams: stringArrayData(component, 'risky_seams'),
       unknowns: stringArrayData(component, 'unknowns'),
       read_first: stringArrayData(component, 'read_first'),
       evidence_ids: component.evidence_ids,
@@ -2756,6 +2993,35 @@ function buildComponentIntelligenceArtifact(params: {
   };
 }
 
+function componentCouplingRecord(component: BrainEntity): ComponentIntelligence['coupling'] {
+  const coupling = component.data?.coupling;
+  if (!isRecord(coupling)) {
+    return {
+      level: 'low',
+      score: 0,
+      static_import_count: 0,
+      internal_imports: [],
+      external_imports: [],
+      reasons: ['No coupling record is available.'],
+    };
+  }
+  const level =
+    coupling.level === 'high' || coupling.level === 'medium' || coupling.level === 'low'
+      ? coupling.level
+      : 'low';
+  const score = typeof coupling.score === 'number' ? coupling.score : 0;
+  const staticImportCount =
+    typeof coupling.static_import_count === 'number' ? coupling.static_import_count : 0;
+  return {
+    level,
+    score,
+    static_import_count: staticImportCount,
+    internal_imports: asStringArray(coupling.internal_imports),
+    external_imports: asStringArray(coupling.external_imports),
+    reasons: asStringArray(coupling.reasons),
+  };
+}
+
 function buildArchitectureReasoningArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -2765,6 +3031,9 @@ function buildArchitectureReasoningArtifact(params: {
 }): Record<string, unknown> {
   const projectId = entityId('project', params.projectName);
   const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const components = params.buckets.components.filter(
+    (component) => component.latest_status !== 'stale',
+  );
   const changedFileSet = new Set(params.changedFiles);
   const flowsByComponent = new Map<string, BrainEntity[]>();
   for (const flow of flows) {
@@ -2773,7 +3042,7 @@ function buildArchitectureReasoningArtifact(params: {
       flowsByComponent.set(componentId, [...existing, flow]);
     }
   }
-  const boundaryCandidates = params.buckets.components
+  const boundaryCandidates = components
     .map((component) => {
       const componentFlows = flowsByComponent.get(component.id) ?? [];
       const inboundCount = params.relationships.filter(
@@ -2782,12 +3051,18 @@ function buildArchitectureReasoningArtifact(params: {
       const outboundCount = params.relationships.filter(
         (relationship) => relationship.from === component.id && relationship.relation !== 'owns',
       ).length;
+      const coupling = componentCouplingRecord(component);
       return {
         component_id: safeText(component.id),
         name: safeText(component.name),
+        boundary_type: stringData(component, 'boundary_type') ?? 'unknown',
+        criticality: stringData(component, 'criticality') ?? 'unknown',
+        blast_radius: stringData(component, 'blast_radius') ?? 'unknown',
         flow_count: componentFlows.length,
         inbound_count: inboundCount,
         outbound_count: outboundCount,
+        coupling_level: coupling.level,
+        coupling_score: coupling.score,
         confidence: weakestConfidence([
           component.confidence,
           ...componentFlows.map((flow) => flow.confidence),
@@ -2801,9 +3076,92 @@ function buildArchitectureReasoningArtifact(params: {
     .sort(
       (a, b) =>
         b.flow_count - a.flow_count ||
+        b.coupling_score - a.coupling_score ||
         b.inbound_count + b.outbound_count - (a.inbound_count + a.outbound_count) ||
         a.component_id.localeCompare(b.component_id),
     );
+  const couplingHotspots = components
+    .map((component) => {
+      const coupling = componentCouplingRecord(component);
+      const importRelationships = params.relationships.filter(
+        (relationship) => relationship.from === component.id && relationship.relation === 'imports',
+      );
+      return {
+        component_id: safeText(component.id),
+        coupling_level: coupling.level,
+        coupling_score: coupling.score,
+        static_import_count: coupling.static_import_count,
+        internal_imports: unique([
+          ...coupling.internal_imports,
+          ...importRelationships.map((relationship) => relationship.to),
+        ]).map(safeText),
+        external_imports: coupling.external_imports.map(safeText),
+        reasons: coupling.reasons.map(safeText),
+        evidence_ids: unique([
+          ...component.evidence_ids,
+          ...importRelationships.flatMap((relationship) => relationship.evidence_ids),
+        ]).slice(0, 12),
+      };
+    })
+    .filter((item) => item.coupling_score > 0 || item.internal_imports.length > 0)
+    .sort(
+      (a, b) => b.coupling_score - a.coupling_score || a.component_id.localeCompare(b.component_id),
+    )
+    .slice(0, 20);
+  const criticalPaths = components
+    .filter(
+      (component) =>
+        stringData(component, 'criticality') === 'high' ||
+        stringData(component, 'blast_radius') === 'broad',
+    )
+    .map((component) => ({
+      component_id: safeText(component.id),
+      criticality: stringData(component, 'criticality') ?? 'unknown',
+      criticality_score: numberData(component, 'criticality_score') ?? 0,
+      blast_radius: stringData(component, 'blast_radius') ?? 'unknown',
+      flow_ids: (flowsByComponent.get(component.id) ?? []).map((flow) => safeText(flow.id)),
+      tests: stringArrayData(component, 'tests').map(safeText),
+      read_first: stringArrayData(component, 'read_first').map(safeText),
+      evidence_ids: component.evidence_ids.map(safeText),
+    }))
+    .sort(
+      (a, b) =>
+        b.criticality_score - a.criticality_score || a.component_id.localeCompare(b.component_id),
+    )
+    .slice(0, 20);
+  const riskySeams = components
+    .flatMap((component) =>
+      stringArrayData(component, 'risky_seams').map((seam) => ({
+        component_id: safeText(component.id),
+        seam: safeText(seam),
+        coupling_level: componentCouplingRecord(component).level,
+        blast_radius: stringData(component, 'blast_radius') ?? 'unknown',
+        evidence_ids: component.evidence_ids.map(safeText),
+      })),
+    )
+    .slice(0, 30);
+  const tradeoffMatrix = components
+    .map((component) => ({
+      component_id: safeText(component.id),
+      boundary_type: stringData(component, 'boundary_type') ?? 'unknown',
+      criticality: stringData(component, 'criticality') ?? 'unknown',
+      coupling_level: componentCouplingRecord(component).level,
+      blast_radius: stringData(component, 'blast_radius') ?? 'unknown',
+      tradeoffs: stringArrayData(component, 'tradeoffs').map(safeText),
+      failure_modes: stringArrayData(component, 'failure_modes').map(safeText),
+    }))
+    .filter((item) => item.tradeoffs.length > 0 || item.failure_modes.length > 0)
+    .slice(0, 30);
+  const whatBreaks = components
+    .map((component) => ({
+      component_id: safeText(component.id),
+      blast_radius: stringData(component, 'blast_radius') ?? 'unknown',
+      impacts: stringArrayData(component, 'what_breaks_if_removed').map(safeText),
+      tests: stringArrayData(component, 'tests').map(safeText),
+      evidence_ids: component.evidence_ids.map(safeText),
+    }))
+    .filter((item) => item.impacts.length > 0)
+    .slice(0, 30);
   const crossComponentFlows = flows
     .filter((flow) => flowStringArray(flow, 'components').length > 1)
     .map((flow) => ({
@@ -2817,7 +3175,7 @@ function buildArchitectureReasoningArtifact(params: {
       evidence_ids: flow.evidence_ids.map(safeText),
     }));
   const riskConcentrations = [
-    ...params.buckets.components.map((component) => ({
+    ...components.map((component) => ({
       entity_id: safeText(component.id),
       kind: 'component',
       risk_count: stringArrayData(component, 'known_risks').length,
@@ -2867,6 +3225,32 @@ function buildArchitectureReasoningArtifact(params: {
       confidence: 'inferred',
     });
   }
+  if (couplingHotspots.length > 0) {
+    reviewHints.push({
+      reason: 'Coupling hotspots need import/export review before interface changes.',
+      affected_components: couplingHotspots.map((hotspot) => hotspot.component_id),
+      suggested_tests: unique(
+        couplingHotspots.flatMap((hotspot) => {
+          const component = components.find((item) => item.id === hotspot.component_id);
+          return component === undefined ? [] : stringArrayData(component, 'tests');
+        }),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
+  if (riskySeams.length > 0) {
+    reviewHints.push({
+      reason: 'Risky architecture seams were detected from local static evidence.',
+      affected_components: unique(riskySeams.map((seam) => seam.component_id)),
+      suggested_tests: unique(
+        riskySeams.flatMap((seam) => {
+          const component = components.find((item) => item.id === seam.component_id);
+          return component === undefined ? [] : stringArrayData(component, 'tests');
+        }),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
   if (lowConfidenceFlows.length > 0) {
     reviewHints.push({
       reason:
@@ -2878,7 +3262,7 @@ function buildArchitectureReasoningArtifact(params: {
       confidence: 'inferred',
     });
   }
-  const componentsWithoutFlows = params.buckets.components.filter(
+  const componentsWithoutFlows = components.filter(
     (component) => (flowsByComponent.get(component.id) ?? []).length === 0,
   );
   const relationshipsWithoutEvidence = params.relationships.filter(
@@ -2888,6 +3272,11 @@ function buildArchitectureReasoningArtifact(params: {
     generated_at: params.now,
     project_id: projectId,
     boundary_candidates: boundaryCandidates,
+    coupling_hotspots: couplingHotspots,
+    critical_paths: criticalPaths,
+    risky_seams: riskySeams,
+    tradeoff_matrix: tradeoffMatrix,
+    what_breaks: whatBreaks,
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
     review_hints: reviewHints,
@@ -3254,14 +3643,17 @@ function buildLatest(params: {
     exposed_apis: stringArrayData(component, 'exposed_apis'),
     tests: stringArrayData(component, 'tests'),
     configs: stringArrayData(component, 'configs'),
+    coupling: isRecord(component.data?.coupling) ? component.data.coupling : undefined,
     criticality: stringData(component, 'criticality'),
     criticality_score: numberData(component, 'criticality_score'),
+    blast_radius: stringData(component, 'blast_radius'),
     ownership_confidence: isRecord(component.data?.ownership_confidence)
       ? component.data.ownership_confidence
       : undefined,
     tradeoffs: stringArrayData(component, 'tradeoffs'),
     failure_modes: stringArrayData(component, 'failure_modes'),
     what_breaks_if_removed: stringArrayData(component, 'what_breaks_if_removed'),
+    risky_seams: stringArrayData(component, 'risky_seams'),
     important_files: stringArrayData(component, 'important_files'),
     read_first: stringArrayData(component, 'read_first'),
     known_risks: stringArrayData(component, 'known_risks'),
@@ -3475,6 +3867,8 @@ function renderComponentCards(
       const purpose = stringData(component, 'purpose') ?? component.description;
       const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
       const criticality = stringData(component, 'criticality') ?? 'unknown';
+      const blastRadius = stringData(component, 'blast_radius') ?? 'unknown';
+      const coupling = componentCouplingRecord(component);
       const score = numberData(component, 'criticality_score');
       const scoreText = score === undefined ? '' : ` · ${score}/10`;
       const ownershipConfidence = isRecord(component.data?.ownership_confidence)
@@ -3486,11 +3880,11 @@ function renderComponentCards(
           : '';
       const fieldEvidence = recordStringArrayData(component, 'field_evidence');
       return `<article class="card" data-search="${htmlEscape(
-        `${component.id} ${component.name} ${purpose} ${boundaryType} ${criticality} ${component.confidence} ${component.source_files.join(' ')}`,
+        `${component.id} ${component.name} ${purpose} ${boundaryType} ${criticality} ${blastRadius} ${coupling.level} ${component.confidence} ${component.source_files.join(' ')}`,
       )}" data-kind="component" data-confidence="${htmlEscape(
         component.confidence,
       )}" data-criticality="${htmlEscape(criticality)}">
-        <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(boundaryType)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)}${htmlEscape(ownershipScore)}</div>
+        <div class="badge">${htmlEscape(component.confidence)} · ${htmlEscape(boundaryType)} · ${htmlEscape(criticality)}${htmlEscape(scoreText)} · ${htmlEscape(blastRadius)} radius · ${htmlEscape(coupling.level)} coupling${htmlEscape(ownershipScore)}</div>
         <h3>${htmlEscape(component.name)}</h3>
         <p class="muted">Explain this: <code>rizz explain ${htmlEscape(component.name)}</code></p>
         <p>${htmlEscape(purpose)}</p>
@@ -3530,6 +3924,19 @@ function renderComponentCards(
           fieldEvidence.dependency_roles ?? component.evidence_ids,
           evidenceById,
         )}
+        <h4>Coupling</h4>
+        ${renderListWithEvidence(
+          [
+            `level: ${coupling.level}`,
+            `score: ${coupling.score}/10`,
+            `static imports: ${coupling.static_import_count}`,
+            ...coupling.reasons,
+            ...coupling.internal_imports.map((item) => `internal: ${item}`),
+            ...coupling.external_imports.map((item) => `external: ${item}`),
+          ],
+          fieldEvidence.coupling ?? component.evidence_ids,
+          evidenceById,
+        )}
         <h4>Read First</h4>
         ${renderListWithEvidence(
           stringArrayData(component, 'read_first'),
@@ -3546,6 +3953,12 @@ function renderComponentCards(
         ${renderListWithEvidence(
           stringArrayData(component, 'what_breaks_if_removed'),
           fieldEvidence.what_breaks_if_removed ?? component.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Risky Seams</h4>
+        ${renderListWithEvidence(
+          stringArrayData(component, 'risky_seams'),
+          fieldEvidence.risky_seams ?? component.evidence_ids,
           evidenceById,
         )}
         <h4>Tradeoffs</h4>
@@ -3714,6 +4127,17 @@ function renderArchitectureReasoning(value: unknown): string {
   const boundaryCandidates = Array.isArray(value.boundary_candidates)
     ? value.boundary_candidates.filter(isRecord)
     : [];
+  const couplingHotspots = Array.isArray(value.coupling_hotspots)
+    ? value.coupling_hotspots.filter(isRecord)
+    : [];
+  const criticalPaths = Array.isArray(value.critical_paths)
+    ? value.critical_paths.filter(isRecord)
+    : [];
+  const riskySeams = Array.isArray(value.risky_seams) ? value.risky_seams.filter(isRecord) : [];
+  const tradeoffMatrix = Array.isArray(value.tradeoff_matrix)
+    ? value.tradeoff_matrix.filter(isRecord)
+    : [];
+  const whatBreaks = Array.isArray(value.what_breaks) ? value.what_breaks.filter(isRecord) : [];
   const crossComponentFlows = Array.isArray(value.cross_component_flows)
     ? value.cross_component_flows.filter(isRecord)
     : [];
@@ -3731,7 +4155,57 @@ function renderArchitectureReasoning(value: unknown): string {
       typeof candidate.outbound_count === 'number' ? candidate.outbound_count : 0;
     const confidence =
       typeof candidate.confidence === 'string' ? candidate.confidence : 'unknown confidence';
-    return `${componentId}: ${flowCount} flow(s), ${inboundCount} inbound, ${outboundCount} outbound, ${confidence}`;
+    const criticality =
+      typeof candidate.criticality === 'string' ? candidate.criticality : 'unknown criticality';
+    const coupling =
+      typeof candidate.coupling_level === 'string' ? candidate.coupling_level : 'unknown coupling';
+    return `${componentId}: ${flowCount} flow(s), ${inboundCount} inbound, ${outboundCount} outbound, ${criticality}, ${coupling} coupling, ${confidence}`;
+  });
+  const couplingLabels = couplingHotspots.slice(0, 5).map((hotspot) => {
+    const componentId =
+      typeof hotspot.component_id === 'string' ? hotspot.component_id : 'unknown component';
+    const level = typeof hotspot.coupling_level === 'string' ? hotspot.coupling_level : 'unknown';
+    const score = typeof hotspot.coupling_score === 'number' ? hotspot.coupling_score : 0;
+    const internalImports = Array.isArray(hotspot.internal_imports)
+      ? hotspot.internal_imports.filter((item): item is string => typeof item === 'string')
+      : [];
+    return `${componentId}: ${level} (${score}/10), ${internalImports.length} internal import target(s)`;
+  });
+  const criticalPathLabels = criticalPaths.slice(0, 5).map((path) => {
+    const componentId =
+      typeof path.component_id === 'string' ? path.component_id : 'unknown component';
+    const score = typeof path.criticality_score === 'number' ? path.criticality_score : 0;
+    const blastRadius = typeof path.blast_radius === 'string' ? path.blast_radius : 'unknown';
+    const flows = Array.isArray(path.flow_ids)
+      ? path.flow_ids.filter((item): item is string => typeof item === 'string').length
+      : 0;
+    return `${componentId}: ${score}/10 criticality, ${blastRadius} radius, ${flows} flow(s)`;
+  });
+  const seamLabels = riskySeams.slice(0, 6).map((seam) => {
+    const componentId =
+      typeof seam.component_id === 'string' ? seam.component_id : 'unknown component';
+    const label = typeof seam.seam === 'string' ? seam.seam : 'unknown seam';
+    return `${componentId}: ${label}`;
+  });
+  const tradeoffLabels = tradeoffMatrix.slice(0, 5).map((item) => {
+    const componentId =
+      typeof item.component_id === 'string' ? item.component_id : 'unknown component';
+    const boundaryType =
+      typeof item.boundary_type === 'string' ? item.boundary_type : 'unknown boundary';
+    const blastRadius = typeof item.blast_radius === 'string' ? item.blast_radius : 'unknown';
+    const tradeoffs = Array.isArray(item.tradeoffs)
+      ? item.tradeoffs.filter((entry): entry is string => typeof entry === 'string').length
+      : 0;
+    return `${componentId}: ${boundaryType}, ${blastRadius} radius, ${tradeoffs} tradeoff(s)`;
+  });
+  const whatBreaksLabels = whatBreaks.slice(0, 5).map((item) => {
+    const componentId =
+      typeof item.component_id === 'string' ? item.component_id : 'unknown component';
+    const blastRadius = typeof item.blast_radius === 'string' ? item.blast_radius : 'unknown';
+    const impacts = Array.isArray(item.impacts)
+      ? item.impacts.filter((impact): impact is string => typeof impact === 'string').length
+      : 0;
+    return `${componentId}: ${blastRadius} radius, ${impacts} removal/change impact(s)`;
   });
   const flowLabels = crossComponentFlows.slice(0, 5).map((flow) => {
     const flowId = typeof flow.flow_id === 'string' ? flow.flow_id : 'unknown flow';
@@ -3755,6 +4229,11 @@ function renderArchitectureReasoning(value: unknown): string {
   });
   return `<div class="grid">
     <article class="card"><h3>Boundary Candidates</h3>${renderList(boundaryLabels)}</article>
+    <article class="card"><h3>Coupling Hotspots</h3>${renderList(couplingLabels)}</article>
+    <article class="card"><h3>Critical Paths</h3>${renderList(criticalPathLabels)}</article>
+    <article class="card"><h3>Risky Seams</h3>${renderList(seamLabels)}</article>
+    <article class="card"><h3>Tradeoff Matrix</h3>${renderList(tradeoffLabels)}</article>
+    <article class="card"><h3>What Breaks</h3>${renderList(whatBreaksLabels)}</article>
     <article class="card"><h3>Cross-Component Flows</h3>${renderList(flowLabels)}</article>
     <article class="card"><h3>Risk Concentrations</h3>${renderList(riskLabels)}</article>
     <article class="card"><h3>Review Hints</h3>${renderList(hintLabels)}</article>
@@ -4117,6 +4596,7 @@ function buildBrain(params: {
   const currentPaths = new Set(params.files.map((file) => sensitiveIdentityKey(file.relativePath)));
   const changedFiles: string[] = [];
   const staleFiles: string[] = [];
+  const inferredComponentPaths = componentPaths(params.files);
 
   buckets.projects.push(
     makeEntity({
@@ -4222,13 +4702,15 @@ function buildBrain(params: {
     if (folder !== '.') addRelation(relationships, projectId, 'owns', folderId, [], 'verified');
   }
 
-  for (const componentPath of componentPaths(params.files)) {
+  for (const componentPath of inferredComponentPaths) {
     const componentFiles = filesForComponent(params.files, componentPath);
     const sourceFiles = componentFiles.map((file) => file.relativePath);
     const intelligence = inferComponentIntelligence(
+      params.rootDir,
       componentPath,
       componentFiles,
       params.packageFacts,
+      inferredComponentPaths,
     );
     const componentId = entityId('component', componentPath);
     const componentEvidenceIds = sourceFiles.slice(0, 12).map(evidenceId);
@@ -4267,6 +4749,16 @@ function buildBrain(params: {
         'depends_on',
         entityId('dependency', dependency),
         componentEvidenceIds,
+        'inferred',
+      );
+    }
+    for (const importedComponentId of intelligence.coupling.internal_imports) {
+      addRelation(
+        relationships,
+        componentId,
+        'imports',
+        importedComponentId,
+        intelligence.field_evidence.coupling ?? componentEvidenceIds,
         'inferred',
       );
     }
