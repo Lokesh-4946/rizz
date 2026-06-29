@@ -579,8 +579,10 @@ describe('project brain generation', () => {
       const testFlow = flows.entities.find((flow) => flow.id === 'flow:packages--brain--test');
       const testFlowOrders = testFlow?.data?.steps?.map((step) => step.order) ?? [];
       expect(testFlowOrders).toEqual(testFlowOrders.map((_, index) => index + 1));
-      expect(testFlow?.data?.steps?.[0]?.evidence).toContain(
-        'evidence:file-packages--brain--src--index.ts',
+      expect(testFlow?.data?.steps).toContainEqual(
+        expect.objectContaining({
+          evidence: expect.arrayContaining(['evidence:file-packages--brain--src--index.ts']),
+        }),
       );
 
       const flowIndex = await readJson<{
@@ -628,6 +630,133 @@ describe('project brain generation', () => {
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
       });
+    });
+  });
+
+  it('maps flow entrypoints through command paths, imports, components, files, tests, and configs', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'core', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: {
+            start: 'node dist/index.js',
+            test: 'vitest run packages/cli',
+          },
+          dependencies: { '@sample/core': 'workspace:*' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@sample/core' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { runCore } from "@sample/core";\nimport { localCli } from "./local.js";\nexport function main() { return runCore() + localCli(); }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'local.ts'),
+        'export function localCli() { return "local"; }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest";\nit("starts", () => {});\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function runCore() { return "core"; }\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:10:00.000Z'),
+      });
+
+      expect(result).toMatchObject({ ok: true, value: { flows: 2 } });
+      if (!result.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            entrypoints?: Array<{ component_id?: string }>;
+            components?: string[];
+            files?: string[];
+            tests?: string[];
+            configs?: string[];
+            steps?: Array<{ type: string; path: string }>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const startFlow = flows.entities.find((flow) => flow.id === 'flow:packages--cli--start');
+      expect(startFlow?.data?.entrypoints).toContainEqual(
+        expect.objectContaining({ component_id: 'component:packages--cli' }),
+      );
+      expect(startFlow?.data?.components).toEqual(
+        expect.arrayContaining(['component:packages--cli', 'component:packages--core']),
+      );
+      expect(startFlow?.data?.files).toEqual(
+        expect.arrayContaining([
+          'packages/cli/package.json',
+          'packages/cli/src/index.ts',
+          'packages/cli/src/local.ts',
+          'packages/core/src/index.ts',
+        ]),
+      );
+      expect(startFlow?.data?.tests).toEqual(['packages/cli/src/index.test.ts']);
+      expect(startFlow?.data?.configs).toContain('packages/cli/package.json');
+      expect(startFlow?.data?.steps).toContainEqual(
+        expect.objectContaining({ type: 'function', path: 'packages/cli/src/local.ts' }),
+      );
+
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'flow:packages--cli--start',
+          relation: 'depends_on',
+          to: 'file:packages--cli--src--local.ts',
+        }),
+      );
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'test:packages--cli--src--index.test.ts',
+          relation: 'tests',
+          to: 'flow:packages--cli--start',
+        }),
+      );
+
+      const flowCoverage = await readJson<{
+        entrypoint_component_coverage_ratio: number;
+        source_file_coverage_ratio: number;
+        test_file_coverage_ratio: number;
+        config_file_coverage_ratio: number;
+      }>(join(result.value.researchDir, 'flow_coverage.json'));
+      expect(flowCoverage.entrypoint_component_coverage_ratio).toBe(1);
+      expect(flowCoverage.source_file_coverage_ratio).toBe(1);
+      expect(flowCoverage.test_file_coverage_ratio).toBe(1);
+      expect(flowCoverage.config_file_coverage_ratio).toBe(1);
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'flow:packages--cli--start',
+        now: new Date('2026-06-28T12:11:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.entry_points).toContain(
+        'command: packages/cli/package.json#start -> component:packages--cli',
+      );
+      expect(explained.value.explanation.tradeoffs).toContainEqual(
+        expect.stringContaining('deterministic static reconstructions'),
+      );
+      expect(explained.value.explanation.failure_modes).not.toContain(
+        'No directly linked tests were detected for this flow.',
+      );
     });
   });
 
@@ -1021,7 +1150,9 @@ describe('project brain generation', () => {
         target: 'flow:packages--brain--test',
         resolved_entity_id: 'flow:packages--brain--test',
         entity_type: 'flow',
-        entry_points: expect.arrayContaining(['command: packages/brain/package.json#test']),
+        entry_points: expect.arrayContaining([
+          'command: packages/brain/package.json#test -> component:packages--brain',
+        ]),
         tests: expect.arrayContaining(['packages/brain/src/index.test.ts']),
         configs: expect.arrayContaining(['packages/brain/package.json']),
         important_files: expect.arrayContaining(['packages/brain/src/index.ts']),
