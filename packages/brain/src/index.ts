@@ -3,6 +3,15 @@ import { createHash } from 'node:crypto';
 import { constants, readFileSync, statSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
+import {
+  classifySensitivePath,
+  containsSensitiveReference,
+  redactSensitiveText,
+  redactedReferenceCount,
+  sensitiveIdentityKey,
+  shouldOmitSensitivePath,
+  unredactedSensitiveReferenceCount,
+} from './sensitivity.js';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
@@ -189,6 +198,7 @@ interface FlowIntelligence {
 interface PreviousFileFact {
   readonly id: string;
   readonly relativePath: string;
+  readonly pathKey: string;
   readonly hash: string;
   readonly createdAt: string;
 }
@@ -484,11 +494,8 @@ const CONFIG_FILES = new Set([
 ]);
 
 function shouldSkipFile(name: string): boolean {
-  if (name === '.env') return true;
-  if (name.startsWith('.env.') && name !== '.env.example') return true;
+  if (shouldOmitSensitivePath(name)) return true;
   if (name.endsWith('.log')) return true;
-  if (name.endsWith('.pem') || name.endsWith('.key') || name.endsWith('.p12')) return true;
-  if (name === 'secrets' || name.startsWith('secrets.')) return true;
   if (IGNORED_FILE_NAMES.has(name)) return true;
   if (IGNORED_EXTENSIONS.has(extname(name).toLowerCase())) return true;
   return false;
@@ -500,6 +507,7 @@ function shouldSkipRelativePath(
 ): boolean {
   const parts = relativePath.split('/');
   if (parts.some((part) => IGNORED_DIRS.has(part))) return true;
+  if (shouldOmitSensitivePath(relativePath)) return true;
   const name = parts[parts.length - 1] ?? relativePath;
   if (shouldSkipFile(name)) return true;
   return isIgnoredByPatterns(relativePath, ignorePatterns);
@@ -597,36 +605,36 @@ function stableSlug(value: string): string {
 }
 
 function entityId(type: EntityType, name: string): string {
-  return `${type}:${stableSlug(name)}`;
+  const classification = classifySensitivePath(name);
+  if (classification.isSensitive) return `${type}:${classification.redactedId}`;
+  return `${type}:${stableSlug(safeText(name))}`;
 }
 
 function evidenceId(relativePath: string): string {
-  return `evidence:file-${stableSlug(relativePath)}`;
+  const classification = classifySensitivePath(relativePath);
+  if (classification.isSensitive) return `evidence:${classification.redactedId}`;
+  return `evidence:file-${stableSlug(safeText(relativePath))}`;
 }
 
 function jsonString(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-function redactSecrets(value: string): string {
-  return value
-    .replace(/\bsk-[a-z0-9][a-z0-9_-]{8,}\b/gi, '[redacted secret]')
-    .replace(/\bsk-or-v1-[a-z0-9]{16,}\b/gi, '[redacted secret]')
-    .replace(/\bgh[pousr]_[a-z0-9_]{20,}\b/gi, '[redacted secret]')
-    .replace(/\bBearer\s+[a-z0-9._~+/-]+=*/gi, 'Bearer [redacted secret]');
+function safeText(value: string): string {
+  return redactSensitiveText(value);
 }
 
-function safeText(value: string): string {
-  return redactSecrets(value);
+function safeBrainValue(value: unknown): unknown {
+  if (typeof value === 'string') return safeText(value);
+  if (Array.isArray(value)) return value.map(safeBrainValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [safeText(key), safeBrainValue(item)]),
+  );
 }
 
 function safeResearchValue(value: unknown): unknown {
-  if (typeof value === 'string') return safeText(value);
-  if (Array.isArray(value)) return value.map(safeResearchValue);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [safeText(key), safeResearchValue(item)]),
-  );
+  return safeBrainValue(value);
 }
 
 function sorted<T>(items: readonly T[], key: (item: T) => string): T[] {
@@ -736,16 +744,39 @@ function previousFileFacts(
   for (const entity of entities ?? []) {
     const relativePath =
       typeof entity.data?.relativePath === 'string' ? entity.data.relativePath : undefined;
+    const pathKey = typeof entity.data?.path_key === 'string' ? entity.data.path_key : undefined;
     const hash = typeof entity.data?.hash === 'string' ? entity.data.hash : undefined;
     if (relativePath === undefined || hash === undefined) continue;
-    out.set(relativePath, {
+    out.set(pathKey ?? sensitiveIdentityKey(relativePath), {
       id: entity.id,
       relativePath,
+      pathKey: pathKey ?? sensitiveIdentityKey(relativePath),
       hash,
       createdAt: entity.created_at,
     });
   }
   return out;
+}
+
+function downgradeConfidenceForRedaction(confidence: Confidence): Confidence {
+  if (confidence === 'verified') return 'inferred';
+  if (confidence === 'inferred') return 'uncertain';
+  return 'uncertain';
+}
+
+function mergeUnknownsForRedaction(
+  data: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const redactionUnknown =
+    'Some evidence labels were redacted because filenames or paths are sensitive.';
+  if (data === undefined) return { unknowns: [redactionUnknown] };
+  const existingUnknowns = Array.isArray(data.unknowns)
+    ? data.unknowns.filter((item): item is string => typeof item === 'string')
+    : [];
+  return {
+    ...data,
+    unknowns: unique([...existingUnknowns, redactionUnknown]),
+  };
 }
 
 function previousEntityMap(entities: readonly BrainEntity[] | undefined): Map<string, BrainEntity> {
@@ -768,6 +799,25 @@ function makeEntity(params: {
   readonly latestStatus?: LatestStatus;
   readonly data?: Record<string, unknown>;
 }): BrainEntity {
+  const redactionCount = redactedReferenceCount([
+    params.id,
+    params.name,
+    params.description,
+    params.evidenceIds ?? [],
+    params.relatedEntityIds ?? [],
+    params.sourceFiles ?? [],
+    params.data ?? {},
+  ]);
+  const baseConfidence = params.confidence ?? 'verified';
+  const confidence =
+    redactionCount > 0 ? downgradeConfidenceForRedaction(baseConfidence) : baseConfidence;
+  const data =
+    redactionCount > 0
+      ? {
+          ...mergeUnknownsForRedaction(params.data),
+          redacted_evidence_count: redactionCount,
+        }
+      : params.data;
   return {
     id: params.id,
     type: params.type,
@@ -775,12 +825,12 @@ function makeEntity(params: {
     description: params.description,
     created_at: params.createdAt ?? params.now,
     updated_at: params.now,
-    confidence: params.confidence ?? 'verified',
+    confidence,
     evidence_ids: unique(params.evidenceIds ?? []),
     related_entity_ids: unique(params.relatedEntityIds ?? []),
     source_files: unique(params.sourceFiles ?? []),
     latest_status: params.latestStatus ?? 'current',
-    ...(params.data !== undefined ? { data: params.data } : {}),
+    ...(data !== undefined ? { data } : {}),
   };
 }
 
@@ -2063,6 +2113,172 @@ function ratio(numerator: number, denominator: number): number {
   return Number((numerator / denominator).toFixed(4));
 }
 
+function scorePercent(numerator: number, denominator: number): number {
+  return Math.round(ratio(numerator, denominator) * 100);
+}
+
+function evidenceQualityBand(score: number, redactionSafetyScore: number): string {
+  if (redactionSafetyScore < 100) return 'unsafe';
+  if (score >= 85) return 'strong';
+  if (score >= 65) return 'usable';
+  if (score >= 40) return 'weak';
+  return 'unsafe';
+}
+
+function buildEvidenceQualityArtifact(params: {
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+}): Record<string, unknown> {
+  const entities = allBucketEntities(params.buckets);
+  const referencedEvidenceIds = unique([
+    ...entities.flatMap((entity) => entity.evidence_ids),
+    ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+  ]);
+  const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
+  const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
+  const entitiesWithEvidence = entities.filter((entity) => entity.evidence_ids.length > 0);
+  const entitiesWithoutEvidence = entities.filter((entity) => entity.evidence_ids.length === 0);
+  const relationshipsWithEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length > 0,
+  );
+  const relationshipsWithoutEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length === 0,
+  );
+  const totalClaims = entities.length + params.relationships.length;
+  const claimsWithEvidence = entitiesWithEvidence.length + relationshipsWithEvidence.length;
+  const claimsWithoutEvidence =
+    entitiesWithoutEvidence.length + relationshipsWithoutEvidence.length;
+  const confidenceDistribution = countByConfidence([
+    ...entities.map((entity) => entity.confidence),
+    ...params.relationships.map((relationship) => relationship.confidence),
+  ]);
+  const redactedEvidenceCount = params.buckets.evidence.filter((entity) =>
+    containsSensitiveReference(entity),
+  ).length;
+  const redactedReferenceCount = redactedReferenceCountForBrain({
+    entities,
+    relationships: params.relationships,
+  });
+  const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(
+    safeBrainValue({ entities, relationships: params.relationships }),
+  );
+  const confidenceDowngradeCount = entities.filter(
+    (entity) => numberData(entity, 'redacted_evidence_count') !== undefined,
+  ).length;
+  const entityCoverageScore = scorePercent(entitiesWithEvidence.length, entities.length);
+  const relationshipCoverageScore = scorePercent(
+    relationshipsWithEvidence.length,
+    params.relationships.length,
+  );
+  const fieldEvidenceEntries = [
+    ...params.buckets.components.flatMap((component) =>
+      Object.values(recordStringArrayData(component, 'field_evidence')),
+    ),
+    ...params.buckets.flows.flatMap((flow) =>
+      Object.values(recordStringArrayData(flow, 'field_evidence')),
+    ),
+  ];
+  const fieldsWithEvidence = fieldEvidenceEntries.filter((ids) => ids.length > 0).length;
+  const fieldEvidenceScore = scorePercent(fieldsWithEvidence, fieldEvidenceEntries.length);
+  const evidenceCoverageScore = scorePercent(claimsWithEvidence, totalClaims);
+  const referenceIntegrityScore = Math.max(0, 100 - missingEvidenceReferences.length * 10);
+  const redactionSafetyScore = Math.max(0, 100 - unsafeSensitiveReferenceCount * 25);
+  const overallScore = Math.round(
+    evidenceCoverageScore * 0.4 +
+      referenceIntegrityScore * 0.25 +
+      fieldEvidenceScore * 0.2 +
+      redactionSafetyScore * 0.15,
+  );
+  const topUncertainAreas = unique([
+    ...entitiesWithoutEvidence.slice(0, 8).map((entity) => `${entity.type}: ${entity.id}`),
+    ...entities
+      .filter((entity) => entity.confidence === 'uncertain')
+      .slice(0, 8)
+      .map((entity) => `${entity.type}: ${entity.id}`),
+    ...missingEvidenceReferences.slice(0, 8).map((id) => `missing evidence: ${id}`),
+  ]).slice(0, 12);
+
+  return {
+    generated_at: params.now,
+    total_claims: totalClaims,
+    claims_with_evidence: claimsWithEvidence,
+    claims_without_evidence: claimsWithoutEvidence,
+    redacted_evidence_count: redactedEvidenceCount,
+    redacted_reference_count: redactedReferenceCount,
+    unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+    verified_claim_count: confidenceDistribution.verified,
+    inferred_claim_count: confidenceDistribution.inferred,
+    uncertain_claim_count: confidenceDistribution.uncertain,
+    evidence_coverage_score: evidenceCoverageScore,
+    redaction_safety_score: redactionSafetyScore,
+    confidence_distribution: confidenceDistribution,
+    top_uncertain_areas: topUncertainAreas,
+    overall_score: overallScore,
+    quality_band: evidenceQualityBand(overallScore, redactionSafetyScore),
+    coverage_score: evidenceCoverageScore,
+    reference_integrity_score: referenceIntegrityScore,
+    field_evidence_score: fieldEvidenceScore,
+    redaction_penalty: 100 - redactionSafetyScore,
+    redacted_evidence_records: redactedEvidenceCount,
+    redacted_file_references: redactedReferenceCount,
+    confidence_downgrades: confidenceDowngradeCount,
+    unknowns_from_redaction: entities
+      .filter((entity) => containsSensitiveReference(entity))
+      .map((entity) => `Sensitive evidence redacted for ${entity.type}.`)
+      .slice(0, 10),
+    scoring_notes: [
+      'Evidence quality is computed from local brain entities, relationships, field evidence, confidence, and redaction safety.',
+      'Redacted sensitive references preserve trust without exposing raw filenames or paths.',
+    ],
+    evidence_records: params.buckets.evidence.length,
+    referenced_evidence_ids: referencedEvidenceIds.length,
+    missing_evidence_references: missingEvidenceReferences,
+    entities_with_evidence: entitiesWithEvidence.length,
+    entities_without_evidence: entitiesWithoutEvidence.length,
+    entity_evidence_coverage_ratio: ratio(entitiesWithEvidence.length, entities.length),
+    entities_without_evidence_by_type: countByValue(
+      entitiesWithoutEvidence.map((entity) => entity.type),
+    ),
+    relationships_with_evidence: relationshipsWithEvidence.length,
+    relationships_without_evidence: relationshipsWithoutEvidence.length,
+    relationship_evidence_coverage_ratio: ratio(
+      relationshipsWithEvidence.length,
+      params.relationships.length,
+    ),
+    component_field_evidence: params.buckets.components.map((component) => ({
+      id: component.id,
+      confidence: component.confidence,
+      fields: Object.fromEntries(
+        Object.entries(recordStringArrayData(component, 'field_evidence')).map(([field, ids]) => [
+          field,
+          ids.length,
+        ]),
+      ),
+    })),
+    flow_field_evidence: params.buckets.flows.map((flow) => ({
+      id: flow.id,
+      confidence: flow.confidence,
+      fields: Object.fromEntries(
+        Object.entries(recordStringArrayData(flow, 'field_evidence')).map(([field, ids]) => [
+          field,
+          ids.length,
+        ]),
+      ),
+    })),
+  };
+}
+
+function redactedReferenceCountForBrain(params: {
+  readonly entities: readonly BrainEntity[];
+  readonly relationships: readonly BrainRelationship[];
+}): number {
+  return redactedReferenceCount({
+    entities: params.entities,
+    relationships: params.relationships,
+  });
+}
+
 function buildArchitectureReasoningArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -2236,12 +2452,6 @@ function buildResearchArtifacts(params: {
     ENTITY_FILES.map(([bucket, , entityType]) => [entityType, params.buckets[bucket].length]),
   );
   const activeFileEntities = params.buckets.files.filter((file) => file.latest_status !== 'stale');
-  const referencedEvidenceIds = unique([
-    ...entities.flatMap((entity) => entity.evidence_ids),
-    ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
-  ]);
-  const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
-  const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
   const filesByStatus = countByValue(params.buckets.files.map((file) => file.latest_status));
   const changedFiles = unique(params.changedFiles);
   const staleFiles = unique(params.staleFiles);
@@ -2250,14 +2460,6 @@ function buildResearchArtifacts(params: {
   );
   const mappedActiveFiles = activeFileEntities.filter((file) =>
     componentSourceFiles.has(file.name),
-  );
-  const entitiesWithEvidence = entities.filter((entity) => entity.evidence_ids.length > 0);
-  const entitiesWithoutEvidence = entities.filter((entity) => entity.evidence_ids.length === 0);
-  const relationshipsWithEvidence = params.relationships.filter(
-    (relationship) => relationship.evidence_ids.length > 0,
-  );
-  const relationshipsWithoutEvidence = params.relationships.filter(
-    (relationship) => relationship.evidence_ids.length === 0,
   );
   const currentFiles = activeFileEntities.filter((file) => file.latest_status === 'current');
   const newFiles = activeFileEntities.filter((file) => file.latest_status === 'new');
@@ -2387,44 +2589,11 @@ function buildResearchArtifacts(params: {
           evidence_ids: risk.evidence_ids,
         })),
     },
-    evidenceQuality: {
-      generated_at: params.now,
-      evidence_records: params.buckets.evidence.length,
-      referenced_evidence_ids: referencedEvidenceIds.length,
-      missing_evidence_references: missingEvidenceReferences,
-      entities_with_evidence: entitiesWithEvidence.length,
-      entities_without_evidence: entitiesWithoutEvidence.length,
-      entity_evidence_coverage_ratio: ratio(entitiesWithEvidence.length, entities.length),
-      entities_without_evidence_by_type: countByValue(
-        entitiesWithoutEvidence.map((entity) => entity.type),
-      ),
-      relationships_with_evidence: relationshipsWithEvidence.length,
-      relationships_without_evidence: relationshipsWithoutEvidence.length,
-      relationship_evidence_coverage_ratio: ratio(
-        relationshipsWithEvidence.length,
-        params.relationships.length,
-      ),
-      component_field_evidence: params.buckets.components.map((component) => ({
-        id: component.id,
-        confidence: component.confidence,
-        fields: Object.fromEntries(
-          Object.entries(recordStringArrayData(component, 'field_evidence')).map(([field, ids]) => [
-            field,
-            ids.length,
-          ]),
-        ),
-      })),
-      flow_field_evidence: flows.map((flow) => ({
-        id: flow.id,
-        confidence: flow.confidence,
-        fields: Object.fromEntries(
-          Object.entries(recordStringArrayData(flow, 'field_evidence')).map(([field, ids]) => [
-            field,
-            ids.length,
-          ]),
-        ),
-      })),
-    },
+    evidenceQuality: buildEvidenceQualityArtifact({
+      now: params.now,
+      buckets: params.buckets,
+      relationships: params.relationships,
+    }),
     incrementalUpdate: {
       generated_at: params.now,
       scanned_files: params.files.length,
@@ -2567,11 +2736,11 @@ async function writeFlowMirrors(
       evidence_ids: flow.evidence_ids,
     })),
   };
-  await writeVerifiedFile(join(flowDir, 'index.json'), jsonString(safeResearchValue(index)));
+  await writeVerifiedFile(join(flowDir, 'index.json'), jsonString(safeBrainValue(index)));
   for (const flow of sortedFlows) {
     await writeVerifiedFile(
       join(flowDir, flowMirrorFileName(flow)),
-      jsonString(safeResearchValue(flow)),
+      jsonString(safeBrainValue(flow)),
     );
   }
 }
@@ -2634,6 +2803,11 @@ function buildLatest(params: {
     relationships: params.relationships,
     changedFiles: params.changedFiles,
   });
+  const evidenceQuality = buildEvidenceQualityArtifact({
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+  });
   const confidenceGaps = params.buckets.risks
     .filter((risk) => risk.confidence !== 'verified')
     .map((risk) => risk.description);
@@ -2648,6 +2822,7 @@ function buildLatest(params: {
     latest_component_map: componentMap,
     latest_flow_map: flowMap,
     latest_architecture_reasoning: architectureReasoning,
+    latest_evidence_quality: evidenceQuality,
     latest_risks: risks,
     latest_review_status: {
       status: 'not_run',
@@ -2710,7 +2885,7 @@ function recordStringArrayData(
 }
 
 function htmlEscape(value: string): string {
-  return value
+  return safeText(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -3058,6 +3233,43 @@ function renderArchitectureReasoning(value: unknown): string {
   </div>`;
 }
 
+function renderEvidenceQuality(value: unknown): string {
+  if (!isRecord(value)) {
+    return '<p class="muted">No evidence quality artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
+  }
+  const score = typeof value.overall_score === 'number' ? value.overall_score : 0;
+  const band = typeof value.quality_band === 'string' ? value.quality_band : 'unknown';
+  const redactedCount =
+    typeof value.redacted_evidence_count === 'number' ? value.redacted_evidence_count : 0;
+  const redactedReferences =
+    typeof value.redacted_reference_count === 'number' ? value.redacted_reference_count : 0;
+  const coverage =
+    typeof value.evidence_coverage_score === 'number' ? value.evidence_coverage_score : 0;
+  const safety =
+    typeof value.redaction_safety_score === 'number' ? value.redaction_safety_score : 0;
+  const distribution = isRecord(value.confidence_distribution)
+    ? [
+        `verified: ${String(value.confidence_distribution.verified ?? 0)}`,
+        `inferred: ${String(value.confidence_distribution.inferred ?? 0)}`,
+        `uncertain: ${String(value.confidence_distribution.uncertain ?? 0)}`,
+      ]
+    : [];
+  const uncertainAreas = asStringArray(value.top_uncertain_areas).slice(0, 8);
+  return `<div class="grid">
+    <article class="card"><h3>Evidence Quality Score</h3><p>${score}/100 · ${htmlEscape(band)}</p></article>
+    <article class="card"><h3>Redacted Sensitive Evidence</h3>${renderList([
+      `${redactedCount} evidence record(s)`,
+      `${redactedReferences} redacted reference(s)`,
+    ])}</article>
+    <article class="card"><h3>Coverage & Safety</h3>${renderList([
+      `evidence coverage: ${coverage}/100`,
+      `redaction safety: ${safety}/100`,
+    ])}</article>
+    <article class="card"><h3>Confidence Distribution</h3>${renderList(distribution)}</article>
+    <article class="card"><h3>Unknown / Uncertain Areas</h3>${renderList(uncertainAreas)}</article>
+  </div>`;
+}
+
 function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
   if (evidence.length === 0) return '<p class="muted">No evidence records detected yet.</p>';
   return evidence
@@ -3195,6 +3407,11 @@ function renderReport(params: {
       </div>
     </section>
     <section>
+      <h2>Evidence Quality</h2>
+      <p class="muted">Trust posture for local Project Intelligence claims, evidence references, confidence, and redaction safety.</p>
+      ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
+    </section>
+    <section>
       <h2>How To Run Locally</h2>
       <p class="muted">Detected commands are copied from project manifests and should be verified by a human before release docs rely on them.</p>
       ${renderList(commands)}
@@ -3326,11 +3543,13 @@ async function writeEntityFile(
 ): Promise<void> {
   await writeVerifiedFile(
     join(entitiesDir, fileName),
-    jsonString({
-      generated_at: generatedAt,
-      entity_type: entityType,
-      entities: sorted(entities, (entity) => entity.id),
-    }),
+    jsonString(
+      safeBrainValue({
+        generated_at: generatedAt,
+        entity_type: entityType,
+        entities: sorted(entities, (entity) => entity.id),
+      }),
+    ),
   );
 }
 
@@ -3366,7 +3585,7 @@ function buildBrain(params: {
   const projectId = entityId('project', params.projectName);
   const packageManager = detectPackageManager(params.files);
   const stack = detectTechStack(params.files, params.packageFacts);
-  const currentPaths = new Set(params.files.map((file) => file.relativePath));
+  const currentPaths = new Set(params.files.map((file) => sensitiveIdentityKey(file.relativePath)));
   const changedFiles: string[] = [];
   const staleFiles: string[] = [];
 
@@ -3383,7 +3602,8 @@ function buildBrain(params: {
   );
 
   for (const file of params.files) {
-    const previous = params.previousFiles.get(file.relativePath);
+    const pathKey = sensitiveIdentityKey(file.relativePath);
+    const previous = params.previousFiles.get(pathKey);
     const status: LatestStatus =
       previous === undefined ? 'new' : previous.hash === file.hash ? 'current' : 'changed';
     if (status === 'changed' || status === 'new') changedFiles.push(file.relativePath);
@@ -3400,6 +3620,7 @@ function buildBrain(params: {
         confidence: 'verified',
         sourceFiles: [file.relativePath],
         data: {
+          path_key: pathKey,
           kind: classifySourceKind(file),
           path: file.relativePath,
           hash: file.hash,
@@ -3419,6 +3640,7 @@ function buildBrain(params: {
         sourceFiles: [file.relativePath],
         latestStatus: status,
         data: {
+          path_key: pathKey,
           relativePath: file.relativePath,
           extension: file.extension,
           size: file.size,
@@ -3431,8 +3653,8 @@ function buildBrain(params: {
     addRelation(relationships, folderId, 'owns', fileId, [evId]);
   }
 
-  for (const previous of params.previousFiles.values()) {
-    if (currentPaths.has(previous.relativePath)) continue;
+  for (const [previousPathKey, previous] of params.previousFiles.entries()) {
+    if (currentPaths.has(previousPathKey)) continue;
     staleFiles.push(previous.relativePath);
     buckets.files.push(
       makeEntity({
@@ -3832,11 +4054,11 @@ export async function generateProjectBrain(
     const snapshotName = `${now.replace(/:/g, '-')}.json`;
     const snapshot = { index, latest, graph };
 
-    await writeVerifiedFile(join(brainDir, 'index.json'), jsonString(index));
-    await writeVerifiedFile(join(brainDir, 'graph.json'), jsonString(graph));
-    await writeVerifiedFile(join(brainDir, 'latest.json'), jsonString(latest));
-    await writeVerifiedFile(changelogPath, jsonString(changelog));
-    await writeVerifiedFile(join(snapshotsDir, snapshotName), jsonString(snapshot));
+    await writeVerifiedFile(join(brainDir, 'index.json'), jsonString(safeBrainValue(index)));
+    await writeVerifiedFile(join(brainDir, 'graph.json'), jsonString(safeBrainValue(graph)));
+    await writeVerifiedFile(join(brainDir, 'latest.json'), jsonString(safeBrainValue(latest)));
+    await writeVerifiedFile(changelogPath, jsonString(safeBrainValue(changelog)));
+    await writeVerifiedFile(join(snapshotsDir, snapshotName), jsonString(safeBrainValue(snapshot)));
     for (const [bucket, fileName, entityType] of ENTITY_FILES) {
       await writeEntityFile(entitiesDir, fileName, entityType, now, built.buckets[bucket]);
     }
@@ -3992,7 +4214,7 @@ export async function reviewProjectChanges(
         last_review_risk: review.overall_risk,
       },
     };
-    await writeVerifiedFile(latestPath, jsonString(updatedLatest));
+    await writeVerifiedFile(latestPath, jsonString(safeBrainValue(updatedLatest)));
 
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
@@ -4205,7 +4427,9 @@ function resolveExplainTarget(
 }
 
 function normalizeExplainQuery(value: string): string {
-  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/g, '').toLowerCase();
+  const cleaned = value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/g, '');
+  const classification = classifySensitivePath(cleaned);
+  return (classification.isSensitive ? classification.redactedId : cleaned).toLowerCase();
 }
 
 function explainMatchScore(query: string, entity: BrainEntity): number {
@@ -4220,7 +4444,12 @@ function explainMatchScore(query: string, entity: BrainEntity): number {
   if (name === query || relativePath === query) return 90 + typeBonus;
   if (sources.includes(query)) return 85 + typeBonus;
   if (name.endsWith(`/${query}`) || relativePath.endsWith(`/${query}`)) return 75 + typeBonus;
-  if (id.includes(slug) || name.includes(query) || relativePath.includes(query)) {
+  if (
+    id.includes(query) ||
+    id.includes(slug) ||
+    name.includes(query) ||
+    relativePath.includes(query)
+  ) {
     return 50 + typeBonus;
   }
   if (sources.some((source) => source.includes(query))) return 45 + typeBonus;
@@ -4781,6 +5010,7 @@ function buildReview(params: {
 }): ReviewSummaryData {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
   const changedFileSet = new Set(changedFiles);
+  const publicChangedFiles = changedFiles.map(safeText);
   const changedSourceFiles = changedFiles.filter((file) => isSourceFile(file));
   const changedTestFiles = changedFiles.filter((file) => isTestPath(file));
   const changedConfigFiles = changedFiles.filter((file) => isConfigPath(file));
@@ -4827,9 +5057,11 @@ function buildReview(params: {
       category: params.category,
       title: safeText(params.title),
       description: safeText(params.description),
-      affected_files: unique(params.affected_files),
-      affected_entities: unique(params.affected_entities),
-      evidence_ids: unique(params.evidenceIds ?? params.affected_files.map(evidenceId)),
+      affected_files: unique(params.affected_files.map(safeText)),
+      affected_entities: unique(params.affected_entities.map(safeText)),
+      evidence_ids: unique(params.evidenceIds ?? params.affected_files.map(evidenceId)).map(
+        safeText,
+      ),
       confidence: params.confidence,
       recommendation: safeText(params.recommendation),
       ...(params.safer_alternative !== undefined
@@ -4860,7 +5092,7 @@ function buildReview(params: {
       category: 'Regression risk',
       title: 'Broad change crosses multiple brain boundaries',
       description: `The diff touches ${changedFiles.length} file(s) across ${affectedComponents.length} inferred component(s).`,
-      affected_files: changedFiles,
+      affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
       confidence: 'inferred',
       recommendation:
@@ -4877,7 +5109,7 @@ function buildReview(params: {
       category: 'Missing tests',
       title: 'Runtime files changed without test artifacts in the diff',
       description: `${changedSourceFiles.length} source file(s) changed, but no test file changed with them.`,
-      affected_files: changedSourceFiles,
+      affected_files: changedSourceFiles.map(safeText),
       affected_entities: graphAffectedEntities,
       confidence: 'verified',
       recommendation:
@@ -4913,7 +5145,8 @@ function buildReview(params: {
       description: containsSecretLikeValue(params.diffText)
         ? 'The diff includes a secret-like string pattern and must be cleaned before merge.'
         : 'The diff touches auth, provider, keychain, credential, or environment handling.',
-      affected_files: secretRiskFiles.length > 0 ? secretRiskFiles : changedFiles,
+      affected_files:
+        secretRiskFiles.length > 0 ? secretRiskFiles.map(safeText) : publicChangedFiles,
       affected_entities: graphAffectedEntities,
       confidence: containsSecretLikeValue(params.diffText) ? 'verified' : 'inferred',
       recommendation:
@@ -4967,7 +5200,9 @@ function buildReview(params: {
       title: 'Project brain contract may be drifting across package boundaries',
       description:
         'Brain-related changes touch additional inferred components, increasing interoperability risk for future agents.',
-      affected_files: changedFiles.filter((file) => file.includes('brain') || file.includes('cli')),
+      affected_files: changedFiles
+        .filter((file) => file.includes('brain') || file.includes('cli'))
+        .map(safeText),
       affected_entities: graphAffectedEntities,
       confidence: 'inferred',
       recommendation:
@@ -4984,7 +5219,7 @@ function buildReview(params: {
       title: 'Large diff has little visible test movement',
       description:
         'The change may be carrying too much product surface for the amount of verification in the diff.',
-      affected_files: changedFiles,
+      affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
       confidence: 'inferred',
       recommendation:
@@ -5004,7 +5239,7 @@ function buildReview(params: {
   return {
     id: entityId('review', `${params.now}-git-diff`),
     generated_at: params.now,
-    changed_files: changedFiles,
+    changed_files: publicChangedFiles,
     affected_components: affectedComponentIds,
     affected_flows: affectedFlows,
     affected_entities: graphAffectedEntities,
@@ -5103,7 +5338,7 @@ function affectedFlowEntities(
 }
 
 function containsSecretLikeValue(value: string): boolean {
-  return redactSecrets(value) !== value;
+  return safeText(value) !== value;
 }
 
 function requiredTestCommands(
@@ -5113,7 +5348,7 @@ function requiredTestCommands(
   const commandTexts = commands
     .map((command) => {
       const text = typeof command.data?.command === 'string' ? command.data.command : undefined;
-      return text === undefined ? undefined : `${command.name}: ${text}`;
+      return text === undefined ? undefined : safeText(`${command.name}: ${text}`);
     })
     .filter((command): command is string => command !== undefined);
   const quality = commandTexts.filter((command) =>

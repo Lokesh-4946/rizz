@@ -39,6 +39,23 @@ async function readTreeText(dir: string): Promise<string> {
   return out;
 }
 
+async function readTreeFiles(dir: string): Promise<ReadonlyMap<string, string>> {
+  const out = new Map<string, string>();
+  async function walk(current: string, prefix: string): Promise<void> {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      const label = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(path, label);
+        continue;
+      }
+      if (entry.isFile()) out.set(label, await readFile(path, 'utf8'));
+    }
+  }
+  await walk(dir, '');
+  return out;
+}
+
 async function git(dir: string, args: readonly string[]): Promise<void> {
   const { spawnSync } = await import('node:child_process');
   const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
@@ -911,7 +928,7 @@ describe('project brain generation', () => {
       expect(report).not.toContain('sk-or-v1-brainsecret');
       const research = await readTreeText(join(dir, '.rizz', 'research'));
       expect(research).not.toContain('sk-or-v1-brainsecret');
-      expect(research).toContain('[redacted secret]');
+      expect(research).toContain('redacted:sensitive-file:');
     });
   });
 
@@ -969,6 +986,148 @@ describe('project brain generation', () => {
       expect(generated).not.toContain('server.key');
       expect(generated).not.toContain('private key sentinel');
       expect(generated).toContain('.env.example');
+    });
+  });
+
+  it('redacts sensitive path names across brain, research, reports, review, and explain', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await mkdir(join(dir, '.aws'), { recursive: true });
+      await mkdir(join(dir, 'keys'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'sample-app',
+          scripts: {
+            test: 'OPENAI_API_KEY=sk-ant-fixturesecret0000000000000000 ghp_token=ghp_fixturesecret000000000000000 vitest run --header "Authorization: Bearer fixture.secret.token"',
+          },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'client_secret_handler.ts'),
+        'export function handleClientSecret(): string { return "ok"; }\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'secret-token-flow.test.ts'),
+        'import { expect, it } from "vitest";\nit("works", () => expect(true).toBe(true));\n',
+      );
+      await writeFile(join(dir, '.env'), 'OPENAI_API_KEY=sk-ant-private0000000000000000');
+      await writeFile(
+        join(dir, '.env.local'),
+        'OPENROUTER_API_KEY=sk-or-v1-private0000000000000000',
+      );
+      await writeFile(join(dir, '.aws', 'credentials'), 'aws_access_key_id = private');
+      await writeFile(join(dir, 'keys', 'server.key'), 'private key sentinel');
+      await writeFile(join(dir, '.env.example'), 'OPENROUTER_API_KEY=');
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:20:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'src', 'client_secret_handler.ts'),
+        'export function handleClientSecret(): string { return "changed"; }\n',
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:21:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+
+      const explain = await explainProjectTarget({
+        rootDir: dir,
+        target: 'src/client_secret_handler.ts',
+        now: new Date('2026-06-28T11:22:00.000Z'),
+      });
+      expect(explain.ok).toBe(true);
+      if (!explain.ok) return;
+
+      const forbidden = [
+        'client_secret_handler.ts',
+        'secret-token-flow.test.ts',
+        'sk-ant-fixturesecret',
+        'ghp_fixturesecret',
+        'Bearer fixture.secret.token',
+        '.env.local',
+        '.aws/credentials',
+        'server.key',
+        'private key sentinel',
+        dir,
+      ];
+      const expectNoLeaks = (label: string, text: string): void => {
+        for (const value of forbidden) {
+          expect(text, `${label} leaked ${value}`).not.toContain(value);
+        }
+      };
+
+      const files = await readTreeFiles(join(dir, '.rizz'));
+      for (const label of [
+        'brain/latest.json',
+        'brain/graph.json',
+        'brain/entities/evidence.json',
+        'reports/index.html',
+        'reports/review.html',
+        'reports/explain.html',
+      ]) {
+        expectNoLeaks(label, files.get(label) ?? '');
+      }
+      for (const [label, text] of files) {
+        if (label.startsWith('brain/entities/') || label.startsWith('research/')) {
+          expectNoLeaks(label, text);
+        }
+      }
+
+      const generated = [...files.values()].join('\n');
+      expectNoLeaks('.rizz tree', generated);
+      expect(generated).toContain('redacted:sensitive-file:');
+      expect(generated).toContain('[redacted secret]');
+      expect(generated).toContain('.env.example');
+      expect(generated).toContain('Some evidence labels were redacted');
+      expect(generated).not.toContain(
+        'Configuration artifact detected at redacted:sensitive-file:',
+      );
+
+      const evidence = await readJson<{
+        readonly entities: readonly { readonly id: string; readonly confidence: string }[];
+      }>(join(dir, '.rizz', 'brain', 'entities', 'evidence.json'));
+      const redactedEvidence = evidence.entities.find((entity) =>
+        /^evidence:redacted:sensitive-file:[a-f0-9]{12}$/.test(entity.id),
+      );
+      expect(redactedEvidence).toBeDefined();
+      expect(redactedEvidence?.confidence).not.toBe('verified');
+
+      const evidenceQuality = await readJson<Record<string, unknown>>(
+        join(dir, '.rizz', 'research', 'evidence_quality.json'),
+      );
+      expect(evidenceQuality).toMatchObject({
+        total_claims: expect.any(Number),
+        claims_with_evidence: expect.any(Number),
+        claims_without_evidence: expect.any(Number),
+        redacted_evidence_count: expect.any(Number),
+        verified_claim_count: expect.any(Number),
+        inferred_claim_count: expect.any(Number),
+        uncertain_claim_count: expect.any(Number),
+        evidence_coverage_score: expect.any(Number),
+        redaction_safety_score: 100,
+        confidence_distribution: expect.any(Object),
+        top_uncertain_areas: expect.any(Array),
+      });
+      expect(evidenceQuality.redacted_evidence_count).toBeGreaterThan(0);
+
+      expect(JSON.stringify(review.value.review)).not.toContain('client_secret_handler.ts');
+      expect(review.value.review.changed_files).toContainEqual(
+        expect.stringMatching(/^redacted:sensitive-file:/),
+      );
+      expect(JSON.stringify(explain.value.explanation)).not.toContain('client_secret_handler.ts');
+      expect(explain.value.explanation.resolved_entity_id).toContain('redacted:sensitive-file:');
     });
   });
 
