@@ -4,7 +4,7 @@
 // job #3). Kept dependency-light so cold start stays fast (the footprint gate measures this binary).
 
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   OPENROUTER_DEFAULT_MODEL_ID,
@@ -40,6 +40,12 @@ Usage:
 
 /** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
+
+function displayLocalPath(path: string): string {
+  const local = relative(process.cwd(), path).replace(/\\/g, '/');
+  if (local === '') return '.';
+  return local.startsWith('..') ? path : local;
+}
 
 type StartTuiOptions = ResolvedProvider & {
   readonly notice?: string;
@@ -85,9 +91,9 @@ async function runBrainCommand(): Promise<number> {
   }
   const summary = result.value;
   process.stdout.write(`rizz understood ${summary.scannedFiles} file(s)\n`);
-  process.stdout.write(`  brain: ${summary.latestPath}\n`);
-  process.stdout.write(`  research: ${summary.researchDir}\n`);
-  process.stdout.write(`  report: ${summary.reportPath}\n`);
+  process.stdout.write(`  brain: ${displayLocalPath(summary.latestPath)}\n`);
+  process.stdout.write(`  research: ${displayLocalPath(summary.researchDir)}\n`);
+  process.stdout.write(`  report: ${displayLocalPath(summary.reportPath)}\n`);
   process.stdout.write(`  components: ${summary.components}\n`);
   process.stdout.write(`  flows: ${summary.flows}\n`);
   process.stdout.write(`  commands: ${summary.commands}\n`);
@@ -121,8 +127,8 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
   process.stdout.write(`  affected flows: ${summary.review.affected_flows.length}\n`);
   process.stdout.write(`  findings: ${summary.findings}\n`);
   process.stdout.write(`  action: ${summary.recommendedAction}\n`);
-  process.stdout.write(`  review: ${summary.reviewPath}\n`);
-  process.stdout.write(`  report: ${summary.reportPath}\n`);
+  process.stdout.write(`  review: ${displayLocalPath(summary.reviewPath)}\n`);
+  process.stdout.write(`  report: ${displayLocalPath(summary.reportPath)}\n`);
   if (summary.review.required_tests.length > 0) {
     process.stdout.write('  required tests:\n');
     for (const command of summary.review.required_tests) {
@@ -169,7 +175,7 @@ async function runExplainCommand(options: {
   process.stdout.write(`rizz explained ${explanation.resolved_entity_id}\n`);
   process.stdout.write(`  type: ${explanation.entity_type}\n`);
   process.stdout.write(`  confidence: ${explanation.confidence}\n`);
-  process.stdout.write(`  latest report: ${result.value.reportPath}\n`);
+  process.stdout.write(`  latest report: ${displayLocalPath(result.value.reportPath)}\n`);
   process.stdout.write(`\nWhat this is\n  ${explanation.purpose}\n`);
   writeSection('Responsibilities', explanation.responsibilities);
   writeSection('Entry points', explanation.entry_points);
