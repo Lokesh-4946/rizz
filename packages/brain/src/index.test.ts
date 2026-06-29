@@ -375,6 +375,20 @@ describe('project brain generation', () => {
       const evidenceQuality = await readJson<{
         evidence_records: number;
         referenced_evidence_ids: number;
+        unsupported_claims: number;
+        weak_evidence_claims: number;
+        evidence_gap_count: number;
+        field_coverage_by_entity_type: {
+          component: { unsupported_fields: number; weak_evidence_fields: number };
+          flow: { unsupported_fields: number; weak_evidence_fields: number };
+        };
+        confidence_adjustments: {
+          weak_entity_claims: number;
+          weak_relationship_claims: number;
+          weak_field_claims: number;
+          unsupported_field_claims: number;
+        };
+        top_evidence_gaps: Array<{ kind: string; id: string; field?: string; reason: string }>;
         entity_evidence_coverage_ratio: number;
         relationship_evidence_coverage_ratio: number;
         missing_evidence_references: string[];
@@ -386,6 +400,26 @@ describe('project brain generation', () => {
       }>(join(researchDir, 'evidence_quality.json'));
       expect(evidenceQuality.evidence_records).toBe(3);
       expect(evidenceQuality.referenced_evidence_ids).toBe(3);
+      expect(evidenceQuality.unsupported_claims).toBeGreaterThan(0);
+      expect(evidenceQuality.weak_evidence_claims).toBeGreaterThan(0);
+      expect(evidenceQuality.evidence_gap_count).toBeGreaterThanOrEqual(
+        evidenceQuality.unsupported_claims + evidenceQuality.weak_evidence_claims,
+      );
+      expect(evidenceQuality.field_coverage_by_entity_type.component).toMatchObject({
+        unsupported_fields: expect.any(Number),
+        weak_evidence_fields: expect.any(Number),
+      });
+      expect(evidenceQuality.field_coverage_by_entity_type.flow).toMatchObject({
+        unsupported_fields: expect.any(Number),
+        weak_evidence_fields: expect.any(Number),
+      });
+      expect(evidenceQuality.confidence_adjustments).toMatchObject({
+        weak_entity_claims: expect.any(Number),
+        weak_relationship_claims: expect.any(Number),
+        weak_field_claims: expect.any(Number),
+        unsupported_field_claims: expect.any(Number),
+      });
+      expect(evidenceQuality.top_evidence_gaps.length).toBeGreaterThan(0);
       expect(evidenceQuality.entity_evidence_coverage_ratio).toBeGreaterThan(0);
       expect(evidenceQuality.relationship_evidence_coverage_ratio).toBeGreaterThan(0);
       expect(evidenceQuality.missing_evidence_references).toEqual([]);
@@ -806,13 +840,16 @@ describe('project brain generation', () => {
       );
 
       expect(helperComponent?.field_coverage).toMatchObject({
+        coupling: true,
         tradeoffs: true,
         failure_modes: true,
         known_risks: true,
       });
+      expect(helperComponent?.field_evidence.coupling).toBe(0);
       expect(helperComponent?.field_evidence.tradeoffs).toBe(0);
       expect(helperComponent?.field_evidence.failure_modes).toBe(0);
       expect(helperComponent?.field_evidence.known_risks).toBe(0);
+      expect(componentIntelligence.evidence_coverage.coupling).toBe(0);
       expect(componentIntelligence.evidence_coverage.tradeoffs).toBe(0);
       expect(componentIntelligence.evidence_coverage.failure_modes).toBe(0);
       expect(componentIntelligence.evidence_coverage.known_risks).toBe(0);
@@ -838,6 +875,63 @@ describe('project brain generation', () => {
       expect(benchmarkReady.readiness.is_ready).toBe(false);
       expect(benchmarkReady.readiness.blocking_gaps).toContain(
         'No component has benchmark coverage across boundary, flow, and evidence signals.',
+      );
+    });
+  });
+
+  it('uses import and package evidence for component coupling instead of broad component files', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'core', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          dependencies: { '@sample/core': 'workspace:*' },
+        }),
+      );
+      await writeFile(join(dir, 'packages', 'cli', 'README.md'), '# CLI package\n');
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { run } from "@sample/core";\nexport const main = run;\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@sample/core' }),
+      );
+      await writeFile(join(dir, 'packages', 'core', 'src', 'index.ts'), 'export const run = 1;\n');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:06:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const components = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: { field_evidence?: Record<string, string[]> };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'components.json'));
+      const cli = components.entities.find((entity) => entity.id === 'component:packages--cli');
+      expect(cli?.data?.field_evidence?.coupling).toEqual([
+        'evidence:file-packages--cli--package.json',
+        'evidence:file-packages--cli--src--index.ts',
+      ]);
+      expect(cli?.data?.field_evidence?.coupling).not.toContain(
+        'evidence:file-packages--cli--readme.md',
+      );
+
+      const evidenceQuality = await readJson<{
+        component_field_evidence: Array<{ id: string; fields: { coupling?: number } }>;
+      }>(join(result.value.researchDir, 'evidence_quality.json'));
+      expect(evidenceQuality.component_field_evidence).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--cli',
+          fields: expect.objectContaining({ coupling: 2 }),
+        }),
       );
     });
   });
@@ -1689,6 +1783,9 @@ describe('project brain generation', () => {
         total_claims: expect.any(Number),
         claims_with_evidence: expect.any(Number),
         claims_without_evidence: expect.any(Number),
+        unsupported_claims: expect.any(Number),
+        weak_evidence_claims: expect.any(Number),
+        evidence_gap_count: expect.any(Number),
         redacted_evidence_count: expect.any(Number),
         verified_claim_count: expect.any(Number),
         inferred_claim_count: expect.any(Number),
@@ -1696,9 +1793,14 @@ describe('project brain generation', () => {
         evidence_coverage_score: expect.any(Number),
         redaction_safety_score: 100,
         confidence_distribution: expect.any(Object),
+        field_coverage_by_entity_type: expect.any(Object),
+        confidence_adjustments: expect.any(Object),
+        top_evidence_gaps: expect.any(Array),
         top_uncertain_areas: expect.any(Array),
       });
       expect(evidenceQuality.redacted_evidence_count).toBeGreaterThan(0);
+      expect(JSON.stringify(evidenceQuality)).not.toContain('client_secret_handler.ts');
+      expect(JSON.stringify(evidenceQuality)).not.toContain('OPENAI_API_KEY');
 
       expect(JSON.stringify(review.value.review)).not.toContain('client_secret_handler.ts');
       expect(review.value.review.changed_files).toContainEqual(
