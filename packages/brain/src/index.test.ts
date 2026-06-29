@@ -234,6 +234,7 @@ describe('project brain generation', () => {
         'coverage.json',
         'confidence.json',
         'evidence_quality.json',
+        'architecture_reasoning.json',
         'flow_confidence.json',
         'flow_coverage.json',
         'flow_understanding.json',
@@ -378,6 +379,28 @@ describe('project brain generation', () => {
         expect.objectContaining({ id: 'flow:packages--brain--test' }),
       );
 
+      const architectureReasoning = await readJson<{
+        boundary_candidates: Array<{ component_id: string; flow_count: number }>;
+        risk_concentrations: Array<{ entity_id: string; kind: string }>;
+        review_hints: Array<{ reason: string; affected_flows: string[] }>;
+        unknowns: string[];
+      }>(join(researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.boundary_candidates).toContainEqual(
+        expect.objectContaining({ component_id: 'component:packages--brain', flow_count: 2 }),
+      );
+      expect(architectureReasoning.risk_concentrations).toContainEqual(
+        expect.objectContaining({ entity_id: 'flow:packages--brain--test', kind: 'flow' }),
+      );
+      expect(architectureReasoning.review_hints).toContainEqual(
+        expect.objectContaining({
+          reason: expect.stringContaining('Low-confidence flows'),
+          affected_flows: expect.arrayContaining(['flow:packages--brain--test']),
+        }),
+      );
+      expect(architectureReasoning.unknowns).toContain(
+        '2 reconstructed flow(s) are not verified yet.',
+      );
+
       const incremental = await readJson<{
         scanned_files: number;
         changed_files: string[];
@@ -495,6 +518,7 @@ describe('project brain generation', () => {
           metrics: string;
           incremental_update: string;
           flow_understanding: string;
+          architecture_reasoning: string;
         };
       }>(join(dir, '.rizz', 'brain', 'index.json'));
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
@@ -502,6 +526,7 @@ describe('project brain generation', () => {
         metrics: '.rizz/research/metrics.json',
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
+        architecture_reasoning: '.rizz/research/architecture_reasoning.json',
       });
     });
   });
@@ -743,6 +768,39 @@ describe('project brain generation', () => {
       expect(component.value.explanation.evidence_ids).toContain(
         'evidence:file-packages--brain--package.json',
       );
+
+      const flow = await explainProjectTarget({
+        rootDir: dir,
+        target: 'flow:packages--brain--test',
+        now: new Date('2026-06-28T11:01:30.000Z'),
+      });
+      expect(flow.ok).toBe(true);
+      if (!flow.ok) return;
+      expect(flow.value.explanation).toMatchObject({
+        target: 'flow:packages--brain--test',
+        resolved_entity_id: 'flow:packages--brain--test',
+        entity_type: 'flow',
+        entry_points: expect.arrayContaining(['command: packages/brain/package.json#test']),
+        tests: expect.arrayContaining(['packages/brain/src/index.test.ts']),
+        configs: expect.arrayContaining(['packages/brain/package.json']),
+        important_files: expect.arrayContaining(['packages/brain/src/index.ts']),
+        confidence: 'inferred',
+        flow: expect.objectContaining({
+          kind: 'test',
+          confidence_score: expect.any(Number),
+          components: expect.arrayContaining(['component:packages--brain']),
+        }),
+      });
+      expect(flow.value.explanation.flow?.steps).toContainEqual(
+        expect.objectContaining({ path: 'packages/brain/src/index.ts' }),
+      );
+      expect(flow.value.explanation.unknowns).toContainEqual(
+        expect.stringContaining('Flow confidence reason:'),
+      );
+      const flowReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(flowReport).toContain('Flow Steps');
+      expect(flowReport).toContain('flow:packages--brain--test');
+      expect(flowReport).not.toContain('sk-or-v1-');
 
       const file = await explainProjectTarget({
         rootDir: dir,
@@ -1019,8 +1077,19 @@ describe('project brain generation', () => {
         }),
       );
       await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: { check: 'vitest run packages/cli && tsc -b' },
+        }),
+      );
+      await writeFile(
         join(dir, 'packages', 'cli', 'src', 'index.ts'),
         'export const answer = 1;\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("checks", () => {});\n',
       );
       await generateProjectBrain({
         rootDir: dir,
@@ -1051,8 +1120,21 @@ describe('project brain generation', () => {
       if (!result.ok) return;
       expect(result.value.review.changed_files).toEqual(['packages/cli/src/index.ts']);
       expect(result.value.review.affected_components).toContain('component:packages--cli');
+      expect(result.value.review.affected_flows).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:packages--cli--check',
+          changed_files: ['packages/cli/src/index.ts'],
+          tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+        }),
+      );
       expect(result.value.review.findings).toContainEqual(
         expect.objectContaining({ category: 'Missing tests', severity: 'medium' }),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Known flows overlap the diff',
+          affected_entities: expect.arrayContaining(['flow:packages--cli--check']),
+        }),
       );
 
       const reviews = await readJson<{
@@ -1065,14 +1147,21 @@ describe('project brain generation', () => {
         }),
       );
       const latest = await readJson<{
-        latest_review_status: { readonly status?: string; readonly findings?: number };
+        latest_review_status: {
+          readonly status?: string;
+          readonly findings?: number;
+          readonly affected_flows?: string[];
+        };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
       expect(latest.latest_review_status).toMatchObject({
         status: 'investigate',
+        affected_flows: ['flow:packages--cli--check'],
       });
       expect(Number(latest.latest_review_status.findings)).toBeGreaterThanOrEqual(1);
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('rizz review');
+      expect(report).toContain('Affected Flows');
+      expect(report).toContain('flow:packages--cli--check');
       expect(report).toContain('Missing tests');
     });
   });

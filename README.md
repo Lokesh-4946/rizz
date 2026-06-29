@@ -18,7 +18,7 @@ Agent Light is the current public preview surface:
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
 - `.rizz/brain/flows/*.json` deterministic flow mirrors for entrypoints, steps, evidence, tests, and risks
 - `.rizz/brain/graph.json` relationships with evidence and confidence
-- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, Flow Understanding, and incremental understanding
+- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, Flow Understanding, Architecture Reasoning, and incremental understanding
 - `.rizz/reports/index.html` local architecture intelligence portal
 - `.rizz/reports/review.html` local risk/blast-radius review report
 - `rizz setup` dependency doctor and provider route picker
@@ -100,6 +100,21 @@ tmp/
 *.generated.ts
 ```
 
+## Explain A Target
+
+Use explain when you need a focused, evidence-backed read path before changing code:
+
+```sh
+rizz explain packages/cli
+rizz explain packages/cli/src/index.ts
+rizz explain flow packages--cli--check
+```
+
+`rizz explain flow <flow-id>` reads canonical flow entities from `.rizz/brain/entities/flows.json`
+and reports entrypoints, ordered steps, mapped components/files, tests, configs, risks, confidence,
+unknowns, and evidence. Flow explanations are deterministic static reconstructions, not runtime
+traces.
+
 ## Review A Change
 
 Run this before asking an agent to edit more code or before merging a branch:
@@ -124,10 +139,10 @@ For automation:
 rizz review --json
 ```
 
-The review is intentionally skeptical. It reports overall risk, surgicality, blast radius, required
-tests, reviewer focus areas, and findings across correctness, regression risk, architecture drift,
-hidden coupling, missing tests, security, performance, maintainability, backward compatibility, and
-overengineering.
+The review is intentionally skeptical. It reports overall risk, surgicality, blast radius, affected
+flows, required tests, reviewer focus areas, and findings across correctness, regression risk,
+architecture drift, hidden coupling, missing tests, security, performance, maintainability, backward
+compatibility, and overengineering.
 
 ## Model Setup
 
