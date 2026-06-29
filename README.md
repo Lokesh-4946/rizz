@@ -16,8 +16,9 @@ Agent Light is the current public preview surface:
 - `rizz review` git-diff review using the local project brain
 - `.rizz/brain/latest.json` structured current-state summary
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
+- `.rizz/brain/flows/*.json` deterministic flow mirrors for entrypoints, steps, evidence, tests, and risks
 - `.rizz/brain/graph.json` relationships with evidence and confidence
-- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, and incremental understanding
+- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, Flow Understanding, and incremental understanding
 - `.rizz/reports/index.html` local architecture intelligence portal
 - `.rizz/reports/review.html` local risk/blast-radius review report
 - `rizz setup` dependency doctor and provider route picker
@@ -55,6 +56,7 @@ rizz
 ```text
 .rizz/brain/latest.json
 .rizz/brain/entities/
+.rizz/brain/flows/
 .rizz/brain/graph.json
 .rizz/research/
 .rizz/reports/index.html

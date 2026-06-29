@@ -87,6 +87,7 @@ async function runBrainCommand(): Promise<number> {
   process.stdout.write(`  research: ${summary.researchDir}\n`);
   process.stdout.write(`  report: ${summary.reportPath}\n`);
   process.stdout.write(`  components: ${summary.components}\n`);
+  process.stdout.write(`  flows: ${summary.flows}\n`);
   process.stdout.write(`  commands: ${summary.commands}\n`);
   process.stdout.write(`  tests: ${summary.tests}\n`);
   process.stdout.write(`  changed: ${summary.changedFiles}\n`);

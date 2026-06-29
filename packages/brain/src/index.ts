@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, readFileSync, statSync } from 'node:fs';
-import { access, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
@@ -107,6 +107,82 @@ interface ComponentIntelligence {
   readonly important_files: readonly string[];
   readonly known_risks: readonly string[];
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
+  readonly signals: readonly string[];
+}
+
+type FlowKind = 'api' | 'cli' | 'job' | 'ui' | 'config' | 'test' | 'unknown';
+
+type FlowEntrypointType = 'route' | 'command' | 'function' | 'script' | 'file' | 'config';
+
+type FlowStepType =
+  | 'route'
+  | 'handler'
+  | 'service'
+  | 'function'
+  | 'config'
+  | 'dependency'
+  | 'test'
+  | 'external';
+
+type FlowRiskKind =
+  | 'missing_test'
+  | 'missing_config'
+  | 'weak_evidence'
+  | 'orphan_step'
+  | 'changed_hotspot';
+
+interface FlowEntrypoint {
+  readonly type: FlowEntrypointType;
+  readonly path: string;
+  readonly symbol: string | null;
+  readonly evidence: readonly string[];
+}
+
+interface FlowStep {
+  readonly step_id: string;
+  readonly order: number;
+  readonly type: FlowStepType;
+  readonly path: string;
+  readonly symbol: string | null;
+  readonly description: string;
+  readonly evidence: readonly string[];
+}
+
+interface FlowRisk {
+  readonly risk_id: string;
+  readonly kind: FlowRiskKind;
+  readonly description: string;
+  readonly evidence: readonly string[];
+}
+
+interface FlowConfidence {
+  readonly score: number;
+  readonly reason: string;
+}
+
+interface FlowEvidence {
+  readonly path: string;
+  readonly line_start: number;
+  readonly line_end: number;
+  readonly reason: string;
+}
+
+interface FlowIntelligence {
+  readonly flow_id: string;
+  readonly name: string;
+  readonly kind: FlowKind;
+  readonly entrypoints: readonly FlowEntrypoint[];
+  readonly steps: readonly FlowStep[];
+  readonly components: readonly string[];
+  readonly files: readonly string[];
+  readonly dependencies: readonly string[];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly risks: readonly FlowRisk[];
+  readonly confidence: FlowConfidence;
+  readonly evidence: readonly FlowEvidence[];
+  readonly field_evidence: Readonly<Record<string, readonly string[]>>;
+  readonly unknowns: readonly string[];
   readonly signals: readonly string[];
 }
 
@@ -231,6 +307,7 @@ export interface GenerateProjectBrainSummary {
   readonly changedFiles: number;
   readonly staleFiles: number;
   readonly components: number;
+  readonly flows: number;
   readonly commands: number;
   readonly tests: number;
 }
@@ -314,6 +391,9 @@ const RESEARCH_ARTIFACT_FILES = {
   confidence: 'confidence.json',
   evidenceQuality: 'evidence_quality.json',
   incrementalUpdate: 'incremental_update.json',
+  flowUnderstanding: 'flow_understanding.json',
+  flowCoverage: 'flow_coverage.json',
+  flowConfidence: 'flow_confidence.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -560,7 +640,7 @@ async function scanFiles(
 
   async function walk(dir: string): Promise<void> {
     if (facts.length >= maxFiles) return;
-    const entries = await readdir(dir, { withFileTypes: true });
+    const entries = sorted(await readdir(dir, { withFileTypes: true }), (entry) => entry.name);
     for (const entry of entries) {
       if (facts.length >= maxFiles) return;
       const absolutePath = join(dir, entry.name);
@@ -636,6 +716,12 @@ function previousFileFacts(
       createdAt: entity.created_at,
     });
   }
+  return out;
+}
+
+function previousEntityMap(entities: readonly BrainEntity[] | undefined): Map<string, BrainEntity> {
+  const out = new Map<string, BrainEntity>();
+  for (const entity of entities ?? []) out.set(entity.id, entity);
   return out;
 }
 
@@ -1039,6 +1125,720 @@ function knownRisksForComponent(
   return [...risks];
 }
 
+function packageComponentPath(pkg: PackageJsonFact): string | undefined {
+  const dir = dirname(pkg.relativePath).split(sep).join('/');
+  return dir === '.' ? undefined : dir;
+}
+
+function sourceFilesForPackage(files: readonly FileFact[], pkg: PackageJsonFact): FileFact[] {
+  const componentPath = packageComponentPath(pkg);
+  if (componentPath === undefined) {
+    return files.filter(
+      (file) => dirname(file.relativePath) === '.' && isSourceFile(file.relativePath),
+    );
+  }
+  return filesForComponent(files, componentPath);
+}
+
+function entrySourceFiles(files: readonly FileFact[]): readonly FileFact[] {
+  const ranked = files
+    .filter((file) => classifySourceKind(file) === 'source')
+    .sort((a, b) => {
+      const rank = (file: FileFact): number => {
+        const name = basename(file.relativePath).toLowerCase();
+        if (name === 'index.ts' || name === 'index.js') return 0;
+        if (name === 'cli.ts' || name === 'cli.js') return 1;
+        if (name === 'main.ts' || name === 'main.js') return 2;
+        return 3;
+      };
+      return rank(a) - rank(b) || a.relativePath.localeCompare(b.relativePath);
+    });
+  return ranked.slice(0, 5);
+}
+
+function importSpecifiersFromText(text: string): string[] {
+  const specifiers = new Set<string>();
+  const patterns = [
+    /import\s+(?:[^'"]+?\s+from\s*)?['"]([^'"]+)['"]/g,
+    /import\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const specifier = match[1];
+      if (specifier !== undefined && specifier.trim() !== '') specifiers.add(safeText(specifier));
+    }
+  }
+  return [...specifiers].sort((a, b) => a.localeCompare(b));
+}
+
+function readTextIfAvailable(rootDir: string, relativePath: string): string | undefined {
+  try {
+    return readFileSync(join(rootDir, relativePath), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+function lineSpanForNeedle(
+  text: string | undefined,
+  needle: string | RegExp,
+): {
+  readonly lineStart: number;
+  readonly lineEnd: number;
+} {
+  if (text === undefined) return { lineStart: 1, lineEnd: 1 };
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (typeof needle === 'string' ? line.includes(needle) : needle.test(line)) {
+      return { lineStart: i + 1, lineEnd: i + 1 };
+    }
+  }
+  return { lineStart: 1, lineEnd: 1 };
+}
+
+function flowEvidenceForNeedle(params: {
+  readonly rootDir: string;
+  readonly path: string;
+  readonly needle: string | RegExp;
+  readonly reason: string;
+}): FlowEvidence {
+  const span = lineSpanForNeedle(readTextIfAvailable(params.rootDir, params.path), params.needle);
+  return {
+    path: safeText(params.path),
+    line_start: span.lineStart,
+    line_end: span.lineEnd,
+    reason: safeText(params.reason),
+  };
+}
+
+function flowKindForScript(pkg: PackageJsonFact, scriptName: string, command: string): FlowKind {
+  const lowerName = scriptName.toLowerCase();
+  const lowerCommand = command.toLowerCase();
+  const manifestDir = dirname(pkg.relativePath).toLowerCase();
+  if (/test|check|lint|typecheck|vitest|pytest/.test(`${lowerName} ${lowerCommand}`)) {
+    return 'test';
+  }
+  if (/build|release|deploy|publish|pack|sync|cron|job|generate/.test(lowerName)) return 'job';
+  if (manifestDir.includes('cli') || /bin|cli|node .*index|rizz/.test(lowerCommand)) return 'cli';
+  if (/vite|next|react|tsx|ui/.test(`${manifestDir} ${lowerCommand}`)) return 'ui';
+  return 'job';
+}
+
+function flowNameForScript(scriptName: string, kind: FlowKind): string {
+  if (kind === 'test') return `${safeText(scriptName)} test flow`;
+  if (kind === 'job') return `${safeText(scriptName)} job`;
+  if (kind === 'ui') return `${safeText(scriptName)} UI flow`;
+  return `${safeText(scriptName)} command`;
+}
+
+function flowStepId(flowId: string, order: number): string {
+  return `flow-step:${stableSlug(flowId)}:${String(order).padStart(3, '0')}`;
+}
+
+function componentPathFromId(componentId: string): string {
+  return componentId.replace(/^component:/, '').replace(/--/g, '/');
+}
+
+function componentIdsForFiles(
+  files: readonly string[],
+  components: readonly BrainEntity[],
+): string[] {
+  return unique(
+    components
+      .filter((component) =>
+        component.source_files.some((source) =>
+          files.some((file) => file === source || source.startsWith(`${file}/`)),
+        ),
+      )
+      .map((component) => component.id),
+  );
+}
+
+function flowConfidenceFor(
+  intelligence: Pick<FlowIntelligence, 'tests' | 'signals' | 'unknowns'>,
+): {
+  readonly confidence: Confidence;
+  readonly score: number;
+  readonly reason: string;
+} {
+  let score = 0.35;
+  if (intelligence.signals.includes('package script')) score += 0.2;
+  if (intelligence.signals.includes('static import')) score += 0.15;
+  if (intelligence.signals.includes('route file')) score += 0.15;
+  if (intelligence.tests.length > 0) score += 0.15;
+  if (intelligence.unknowns.length > 0) score -= 0.1;
+  const capped = Math.max(0.1, Math.min(0.95, Number(score.toFixed(2))));
+  if (capped >= 0.9 && intelligence.unknowns.length === 0) {
+    return {
+      confidence: 'verified',
+      score: capped,
+      reason: 'Direct entrypoint, source, and test evidence were detected.',
+    };
+  }
+  if (capped >= 0.5) {
+    return {
+      confidence: 'inferred',
+      score: capped,
+      reason:
+        'Flow is reconstructed from local static evidence; runtime reachability is not traced.',
+    };
+  }
+  return {
+    confidence: 'uncertain',
+    score: capped,
+    reason: 'Flow has weak or partial static evidence and needs confirmation before relying on it.',
+  };
+}
+
+function asFlowConfidenceScore(entity: BrainEntity): number {
+  const confidence = entity.data?.confidence;
+  if (!isRecord(confidence)) {
+    if (entity.confidence === 'verified') return 1;
+    if (entity.confidence === 'inferred') return 0.65;
+    return 0.35;
+  }
+  const score = confidence.score;
+  return typeof score === 'number' ? score : 0.35;
+}
+
+function flowConfidenceReason(entity: BrainEntity): string {
+  const confidence = entity.data?.confidence;
+  if (!isRecord(confidence)) return 'No confidence reason recorded.';
+  return typeof confidence.reason === 'string'
+    ? confidence.reason
+    : 'No confidence reason recorded.';
+}
+
+function flowStringArray(entity: BrainEntity, key: string): string[] {
+  return stringArrayData(entity, key);
+}
+
+function flowRisks(entity: BrainEntity): FlowRisk[] {
+  const risks = entity.data?.risks;
+  if (!Array.isArray(risks)) return [];
+  return risks.filter((risk): risk is FlowRisk => {
+    if (!isRecord(risk)) return false;
+    return (
+      typeof risk.risk_id === 'string' &&
+      typeof risk.kind === 'string' &&
+      typeof risk.description === 'string' &&
+      Array.isArray(risk.evidence)
+    );
+  });
+}
+
+function flowSteps(entity: BrainEntity): FlowStep[] {
+  const steps = entity.data?.steps;
+  if (!Array.isArray(steps)) return [];
+  return steps.filter((step): step is FlowStep => {
+    if (!isRecord(step)) return false;
+    return (
+      typeof step.step_id === 'string' &&
+      typeof step.order === 'number' &&
+      typeof step.type === 'string' &&
+      typeof step.path === 'string' &&
+      typeof step.description === 'string' &&
+      Array.isArray(step.evidence)
+    );
+  });
+}
+
+function inferScriptFlow(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly packageFact: PackageJsonFact;
+  readonly scriptName: string;
+  readonly command: string;
+  readonly components: readonly BrainEntity[];
+  readonly changedFiles: ReadonlySet<string>;
+}): FlowIntelligence {
+  const ownerPath = packageComponentPath(params.packageFact);
+  const ownerComponentId = ownerPath === undefined ? undefined : entityId('component', ownerPath);
+  const ownerFiles = sourceFilesForPackage(params.files, params.packageFact);
+  const entryFiles = entrySourceFiles(ownerFiles);
+  const packageNameToComponent = new Map(
+    params.packageFacts
+      .filter((pkg) => pkg.name !== undefined && packageComponentPath(pkg) !== undefined)
+      .map((pkg) => [pkg.name ?? '', entityId('component', packageComponentPath(pkg) ?? '')]),
+  );
+  const importedSpecifiers = new Set<string>();
+  const importEvidence: FlowEvidence[] = [];
+  for (const file of entryFiles) {
+    const text = readTextIfAvailable(params.rootDir, file.relativePath);
+    if (text === undefined) continue;
+    for (const specifier of importSpecifiersFromText(text)) {
+      importedSpecifiers.add(specifier);
+      importEvidence.push(
+        flowEvidenceForNeedle({
+          rootDir: params.rootDir,
+          path: file.relativePath,
+          needle: specifier,
+          reason: `Static import evidence for ${specifier}.`,
+        }),
+      );
+    }
+  }
+
+  const commandText = safeText(params.command);
+  for (const pkg of params.packageFacts) {
+    if (pkg.name !== undefined && commandText.includes(pkg.name)) importedSpecifiers.add(pkg.name);
+  }
+
+  const relatedComponentIds = new Set<string>();
+  if (ownerComponentId !== undefined) relatedComponentIds.add(ownerComponentId);
+  for (const specifier of importedSpecifiers) {
+    const componentId = packageNameToComponent.get(specifier);
+    if (componentId !== undefined) relatedComponentIds.add(componentId);
+  }
+
+  const relatedComponents = params.components.filter((component) =>
+    relatedComponentIds.has(component.id),
+  );
+  const files = unique([
+    params.packageFact.relativePath,
+    ...entryFiles.map((file) => file.relativePath),
+    ...relatedComponents.flatMap((component) => stringArrayData(component, 'important_files')),
+    ...relatedComponents.flatMap((component) => component.source_files.slice(0, 3)),
+  ]).slice(0, 30);
+  const configs = unique([
+    params.packageFact.relativePath,
+    ...relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
+  ]);
+  const tests = unique(
+    relatedComponents.flatMap((component) => stringArrayData(component, 'tests')),
+  );
+  const dependencies = unique([
+    ...Object.keys(params.packageFact.dependencies),
+    ...Object.keys(params.packageFact.devDependencies),
+    ...[...importedSpecifiers].filter((specifier) => !specifier.startsWith('.')),
+  ]).map((dependency) => entityId('dependency', dependency));
+  const kind = flowKindForScript(params.packageFact, params.scriptName, params.command);
+  const flowBase =
+    ownerPath === undefined ? `scripts/${params.scriptName}` : `${ownerPath}/${params.scriptName}`;
+  const flowId = entityId('flow', flowBase);
+  const scriptEvidenceId = evidenceId(params.packageFact.relativePath);
+  const entrypoint: FlowEntrypoint = {
+    type: 'command',
+    path: safeText(params.packageFact.relativePath),
+    symbol: safeText(params.scriptName),
+    evidence: [scriptEvidenceId],
+  };
+  const steps: FlowStep[] = [];
+  let order = 1;
+  for (const file of entryFiles) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'handler',
+      path: safeText(file.relativePath),
+      symbol: safeText(params.scriptName),
+      description: `Command flow enters source file ${safeText(file.relativePath)}.`,
+      evidence: [evidenceId(file.relativePath)],
+    });
+    order += 1;
+  }
+  for (const component of relatedComponents.filter(
+    (component) => component.id !== ownerComponentId,
+  )) {
+    const componentFile =
+      stringArrayData(component, 'important_files')[0] ?? component.source_files[0];
+    if (componentFile === undefined) continue;
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'service',
+      path: safeText(componentFile),
+      symbol: null,
+      description: `Flow reaches related component ${safeText(component.name)}.`,
+      evidence: [evidenceId(componentFile)],
+    });
+    order += 1;
+  }
+  for (const config of configs.slice(0, 3)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'config',
+      path: safeText(config),
+      symbol: null,
+      description: `Flow depends on configuration from ${safeText(config)}.`,
+      evidence: [evidenceId(config)],
+    });
+    order += 1;
+  }
+  for (const test of tests.slice(0, 3)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'test',
+      path: safeText(test),
+      symbol: null,
+      description: 'Related test artifact for this flow.',
+      evidence: [evidenceId(test)],
+    });
+    order += 1;
+  }
+
+  const signals = unique([
+    'package script',
+    ...(entryFiles.length > 0 ? ['source entry'] : []),
+    ...(importedSpecifiers.size > 0 ? ['static import'] : []),
+    ...(tests.length > 0 ? ['test artifact'] : []),
+    ...(configs.length > 0 ? ['configuration'] : []),
+  ]);
+  const unknowns = unique([
+    ...(entryFiles.some((file) =>
+      readTextIfAvailable(params.rootDir, file.relativePath)?.includes('import('),
+    )
+      ? ['Dynamic import is static evidence only; runtime reachability is not traced.']
+      : []),
+    ...(entryFiles.length === 0
+      ? ['No source entry file was detected for this package script.']
+      : []),
+  ]);
+  const risks: FlowRisk[] = [];
+  if (tests.length === 0) {
+    risks.push({
+      risk_id: `${flowId}:missing-test`,
+      kind: 'missing_test',
+      description: 'No directly linked test artifact was detected for this flow.',
+      evidence: [scriptEvidenceId],
+    });
+  }
+  if (signals.length <= 1) {
+    risks.push({
+      risk_id: `${flowId}:weak-evidence`,
+      kind: 'weak_evidence',
+      description: 'Flow is backed by weak path or manifest evidence only.',
+      evidence: [scriptEvidenceId],
+    });
+  }
+  if (files.some((file) => params.changedFiles.has(file))) {
+    risks.push({
+      risk_id: `${flowId}:changed-hotspot`,
+      kind: 'changed_hotspot',
+      description: 'A file in this flow changed in the latest scan.',
+      evidence: files.filter((file) => params.changedFiles.has(file)).map(evidenceId),
+    });
+  }
+  const baseConfidence = flowConfidenceFor({ tests, signals, unknowns });
+  return {
+    flow_id: flowId,
+    name: flowNameForScript(params.scriptName, kind),
+    kind,
+    entrypoints: [entrypoint],
+    steps,
+    components: unique([...relatedComponentIds]),
+    files,
+    dependencies,
+    configs,
+    tests,
+    risks,
+    confidence: {
+      score: baseConfidence.score,
+      reason: baseConfidence.reason,
+    },
+    evidence: uniqueFlowEvidence([
+      flowEvidenceForNeedle({
+        rootDir: params.rootDir,
+        path: params.packageFact.relativePath,
+        needle: params.scriptName,
+        reason: `Package script ${params.scriptName} declares this flow entrypoint.`,
+      }),
+      ...importEvidence,
+      ...entryFiles.map((file) =>
+        flowEvidenceForNeedle({
+          rootDir: params.rootDir,
+          path: file.relativePath,
+          needle: params.scriptName,
+          reason: `Source file is an inferred handler for ${params.scriptName}.`,
+        }),
+      ),
+    ]),
+    field_evidence: {
+      entrypoints: [scriptEvidenceId],
+      steps: unique(steps.flatMap((step) => step.evidence)),
+      components: unique(relatedComponents.flatMap((component) => component.evidence_ids)),
+      files: files.map(evidenceId),
+      dependencies: [scriptEvidenceId],
+      configs: configs.map(evidenceId),
+      tests: tests.map(evidenceId),
+      risks: unique(risks.flatMap((risk) => risk.evidence)),
+    },
+    unknowns,
+    signals,
+  };
+}
+
+function uniqueFlowEvidence(evidence: readonly FlowEvidence[]): FlowEvidence[] {
+  const byKey = new Map<string, FlowEvidence>();
+  for (const item of evidence) {
+    byKey.set(`${item.path}:${item.line_start}:${item.line_end}:${item.reason}`, item);
+  }
+  return [...byKey.values()].sort(
+    (a, b) =>
+      a.path.localeCompare(b.path) ||
+      a.line_start - b.line_start ||
+      a.reason.localeCompare(b.reason),
+  );
+}
+
+function isRouteLikeFile(file: FileFact): boolean {
+  const lower = file.relativePath.toLowerCase();
+  const name = basename(lower);
+  return (
+    lower.includes('/api/') ||
+    lower.includes('/routes/') ||
+    lower.includes('/controllers/') ||
+    name === 'route.ts' ||
+    name === 'route.js' ||
+    name.includes('controller')
+  );
+}
+
+function inferRouteFlow(params: {
+  readonly rootDir: string;
+  readonly file: FileFact;
+  readonly components: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly changedFiles: ReadonlySet<string>;
+}): FlowIntelligence {
+  const componentIds = componentIdsForFiles([params.file.relativePath], params.components);
+  const relatedTests = params.tests
+    .filter((test) => {
+      const base = basename(params.file.relativePath).replace(/\.(ts|js|tsx|jsx)$/i, '');
+      return test.source_files.some(
+        (file) => file.includes(base) || file.includes(componentPathFromId(componentIds[0] ?? '')),
+      );
+    })
+    .flatMap((test) => test.source_files);
+  const flowId = entityId('flow', `api/${params.file.relativePath}`);
+  const evId = evidenceId(params.file.relativePath);
+  const risks: FlowRisk[] = [];
+  if (relatedTests.length === 0) {
+    risks.push({
+      risk_id: `${flowId}:missing-test`,
+      kind: 'missing_test',
+      description: 'No directly linked test artifact was detected for this API flow.',
+      evidence: [evId],
+    });
+  }
+  if (params.changedFiles.has(params.file.relativePath)) {
+    risks.push({
+      risk_id: `${flowId}:changed-hotspot`,
+      kind: 'changed_hotspot',
+      description: 'The route file changed in the latest scan.',
+      evidence: [evId],
+    });
+  }
+  const signals = unique(['route file', ...(relatedTests.length > 0 ? ['test artifact'] : [])]);
+  const baseConfidence = flowConfidenceFor({ tests: relatedTests, signals, unknowns: [] });
+  return {
+    flow_id: flowId,
+    name: `${safeText(basename(params.file.relativePath))} API flow`,
+    kind: 'api',
+    entrypoints: [
+      {
+        type: 'route',
+        path: safeText(params.file.relativePath),
+        symbol: null,
+        evidence: [evId],
+      },
+    ],
+    steps: [
+      {
+        step_id: flowStepId(flowId, 1),
+        order: 1,
+        type: 'route',
+        path: safeText(params.file.relativePath),
+        symbol: null,
+        description: `API route entrypoint at ${safeText(params.file.relativePath)}.`,
+        evidence: [evId],
+      },
+    ],
+    components: componentIds,
+    files: [params.file.relativePath],
+    dependencies: [],
+    configs: [],
+    tests: unique(relatedTests),
+    risks,
+    confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
+    evidence: [
+      flowEvidenceForNeedle({
+        rootDir: params.rootDir,
+        path: params.file.relativePath,
+        needle: /route|handler|get|post|put|delete|export/i,
+        reason: 'Route-like file pattern is the flow entrypoint evidence.',
+      }),
+    ],
+    field_evidence: {
+      entrypoints: [evId],
+      steps: [evId],
+      components: componentIds.flatMap(
+        (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
+      ),
+      files: [evId],
+      tests: relatedTests.map(evidenceId),
+      risks: risks.flatMap((risk) => risk.evidence),
+    },
+    unknowns:
+      componentIds.length === 0 ? ['No owning component was detected for this route file.'] : [],
+    signals,
+  };
+}
+
+function buildFlowEntity(
+  intelligence: FlowIntelligence,
+  now: string,
+  createdAt?: string,
+): BrainEntity {
+  const confidence = flowConfidenceFor({
+    tests: intelligence.tests,
+    signals: intelligence.signals,
+    unknowns: intelligence.unknowns,
+  });
+  return makeEntity({
+    id: intelligence.flow_id,
+    type: 'flow',
+    name: intelligence.name,
+    description: `${intelligence.kind} flow reconstructed from local evidence.`,
+    now,
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    confidence: confidence.confidence,
+    evidenceIds: unique([
+      ...intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+      ...intelligence.steps.flatMap((step) => step.evidence),
+      ...intelligence.risks.flatMap((risk) => risk.evidence),
+    ]),
+    relatedEntityIds: unique([
+      ...intelligence.components,
+      ...intelligence.dependencies,
+      ...intelligence.configs.map((config) => entityId('config', config)),
+      ...intelligence.tests.map((test) => entityId('test', test)),
+    ]),
+    sourceFiles: intelligence.files,
+    data: { ...intelligence, confidence: { ...intelligence.confidence, score: confidence.score } },
+  });
+}
+
+function reconstructFlows(params: {
+  readonly rootDir: string;
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly buckets: BrainBuckets;
+  readonly relationships: BrainRelationship[];
+  readonly changedFiles: readonly string[];
+  readonly previousFlows: ReadonlyMap<string, BrainEntity>;
+}): void {
+  const changedFileSet = new Set(params.changedFiles);
+  const flowIntelligence: FlowIntelligence[] = [];
+  for (const pkg of params.packageFacts) {
+    for (const [scriptName, command] of Object.entries(pkg.scripts)) {
+      flowIntelligence.push(
+        inferScriptFlow({
+          rootDir: params.rootDir,
+          files: params.files,
+          packageFacts: params.packageFacts,
+          packageFact: pkg,
+          scriptName,
+          command,
+          components: params.buckets.components,
+          changedFiles: changedFileSet,
+        }),
+      );
+    }
+  }
+  for (const file of params.files.filter(isRouteLikeFile)) {
+    flowIntelligence.push(
+      inferRouteFlow({
+        rootDir: params.rootDir,
+        file,
+        components: params.buckets.components,
+        tests: params.buckets.tests,
+        changedFiles: changedFileSet,
+      }),
+    );
+  }
+
+  const byId = new Map<string, FlowIntelligence>();
+  for (const flow of flowIntelligence) byId.set(flow.flow_id, flow);
+
+  for (const flow of sorted([...byId.values()], (item) => item.flow_id)) {
+    const previous = params.previousFlows.get(flow.flow_id);
+    const entity = buildFlowEntity(flow, params.now, previous?.created_at);
+    params.buckets.flows.push(entity);
+    for (const componentId of flow.components) {
+      addRelation(
+        params.relationships,
+        flow.flow_id,
+        'calls',
+        componentId,
+        flow.field_evidence.components ?? entity.evidence_ids,
+        entity.confidence,
+      );
+    }
+    for (const dependencyId of flow.dependencies) {
+      addRelation(
+        params.relationships,
+        flow.flow_id,
+        'depends_on',
+        dependencyId,
+        flow.field_evidence.dependencies ?? entity.evidence_ids,
+        'inferred',
+      );
+    }
+    for (const configPath of flow.configs) {
+      addRelation(
+        params.relationships,
+        flow.flow_id,
+        'configures',
+        entityId('config', configPath),
+        [evidenceId(configPath)],
+        'inferred',
+      );
+    }
+    for (const testPath of flow.tests) {
+      addRelation(
+        params.relationships,
+        entityId('test', testPath),
+        'tests',
+        flow.flow_id,
+        [evidenceId(testPath)],
+        'inferred',
+      );
+    }
+  }
+  for (const [flowId, previous] of params.previousFlows.entries()) {
+    if (byId.has(flowId)) continue;
+    params.buckets.flows.push(
+      makeEntity({
+        id: previous.id,
+        type: 'flow',
+        name: previous.name,
+        description: `Previously known flow ${safeText(previous.name)} was not reconstructed in this scan.`,
+        now: params.now,
+        createdAt: previous.created_at,
+        confidence: 'uncertain',
+        evidenceIds: previous.evidence_ids,
+        relatedEntityIds: previous.related_entity_ids,
+        sourceFiles: previous.source_files,
+        latestStatus: 'stale',
+        data: {
+          ...(previous.data ?? {}),
+          unknowns: unique([
+            ...stringArrayData(previous, 'unknowns'),
+            'Flow was not reconstructed in the latest scan; rerun with full source context or inspect stale evidence.',
+          ]),
+        },
+      }),
+    );
+  }
+}
+
 function inferComponentIntelligence(
   componentPath: string,
   files: readonly FileFact[],
@@ -1211,6 +2011,24 @@ function buildResearchArtifacts(params: {
   );
   const currentFiles = activeFileEntities.filter((file) => file.latest_status === 'current');
   const newFiles = activeFileEntities.filter((file) => file.latest_status === 'new');
+  const flows = params.buckets.flows;
+  const flowStepCount = flows.reduce((count, flow) => count + flowSteps(flow).length, 0);
+  const flowRiskCount = flows.reduce((count, flow) => count + flowRisks(flow).length, 0);
+  const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
+  const flowsWithoutTests = flows.filter((flow) => flowStringArray(flow, 'tests').length === 0);
+  const lowConfidenceFlows = flows.filter((flow) => flow.confidence !== 'verified');
+  const changedFileSet = new Set(changedFiles);
+  const changedFlows = flows.filter((flow) =>
+    flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
+  );
+  const averageFlowConfidence =
+    flows.length === 0
+      ? 0
+      : Number(
+          (
+            flows.reduce((total, flow) => total + asFlowConfidenceScore(flow), 0) / flows.length
+          ).toFixed(4),
+        );
 
   return {
     metrics: {
@@ -1222,6 +2040,9 @@ function buildResearchArtifacts(params: {
       stale_file_entities: staleFiles.length,
       changed_files: changedFiles.length,
       components: params.buckets.components.length,
+      flows: flows.length,
+      flow_steps: flowStepCount,
+      flow_risks: flowRiskCount,
       commands: params.buckets.commands.length,
       tests: params.buckets.tests.length,
       evidence_records: params.buckets.evidence.length,
@@ -1258,6 +2079,21 @@ function buildResearchArtifacts(params: {
       components_with_configs: params.buckets.components.filter(
         (component) => stringArrayData(component, 'configs').length > 0,
       ).length,
+      flows_with_tests: flowsWithTests.length,
+      flows_with_configs: flows.filter((flow) => flowStringArray(flow, 'configs').length > 0)
+        .length,
+      flows_with_evidence: flows.filter((flow) => flow.evidence_ids.length > 0).length,
+      flow_coverage: flows.map((flow) => ({
+        id: flow.id,
+        name: flow.name,
+        kind: stringData(flow, 'kind') ?? 'unknown',
+        files: flowStringArray(flow, 'files').length,
+        components: flowStringArray(flow, 'components').length,
+        tests: flowStringArray(flow, 'tests'),
+        configs: flowStringArray(flow, 'configs'),
+        evidence_ids: flow.evidence_ids.length,
+        confidence: flow.confidence,
+      })),
       component_coverage: params.buckets.components.map((component) => ({
         id: component.id,
         name: component.name,
@@ -1282,6 +2118,15 @@ function buildResearchArtifacts(params: {
         criticality: stringData(component, 'criticality') ?? 'unknown',
         evidence_ids: component.evidence_ids,
         source_files: component.source_files,
+      })),
+      flow_confidence: flows.map((flow) => ({
+        id: flow.id,
+        name: flow.name,
+        kind: stringData(flow, 'kind') ?? 'unknown',
+        confidence: flow.confidence,
+        score: asFlowConfidenceScore(flow),
+        evidence_ids: flow.evidence_ids,
+        unknowns: stringArrayData(flow, 'unknowns'),
       })),
       confidence_gaps: params.buckets.risks
         .filter((risk) => risk.confidence !== 'verified')
@@ -1319,6 +2164,16 @@ function buildResearchArtifacts(params: {
           ]),
         ),
       })),
+      flow_field_evidence: flows.map((flow) => ({
+        id: flow.id,
+        confidence: flow.confidence,
+        fields: Object.fromEntries(
+          Object.entries(recordStringArrayData(flow, 'field_evidence')).map(([field, ids]) => [
+            field,
+            ids.length,
+          ]),
+        ),
+      })),
     },
     incrementalUpdate: {
       generated_at: params.now,
@@ -1331,6 +2186,83 @@ function buildResearchArtifacts(params: {
       file_reuse_ratio: ratio(currentFiles.length, params.files.length),
       current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
       new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
+      affected_flows: changedFlows.map((flow) => flow.id),
+    },
+    flowUnderstanding: {
+      generated_at: params.now,
+      total_flows: flows.length,
+      flows_by_kind: countByValue(flows.map((flow) => stringData(flow, 'kind') ?? 'unknown')),
+      flows_with_tests: flowsWithTests.length,
+      flows_without_tests: flowsWithoutTests.length,
+      average_confidence: averageFlowConfidence,
+      low_confidence_flows: lowConfidenceFlows.map((flow) => ({
+        id: flow.id,
+        name: flow.name,
+        confidence: flow.confidence,
+        reason: flowConfidenceReason(flow),
+      })),
+      orphan_entrypoints: flows
+        .filter((flow) => flowStringArray(flow, 'components').length === 0)
+        .map((flow) => flow.id),
+      incremental_update: {
+        previous_total_flows: flows.length,
+        current_total_flows: flows.length,
+        added: [],
+        removed: [],
+        changed: changedFlows.map((flow) => flow.id),
+      },
+    },
+    flowCoverage: {
+      generated_at: params.now,
+      total_flows: flows.length,
+      entrypoint_coverage_ratio: ratio(
+        flows.filter((flow) => {
+          const entrypoints = flow.data?.entrypoints;
+          return Array.isArray(entrypoints) && entrypoints.length > 0;
+        }).length,
+        flows.length,
+      ),
+      test_backed_flow_ratio: ratio(flowsWithTests.length, flows.length),
+      config_backed_flow_ratio: ratio(
+        flows.filter((flow) => flowStringArray(flow, 'configs').length > 0).length,
+        flows.length,
+      ),
+      components_covered_by_flows: unique(
+        flows.flatMap((flow) => flowStringArray(flow, 'components')),
+      ),
+      files_covered_by_flows: unique(flows.flatMap((flow) => flowStringArray(flow, 'files'))),
+      flows: flows.map((flow) => ({
+        id: flow.id,
+        kind: stringData(flow, 'kind') ?? 'unknown',
+        files: flowStringArray(flow, 'files').length,
+        components: flowStringArray(flow, 'components').length,
+        tests: flowStringArray(flow, 'tests').length,
+        configs: flowStringArray(flow, 'configs').length,
+        risks: flowRisks(flow).length,
+        confidence: flow.confidence,
+      })),
+    },
+    flowConfidence: {
+      generated_at: params.now,
+      average_confidence: averageFlowConfidence,
+      flow_confidence_counts: countByConfidence(flows.map((flow) => flow.confidence)),
+      low_confidence_flows: lowConfidenceFlows.map((flow) => ({
+        id: flow.id,
+        confidence: flow.confidence,
+        score: asFlowConfidenceScore(flow),
+        unknowns: stringArrayData(flow, 'unknowns'),
+      })),
+      flows: flows.map((flow) => ({
+        id: flow.id,
+        name: flow.name,
+        confidence: flow.confidence,
+        score: asFlowConfidenceScore(flow),
+        steps: flowSteps(flow).map((step) => ({
+          step_id: step.step_id,
+          order: step.order,
+          evidence_ids: step.evidence,
+        })),
+      })),
     },
   };
 }
@@ -1343,6 +2275,46 @@ async function writeResearchArtifacts(
     await writeVerifiedFile(
       join(researchDir, fileName),
       jsonString(safeResearchValue(artifacts[key as keyof typeof RESEARCH_ARTIFACT_FILES])),
+    );
+  }
+}
+
+function flowMirrorFileName(flow: BrainEntity): string {
+  return `${stableSlug(flow.id)}.json`;
+}
+
+async function writeFlowMirrors(
+  flowDir: string,
+  generatedAt: string,
+  flows: readonly BrainEntity[],
+): Promise<void> {
+  await rm(flowDir, { recursive: true, force: true });
+  await mkdir(flowDir, { recursive: true });
+  const sortedFlows = sorted(flows, (flow) => flow.id);
+  const index = {
+    generated_at: generatedAt,
+    flows: sortedFlows.map((flow) => ({
+      id: flow.id,
+      name: flow.name,
+      kind: stringData(flow, 'kind') ?? 'unknown',
+      file: `.rizz/brain/flows/${flowMirrorFileName(flow)}`,
+      entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
+      components: flowStringArray(flow, 'components').length,
+      files: flowStringArray(flow, 'files').length,
+      tests: flowStringArray(flow, 'tests').length,
+      risks: flowRisks(flow).length,
+      steps: flowSteps(flow).length,
+      confidence: flow.confidence,
+      latest_status: flow.latest_status,
+      score: asFlowConfidenceScore(flow),
+      evidence_ids: flow.evidence_ids,
+    })),
+  };
+  await writeVerifiedFile(join(flowDir, 'index.json'), jsonString(safeResearchValue(index)));
+  for (const flow of sortedFlows) {
+    await writeVerifiedFile(
+      join(flowDir, flowMirrorFileName(flow)),
+      jsonString(safeResearchValue(flow)),
     );
   }
 }
@@ -1378,6 +2350,19 @@ function buildLatest(params: {
     important_files: stringArrayData(component, 'important_files'),
     known_risks: stringArrayData(component, 'known_risks'),
   }));
+  const flowMap = params.buckets.flows.map((flow) => ({
+    id: flow.id,
+    name: flow.name,
+    kind: stringData(flow, 'kind') ?? 'unknown',
+    entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
+    component_count: flowStringArray(flow, 'components').length,
+    file_count: flowStringArray(flow, 'files').length,
+    test_count: flowStringArray(flow, 'tests').length,
+    risk_count: flowRisks(flow).length,
+    confidence: flow.confidence,
+    score: asFlowConfidenceScore(flow),
+    evidence_ids: flow.evidence_ids,
+  }));
   const risks = params.buckets.risks.map((risk) => ({
     id: risk.id,
     name: risk.name,
@@ -1395,8 +2380,9 @@ function buildLatest(params: {
     latest_architecture_summary:
       params.buckets.components.length === 0
         ? 'No durable component map has been inferred yet.'
-        : `${params.projectName} has ${params.buckets.components.length} inferred component(s) with purpose/responsibility signals, ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
+        : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.flows.length} reconstructed flow(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
     latest_component_map: componentMap,
+    latest_flow_map: flowMap,
     latest_risks: risks,
     latest_review_status: {
       status: 'not_run',
@@ -1625,6 +2611,58 @@ function renderComponentCards(
     .join('');
 }
 
+function renderFlowCards(
+  flows: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  if (flows.length === 0) {
+    return '<p class="muted">No reconstructed flows detected yet.</p>';
+  }
+  return flows
+    .map((flow) => {
+      const kind = stringData(flow, 'kind') ?? 'unknown';
+      const steps = flowSteps(flow);
+      const risks = flowRisks(flow);
+      const entrypoints = Array.isArray(flow.data?.entrypoints)
+        ? flow.data.entrypoints.filter(isRecord).map((entrypoint) => {
+            const type = typeof entrypoint.type === 'string' ? entrypoint.type : 'entrypoint';
+            const path = typeof entrypoint.path === 'string' ? entrypoint.path : 'unknown';
+            const symbol = typeof entrypoint.symbol === 'string' ? `#${entrypoint.symbol}` : '';
+            return `${type}: ${path}${symbol}`;
+          })
+        : [];
+      const stepLabels = steps.map((step) => `${step.order}. ${step.type}: ${step.path}`);
+      return `<article class="card" data-search="${htmlEscape(
+        `${flow.id} ${flow.name} ${kind} ${flow.confidence} ${flow.source_files.join(' ')}`,
+      )}" data-kind="flow" data-confidence="${htmlEscape(flow.confidence)}">
+        <div class="badge">${htmlEscape(flow.confidence)} · ${htmlEscape(kind)} · ${htmlEscape(
+          String(asFlowConfidenceScore(flow)),
+        )}</div>
+        <h3>${htmlEscape(flow.name)}</h3>
+        <p class="muted">${htmlEscape(flow.id)}</p>
+        <p>${htmlEscape(flow.description)}</p>
+        <h4>Entrypoints</h4>
+        ${renderListWithEvidence(entrypoints, flow.evidence_ids, evidenceById)}
+        <h4>Steps</h4>
+        ${renderListWithEvidence(stepLabels, unique(steps.flatMap((step) => step.evidence)), evidenceById)}
+        <h4>Coverage</h4>
+        ${renderList([
+          `${flowStringArray(flow, 'components').length} component(s)`,
+          `${flowStringArray(flow, 'files').length} file(s)`,
+          `${flowStringArray(flow, 'tests').length} test artifact(s)`,
+          `${risks.length} risk(s)`,
+        ])}
+        <h4>Risks</h4>
+        ${renderListWithEvidence(
+          risks.map((risk) => `${risk.kind}: ${risk.description}`),
+          unique(risks.flatMap((risk) => risk.evidence)),
+          evidenceById,
+        )}
+      </article>`;
+    })
+    .join('');
+}
+
 function renderStartHere(
   components: readonly BrainEntity[],
   evidenceById: ReadonlyMap<string, BrainEntity>,
@@ -1800,6 +2838,7 @@ function renderReport(params: {
       <p class="muted">Generated ${htmlEscape(generatedAt)} · Project Intelligence Store · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
+        <span class="badge">${params.buckets.flows.length} flows</span>
         <span class="badge warn">${params.buckets.risks.length} risks</span>
         <span class="badge warn">${unknownCount} unknowns</span>
         <span class="badge">${params.buckets.evidence.length} evidence records</span>
@@ -1863,8 +2902,9 @@ function renderReport(params: {
       <details open><summary>Current reasoning</summary><p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p></details>
     </section>
     <section>
-      <h2>Request/Data Flows</h2>
-      <div class="grid">${renderEntityCards(params.buckets.flows)}</div>
+      <h2>Flow Understanding</h2>
+      <p class="muted">Static local flow maps reconstructed from scripts, routes, imports, configs, tests, and component evidence.</p>
+      <div class="grid">${renderFlowCards(params.buckets.flows, evidenceById)}</div>
     </section>
     <section>
       <h2>Dependency Graph</h2>
@@ -1962,7 +3002,7 @@ async function writeEntityFile(
   generatedAt: string,
   entities: readonly BrainEntity[],
 ): Promise<void> {
-  await writeFile(
+  await writeVerifiedFile(
     join(entitiesDir, fileName),
     jsonString({
       generated_at: generatedAt,
@@ -1989,6 +3029,7 @@ function buildBrain(params: {
   readonly now: string;
   readonly files: readonly FileFact[];
   readonly previousFiles: ReadonlyMap<string, PreviousFileFact>;
+  readonly previousFlows: ReadonlyMap<string, BrainEntity>;
   readonly packageFacts: readonly PackageJsonFact[];
 }): {
   readonly buckets: BrainBuckets;
@@ -2272,38 +3313,16 @@ function buildBrain(params: {
     addRelation(relationships, testId, 'tests', projectId, [evidenceId(test.relativePath)]);
   }
 
-  if (buckets.commands.some((command) => command.name === 'build')) {
-    buckets.flows.push(
-      makeEntity({
-        id: entityId('flow', 'build'),
-        type: 'flow',
-        name: 'build',
-        description: 'Build flow inferred from package scripts.',
-        now: params.now,
-        confidence: 'verified',
-        evidenceIds: buckets.commands
-          .filter((command) => command.name === 'build')
-          .flatMap((command) => command.evidence_ids),
-      }),
-    );
-  }
-  if (
-    buckets.commands.some((command) => command.name.includes('test') || command.name === 'check')
-  ) {
-    buckets.flows.push(
-      makeEntity({
-        id: entityId('flow', 'quality-gate'),
-        type: 'flow',
-        name: 'quality gate',
-        description: 'Quality gate inferred from test/check package scripts.',
-        now: params.now,
-        confidence: 'verified',
-        evidenceIds: buckets.commands
-          .filter((command) => command.name.includes('test') || command.name === 'check')
-          .flatMap((command) => command.evidence_ids),
-      }),
-    );
-  }
+  reconstructFlows({
+    rootDir: params.rootDir,
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+    buckets,
+    relationships,
+    changedFiles,
+    previousFlows: params.previousFlows,
+  });
 
   if (!buckets.commands.some((command) => command.name.includes('test'))) {
     buckets.risks.push(
@@ -2382,6 +3401,7 @@ export async function generateProjectBrain(
     const projectName = basename(rootDir);
     const brainDir = join(rootDir, '.rizz', 'brain');
     const entitiesDir = join(brainDir, 'entities');
+    const flowDir = join(brainDir, 'flows');
     const snapshotsDir = join(brainDir, 'snapshots');
     const researchDir = join(rootDir, '.rizz', 'research');
     const reportsDir = join(rootDir, '.rizz', 'reports');
@@ -2393,14 +3413,26 @@ export async function generateProjectBrain(
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'files.json'),
     );
+    const previousFlowFile = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
+      join(entitiesDir, 'flows.json'),
+    );
     const ignorePatterns = await readRizzIgnore(rootDir);
     const previousFiles = previousFileFacts(previous?.entities);
+    const previousFlows = previousEntityMap(previousFlowFile?.entities);
     for (const relativePath of previousFiles.keys()) {
       if (shouldSkipRelativePath(relativePath, ignorePatterns)) previousFiles.delete(relativePath);
     }
     const files = await scanFiles(rootDir, options.maxFiles ?? 5_000, ignorePatterns);
     const packageFacts = await readPackageJsonFacts(rootDir, files);
-    const built = buildBrain({ rootDir, projectName, now, files, previousFiles, packageFacts });
+    const built = buildBrain({
+      rootDir,
+      projectName,
+      now,
+      files,
+      previousFiles,
+      previousFlows,
+      packageFacts,
+    });
     const latest = buildLatest({
       projectName,
       now,
@@ -2422,6 +3454,7 @@ export async function generateProjectBrain(
       ),
       latest_path: '.rizz/brain/latest.json',
       graph_path: '.rizz/brain/graph.json',
+      flow_index_path: '.rizz/brain/flows/index.json',
       report_path: '.rizz/reports/index.html',
       research_paths: {
         metrics: '.rizz/research/metrics.json',
@@ -2429,6 +3462,9 @@ export async function generateProjectBrain(
         confidence: '.rizz/research/confidence.json',
         evidence_quality: '.rizz/research/evidence_quality.json',
         incremental_update: '.rizz/research/incremental_update.json',
+        flow_understanding: '.rizz/research/flow_understanding.json',
+        flow_coverage: '.rizz/research/flow_coverage.json',
+        flow_confidence: '.rizz/research/flow_confidence.json',
       },
     };
     const graph = {
@@ -2473,16 +3509,17 @@ export async function generateProjectBrain(
     const snapshotName = `${now.replace(/:/g, '-')}.json`;
     const snapshot = { index, latest, graph };
 
-    await writeFile(join(brainDir, 'index.json'), jsonString(index));
-    await writeFile(join(brainDir, 'graph.json'), jsonString(graph));
-    await writeFile(join(brainDir, 'latest.json'), jsonString(latest));
-    await writeFile(changelogPath, jsonString(changelog));
-    await writeFile(join(snapshotsDir, snapshotName), jsonString(snapshot));
+    await writeVerifiedFile(join(brainDir, 'index.json'), jsonString(index));
+    await writeVerifiedFile(join(brainDir, 'graph.json'), jsonString(graph));
+    await writeVerifiedFile(join(brainDir, 'latest.json'), jsonString(latest));
+    await writeVerifiedFile(changelogPath, jsonString(changelog));
+    await writeVerifiedFile(join(snapshotsDir, snapshotName), jsonString(snapshot));
     for (const [bucket, fileName, entityType] of ENTITY_FILES) {
       await writeEntityFile(entitiesDir, fileName, entityType, now, built.buckets[bucket]);
     }
+    await writeFlowMirrors(flowDir, now, built.buckets.flows);
     await writeResearchArtifacts(researchDir, researchArtifacts);
-    await writeFile(join(reportsDir, 'index.html'), report);
+    await writeVerifiedFile(join(reportsDir, 'index.html'), report);
 
     return {
       ok: true,
@@ -2496,6 +3533,7 @@ export async function generateProjectBrain(
         changedFiles: built.changedFiles.length,
         staleFiles: built.staleFiles.length,
         components: built.buckets.components.length,
+        flows: built.buckets.flows.length,
         commands: built.buckets.commands.length,
         tests: built.buckets.tests.length,
       },

@@ -234,6 +234,9 @@ describe('project brain generation', () => {
         'coverage.json',
         'confidence.json',
         'evidence_quality.json',
+        'flow_confidence.json',
+        'flow_coverage.json',
+        'flow_understanding.json',
         'incremental_update.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
@@ -245,6 +248,9 @@ describe('project brain generation', () => {
         scanned_files: number;
         changed_files: number;
         components: number;
+        flows: number;
+        flow_steps: number;
+        flow_risks: number;
         entity_counts: { component: number; evidence: number; test: number };
         relationship_counts: { owns: number; depends_on: number; tests: number };
       }>(join(researchDir, 'metrics.json'));
@@ -253,7 +259,10 @@ describe('project brain generation', () => {
         scanned_files: 3,
         changed_files: 1,
         components: 1,
+        flows: 2,
       });
+      expect(metrics.flow_steps).toBeGreaterThan(0);
+      expect(metrics.flow_risks).toBeGreaterThanOrEqual(0);
       expect(metrics.entity_counts.component).toBe(1);
       expect(metrics.entity_counts.evidence).toBe(3);
       expect(metrics.entity_counts.test).toBe(1);
@@ -264,11 +273,13 @@ describe('project brain generation', () => {
       const coverage = await readJson<{
         files_by_kind: Record<string, number>;
         components_with_tests: number;
+        flows_with_tests: number;
         component_file_coverage_ratio: number;
         component_coverage: Array<{ id: string; tests: string[]; configs: string[] }>;
       }>(join(researchDir, 'coverage.json'));
       expect(coverage.files_by_kind).toEqual({ 'package-manifest': 1, source: 1, test: 1 });
       expect(coverage.components_with_tests).toBe(1);
+      expect(coverage.flows_with_tests).toBeGreaterThan(0);
       expect(coverage.component_file_coverage_ratio).toBe(1);
       expect(coverage.component_coverage).toContainEqual(
         expect.objectContaining({
@@ -282,6 +293,7 @@ describe('project brain generation', () => {
         entity_confidence_counts: { verified: number; inferred: number; uncertain: number };
         relationship_confidence_counts: { verified: number; inferred: number; uncertain: number };
         component_confidence: Array<{ id: string; confidence: string; evidence_ids: string[] }>;
+        flow_confidence: Array<{ id: string; confidence: string; evidence_ids: string[] }>;
       }>(join(researchDir, 'confidence.json'));
       expect(confidence.entity_confidence_counts.verified).toBeGreaterThan(0);
       expect(confidence.entity_confidence_counts.inferred).toBeGreaterThan(0);
@@ -296,6 +308,12 @@ describe('project brain generation', () => {
           ]),
         }),
       );
+      expect(confidence.flow_confidence).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:packages--brain--test',
+          confidence: 'inferred',
+        }),
+      );
 
       const evidenceQuality = await readJson<{
         evidence_records: number;
@@ -307,6 +325,7 @@ describe('project brain generation', () => {
           id: string;
           fields: { dependencies?: number; tests?: number; configs?: number };
         }>;
+        flow_field_evidence: Array<{ id: string; fields: { steps?: number; tests?: number } }>;
       }>(join(researchDir, 'evidence_quality.json'));
       expect(evidenceQuality.evidence_records).toBe(3);
       expect(evidenceQuality.referenced_evidence_ids).toBe(3);
@@ -318,6 +337,45 @@ describe('project brain generation', () => {
           id: 'component:packages--brain',
           fields: expect.objectContaining({ dependencies: 1, tests: 1, configs: 1 }),
         }),
+      );
+      expect(evidenceQuality.flow_field_evidence).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:packages--brain--test',
+          fields: expect.objectContaining({ steps: expect.any(Number), tests: 1 }),
+        }),
+      );
+
+      const flowUnderstanding = await readJson<{
+        total_flows: number;
+        flows_with_tests: number;
+        flows_without_tests: number;
+        low_confidence_flows: Array<{ id: string }>;
+      }>(join(researchDir, 'flow_understanding.json'));
+      expect(flowUnderstanding).toMatchObject({
+        total_flows: 2,
+        flows_with_tests: 2,
+        flows_without_tests: 0,
+      });
+      expect(flowUnderstanding.low_confidence_flows).toContainEqual(
+        expect.objectContaining({ id: 'flow:packages--brain--test' }),
+      );
+
+      const flowCoverage = await readJson<{
+        test_backed_flow_ratio: number;
+        flows: Array<{ id: string; tests: number; configs: number }>;
+      }>(join(researchDir, 'flow_coverage.json'));
+      expect(flowCoverage.test_backed_flow_ratio).toBe(1);
+      expect(flowCoverage.flows).toContainEqual(
+        expect.objectContaining({ id: 'flow:packages--brain--test', tests: 1, configs: 1 }),
+      );
+
+      const flowConfidence = await readJson<{
+        low_confidence_flows: Array<{ id: string; score: number }>;
+        flow_confidence_counts: { inferred: number };
+      }>(join(researchDir, 'flow_confidence.json'));
+      expect(flowConfidence.flow_confidence_counts.inferred).toBeGreaterThan(0);
+      expect(flowConfidence.low_confidence_flows).toContainEqual(
+        expect.objectContaining({ id: 'flow:packages--brain--test' }),
       );
 
       const incremental = await readJson<{
@@ -363,12 +421,87 @@ describe('project brain generation', () => {
         file_reuse_ratio: 0.75,
       });
 
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          type: string;
+          name: string;
+          confidence: string;
+          data?: {
+            kind?: string;
+            components?: string[];
+            files?: string[];
+            tests?: string[];
+            configs?: string[];
+            risks?: Array<{ kind: string }>;
+            steps?: Array<{ order: number; path: string; evidence: string[] }>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      expect(flows.entities).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:packages--brain--test',
+          type: 'flow',
+          name: 'test test flow',
+          confidence: 'inferred',
+          data: expect.objectContaining({
+            kind: 'test',
+            components: ['component:packages--brain'],
+            files: expect.arrayContaining([
+              'packages/brain/package.json',
+              'packages/brain/src/index.test.ts',
+              'packages/brain/src/index.ts',
+            ]),
+            tests: ['packages/brain/src/index.test.ts'],
+            configs: ['packages/brain/package.json'],
+          }),
+        }),
+      );
+      const testFlow = flows.entities.find((flow) => flow.id === 'flow:packages--brain--test');
+      const testFlowOrders = testFlow?.data?.steps?.map((step) => step.order) ?? [];
+      expect(testFlowOrders).toEqual(testFlowOrders.map((_, index) => index + 1));
+      expect(testFlow?.data?.steps?.[0]?.evidence).toContain(
+        'evidence:file-packages--brain--src--index.ts',
+      );
+
+      const flowIndex = await readJson<{
+        flows: Array<{
+          id: string;
+          file: string;
+          latest_status: string;
+          steps: number;
+          tests: number;
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'flows', 'index.json'));
+      expect(flowIndex.flows).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:packages--brain--test',
+          file: '.rizz/brain/flows/flow-packages--brain--test.json',
+          latest_status: 'current',
+          tests: 1,
+        }),
+      );
+      const flowDetail = await readJson<{
+        id: string;
+        data?: { steps?: Array<{ order: number }> };
+      }>(join(dir, '.rizz', 'brain', 'flows', 'flow-packages--brain--test.json'));
+      expect(flowDetail.id).toBe('flow:packages--brain--test');
+      const flowDetailOrders = flowDetail.data?.steps?.map((step) => step.order) ?? [];
+      expect(flowDetailOrders).toEqual(flowDetailOrders.map((_, index) => index + 1));
+
       const index = await readJson<{
-        research_paths: { metrics: string; incremental_update: string };
+        flow_index_path: string;
+        research_paths: {
+          metrics: string;
+          incremental_update: string;
+          flow_understanding: string;
+        };
       }>(join(dir, '.rizz', 'brain', 'index.json'));
+      expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
       expect(index.research_paths).toMatchObject({
         metrics: '.rizz/research/metrics.json',
         incremental_update: '.rizz/research/incremental_update.json',
+        flow_understanding: '.rizz/research/flow_understanding.json',
       });
     });
   });

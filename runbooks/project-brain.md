@@ -8,8 +8,8 @@ rizz understand
 rizz brain
 ```
 
-It is intentionally local and deterministic in the first version. It does not require a provider
-key, model call, cloud account, Workspace Mode, or OS connector.
+It is intentionally local and deterministic. It does not require a provider key, model call, cloud
+account, Workspace Mode, or OS connector.
 
 The brain is also the interoperability contract for other agents. Any coding agent, reviewer,
 planning model, CI tool, or human-facing report should be able to read the same local files and
@@ -23,18 +23,23 @@ recover the current project state without depending on a hidden chat transcript.
 .rizz/brain/graph.json
 .rizz/brain/changelog.json
 .rizz/brain/entities/
+.rizz/brain/flows/index.json
+.rizz/brain/flows/<flow-id>.json
 .rizz/brain/snapshots/
 .rizz/research/metrics.json
 .rizz/research/coverage.json
 .rizz/research/confidence.json
 .rizz/research/evidence_quality.json
 .rizz/research/incremental_update.json
+.rizz/research/flow_understanding.json
+.rizz/research/flow_coverage.json
+.rizz/research/flow_confidence.json
 .rizz/reports/index.html
 .rizz/reports/review.html
 ```
 
-`latest.json` is the front door. It summarizes the latest architecture summary, component map,
-risks, review status, open questions, handoffs, confidence gaps, and recommended next actions.
+`latest.json` is the front door. It summarizes the latest architecture summary, component map, flow
+map, risks, review status, open questions, handoffs, confidence gaps, and recommended next actions.
 
 `entities/*.json` stores first-class records with stable IDs:
 
@@ -45,6 +50,10 @@ risks, review status, open questions, handoffs, confidence gaps, and recommended
 
 `graph.json` stores relationships such as `owns`, `depends_on`, `exposes`, `tests`,
 `changed_by`, `reviewed_by`, and `handed_off_to`.
+
+`flows/*.json` stores deterministic mirrors of canonical `flow` entities. Flow entities remain the
+source of truth in `entities/flows.json`; the mirrors make flow details easier for portals, evals,
+and other tools to consume without inventing a second brain.
 
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
@@ -62,14 +71,17 @@ Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/res
 - `evidence_quality.json` summarizes referenced evidence IDs, missing evidence references,
   evidence-backed entities/relationships, and component field-evidence counts.
 - `incremental_update.json` summarizes changed, current, new, and stale files for the latest scan.
+- `flow_understanding.json`, `flow_coverage.json`, and `flow_confidence.json` summarize flow count,
+  kind distribution, test/config coverage, low-confidence flows, affected flows, and confidence
+  calibration.
 
 These artifacts are local scan output. They do not require a provider key, model call, cloud
 account, or external service.
 
 ## Review Flow
 
-`rizz review` is the first brain-backed merge/readiness check. It is deterministic and local in the
-first version; it does not post PR comments, edit code, call a cloud service, or approve changes.
+`rizz review` is the brain-backed merge/readiness check. It is deterministic and local; it does not
+post PR comments, edit code, call a cloud service, or approve changes.
 
 ```sh
 rizz review
@@ -160,6 +172,10 @@ Smoke the command in a temporary repo and confirm:
 - `.rizz/research/confidence.json` exists
 - `.rizz/research/evidence_quality.json` exists
 - `.rizz/research/incremental_update.json` exists
+- `.rizz/research/flow_understanding.json` exists
+- `.rizz/research/flow_coverage.json` exists
+- `.rizz/research/flow_confidence.json` exists
+- `.rizz/brain/flows/index.json` exists
 - `.rizz/reports/index.html` exists
 - `.rizz/reports/review.html` exists after `rizz review`
 - no provider key, token, or user secret appears in generated output
