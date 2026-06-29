@@ -1,5 +1,34 @@
 {
-  "id": "smoke-000",
-  "prompt": "Placeholder task. M5 replaces this with real coding tasks driven through the loop.",
-  "rubric": "schema-only (M0)"
+  "schema_version": 1,
+  "id": "pi-bench-seed-smoke",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "title": "PI-Bench seed schema smoke",
+  "prompt": "Build a local project brain for the fixture and emit deterministic research metrics.",
+  "fixture": {
+    "root": "pi-bench-seed-smoke",
+    "files": [
+      {
+        "path": "README.md",
+        "contents": "# PI-Bench seed smoke\n\nLocal deterministic benchmark fixture.\n"
+      }
+    ]
+  },
+  "expected_artifacts": [".rizz/research/metrics.json", ".rizz/research/benchmark_ready.json"],
+  "coverage_targets": {
+    "component": { "minimum_total": 0 },
+    "flow": { "minimum_total": 0 },
+    "evidence": { "minimum_total": 1 },
+    "unknown": { "minimum_total": 0 }
+  },
+  "rubric": {
+    "pass": [
+      "The fixture is processed locally without provider calls.",
+      "The benchmark-ready artifact is valid JSON."
+    ],
+    "fail": [
+      "The task requires network access or provider credentials.",
+      "The research artifact omits benchmark coverage fields."
+    ]
+  }
 }

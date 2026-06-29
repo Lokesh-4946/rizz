@@ -257,6 +257,7 @@ describe('project brain generation', () => {
         'flow_coverage.json',
         'flow_understanding.json',
         'incremental_update.json',
+        'benchmark_ready.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
         artifactNames,
@@ -456,6 +457,46 @@ describe('project brain generation', () => {
         '2 reconstructed flow(s) are not verified yet.',
       );
 
+      const benchmarkReady = await readJson<{
+        schema_version: number;
+        benchmark_suite: string;
+        deterministic: boolean;
+        provider_calls_required: boolean;
+        network_required: boolean;
+        coverage: {
+          component: { total: number; covered: number; coverage_ratio: number };
+          flow: { total: number; covered: number; coverage_ratio: number };
+          evidence: {
+            records: number;
+            claims: number;
+            claims_with_evidence: number;
+            coverage_ratio: number;
+            missing_references: string[];
+          };
+          unknown: { total: number; covered: number; coverage_ratio: number };
+        };
+        readiness: { is_ready: boolean; score: number; blocking_gaps: string[] };
+      }>(join(researchDir, 'benchmark_ready.json'));
+      expect(benchmarkReady).toMatchObject({
+        schema_version: 1,
+        benchmark_suite: 'pi-bench-seed',
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+      });
+      expect(benchmarkReady.coverage.component).toMatchObject({
+        total: 1,
+        covered: 1,
+        coverage_ratio: 1,
+      });
+      expect(benchmarkReady.coverage.flow.total).toBe(2);
+      expect(benchmarkReady.coverage.flow.covered).toBeGreaterThan(0);
+      expect(benchmarkReady.coverage.evidence.records).toBe(3);
+      expect(benchmarkReady.coverage.evidence.claims_with_evidence).toBeGreaterThan(0);
+      expect(benchmarkReady.coverage.evidence.missing_references).toEqual([]);
+      expect(benchmarkReady.coverage.unknown.coverage_ratio).toBeGreaterThanOrEqual(0);
+      expect(benchmarkReady.readiness.score).toBeGreaterThan(0);
+
       const incremental = await readJson<{
         scanned_files: number;
         changed_files: string[];
@@ -575,6 +616,7 @@ describe('project brain generation', () => {
           incremental_update: string;
           flow_understanding: string;
           architecture_reasoning: string;
+          benchmark_ready: string;
         };
       }>(join(dir, '.rizz', 'brain', 'index.json'));
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
@@ -584,6 +626,7 @@ describe('project brain generation', () => {
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
+        benchmark_ready: '.rizz/research/benchmark_ready.json',
       });
     });
   });
@@ -628,6 +671,26 @@ describe('project brain generation', () => {
       expect(componentIntelligence.evidence_coverage.known_risks).toBe(0);
       expect(componentIntelligence.evidence_backed_field_score).toBeLessThan(
         componentIntelligence.field_coverage_score,
+      );
+
+      const benchmarkReady = await readJson<{
+        coverage: {
+          component: { total: number; covered: number };
+          flow: { total: number; coverage_ratio: number };
+          unknown: { total: number; covered: number; coverage_ratio: number };
+        };
+        readiness: { is_ready: boolean; blocking_gaps: string[] };
+      }>(join(result.value.researchDir, 'benchmark_ready.json'));
+      expect(benchmarkReady.coverage.component.total).toBe(1);
+      expect(benchmarkReady.coverage.component.covered).toBe(0);
+      expect(benchmarkReady.coverage.flow).toMatchObject({ total: 0, coverage_ratio: 0 });
+      expect(benchmarkReady.coverage.unknown.total).toBeGreaterThan(0);
+      expect(benchmarkReady.coverage.unknown.covered).toBeGreaterThan(0);
+      expect(benchmarkReady.coverage.unknown.coverage_ratio).toBeGreaterThan(0);
+      expect(benchmarkReady.coverage.unknown.coverage_ratio).toBeLessThan(1);
+      expect(benchmarkReady.readiness.is_ready).toBe(false);
+      expect(benchmarkReady.readiness.blocking_gaps).toContain(
+        'No component has benchmark coverage across boundary, flow, and evidence signals.',
       );
     });
   });

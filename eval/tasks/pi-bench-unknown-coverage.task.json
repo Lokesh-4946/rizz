@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "pi-bench-unknown-coverage",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "title": "Unknown coverage benchmark seed",
+  "prompt": "Build a local project brain for a sparse utility module and report known-unknown coverage alongside component, flow, and evidence metrics.",
+  "fixture": {
+    "root": "pi-bench-unknown-coverage",
+    "files": [
+      {
+        "path": "lib/helper.ts",
+        "contents": "export const helper = 1;\n"
+      },
+      {
+        "path": "README.md",
+        "contents": "# Sparse utility\n\nThis fixture intentionally has limited local signals.\n"
+      }
+    ]
+  },
+  "expected_artifacts": [
+    ".rizz/research/metrics.json",
+    ".rizz/research/architecture_reasoning.json",
+    ".rizz/research/evidence_quality.json",
+    ".rizz/research/benchmark_ready.json"
+  ],
+  "coverage_targets": {
+    "component": { "minimum_total": 1 },
+    "flow": { "minimum_total": 0 },
+    "evidence": { "minimum_total": 2 },
+    "unknown": { "minimum_total": 1 }
+  },
+  "rubric": {
+    "pass": [
+      "The benchmark-ready JSON preserves known-unknown items as structured local facts.",
+      "Unknown coverage is measured even when flow coverage is sparse.",
+      "The fixture runs without provider credentials."
+    ],
+    "fail": [
+      "Unknowns are silently dropped from research metrics.",
+      "The output depends on network or credential state.",
+      "Sparse flow coverage is reported as a crash instead of measured coverage."
+    ]
+  }
+}

@@ -470,6 +470,7 @@ const RESEARCH_ARTIFACT_FILES = {
   flowCoverage: 'flow_coverage.json',
   flowConfidence: 'flow_confidence.json',
   architectureReasoning: 'architecture_reasoning.json',
+  benchmarkReady: 'benchmark_ready.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -2913,6 +2914,191 @@ function buildArchitectureReasoningArtifact(params: {
   };
 }
 
+function completeRatio(numerator: number, denominator: number): number {
+  if (denominator === 0) return 1;
+  return ratio(numerator, denominator);
+}
+
+function buildBenchmarkReadyArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+}): Record<string, unknown> {
+  const entities = allBucketEntities(params.buckets);
+  const components = params.buckets.components.filter(
+    (component) => component.latest_status !== 'stale',
+  );
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const flowsByComponent = new Map<string, BrainEntity[]>();
+  for (const flow of flows) {
+    for (const componentId of flowStringArray(flow, 'components')) {
+      const existing = flowsByComponent.get(componentId) ?? [];
+      flowsByComponent.set(componentId, [...existing, flow]);
+    }
+  }
+
+  const componentsWithEvidence = components.filter(
+    (component) => component.evidence_ids.length > 0,
+  );
+  const componentsWithTests = components.filter(
+    (component) => stringArrayData(component, 'tests').length > 0,
+  );
+  const componentsWithFlows = components.filter(
+    (component) => (flowsByComponent.get(component.id) ?? []).length > 0,
+  );
+  const componentsWithCoverage = components.filter(
+    (component) =>
+      component.evidence_ids.length > 0 &&
+      stringData(component, 'boundary_type') !== undefined &&
+      (flowsByComponent.get(component.id) ?? []).length > 0,
+  );
+
+  const flowsWithEntrypoints = flows.filter((flow) => {
+    const entrypoints = flow.data?.entrypoints;
+    return Array.isArray(entrypoints) && entrypoints.length > 0;
+  });
+  const flowsWithSteps = flows.filter((flow) => flowSteps(flow).length > 0);
+  const flowsWithEvidence = flows.filter((flow) => flow.evidence_ids.length > 0);
+  const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
+  const flowsWithCoverage = flows.filter((flow) => {
+    const entrypoints = flow.data?.entrypoints;
+    return (
+      Array.isArray(entrypoints) &&
+      entrypoints.length > 0 &&
+      flowSteps(flow).length > 0 &&
+      flow.evidence_ids.length > 0
+    );
+  });
+
+  const relationshipsWithEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length > 0,
+  );
+  const entitiesWithEvidence = entities.filter((entity) => entity.evidence_ids.length > 0);
+  const evidenceClaimCount = entities.length + params.relationships.length;
+  const evidenceBackedClaimCount = entitiesWithEvidence.length + relationshipsWithEvidence.length;
+  const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
+  const referencedEvidenceIds = unique([
+    ...entities.flatMap((entity) => entity.evidence_ids),
+    ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+  ]);
+  const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
+
+  const unknownItems = [
+    ...components.flatMap((component) =>
+      stringArrayData(component, 'unknowns').map((description) => ({
+        kind: 'component',
+        entity_id: component.id,
+        description,
+        evidence_ids: component.evidence_ids,
+      })),
+    ),
+    ...flows.flatMap((flow) =>
+      stringArrayData(flow, 'unknowns').map((description) => ({
+        kind: 'flow',
+        entity_id: flow.id,
+        description,
+        evidence_ids: flow.evidence_ids,
+      })),
+    ),
+    ...params.buckets.risks
+      .filter((risk) => risk.confidence !== 'verified')
+      .map((risk) => ({
+        kind: 'risk',
+        entity_id: risk.id,
+        description: risk.description,
+        evidence_ids: risk.evidence_ids,
+      })),
+  ];
+  const unknownsWithEvidence = unknownItems.filter((item) => item.evidence_ids.length > 0);
+  const componentCoverageRatio = ratio(componentsWithCoverage.length, components.length);
+  const flowCoverageRatio = ratio(flowsWithCoverage.length, flows.length);
+  const evidenceCoverageRatio = ratio(evidenceBackedClaimCount, evidenceClaimCount);
+  const unknownCoverageRatio = completeRatio(unknownsWithEvidence.length, unknownItems.length);
+  const readinessScore = Math.round(
+    ((componentCoverageRatio + flowCoverageRatio + evidenceCoverageRatio + unknownCoverageRatio) /
+      4) *
+      100,
+  );
+  const blockingGaps = [
+    ...(components.length > 0 && componentsWithCoverage.length === 0
+      ? ['No component has benchmark coverage across boundary, flow, and evidence signals.']
+      : []),
+    ...(flows.length > 0 && flowsWithCoverage.length === 0
+      ? ['No flow has benchmark coverage across entrypoint, steps, and evidence signals.']
+      : []),
+    ...(missingEvidenceReferences.length > 0
+      ? [`${missingEvidenceReferences.length} evidence reference(s) are missing.`]
+      : []),
+  ];
+
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    benchmark_suite: 'pi-bench-seed',
+    project_id: entityId('project', params.projectName),
+    project_name: params.projectName,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    coverage: {
+      component: {
+        total: components.length,
+        covered: componentsWithCoverage.length,
+        coverage_ratio: componentCoverageRatio,
+        with_evidence: componentsWithEvidence.length,
+        with_tests: componentsWithTests.length,
+        with_flows: componentsWithFlows.length,
+        uncovered_component_ids: components
+          .filter((component) => !componentsWithCoverage.includes(component))
+          .map((component) => component.id),
+      },
+      flow: {
+        total: flows.length,
+        covered: flowsWithCoverage.length,
+        coverage_ratio: flowCoverageRatio,
+        with_entrypoints: flowsWithEntrypoints.length,
+        with_steps: flowsWithSteps.length,
+        with_evidence: flowsWithEvidence.length,
+        with_tests: flowsWithTests.length,
+        uncovered_flow_ids: flows
+          .filter((flow) => !flowsWithCoverage.includes(flow))
+          .map((flow) => flow.id),
+      },
+      evidence: {
+        records: params.buckets.evidence.length,
+        claims: evidenceClaimCount,
+        claims_with_evidence: evidenceBackedClaimCount,
+        coverage_ratio: evidenceCoverageRatio,
+        referenced_evidence_ids: referencedEvidenceIds.length,
+        missing_references: missingEvidenceReferences,
+      },
+      unknown: {
+        total: unknownItems.length,
+        covered: unknownsWithEvidence.length,
+        coverage_ratio: unknownCoverageRatio,
+        components_with_unknowns: components.filter(
+          (component) => stringArrayData(component, 'unknowns').length > 0,
+        ).length,
+        flows_with_unknowns: flows.filter((flow) => stringArrayData(flow, 'unknowns').length > 0)
+          .length,
+        confidence_gap_risks: params.buckets.risks.filter((risk) => risk.confidence !== 'verified')
+          .length,
+        items: unknownItems.slice(0, 25),
+      },
+    },
+    readiness: {
+      is_ready: blockingGaps.length === 0,
+      score: readinessScore,
+      blocking_gaps: blockingGaps,
+      notes: [
+        'Benchmark readiness is computed from deterministic local brain facts only.',
+        'Coverage ratios track component, flow, evidence, and known-unknown surfaces for PI-Bench seed fixtures.',
+      ],
+    },
+  };
+}
+
 function buildResearchArtifacts(params: {
   readonly projectName: string;
   readonly now: string;
@@ -3171,6 +3357,12 @@ function buildResearchArtifacts(params: {
       buckets: params.buckets,
       relationships: params.relationships,
       changedFiles,
+    }),
+    benchmarkReady: buildBenchmarkReadyArtifact({
+      projectName: params.projectName,
+      now: params.now,
+      buckets: params.buckets,
+      relationships: params.relationships,
     }),
   };
 }
@@ -4540,6 +4732,7 @@ export async function generateProjectBrain(
         flow_coverage: '.rizz/research/flow_coverage.json',
         flow_confidence: '.rizz/research/flow_confidence.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
+        benchmark_ready: '.rizz/research/benchmark_ready.json',
       },
     };
     const graph = {
