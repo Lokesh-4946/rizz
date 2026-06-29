@@ -305,7 +305,40 @@ interface AffectedFlowData {
   readonly changed_files: readonly string[];
   readonly components: readonly string[];
   readonly tests: readonly string[];
+  readonly configs: readonly string[];
   readonly risks: number;
+  readonly evidence_ids: readonly string[];
+}
+
+interface ReviewAffectedComponentData {
+  readonly id: string;
+  readonly name: string;
+  readonly boundary_type: string;
+  readonly criticality: string;
+  readonly blast_radius: string;
+  readonly changed_files: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly reason: string;
+}
+
+interface ReviewAffectedRelationshipData {
+  readonly from: string;
+  readonly relation: BrainRelationship['relation'];
+  readonly to: string;
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+}
+
+interface ReviewEvidenceSummaryData {
+  readonly changed_files: number;
+  readonly direct_components: number;
+  readonly dependent_components: number;
+  readonly affected_flows: number;
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
   readonly evidence_ids: readonly string[];
 }
 
@@ -313,9 +346,14 @@ interface ReviewSummaryData {
   readonly id: string;
   readonly generated_at: string;
   readonly changed_files: readonly string[];
+  readonly direct_affected_components: readonly ReviewAffectedComponentData[];
+  readonly dependent_components: readonly ReviewAffectedComponentData[];
   readonly affected_components: readonly string[];
   readonly affected_flows: readonly AffectedFlowData[];
+  readonly affected_relationships: readonly ReviewAffectedRelationshipData[];
   readonly affected_entities: readonly string[];
+  readonly blast_radius_reasons: readonly string[];
+  readonly review_evidence_summary: ReviewEvidenceSummaryData;
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
@@ -4585,10 +4623,32 @@ function renderLatestReview(latest: Record<string, unknown>): string {
   }
   const rows = Object.entries(status)
     .map(
-      ([key, value]) => `<tr><th>${htmlEscape(key)}</th><td>${htmlEscape(String(value))}</td></tr>`,
+      ([key, value]) =>
+        `<tr><th>${htmlEscape(key)}</th><td>${renderReviewStatusValue(value)}</td></tr>`,
     )
     .join('');
   return `<table><tbody>${rows}</tbody></table>`;
+}
+
+function renderReviewStatusValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    const labels = value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+        return undefined;
+      })
+      .filter((item): item is string => item !== undefined);
+    return renderList(labels);
+  }
+  if (isRecord(value)) {
+    const labels = Object.entries(value).map(([key, item]) => {
+      if (Array.isArray(item)) return `${key}: ${item.length}`;
+      return `${key}: ${String(item)}`;
+    });
+    return renderList(labels);
+  }
+  return htmlEscape(String(value));
 }
 
 function renderArchitectureReasoning(value: unknown): string {
@@ -5687,9 +5747,15 @@ export async function reviewProjectChanges(
         overall_risk: review.overall_risk,
         surgicality_score: review.surgicality_score,
         blast_radius: review.blast_radius,
+        blast_radius_reasons: review.blast_radius_reasons,
         findings: review.findings.length,
         changed_files: review.changed_files,
+        direct_affected_components: review.direct_affected_components.map(
+          (component) => component.id,
+        ),
+        dependent_components: review.dependent_components.map((component) => component.id),
         affected_flows: review.affected_flows.map((flow) => flow.id),
+        review_evidence_summary: review.review_evidence_summary,
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
       latest_open_questions: mergeStrings(latest.latest_open_questions, [
@@ -6593,9 +6659,16 @@ function buildReview(params: {
   const changedDependencyFiles = changedFiles.filter((file) => isDependencyPath(file));
   const affectedComponents = affectedComponentEntities(changedFiles, params.entitySets.components);
   const affectedComponentIds = affectedComponents.map((component) => component.id);
+  const dependentComponents = dependentComponentEntities(
+    affectedComponentIds,
+    params.relationships,
+    params.entitySets.components,
+  );
+  const dependentComponentIds = dependentComponents.map((component) => component.id);
+  const allAffectedComponents = uniqueEntities([...affectedComponents, ...dependentComponents]);
   const affectedFlows = affectedFlowEntities(
     changedFiles,
-    affectedComponents,
+    allAffectedComponents,
     params.entitySets.flows,
   );
   const affectedFlowIds = affectedFlows.map((flow) => flow.id);
@@ -6610,15 +6683,69 @@ function buildReview(params: {
       .filter((test) => test.source_files.some((file) => changedFileSet.has(file)))
       .map((test) => test.id),
   ]);
-  const graphAffectedEntities = unique([
+  const affectedEntitySeed = unique([
     ...directlyAffectedEntities,
+    ...dependentComponentIds,
+    ...affectedFlowIds,
+  ]);
+  const affectedRelationships = affectedReviewRelationships(
+    params.relationships,
+    affectedEntitySeed,
+  );
+  const graphAffectedEntities = unique([
+    ...affectedEntitySeed,
     ...params.relationships
-      .filter(
-        (rel) =>
-          directlyAffectedEntities.includes(rel.from) || directlyAffectedEntities.includes(rel.to),
-      )
+      .filter((rel) => affectedEntitySeed.includes(rel.from) || affectedEntitySeed.includes(rel.to))
       .flatMap((rel) => [rel.from, rel.to]),
   ]);
+  const directAffectedComponentData = reviewAffectedComponents({
+    components: affectedComponents,
+    changedFiles,
+    affectedFlows,
+    relationships: params.relationships,
+    reasonFor: () => 'Changed file maps directly to this component boundary.',
+  });
+  const dependentComponentData = reviewAffectedComponents({
+    components: dependentComponents,
+    changedFiles,
+    affectedFlows,
+    relationships: params.relationships,
+    reasonFor: (component) =>
+      dependentComponentReason(component.id, affectedComponentIds, params.relationships),
+  });
+  const affectedTests = unique([
+    ...affectedFlows.flatMap((flow) => flow.tests),
+    ...allAffectedComponents.flatMap((component) => stringArrayData(component, 'tests')),
+    ...changedTestFiles,
+  ]).map(safeText);
+  const affectedConfigs = unique([
+    ...affectedFlows.flatMap((flow) => flow.configs),
+    ...allAffectedComponents.flatMap((component) => stringArrayData(component, 'configs')),
+    ...changedConfigFiles,
+    ...changedDependencyFiles,
+  ]).map(safeText);
+  const reviewEvidenceIds = unique([
+    ...allAffectedComponents.flatMap((component) => component.evidence_ids),
+    ...affectedFlows.flatMap((flow) => flow.evidence_ids),
+    ...affectedRelationships.flatMap((relationship) => relationship.evidence_ids),
+    ...changedFiles.map(evidenceId),
+  ]).map(safeText);
+  const blastRadius = classifyReviewBlastRadius({
+    fileCount: changedFiles.length,
+    directComponentCount: affectedComponents.length,
+    dependentComponentCount: dependentComponents.length,
+    flowCount: affectedFlows.length,
+    relationshipCount: affectedRelationships.length,
+  });
+  const blastRadiusReasons = blastRadiusReasonLines({
+    changedFiles,
+    directComponents: affectedComponents,
+    dependentComponents,
+    affectedFlows,
+    affectedRelationships,
+    affectedTests,
+    affectedConfigs,
+  });
 
   const findings: ReviewFindingData[] = [];
   const addFinding = (
@@ -6661,13 +6788,18 @@ function buildReview(params: {
   }
 
   const isBroad = changedFiles.length > 8 || affectedComponents.length > 3;
-  if (isBroad) {
+  if (isBroad || blastRadius === 'broad') {
     addFinding({
       slug: 'broad-change',
-      severity: changedFiles.length > 20 || affectedComponents.length > 5 ? 'high' : 'medium',
+      severity:
+        changedFiles.length > 20 || affectedComponents.length > 5 || dependentComponents.length > 3
+          ? 'high'
+          : 'medium',
       category: 'Regression risk',
       title: 'Broad change crosses multiple brain boundaries',
-      description: `The diff touches ${changedFiles.length} file(s) across ${affectedComponents.length} inferred component(s).`,
+      description: safeText(
+        `The diff touches ${changedFiles.length} file(s), ${affectedComponents.length} direct component(s), ${dependentComponents.length} dependent component(s), and ${affectedFlows.length} flow(s). ${blastRadiusReasons[0] ?? ''}`,
+      ),
       affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
       confidence: 'inferred',
@@ -6678,13 +6810,43 @@ function buildReview(params: {
     });
   }
 
+  if (dependentComponents.length > 0) {
+    addFinding({
+      slug: 'dependent-components',
+      severity: dependentComponents.length > 2 ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'Consumer components depend on changed components',
+      description: safeText(
+        `${dependentComponents.length} component(s) import, call, or depend on directly changed component(s): ${dependentComponents
+          .map((component) => component.name)
+          .slice(0, 5)
+          .join(', ')}.`,
+      ),
+      affected_files: unique(dependentComponents.flatMap((component) => component.source_files)),
+      affected_entities: unique([...affectedComponentIds, ...dependentComponentIds]),
+      evidenceIds: unique(
+        params.relationships
+          .filter(
+            (rel) =>
+              dependentComponentIds.includes(rel.from) && affectedComponentIds.includes(rel.to),
+          )
+          .flatMap((rel) => rel.evidence_ids),
+      ),
+      confidence: 'inferred',
+      recommendation:
+        'Review changed exports/contracts against consumer components before treating this as isolated.',
+    });
+  }
+
   if (changedSourceFiles.length > 0 && changedTestFiles.length === 0) {
     addFinding({
       slug: 'missing-tests',
       severity: changedSourceFiles.length > 4 ? 'high' : 'medium',
       category: 'Missing tests',
       title: 'Runtime files changed without test artifacts in the diff',
-      description: `${changedSourceFiles.length} source file(s) changed, but no test file changed with them.`,
+      description: safeText(
+        `${changedSourceFiles.length} source file(s) changed, but no test file changed with them. Existing linked test evidence: ${affectedTests.slice(0, 5).join(', ') || 'none detected'}.`,
+      ),
       affected_files: changedSourceFiles.map(safeText),
       affected_entities: graphAffectedEntities,
       confidence: 'verified',
@@ -6736,10 +6898,19 @@ function buildReview(params: {
       severity: affectedFlows.length > 3 ? 'medium' : 'low',
       category: 'Hidden coupling',
       title: 'Known flows overlap the diff',
-      description: `The diff touches ${affectedFlows.length} reconstructed flow(s): ${affectedFlows
-        .map((flow) => flow.name)
-        .slice(0, 5)
-        .join(', ')}.`,
+      description: safeText(
+        `The diff touches ${affectedFlows.length} reconstructed flow(s): ${affectedFlows
+          .map((flow) => flow.name)
+          .slice(0, 5)
+          .join(', ')}. Linked tests/configs: ${
+          unique([
+            ...affectedFlows.flatMap((flow) => flow.tests),
+            ...affectedFlows.flatMap((flow) => flow.configs),
+          ])
+            .slice(0, 6)
+            .join(', ') || 'none detected'
+        }.`,
+      ),
       affected_files: unique(affectedFlows.flatMap((flow) => flow.changed_files)),
       affected_entities: graphAffectedEntities,
       evidenceIds: unique(affectedFlows.flatMap((flow) => flow.evidence_ids)),
@@ -6805,10 +6976,9 @@ function buildReview(params: {
   }
 
   const requiredTests = requiredTestCommands(params.entitySets.commands, changedFiles);
-  const blastRadius = classifyBlastRadius(changedFiles.length, affectedComponents.length);
   const surgicalityScore = scoreSurgicality(
     changedFiles.length,
-    affectedComponents.length,
+    affectedComponents.length + dependentComponents.length,
     findings,
   );
   const overallRisk = classifyOverallRisk(findings, blastRadius);
@@ -6816,9 +6986,22 @@ function buildReview(params: {
     id: entityId('review', `${params.now}-git-diff`),
     generated_at: params.now,
     changed_files: publicChangedFiles,
-    affected_components: affectedComponentIds,
+    direct_affected_components: directAffectedComponentData,
+    dependent_components: dependentComponentData,
+    affected_components: unique([...affectedComponentIds, ...dependentComponentIds]),
     affected_flows: affectedFlows,
+    affected_relationships: affectedRelationships,
     affected_entities: graphAffectedEntities,
+    blast_radius_reasons: blastRadiusReasons,
+    review_evidence_summary: {
+      changed_files: changedFiles.length,
+      direct_components: affectedComponents.length,
+      dependent_components: dependentComponents.length,
+      affected_flows: affectedFlows.length,
+      affected_tests: affectedTests,
+      affected_configs: affectedConfigs,
+      evidence_ids: reviewEvidenceIds.slice(0, 40),
+    },
     findings,
     overall_risk: overallRisk,
     surgicality_score: surgicalityScore,
@@ -6828,7 +7011,9 @@ function buildReview(params: {
       findings,
       changedFiles,
       affectedComponents,
+      dependentComponents,
       affectedFlows,
+      blastRadiusReasons,
     ),
     recommended_action: recommendAction(overallRisk, findings),
   };
@@ -6869,6 +7054,127 @@ function affectedComponentEntities(
   });
 }
 
+function uniqueEntities(entities: readonly BrainEntity[]): BrainEntity[] {
+  const byId = new Map<string, BrainEntity>();
+  for (const entity of entities) {
+    if (!byId.has(entity.id)) byId.set(entity.id, entity);
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function dependentComponentEntities(
+  directComponentIds: readonly string[],
+  relationships: readonly BrainRelationship[],
+  components: readonly BrainEntity[],
+): BrainEntity[] {
+  const directIds = new Set(directComponentIds);
+  const componentsById = new Map(components.map((component) => [component.id, component]));
+  const dependentIds = new Set<string>();
+  for (const rel of relationships) {
+    if (rel.relation === 'imports' || rel.relation === 'calls' || rel.relation === 'depends_on') {
+      if (directIds.has(rel.to) && componentsById.has(rel.from) && !directIds.has(rel.from)) {
+        dependentIds.add(rel.from);
+      }
+      continue;
+    }
+    if (rel.relation === 'used_by') {
+      if (directIds.has(rel.from) && componentsById.has(rel.to) && !directIds.has(rel.to)) {
+        dependentIds.add(rel.to);
+      }
+    }
+  }
+  return [...dependentIds]
+    .map((id) => componentsById.get(id))
+    .filter((component): component is BrainEntity => component !== undefined)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function dependentComponentReason(
+  componentId: string,
+  directComponentIds: readonly string[],
+  relationships: readonly BrainRelationship[],
+): string {
+  const directIds = new Set(directComponentIds);
+  const reasons = relationships
+    .filter((rel) => rel.from === componentId && directIds.has(rel.to))
+    .map((rel) => `${componentId} ${rel.relation} ${rel.to}`);
+  if (reasons.length > 0) return `Consumer relationship: ${reasons.slice(0, 3).join(', ')}.`;
+  const usedByReasons = relationships
+    .filter(
+      (rel) => rel.relation === 'used_by' && rel.to === componentId && directIds.has(rel.from),
+    )
+    .map((rel) => `${rel.from} ${rel.relation} ${componentId}`);
+  if (usedByReasons.length > 0) {
+    return `Consumer relationship: ${usedByReasons.slice(0, 3).join(', ')}.`;
+  }
+  return 'Graph marks this component as a downstream consumer of the changed boundary.';
+}
+
+function affectedReviewRelationships(
+  relationships: readonly BrainRelationship[],
+  affectedEntityIds: readonly string[],
+): ReviewAffectedRelationshipData[] {
+  const affectedIds = new Set(affectedEntityIds);
+  return relationships
+    .filter((rel) => affectedIds.has(rel.from) || affectedIds.has(rel.to))
+    .slice(0, 80)
+    .map((rel) => ({
+      from: safeText(rel.from),
+      relation: rel.relation,
+      to: safeText(rel.to),
+      confidence: rel.confidence,
+      evidence_ids: rel.evidence_ids.map(safeText),
+    }))
+    .sort((a, b) =>
+      `${a.from}:${a.relation}:${a.to}`.localeCompare(`${b.from}:${b.relation}:${b.to}`),
+    );
+}
+
+function reviewAffectedComponents(params: {
+  readonly components: readonly BrainEntity[];
+  readonly changedFiles: readonly string[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly relationships: readonly BrainRelationship[];
+  readonly reasonFor: (component: BrainEntity) => string;
+}): ReviewAffectedComponentData[] {
+  return params.components.map((component) => {
+    const componentFiles = new Set(component.source_files);
+    const componentFlows = params.affectedFlows.filter((flow) =>
+      flow.components.includes(component.id),
+    );
+    const relationshipEvidence = params.relationships
+      .filter((rel) => rel.from === component.id || rel.to === component.id)
+      .flatMap((rel) => rel.evidence_ids);
+    return {
+      id: safeText(component.id),
+      name: safeText(component.name),
+      boundary_type: safeText(stringData(component, 'boundary_type') ?? 'unknown'),
+      criticality: safeText(stringData(component, 'criticality') ?? 'unknown'),
+      blast_radius: safeText(stringData(component, 'blast_radius') ?? 'unknown'),
+      changed_files: params.changedFiles
+        .filter((file) => componentFiles.has(file) || file.startsWith(`${component.name}/`))
+        .map(safeText),
+      affected_flows: componentFlows.map((flow) => flow.id),
+      tests: unique([
+        ...stringArrayData(component, 'tests'),
+        ...componentFlows.flatMap((flow) => flow.tests),
+      ]).map(safeText),
+      configs: unique([
+        ...stringArrayData(component, 'configs'),
+        ...componentFlows.flatMap((flow) => flow.configs),
+      ]).map(safeText),
+      evidence_ids: unique([
+        ...component.evidence_ids,
+        ...componentFlows.flatMap((flow) => flow.evidence_ids),
+        ...relationshipEvidence,
+      ])
+        .map(safeText)
+        .slice(0, 20),
+      reason: safeText(params.reasonFor(component)),
+    };
+  });
+}
+
 function affectedFlowEntities(
   changedFiles: readonly string[],
   affectedComponents: readonly BrainEntity[],
@@ -6905,6 +7211,7 @@ function affectedFlowEntities(
         changed_files: matchedChangedFiles.map(safeText),
         components: flowComponents.map(safeText),
         tests: flowStringArray(flow, 'tests').map(safeText),
+        configs: flowStringArray(flow, 'configs').map(safeText),
         risks: flowRisks(flow).length,
         evidence_ids: flow.evidence_ids.map(safeText),
       },
@@ -6940,6 +7247,55 @@ function classifyBlastRadius(fileCount: number, componentCount: number): BlastRa
   if (fileCount > 12 || componentCount > 4) return 'broad';
   if (fileCount > 4 || componentCount > 1) return 'moderate';
   return 'narrow';
+}
+
+function classifyReviewBlastRadius(params: {
+  readonly fileCount: number;
+  readonly directComponentCount: number;
+  readonly dependentComponentCount: number;
+  readonly flowCount: number;
+  readonly relationshipCount: number;
+}): BlastRadius {
+  if (
+    params.fileCount > 12 ||
+    params.directComponentCount > 4 ||
+    params.dependentComponentCount > 3 ||
+    params.flowCount > 5 ||
+    params.relationshipCount > 80
+  ) {
+    return 'broad';
+  }
+  if (
+    params.fileCount > 4 ||
+    params.directComponentCount > 1 ||
+    params.dependentComponentCount > 0 ||
+    params.flowCount > 1 ||
+    params.relationshipCount > 40
+  ) {
+    return 'moderate';
+  }
+  return 'narrow';
+}
+
+function blastRadiusReasonLines(params: {
+  readonly changedFiles: readonly string[];
+  readonly directComponents: readonly BrainEntity[];
+  readonly dependentComponents: readonly BrainEntity[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedRelationships: readonly ReviewAffectedRelationshipData[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+}): string[] {
+  const directNames = params.directComponents.map((component) => component.name);
+  const dependentNames = params.dependentComponents.map((component) => component.name);
+  return [
+    `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
+    params.dependentComponents.length === 0
+      ? 'No dependent consumer components were found from import/call/dependency graph edges.'
+      : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
+    `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
+    `${params.affectedRelationships.length} graph relationship(s) touch the review blast radius.`,
+  ].map(safeText);
 }
 
 function scoreSurgicality(
@@ -6985,14 +7341,19 @@ function suggestedFocusAreas(
   findings: readonly ReviewFindingData[],
   changedFiles: readonly string[],
   components: readonly BrainEntity[],
+  dependentComponents: readonly BrainEntity[],
   affectedFlows: readonly AffectedFlowData[],
+  blastRadiusReasons: readonly string[],
 ): string[] {
   const categories = findings.map((finding) => finding.category);
   const componentNames = components.map((component) => component.name);
+  const dependentNames = dependentComponents.map((component) => component.name);
   return unique([
     ...categories,
     ...componentNames.map((name) => `component: ${name}`),
+    ...dependentNames.map((name) => `dependent component: ${name}`),
     ...affectedFlows.map((flow) => `flow: ${flow.name}`),
+    ...blastRadiusReasons.slice(0, 2),
     ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
     ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
   ]).slice(0, 8);
@@ -7025,14 +7386,52 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Flow</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Flow</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
         <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(flow.id)} · ${htmlEscape(flow.kind)}</span></td>
         <td>${renderList(flow.changed_files)}</td>
         <td>${renderList(flow.components)}</td>
         <td>${renderList(flow.tests)}</td>
+        <td>${renderList(flow.configs)}</td>
         <td>${htmlEscape(flow.confidence)} · ${flow.score}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
+function renderAffectedComponentRows(
+  components: readonly ReviewAffectedComponentData[],
+  emptyLabel: string,
+): string {
+  if (components.length === 0) return `<p class="muted">${htmlEscape(emptyLabel)}</p>`;
+  return `<table><thead><tr><th>Component</th><th>Reason</th><th>Files</th><th>Flows</th><th>Tests / Configs</th></tr></thead><tbody>${components
+    .map(
+      (component) => `<tr>
+        <td><strong>${htmlEscape(component.name)}</strong><br><span class="muted">${htmlEscape(component.id)} · ${htmlEscape(component.boundary_type)} · ${htmlEscape(component.criticality)} · ${htmlEscape(component.blast_radius)} radius</span></td>
+        <td>${htmlEscape(component.reason)}</td>
+        <td>${renderList(component.changed_files)}</td>
+        <td>${renderList(component.affected_flows)}</td>
+        <td>${renderList([...component.tests, ...component.configs])}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
+function renderAffectedRelationshipRows(
+  relationships: readonly ReviewAffectedRelationshipData[],
+): string {
+  if (relationships.length === 0) {
+    return '<p class="muted">No graph relationships touch this review blast radius.</p>';
+  }
+  return `<table><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th></tr></thead><tbody>${relationships
+    .slice(0, 20)
+    .map(
+      (relationship) => `<tr>
+        <td>${htmlEscape(relationship.from)}</td>
+        <td>${htmlEscape(relationship.relation)}</td>
+        <td>${htmlEscape(relationship.to)}</td>
+        <td>${htmlEscape(relationship.confidence)}</td>
       </tr>`,
     )
     .join('')}</tbody></table>`;
@@ -7086,8 +7485,30 @@ function renderReviewReport(review: ReviewSummaryData): string {
       <article class="card"><h2>Findings</h2><p>${review.findings.length}</p></article>
     </section>
     <section>
+      <h2>Blast Radius Evidence</h2>
+      <div class="grid">
+        <article class="card"><h2>Direct Components</h2><p>${review.direct_affected_components.length}</p></article>
+        <article class="card"><h2>Dependent Components</h2><p>${review.dependent_components.length}</p></article>
+        <article class="card"><h2>Relationships</h2><p>${review.affected_relationships.length}</p></article>
+        <article class="card"><h2>Evidence Records</h2><p>${review.review_evidence_summary.evidence_ids.length}</p></article>
+      </div>
+      ${renderList(review.blast_radius_reasons)}
+    </section>
+    <section>
+      <h2>Direct Components</h2>
+      ${renderAffectedComponentRows(review.direct_affected_components, 'No direct component boundary was mapped for this diff.')}
+    </section>
+    <section>
+      <h2>Dependent Components</h2>
+      ${renderAffectedComponentRows(review.dependent_components, 'No dependent consumer components were found.')}
+    </section>
+    <section>
       <h2>Affected Flows</h2>
       ${renderAffectedFlowRows(review.affected_flows)}
+    </section>
+    <section>
+      <h2>Affected Relationships</h2>
+      ${renderAffectedRelationshipRows(review.affected_relationships)}
     </section>
     <section>
       <h2>Required Tests</h2>
