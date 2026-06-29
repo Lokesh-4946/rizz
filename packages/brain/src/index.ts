@@ -167,6 +167,7 @@ interface FlowEntrypoint {
   readonly type: FlowEntrypointType;
   readonly path: string;
   readonly symbol: string | null;
+  readonly component_id?: string | null;
   readonly evidence: readonly string[];
 }
 
@@ -1463,6 +1464,157 @@ function importSpecifiersFromText(text: string): string[] {
   return [...specifiers].sort((a, b) => a.localeCompare(b));
 }
 
+const RESOLVABLE_SOURCE_EXTENSIONS = [
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.json',
+] as const;
+
+function uniqueFileFacts(files: readonly FileFact[]): FileFact[] {
+  const byPath = new Map<string, FileFact>();
+  for (const file of files) byPath.set(file.relativePath, file);
+  return [...byPath.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+function normalizedPathHint(value: string): string {
+  return value
+    .trim()
+    .replace(/^['"`]+|['"`]+$/g, '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/[),;]+$/g, '');
+}
+
+function commandTokens(command: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"([^"]+)"|'([^']+)'|`([^`]+)`|[^\s]+/g;
+  for (const match of command.matchAll(pattern)) {
+    const token = match[1] ?? match[2] ?? match[3] ?? match[0];
+    const normalized = normalizedPathHint(token);
+    if (normalized !== '') tokens.push(normalized);
+  }
+  return tokens;
+}
+
+function possibleFilePaths(basePath: string): string[] {
+  const normalized = normalizedPathHint(basePath);
+  const extension = extname(normalized);
+  const candidates = new Set<string>([normalized]);
+  if (extension !== '') {
+    const withoutExtension = normalized.slice(0, -extension.length);
+    for (const replacement of RESOLVABLE_SOURCE_EXTENSIONS) {
+      candidates.add(`${withoutExtension}${replacement}`);
+    }
+    if (normalized.includes('/dist/')) {
+      const sourceBase = withoutExtension.replace('/dist/', '/src/');
+      for (const replacement of RESOLVABLE_SOURCE_EXTENSIONS) {
+        candidates.add(`${sourceBase}${replacement}`);
+      }
+    }
+  } else {
+    for (const replacement of RESOLVABLE_SOURCE_EXTENSIONS) {
+      candidates.add(`${normalized}${replacement}`);
+      candidates.add(`${normalized}/index${replacement}`);
+    }
+  }
+  return [...candidates];
+}
+
+function filesForPathHint(files: readonly FileFact[], hint: string): FileFact[] {
+  const normalized = normalizedPathHint(hint);
+  if (normalized === '' || normalized.startsWith('-') || normalized.includes('://')) return [];
+  if (normalized.includes('=') && !normalized.includes('/')) return [];
+  const known = new Map(files.map((file) => [file.relativePath, file]));
+  const exactMatches = possibleFilePaths(normalized)
+    .map((candidate) => known.get(candidate))
+    .filter((file): file is FileFact => file !== undefined);
+  if (exactMatches.length > 0) return uniqueFileFacts(exactMatches);
+  if (!normalized.includes('/')) return [];
+  return uniqueFileFacts(
+    files
+      .filter(
+        (file) =>
+          file.relativePath === normalized || file.relativePath.startsWith(`${normalized}/`),
+      )
+      .sort((a, b) => {
+        const rank = (file: FileFact): number => {
+          const kind = classifySourceKind(file);
+          if (kind === 'source') return 0;
+          if (kind === 'test') return 1;
+          if (kind === 'package-manifest' || kind === 'config') return 2;
+          return 3;
+        };
+        return rank(a) - rank(b) || a.relativePath.localeCompare(b.relativePath);
+      })
+      .slice(0, 20),
+  );
+}
+
+function filesReferencedByCommand(
+  files: readonly FileFact[],
+  command: string,
+  baseDir: string | undefined,
+): FileFact[] {
+  return uniqueFileFacts(
+    commandTokens(command).flatMap((token) => {
+      const direct = filesForPathHint(files, token);
+      if (baseDir === undefined || token.startsWith('/') || token.startsWith('../')) {
+        return direct;
+      }
+      return [...direct, ...filesForPathHint(files, `${baseDir}/${token}`)];
+    }),
+  );
+}
+
+function resolveRelativeImportFiles(
+  files: readonly FileFact[],
+  fromPath: string,
+  specifier: string,
+): FileFact[] {
+  if (!specifier.startsWith('.')) return [];
+  const base = join(dirname(fromPath), specifier).split(sep).join('/');
+  return filesForPathHint(files, base);
+}
+
+function importContextForFiles(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly entryFiles: readonly FileFact[];
+}): {
+  readonly importedSpecifiers: readonly string[];
+  readonly importedFiles: readonly FileFact[];
+  readonly importEvidence: readonly FlowEvidence[];
+} {
+  const importedSpecifiers = new Set<string>();
+  const importedFiles: FileFact[] = [];
+  const importEvidence: FlowEvidence[] = [];
+  for (const file of params.entryFiles) {
+    const text = readTextIfAvailable(params.rootDir, file.relativePath);
+    if (text === undefined) continue;
+    for (const specifier of importSpecifiersFromText(text)) {
+      importedSpecifiers.add(specifier);
+      importEvidence.push(
+        flowEvidenceForNeedle({
+          rootDir: params.rootDir,
+          path: file.relativePath,
+          needle: specifier,
+          reason: `Static import evidence for ${specifier}.`,
+        }),
+      );
+      importedFiles.push(...resolveRelativeImportFiles(params.files, file.relativePath, specifier));
+    }
+  }
+  return {
+    importedSpecifiers: [...importedSpecifiers].sort((a, b) => a.localeCompare(b)),
+    importedFiles: uniqueFileFacts(importedFiles),
+    importEvidence: uniqueFlowEvidence(importEvidence),
+  };
+}
+
 function readTextIfAvailable(rootDir: string, relativePath: string): string | undefined {
   try {
     return readFileSync(join(rootDir, relativePath), 'utf8');
@@ -1631,6 +1783,9 @@ function flowEntrypoints(entity: BrainEntity): FlowEntrypoint[] {
       typeof entrypoint.type === 'string' &&
       typeof entrypoint.path === 'string' &&
       (typeof entrypoint.symbol === 'string' || entrypoint.symbol === null) &&
+      (entrypoint.component_id === undefined ||
+        typeof entrypoint.component_id === 'string' ||
+        entrypoint.component_id === null) &&
       Array.isArray(entrypoint.evidence) &&
       entrypoint.evidence.every((item) => typeof item === 'string')
     );
@@ -1642,6 +1797,11 @@ function safeFlowEntrypoints(entity: BrainEntity): FlowEntrypoint[] {
     type: entrypoint.type,
     path: safeText(entrypoint.path),
     symbol: entrypoint.symbol === null ? null : safeText(entrypoint.symbol),
+    ...(entrypoint.component_id !== undefined
+      ? {
+          component_id: entrypoint.component_id === null ? null : safeText(entrypoint.component_id),
+        }
+      : {}),
     evidence: entrypoint.evidence.map(safeText),
   }));
 }
@@ -1713,29 +1873,24 @@ function inferScriptFlow(params: {
   const ownerPath = packageComponentPath(params.packageFact);
   const ownerComponentId = ownerPath === undefined ? undefined : entityId('component', ownerPath);
   const ownerFiles = sourceFilesForPackage(params.files, params.packageFact);
-  const entryFiles = entrySourceFiles(ownerFiles);
+  const commandFiles = filesReferencedByCommand(params.files, params.command, ownerPath);
+  const commandEntryFiles = commandFiles.filter((file) => classifySourceKind(file) === 'source');
+  const entryFiles = uniqueFileFacts([
+    ...(commandEntryFiles.length > 0 ? commandEntryFiles : []),
+    ...entrySourceFiles(ownerFiles),
+  ]).slice(0, 8);
   const packageNameToComponent = new Map(
     params.packageFacts
       .filter((pkg) => pkg.name !== undefined && packageComponentPath(pkg) !== undefined)
       .map((pkg) => [pkg.name ?? '', entityId('component', packageComponentPath(pkg) ?? '')]),
   );
   const importedSpecifiers = new Set<string>();
-  const importEvidence: FlowEvidence[] = [];
-  for (const file of entryFiles) {
-    const text = readTextIfAvailable(params.rootDir, file.relativePath);
-    if (text === undefined) continue;
-    for (const specifier of importSpecifiersFromText(text)) {
-      importedSpecifiers.add(specifier);
-      importEvidence.push(
-        flowEvidenceForNeedle({
-          rootDir: params.rootDir,
-          path: file.relativePath,
-          needle: specifier,
-          reason: `Static import evidence for ${specifier}.`,
-        }),
-      );
-    }
-  }
+  const importContext = importContextForFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    entryFiles,
+  });
+  for (const specifier of importContext.importedSpecifiers) importedSpecifiers.add(specifier);
 
   const commandText = safeText(params.command);
   for (const pkg of params.packageFacts) {
@@ -1744,6 +1899,12 @@ function inferScriptFlow(params: {
 
   const relatedComponentIds = new Set<string>();
   if (ownerComponentId !== undefined) relatedComponentIds.add(ownerComponentId);
+  for (const componentId of componentIdsForFiles(
+    [...commandFiles, ...importContext.importedFiles].map((file) => file.relativePath),
+    params.components,
+  )) {
+    relatedComponentIds.add(componentId);
+  }
   for (const specifier of importedSpecifiers) {
     const componentId = packageNameToComponent.get(specifier);
     if (componentId !== undefined) relatedComponentIds.add(componentId);
@@ -1754,7 +1915,9 @@ function inferScriptFlow(params: {
   );
   const files = unique([
     params.packageFact.relativePath,
+    ...commandFiles.map((file) => file.relativePath),
     ...entryFiles.map((file) => file.relativePath),
+    ...importContext.importedFiles.map((file) => file.relativePath),
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'important_files')),
     ...relatedComponents.flatMap((component) => component.source_files.slice(0, 3)),
   ]).slice(0, 30);
@@ -1779,6 +1942,7 @@ function inferScriptFlow(params: {
     type: 'command',
     path: safeText(params.packageFact.relativePath),
     symbol: safeText(params.scriptName),
+    ...(ownerComponentId !== undefined ? { component_id: ownerComponentId } : {}),
     evidence: [scriptEvidenceId],
   };
   const steps: FlowStep[] = [];
@@ -1812,6 +1976,18 @@ function inferScriptFlow(params: {
     });
     order += 1;
   }
+  for (const file of importContext.importedFiles.slice(0, 5)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'function',
+      path: safeText(file.relativePath),
+      symbol: null,
+      description: `Flow reaches statically imported file ${safeText(file.relativePath)}.`,
+      evidence: [evidenceId(file.relativePath)],
+    });
+    order += 1;
+  }
   for (const config of configs.slice(0, 3)) {
     steps.push({
       step_id: flowStepId(flowId, order),
@@ -1840,7 +2016,9 @@ function inferScriptFlow(params: {
   const signals = unique([
     'package script',
     ...(entryFiles.length > 0 ? ['source entry'] : []),
+    ...(commandFiles.length > 0 ? ['command path'] : []),
     ...(importedSpecifiers.size > 0 ? ['static import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
     ...(tests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
@@ -1903,7 +2081,7 @@ function inferScriptFlow(params: {
         needle: params.scriptName,
         reason: `Package script ${params.scriptName} declares this flow entrypoint.`,
       }),
-      ...importEvidence,
+      ...importContext.importEvidence,
       ...entryFiles.map((file) =>
         flowEvidenceForNeedle({
           rootDir: params.rootDir,
@@ -1956,12 +2134,22 @@ function isRouteLikeFile(file: FileFact): boolean {
 
 function inferRouteFlow(params: {
   readonly rootDir: string;
+  readonly files: readonly FileFact[];
   readonly file: FileFact;
   readonly components: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
-  const componentIds = componentIdsForFiles([params.file.relativePath], params.components);
+  const importContext = importContextForFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    entryFiles: [params.file],
+  });
+  const allScannedFiles = [params.file, ...importContext.importedFiles];
+  const componentIds = componentIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.components,
+  );
   const relatedTests = params.tests
     .filter((test) => {
       const base = basename(params.file.relativePath).replace(/\.(ts|js|tsx|jsx)$/i, '');
@@ -1989,7 +2177,43 @@ function inferRouteFlow(params: {
       evidence: [evId],
     });
   }
-  const signals = unique(['route file', ...(relatedTests.length > 0 ? ['test artifact'] : [])]);
+  const configs = unique(
+    params.components
+      .filter((component) => componentIds.includes(component.id))
+      .flatMap((component) => stringArrayData(component, 'configs')),
+  );
+  const dependencies = unique(
+    importContext.importedSpecifiers
+      .filter((specifier) => !specifier.startsWith('.'))
+      .map((dependency) => entityId('dependency', dependency)),
+  );
+  const steps: FlowStep[] = [
+    {
+      step_id: flowStepId(flowId, 1),
+      order: 1,
+      type: 'route',
+      path: safeText(params.file.relativePath),
+      symbol: null,
+      description: `API route entrypoint at ${safeText(params.file.relativePath)}.`,
+      evidence: [evId],
+    },
+    ...importContext.importedFiles.slice(0, 6).map((file, index) => ({
+      step_id: flowStepId(flowId, index + 2),
+      order: index + 2,
+      type: 'service' as const,
+      path: safeText(file.relativePath),
+      symbol: null,
+      description: `Route statically imports ${safeText(file.relativePath)}.`,
+      evidence: [evidenceId(file.relativePath)],
+    })),
+  ];
+  const signals = unique([
+    'route file',
+    ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(relatedTests.length > 0 ? ['test artifact'] : []),
+    ...(configs.length > 0 ? ['configuration'] : []),
+  ]);
   const baseConfidence = flowConfidenceFor({ tests: relatedTests, signals, unknowns: [] });
   return {
     flow_id: flowId,
@@ -2000,24 +2224,18 @@ function inferRouteFlow(params: {
         type: 'route',
         path: safeText(params.file.relativePath),
         symbol: null,
+        component_id: componentIds[0] ?? null,
         evidence: [evId],
       },
     ],
-    steps: [
-      {
-        step_id: flowStepId(flowId, 1),
-        order: 1,
-        type: 'route',
-        path: safeText(params.file.relativePath),
-        symbol: null,
-        description: `API route entrypoint at ${safeText(params.file.relativePath)}.`,
-        evidence: [evId],
-      },
-    ],
+    steps,
     components: componentIds,
-    files: [params.file.relativePath],
-    dependencies: [],
-    configs: [],
+    files: unique([
+      params.file.relativePath,
+      ...importContext.importedFiles.map((file) => file.relativePath),
+    ]),
+    dependencies,
+    configs,
     tests: unique(relatedTests),
     risks,
     confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
@@ -2028,14 +2246,20 @@ function inferRouteFlow(params: {
         needle: /route|handler|get|post|put|delete|export/i,
         reason: 'Route-like file pattern is the flow entrypoint evidence.',
       }),
+      ...importContext.importEvidence,
     ],
     field_evidence: {
       entrypoints: [evId],
-      steps: [evId],
+      steps: unique(steps.flatMap((step) => step.evidence)),
       components: componentIds.flatMap(
         (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
       ),
-      files: [evId],
+      files: unique([
+        evId,
+        ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
+      ]),
+      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
     },
@@ -2111,6 +2335,7 @@ function reconstructFlows(params: {
     flowIntelligence.push(
       inferRouteFlow({
         rootDir: params.rootDir,
+        files: params.files,
         file,
         components: params.buckets.components,
         tests: params.buckets.tests,
@@ -2153,6 +2378,16 @@ function reconstructFlows(params: {
         'configures',
         entityId('config', configPath),
         [evidenceId(configPath)],
+        'inferred',
+      );
+    }
+    for (const filePath of flow.files) {
+      addRelation(
+        params.relationships,
+        flow.flow_id,
+        'depends_on',
+        entityId('file', filePath),
+        [evidenceId(filePath)],
         'inferred',
       );
     }
@@ -2946,6 +3181,14 @@ function buildResearchArtifacts(params: {
   const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
   const flowsWithoutTests = flows.filter((flow) => flowStringArray(flow, 'tests').length === 0);
   const lowConfidenceFlows = flows.filter((flow) => flow.confidence !== 'verified');
+  const flowCoveredFiles = new Set(flows.flatMap((flow) => flowStringArray(flow, 'files')));
+  const activeSourceFiles = activeFileEntities.filter((file) => isSourceFile(file.name));
+  const activeTestFiles = activeFileEntities.filter((file) => isTestPath(file.name));
+  const activeConfigFiles = activeFileEntities.filter((file) => isConfigPath(file.name));
+  const entrypoints = flows.flatMap(flowEntrypoints);
+  const entrypointsWithComponents = entrypoints.filter(
+    (entrypoint) => entrypoint.component_id !== undefined && entrypoint.component_id !== null,
+  );
   const changedFileSet = new Set(changedFiles);
   const changedFlows = flows.filter((flow) =>
     flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
@@ -3012,6 +3255,18 @@ function buildResearchArtifacts(params: {
       flows_with_configs: flows.filter((flow) => flowStringArray(flow, 'configs').length > 0)
         .length,
       flows_with_evidence: flows.filter((flow) => flow.evidence_ids.length > 0).length,
+      source_files_covered_by_flows: activeSourceFiles.filter((file) =>
+        flowCoveredFiles.has(file.name),
+      ).length,
+      test_files_covered_by_flows: activeTestFiles.filter((file) => flowCoveredFiles.has(file.name))
+        .length,
+      config_files_covered_by_flows: activeConfigFiles.filter((file) =>
+        flowCoveredFiles.has(file.name),
+      ).length,
+      source_flow_coverage_ratio: ratio(
+        activeSourceFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
+        activeSourceFiles.length,
+      ),
       flow_coverage: flows.map((flow) => ({
         id: flow.id,
         name: flow.name,
@@ -3095,6 +3350,12 @@ function buildResearchArtifacts(params: {
       flows_by_kind: countByValue(flows.map((flow) => stringData(flow, 'kind') ?? 'unknown')),
       flows_with_tests: flowsWithTests.length,
       flows_without_tests: flowsWithoutTests.length,
+      flow_steps: flowStepCount,
+      mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
+        .length,
+      mapped_files: flowCoveredFiles.size,
+      entrypoints: entrypoints.length,
+      entrypoints_mapped_to_components: entrypointsWithComponents.length,
       average_confidence: averageFlowConfidence,
       low_confidence_flows: lowConfidenceFlows.map((flow) => ({
         id: flow.id,
@@ -3123,10 +3384,26 @@ function buildResearchArtifacts(params: {
         }).length,
         flows.length,
       ),
+      entrypoint_component_coverage_ratio: ratio(
+        entrypointsWithComponents.length,
+        entrypoints.length,
+      ),
       test_backed_flow_ratio: ratio(flowsWithTests.length, flows.length),
       config_backed_flow_ratio: ratio(
         flows.filter((flow) => flowStringArray(flow, 'configs').length > 0).length,
         flows.length,
+      ),
+      source_file_coverage_ratio: ratio(
+        activeSourceFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
+        activeSourceFiles.length,
+      ),
+      test_file_coverage_ratio: ratio(
+        activeTestFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
+        activeTestFiles.length,
+      ),
+      config_file_coverage_ratio: ratio(
+        activeConfigFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
+        activeConfigFiles.length,
       ),
       components_covered_by_flows: unique(
         flows.flatMap((flow) => flowStringArray(flow, 'components')),
@@ -3597,7 +3874,9 @@ function renderFlowCards(
             const type = typeof entrypoint.type === 'string' ? entrypoint.type : 'entrypoint';
             const path = typeof entrypoint.path === 'string' ? entrypoint.path : 'unknown';
             const symbol = typeof entrypoint.symbol === 'string' ? `#${entrypoint.symbol}` : '';
-            return `${type}: ${path}${symbol}`;
+            const component =
+              typeof entrypoint.component_id === 'string' ? ` -> ${entrypoint.component_id}` : '';
+            return `${type}: ${path}${symbol}${component}`;
           })
         : [];
       const stepLabels = steps.map((step) => `${step.order}. ${step.type}: ${step.path}`);
@@ -5199,8 +5478,21 @@ function buildFlowExplanation(params: {
     entry_points: entrypointLabels.map(safeText),
     tests,
     configs,
-    tradeoffs: [],
-    failure_modes: [],
+    tradeoffs: [
+      'Flow maps are deterministic static reconstructions, so they improve orientation without proving runtime reachability.',
+      ...(components.length > 1
+        ? [
+            'Cross-component flows improve traceability but deserve extra review when shared boundaries move.',
+          ]
+        : []),
+    ].map(safeText),
+    failure_modes: [
+      ...(entrypoints.length === 0 ? ['No flow entrypoint was recorded.'] : []),
+      ...(steps.length === 0 ? ['No flow steps were reconstructed.'] : []),
+      ...(tests.length === 0 ? ['No directly linked tests were detected for this flow.'] : []),
+      ...(configs.length === 0 ? ['No directly linked configs were detected for this flow.'] : []),
+      ...riskLabels,
+    ].map(safeText),
     breaks_if_changed: [
       `Review this flow when any mapped file changes: ${files.slice(0, 8).join(', ') || 'none recorded'}.`,
       ...relationshipContext.dependedOnBy.map(
@@ -5232,7 +5524,11 @@ function buildFlowExplanation(params: {
 
 function formatFlowEntrypoint(entrypoint: FlowEntrypoint): string {
   const symbol = entrypoint.symbol === null ? '' : `#${entrypoint.symbol}`;
-  return `${entrypoint.type}: ${entrypoint.path}${symbol}`;
+  const component =
+    entrypoint.component_id === undefined || entrypoint.component_id === null
+      ? ''
+      : ` -> ${entrypoint.component_id}`;
+  return `${entrypoint.type}: ${entrypoint.path}${symbol}${component}`;
 }
 
 function formatFlowStep(step: FlowStep): string {
