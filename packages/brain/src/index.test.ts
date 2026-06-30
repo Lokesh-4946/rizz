@@ -2110,13 +2110,34 @@ describe('project brain generation', () => {
       if (!result.ok) return;
       expect(result.value.review.changed_files).toEqual(['packages/cli/src/index.ts']);
       expect(result.value.review.affected_components).toContain('component:packages--cli');
+      expect(result.value.review.direct_affected_components).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--cli',
+          changed_files: ['packages/cli/src/index.ts'],
+          tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          configs: expect.arrayContaining(['packages/cli/package.json']),
+        }),
+      );
+      expect(result.value.review.dependent_components).toEqual([]);
       expect(result.value.review.affected_flows).toContainEqual(
         expect.objectContaining({
           id: 'flow:packages--cli--check',
           changed_files: ['packages/cli/src/index.ts'],
           tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          configs: expect.arrayContaining(['packages/cli/package.json']),
         }),
       );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('1 changed file(s) map to 1 direct component(s)'),
+      );
+      expect(result.value.review.review_evidence_summary).toMatchObject({
+        changed_files: 1,
+        direct_components: 1,
+        dependent_components: 0,
+        affected_flows: 1,
+        affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+        affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+      });
       expect(result.value.review.findings).toContainEqual(
         expect.objectContaining({ category: 'Missing tests', severity: 'medium' }),
       );
@@ -2140,19 +2161,140 @@ describe('project brain generation', () => {
         latest_review_status: {
           readonly status?: string;
           readonly findings?: number;
+          readonly direct_affected_components?: string[];
+          readonly dependent_components?: string[];
           readonly affected_flows?: string[];
+          readonly blast_radius_reasons?: string[];
         };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
       expect(latest.latest_review_status).toMatchObject({
         status: 'investigate',
+        direct_affected_components: ['component:packages--cli'],
+        dependent_components: [],
         affected_flows: ['flow:packages--cli--check'],
       });
+      expect(latest.latest_review_status.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('affected flow(s) link the change'),
+      );
       expect(Number(latest.latest_review_status.findings)).toBeGreaterThanOrEqual(1);
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('rizz review');
+      expect(report).toContain('Blast Radius Evidence');
+      expect(report).toContain('Direct Components');
+      expect(report).toContain('Dependent Components');
       expect(report).toContain('Affected Flows');
       expect(report).toContain('flow:packages--cli--check');
+      expect(report).toContain('packages/cli/package.json');
       expect(report).toContain('Missing tests');
+    });
+  });
+
+  it('uses graph consumers to include dependent components in review blast radius', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'core', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: { start: 'node dist/index.js', test: 'vitest run packages/cli' },
+          dependencies: { '@sample/core': 'workspace:*' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@sample/core' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { runCore } from "../../core/src/index.js";\nexport function main() { return runCore(); }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("starts", () => {});\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function runCore() { return "core"; }\n',
+      );
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:46:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function runCore() { return "changed"; }\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:47:00.000Z'),
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          changedFiles: 1,
+          affectedComponents: 2,
+          blastRadius: 'moderate',
+        },
+      });
+      if (!result.ok) return;
+
+      expect(result.value.review.direct_affected_components).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--core',
+          changed_files: ['packages/core/src/index.ts'],
+        }),
+      );
+      expect(result.value.review.dependent_components).toContainEqual(
+        expect.objectContaining({
+          id: 'component:packages--cli',
+          reason: expect.stringContaining(
+            'component:packages--cli imports component:packages--core',
+          ),
+          tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          configs: expect.arrayContaining(['packages/cli/package.json']),
+        }),
+      );
+      expect(result.value.review.affected_relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'imports',
+          to: 'component:packages--core',
+        }),
+      );
+      expect(result.value.review.affected_flows).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:packages--cli--start',
+          changed_files: ['packages/core/src/index.ts'],
+          tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          configs: expect.arrayContaining(['packages/cli/package.json']),
+        }),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('dependent consumer component(s) require review'),
+      );
+      expect(result.value.review.review_evidence_summary).toMatchObject({
+        direct_components: 1,
+        dependent_components: 1,
+        affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+        affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+      });
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Consumer components depend on changed components',
+          affected_entities: expect.arrayContaining([
+            'component:packages--cli',
+            'component:packages--core',
+          ]),
+        }),
+      );
     });
   });
 

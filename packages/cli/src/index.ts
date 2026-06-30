@@ -124,6 +124,9 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
   process.stdout.write(`  overall risk: ${summary.overallRisk}\n`);
   process.stdout.write(`  surgicality: ${summary.surgicalityScore}/10\n`);
   process.stdout.write(`  blast radius: ${summary.blastRadius}\n`);
+  process.stdout.write(
+    `  direct/dependent components: ${summary.review.direct_affected_components.length}/${summary.review.dependent_components.length}\n`,
+  );
   process.stdout.write(`  affected flows: ${summary.review.affected_flows.length}\n`);
   process.stdout.write(`  findings: ${summary.findings}\n`);
   process.stdout.write(`  action: ${summary.recommendedAction}\n`);
@@ -141,6 +144,12 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
       process.stdout.write(
         `    - ${flow.id} (${flow.kind}, ${flow.confidence}, ${flow.changed_files.length} changed file(s))\n`,
       );
+    }
+  }
+  if (summary.review.blast_radius_reasons.length > 0) {
+    process.stdout.write('  blast radius evidence:\n');
+    for (const reason of summary.review.blast_radius_reasons.slice(0, 4)) {
+      process.stdout.write(`    - ${reason}\n`);
     }
   }
   if (summary.review.findings.length > 0) {
