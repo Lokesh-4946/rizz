@@ -1,0 +1,195 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-nextjs-route-intelligence",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "architecture-flow",
+  "title": "Next.js route intelligence benchmark seed",
+  "prompt": "Build a local project brain for a deterministic Next.js app-router fixture and report route, render, API, component, config, contract, confidence, and unknown coverage.",
+  "fixture": {
+    "root": "pi-bench-nextjs-route-intelligence",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-nextjs-route-intelligence\",\"scripts\":{\"dev\":\"next dev\",\"build\":\"next build\",\"start\":\"next start\",\"test\":\"vitest run\",\"typecheck\":\"tsc --noEmit\"},\"dependencies\":{\"next\":\"15.0.0\",\"react\":\"19.0.0\",\"react-dom\":\"19.0.0\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "next.config.mjs",
+        "contents": "export default {\n  experimental: { typedRoutes: true },\n};\n"
+      },
+      {
+        "path": "tsconfig.json",
+        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
+      },
+      {
+        "path": "src/app/layout.tsx",
+        "contents": "import type { Metadata } from \"next\";\n\nexport const metadata: Metadata = {\n  title: \"Docs Portal\",\n  description: \"Deterministic app-router fixture for route intelligence.\",\n};\n\nexport default function RootLayout({ children }: { readonly children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n"
+      },
+      {
+        "path": "src/app/page.tsx",
+        "contents": "import { DashboardSummary } from \"../components/dashboard-summary\";\nimport { getFeaturedDocs } from \"../lib/content\";\n\nexport default function HomePage() {\n  return (\n    <main>\n      <DashboardSummary docs={getFeaturedDocs()} />\n    </main>\n  );\n}\n"
+      },
+      {
+        "path": "src/app/docs/[slug]/page.tsx",
+        "contents": "import { getDocBySlug, getDocSlugs } from \"../../../lib/content\";\n\nexport function generateStaticParams() {\n  return getDocSlugs().map((slug) => ({ slug }));\n}\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = getDocBySlug(params.slug);\n  return <article>{doc.title}</article>;\n}\n"
+      },
+      {
+        "path": "src/app/api/health/route.ts",
+        "contents": "import { healthSummary } from \"../../../lib/health\";\n\nexport function GET(): Response {\n  return Response.json(healthSummary());\n}\n"
+      },
+      {
+        "path": "src/app/api/health/route.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { GET } from \"./route\";\n\nit(\"returns health\", () => {\n  expect(GET()).toBeInstanceOf(Response);\n});\n"
+      },
+      {
+        "path": "src/app/sitemap.ts",
+        "contents": "export default function sitemap() {\n  return [{ url: \"https://example.test/\" }];\n}\n"
+      },
+      {
+        "path": "src/app/robots.ts",
+        "contents": "export default function robots() {\n  return { rules: [{ userAgent: \"*\", allow: \"/\" }] };\n}\n"
+      },
+      {
+        "path": "src/components/dashboard-summary.tsx",
+        "contents": "export function DashboardSummary({ docs }: { readonly docs: Array<{ readonly title: string }> }) {\n  return (\n    <section>\n      {docs.map((doc) => (\n        <h2 key={doc.title}>{doc.title}</h2>\n      ))}\n    </section>\n  );\n}\n"
+      },
+      {
+        "path": "src/lib/content.ts",
+        "contents": "const docs = [{ slug: \"intro\", title: \"Intro\" }];\n\nexport function getFeaturedDocs() {\n  return docs;\n}\n\nexport function getDocSlugs() {\n  return docs.map((doc) => doc.slug);\n}\n\nexport function getDocBySlug(slug: string) {\n  return docs.find((doc) => doc.slug === slug) ?? docs[0];\n}\n"
+      },
+      {
+        "path": "src/lib/health.ts",
+        "contents": "export function healthSummary() {\n  return { ok: true, service: \"docs\" };\n}\n"
+      }
+    ]
+  },
+  "expected_artifacts": [
+    ".rizz/research/component_intelligence.json",
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/flow_coverage.json",
+    ".rizz/research/evidence_quality.json",
+    ".rizz/research/architecture_reasoning.json",
+    ".rizz/research/benchmark_ready.json",
+    ".rizz/reports/index.html"
+  ],
+  "coverage_targets": {
+    "component": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 1 },
+    "flow": { "minimum_total": 5, "minimum_covered": 5, "minimum_ratio": 0.8 },
+    "evidence": { "minimum_total": 10, "minimum_covered": 10, "minimum_ratio": 0.5 },
+    "unknown": { "minimum_total": 3, "minimum_covered": 3, "minimum_ratio": 0.8 }
+  },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": [
+        "total_flows",
+        "flows_by_kind.api",
+        "flows_by_kind.ui",
+        "mapped_components",
+        "mapped_files",
+        "average_confidence",
+        "low_confidence_flows",
+        "contracts",
+        "orphan_entrypoints"
+      ],
+      "required_substrings": [
+        "flow:nextjs--api--api--health--src--app--api--health--route.ts",
+        "Next.js /api/health API route",
+        "nextjs-app-router",
+        "flow:scripts--dev",
+        "dev UI flow",
+        "HTTP request route input.",
+        "Returns an HTTP/API response from the route flow.",
+        "src/app/api/health/route.ts",
+        "confidence_reasons"
+      ]
+    },
+    {
+      "path": ".rizz/research/component_intelligence.json",
+      "type": "json",
+      "required_fields": ["total_components", "components", "component_flow_coverage"],
+      "required_substrings": [
+        "component:src",
+        "src/app/page.tsx",
+        "src/app/docs/[slug]/page.tsx",
+        "src/app/layout.tsx",
+        "src/app/sitemap.ts",
+        "src/app/robots.ts",
+        "src/components/dashboard-summary.tsx",
+        "src/lib/content.ts"
+      ]
+    },
+    {
+      "path": ".rizz/research/flow_coverage.json",
+      "type": "json",
+      "required_fields": [
+        "components_covered_by_flows",
+        "files_covered_by_flows",
+        "config_backed_flow_ratio",
+        "contract_backed_flow_ratio"
+      ],
+      "required_substrings": [
+        "component:src",
+        "package.json",
+        "src/app/api/health/route.ts",
+        "src/lib/health.ts"
+      ]
+    },
+    {
+      "path": ".rizz/research/architecture_reasoning.json",
+      "type": "json",
+      "required_fields": [
+        "boundary_candidates",
+        "cross_component_flows",
+        "architecture_assumptions",
+        "assumption_confidence",
+        "evidence_gaps",
+        "unknowns"
+      ],
+      "required_substrings": ["component:src", "flow_links"]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "coverage.component.covered",
+        "coverage.flow.covered",
+        "coverage.evidence.claims_with_evidence",
+        "coverage.unknown.items",
+        "readiness.score"
+      ],
+      "required_substrings": [
+        "flow:scripts--dev",
+        "No source entry file was detected for this package script."
+      ]
+    },
+    {
+      "path": ".rizz/reports/index.html",
+      "type": "file",
+      "required_substrings": [
+        "Mission Control ·",
+        "Evidence",
+        "<details",
+        "data-kind=\"component\"",
+        "data-kind=\"flow\"",
+        "src/app/page.tsx",
+        "src/app/docs/[slug]/page.tsx",
+        "src/app/api/health/route.ts"
+      ],
+      "forbidden_substrings": ["<script src=", "<link rel=\"stylesheet\"", "fetch("]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The fixture produces deterministic Next.js app-router page, dynamic docs, layout, API, sitemap, robots, content-loader, component, and package-script evidence.",
+      "flow_understanding.json preserves API route contracts, UI render script flow, mapped files/components/config surfaces, confidence gaps, and known unknowns without provider calls.",
+      "Mission Control report output exposes flagship object labels and expandable details from local artifacts only."
+    ],
+    "fail": [
+      "The benchmark depends on installing Next.js, contacting a provider, or using network access.",
+      "Next app-router page, dynamic route, API route, content loader, or component import evidence is omitted from research artifacts.",
+      "Mission Control loses object labels, expandable details, or local-only report constraints."
+    ]
+  }
+}
