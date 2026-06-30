@@ -1,0 +1,103 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-architecture-flow",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "architecture-flow",
+  "title": "Architecture flow benchmark seed",
+  "prompt": "Build a local project brain for a two-package TypeScript workspace and report architecture, flow, evidence, and unknown coverage from deterministic artifacts.",
+  "fixture": {
+    "root": "pi-bench-architecture-flow",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-architecture-flow\",\"workspaces\":[\"packages/*\"],\"scripts\":{\"test\":\"vitest run\",\"build\":\"tsc -b\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "packages/domain/package.json",
+        "contents": "{\"name\":\"@fixture/domain\",\"scripts\":{\"test\":\"vitest run packages/domain\"},\"dependencies\":{}}\n"
+      },
+      {
+        "path": "packages/domain/src/policy.ts",
+        "contents": "export interface PolicyInput {\n  readonly userId: string;\n  readonly tier: \"free\" | \"pro\";\n}\n\nexport function chooseRoute(input: PolicyInput): string {\n  if (input.tier === \"pro\") return `priority:${input.userId}`;\n  return `standard:${input.userId}`;\n}\n"
+      },
+      {
+        "path": "packages/domain/src/policy.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { chooseRoute } from \"./policy.js\";\n\nit(\"routes pro users to priority\", () => {\n  expect(chooseRoute({ userId: \"u1\", tier: \"pro\" })).toBe(\"priority:u1\");\n});\n"
+      },
+      {
+        "path": "packages/api/package.json",
+        "contents": "{\"name\":\"@fixture/api\",\"scripts\":{\"start\":\"node dist/server.js\",\"test\":\"vitest run packages/api\"},\"dependencies\":{\"@fixture/domain\":\"workspace:*\"}}\n"
+      },
+      {
+        "path": "packages/api/src/server.ts",
+        "contents": "import { chooseRoute, type PolicyInput } from \"@fixture/domain\";\n\nexport function handleRequest(input: PolicyInput): { readonly route: string; readonly accepted: boolean } {\n  const route = chooseRoute(input);\n  return { route, accepted: route.length > 0 };\n}\n"
+      },
+      {
+        "path": "packages/api/src/server.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { handleRequest } from \"./server.js\";\n\nit(\"accepts routed requests\", () => {\n  expect(handleRequest({ userId: \"u2\", tier: \"free\" })).toEqual({ route: \"standard:u2\", accepted: true });\n});\n"
+      }
+    ]
+  },
+  "expected_artifacts": [
+    ".rizz/research/metrics.json",
+    ".rizz/research/coverage.json",
+    ".rizz/research/component_intelligence.json",
+    ".rizz/research/flow_coverage.json",
+    ".rizz/research/evidence_quality.json",
+    ".rizz/research/architecture_reasoning.json",
+    ".rizz/research/benchmark_ready.json"
+  ],
+  "coverage_targets": {
+    "component": { "minimum_total": 2, "minimum_covered": 1, "minimum_ratio": 0.5 },
+    "flow": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.25 },
+    "evidence": { "minimum_total": 7, "minimum_covered": 7, "minimum_ratio": 0.1 },
+    "unknown": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 1 }
+  },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/component_intelligence.json",
+      "type": "json",
+      "required_fields": ["total_components", "components", "component_flow_coverage"]
+    },
+    {
+      "path": ".rizz/research/flow_coverage.json",
+      "type": "json",
+      "required_fields": ["total_flows", "components_covered_by_flows", "files_covered_by_flows"]
+    },
+    {
+      "path": ".rizz/research/architecture_reasoning.json",
+      "type": "json",
+      "required_fields": [
+        "boundary_candidates",
+        "coupling_hotspots",
+        "cross_component_flows",
+        "review_hints",
+        "unknowns"
+      ]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "coverage.component.covered",
+        "coverage.flow.covered",
+        "coverage.evidence.claims_with_evidence",
+        "coverage.unknown.covered",
+        "readiness.score"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The fixture produces multiple local components and at least one reconstructed flow.",
+      "Architecture reasoning reports boundary and flow surfaces from static files.",
+      "Evidence and unknown coverage are scored from benchmark_ready.json without provider calls."
+    ],
+    "fail": [
+      "The benchmark depends on package installation or network access.",
+      "Cross-package evidence is omitted from architecture artifacts.",
+      "Unknown coverage is not represented in the benchmark-ready artifact."
+    ]
+  }
+}

@@ -1,8 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "pi-bench-research-metrics",
   "suite": "pi-bench-seed",
   "mode": "local",
+  "category": "research-metrics",
   "title": "Research metrics benchmark seed",
   "prompt": "Build a local project brain for a small TypeScript package and report component, flow, evidence, and unknown coverage.",
   "fixture": {
@@ -31,11 +32,44 @@
     ".rizz/research/benchmark_ready.json"
   ],
   "coverage_targets": {
-    "component": { "minimum_total": 1 },
-    "flow": { "minimum_total": 1 },
-    "evidence": { "minimum_total": 3 },
-    "unknown": { "minimum_total": 0 }
+    "component": { "minimum_total": 1, "minimum_covered": 0, "minimum_ratio": 0 },
+    "flow": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.5 },
+    "evidence": { "minimum_total": 3, "minimum_covered": 3, "minimum_ratio": 0.1 },
+    "unknown": { "minimum_total": 0, "minimum_covered": 0, "minimum_ratio": 0 }
   },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/component_intelligence.json",
+      "type": "json",
+      "required_fields": [
+        "total_components",
+        "component_understanding_score",
+        "flow_coverage_score",
+        "components"
+      ]
+    },
+    {
+      "path": ".rizz/research/flow_coverage.json",
+      "type": "json",
+      "required_fields": ["total_flows", "test_backed_flow_ratio", "flows"]
+    },
+    {
+      "path": ".rizz/research/evidence_quality.json",
+      "type": "json",
+      "required_fields": ["evidence_records", "claims_with_evidence", "missing_evidence_references"]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "coverage.component.covered",
+        "coverage.flow.covered",
+        "coverage.evidence.claims_with_evidence",
+        "coverage.unknown.coverage_ratio",
+        "readiness.score"
+      ]
+    }
+  ],
   "rubric": {
     "pass": [
       "The benchmark-ready JSON reports component, flow, evidence, and unknown coverage.",

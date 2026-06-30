@@ -1,8 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "pi-bench-unknown-coverage",
   "suite": "pi-bench-seed",
   "mode": "local",
+  "category": "unknown-coverage",
   "title": "Unknown coverage benchmark seed",
   "prompt": "Build a local project brain for a sparse utility module and report known-unknown coverage alongside component, flow, and evidence metrics.",
   "fixture": {
@@ -25,11 +26,34 @@
     ".rizz/research/benchmark_ready.json"
   ],
   "coverage_targets": {
-    "component": { "minimum_total": 1 },
-    "flow": { "minimum_total": 0 },
-    "evidence": { "minimum_total": 2 },
-    "unknown": { "minimum_total": 1 }
+    "component": { "minimum_total": 1, "minimum_covered": 0, "minimum_ratio": 0 },
+    "flow": { "minimum_total": 0, "minimum_covered": 0, "minimum_ratio": 0 },
+    "evidence": { "minimum_total": 2, "minimum_covered": 2, "minimum_ratio": 0.1 },
+    "unknown": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.8 }
   },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/architecture_reasoning.json",
+      "type": "json",
+      "required_fields": ["boundary_candidates", "unknowns", "review_hints"]
+    },
+    {
+      "path": ".rizz/research/evidence_quality.json",
+      "type": "json",
+      "required_fields": ["evidence_records", "top_evidence_gaps", "overall_score"]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "coverage.component.total",
+        "coverage.flow.total",
+        "coverage.evidence.records",
+        "coverage.unknown.items",
+        "readiness.blocking_gaps"
+      ]
+    }
+  ],
   "rubric": {
     "pass": [
       "The benchmark-ready JSON preserves known-unknown items as structured local facts.",

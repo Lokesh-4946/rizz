@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// rizz eval harness (brief §4.6, M5). Runs the coding-task suite against the loop and reports
-// pass/score/tokens/cost. M0 ships the runner skeleton + schema so CI has a real, green eval
-// step to build on; the loop-backed tasks land in M5.
+// rizz eval harness. Runs local deterministic smoke checks plus the PI-Bench seed tasks against
+// rizz brain research artifacts. The PI-Bench seed stays provider-free and network-free.
 
 import { spawn, spawnSync } from 'node:child_process';
 import {
@@ -16,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const evalDir = dirname(fileURLToPath(import.meta.url));
@@ -24,10 +23,16 @@ const repoRoot = dirname(evalDir);
 const tasksDir = join(evalDir, 'tasks');
 const cliBin = join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
 const installLocalScript = join(repoRoot, 'scripts', 'install-local.mjs');
-const PI_BENCH_TASK_SCHEMA_VERSION = 1;
+const PI_BENCH_TASK_SCHEMA_VERSION = 2;
 const PI_BENCH_TASK_SUITE = 'pi-bench-seed';
 const PI_BENCH_TASK_MODE = 'local';
 const COVERAGE_TARGETS = ['component', 'flow', 'evidence', 'unknown'];
+const PI_BENCH_TASK_CATEGORIES = [
+  'smoke',
+  'research-metrics',
+  'unknown-coverage',
+  'architecture-flow',
+];
 
 /** Load every *.task.json under eval/tasks. */
 function loadTasks() {
@@ -37,24 +42,7 @@ function loadTasks() {
 }
 
 const tasks = loadTasks();
-console.log(`rizz eval — ${tasks.length} task(s) loaded`);
-
-let passed = 0;
-for (const task of tasks) {
-  // M5: drive the loop here and score the result. For now we validate the task schema so the
-  // suite is real and the harness is wired into CI.
-  const errors = validatePiBenchTask(task);
-  const valid = errors.length === 0;
-  if (valid) {
-    passed++;
-    console.log(`  ✓ ${task.id}`);
-  } else {
-    console.log(`  ✗ ${task?.id ?? '(missing id)'} — ${errors.join('; ')}`);
-  }
-}
-
-console.log(`\n${passed}/${tasks.length} task(s) valid`);
-if (passed !== tasks.length) process.exitCode = 1;
+const piBenchResult = runPiBenchTasks(tasks);
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -72,10 +60,23 @@ function hasNonNegativeNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+function hasRatioNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isSafeRelativePath(value) {
+  if (!isNonEmptyString(value)) return false;
+  if (value.includes('\0') || isAbsolute(value)) return false;
+  const parts = value.split(/[\\/]/);
+  return !parts.includes('..');
+}
+
 function validateFixture(fixture) {
   const errors = [];
   if (!isRecord(fixture)) return ['fixture must be an object'];
-  if (!isNonEmptyString(fixture.root)) errors.push('fixture.root must be a non-empty string');
+  if (!isSafeRelativePath(fixture.root)) {
+    errors.push('fixture.root must be a safe relative path');
+  }
   if (!Array.isArray(fixture.files) || fixture.files.length === 0) {
     errors.push('fixture.files must include at least one file');
   } else {
@@ -84,8 +85,8 @@ function validateFixture(fixture) {
         errors.push(`fixture.files[${index}] must be an object`);
         continue;
       }
-      if (!isNonEmptyString(file.path)) {
-        errors.push(`fixture.files[${index}].path must be a non-empty string`);
+      if (!isSafeRelativePath(file.path)) {
+        errors.push(`fixture.files[${index}].path must be a safe relative path`);
       }
       if (typeof file.contents !== 'string') {
         errors.push(`fixture.files[${index}].contents must be a string`);
@@ -106,6 +107,38 @@ function validateCoverageTargets(targets) {
     }
     if (!hasNonNegativeNumber(target.minimum_total)) {
       errors.push(`coverage_targets.${key}.minimum_total must be a non-negative number`);
+    }
+    if (!hasNonNegativeNumber(target.minimum_covered)) {
+      errors.push(`coverage_targets.${key}.minimum_covered must be a non-negative number`);
+    }
+    if (!hasRatioNumber(target.minimum_ratio)) {
+      errors.push(`coverage_targets.${key}.minimum_ratio must be a number between 0 and 1`);
+    }
+  }
+  return errors;
+}
+
+function validateArtifactAssertions(assertions) {
+  const errors = [];
+  if (!Array.isArray(assertions) || assertions.length === 0) {
+    return ['artifact_assertions must include at least one assertion'];
+  }
+  for (const [index, assertion] of assertions.entries()) {
+    if (!isRecord(assertion)) {
+      errors.push(`artifact_assertions[${index}] must be an object`);
+      continue;
+    }
+    if (!isSafeRelativePath(assertion.path)) {
+      errors.push(`artifact_assertions[${index}].path must be a safe relative path`);
+    }
+    if (assertion.type !== 'json' && assertion.type !== 'file') {
+      errors.push(`artifact_assertions[${index}].type must be json or file`);
+    }
+    if (
+      assertion.required_fields !== undefined &&
+      (!isStringArray(assertion.required_fields) || assertion.required_fields.length === 0)
+    ) {
+      errors.push(`artifact_assertions[${index}].required_fields must include strings`);
     }
   }
   return errors;
@@ -134,15 +167,223 @@ function validatePiBenchTask(task) {
   }
   if (task.suite !== PI_BENCH_TASK_SUITE) errors.push(`suite must be ${PI_BENCH_TASK_SUITE}`);
   if (task.mode !== PI_BENCH_TASK_MODE) errors.push(`mode must be ${PI_BENCH_TASK_MODE}`);
+  if (!PI_BENCH_TASK_CATEGORIES.includes(task.category)) {
+    errors.push(`category must be one of ${PI_BENCH_TASK_CATEGORIES.join(', ')}`);
+  }
   if (!isNonEmptyString(task.title)) errors.push('title must be a non-empty string');
   if (!isNonEmptyString(task.prompt)) errors.push('prompt must be a non-empty string');
-  if (!isStringArray(task.expected_artifacts) || task.expected_artifacts.length === 0) {
-    errors.push('expected_artifacts must include at least one string');
+  if (!Array.isArray(task.expected_artifacts) || task.expected_artifacts.length === 0) {
+    errors.push('expected_artifacts must include at least one path');
+  } else if (!task.expected_artifacts.every(isSafeRelativePath)) {
+    errors.push('expected_artifacts must be safe relative paths');
   }
   errors.push(...validateFixture(task.fixture));
   errors.push(...validateCoverageTargets(task.coverage_targets));
+  errors.push(...validateArtifactAssertions(task.artifact_assertions));
   errors.push(...validateRubric(task.rubric));
   return errors;
+}
+
+function safeJoin(root, relativePath) {
+  const normalized = normalize(relativePath);
+  assert(
+    isSafeRelativePath(normalized) && normalized !== '.' && !normalized.startsWith(`..${sep}`),
+    `unsafe relative path: ${relativePath}`,
+  );
+  return join(root, normalized);
+}
+
+function materializeFixture(task, parentDir) {
+  const repoDir = safeJoin(parentDir, task.fixture.root);
+  mkdirSync(repoDir, { recursive: true });
+  for (const file of task.fixture.files) {
+    const filePath = safeJoin(repoDir, file.path);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, file.contents);
+  }
+  return repoDir;
+}
+
+function readJsonArtifact(rootDir, relativePath) {
+  return JSON.parse(readFileSync(safeJoin(rootDir, relativePath), 'utf8'));
+}
+
+function getPathValue(value, path) {
+  let current = value;
+  for (const segment of path.split('.')) {
+    if (!isRecord(current) && !Array.isArray(current)) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+function assertExpectedArtifacts(task, repoDir) {
+  const errors = [];
+  for (const artifact of task.expected_artifacts) {
+    if (!existsSync(safeJoin(repoDir, artifact))) errors.push(`missing artifact ${artifact}`);
+  }
+  return errors;
+}
+
+function assertArtifactContracts(task, repoDir) {
+  const errors = [];
+  for (const assertion of task.artifact_assertions) {
+    const artifactPath = safeJoin(repoDir, assertion.path);
+    if (!existsSync(artifactPath)) {
+      errors.push(`missing asserted artifact ${assertion.path}`);
+      continue;
+    }
+    if (assertion.type !== 'json') continue;
+    let json;
+    try {
+      json = JSON.parse(readFileSync(artifactPath, 'utf8'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${assertion.path} is not valid JSON: ${message}`);
+      continue;
+    }
+    for (const field of assertion.required_fields ?? []) {
+      if (getPathValue(json, field) === undefined) {
+        errors.push(`${assertion.path} missing ${field}`);
+      }
+    }
+  }
+  return errors;
+}
+
+function coverageValues(benchmarkReady, key) {
+  const coverage = benchmarkReady.coverage?.[key];
+  if (!isRecord(coverage)) return undefined;
+  if (key === 'evidence') {
+    return {
+      total: coverage.records,
+      covered: coverage.claims_with_evidence,
+      ratio: coverage.coverage_ratio,
+    };
+  }
+  return {
+    total: coverage.total,
+    covered: coverage.covered,
+    ratio: coverage.coverage_ratio,
+  };
+}
+
+function percent(value) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatCoverage(key, component) {
+  if (key === 'evidence') {
+    return `${component.covered} claims/${component.total} records ${percent(component.ratio)}`;
+  }
+  return `${component.covered}/${component.total} ${percent(component.ratio)}`;
+}
+
+function scoreBenchmarkReady(task, benchmarkReady) {
+  const errors = [];
+  if (benchmarkReady.schema_version !== 1) errors.push('benchmark_ready schema_version must be 1');
+  if (benchmarkReady.benchmark_suite !== PI_BENCH_TASK_SUITE) {
+    errors.push(`benchmark_ready benchmark_suite must be ${PI_BENCH_TASK_SUITE}`);
+  }
+  if (benchmarkReady.deterministic !== true) errors.push('benchmark_ready must be deterministic');
+  if (benchmarkReady.provider_calls_required !== false) {
+    errors.push('benchmark_ready must not require provider calls');
+  }
+  if (benchmarkReady.network_required !== false) {
+    errors.push('benchmark_ready must not require network access');
+  }
+
+  const coverage = {};
+  for (const key of COVERAGE_TARGETS) {
+    const values = coverageValues(benchmarkReady, key);
+    if (values === undefined) {
+      errors.push(`benchmark_ready coverage.${key} is missing`);
+      continue;
+    }
+    const target = task.coverage_targets[key];
+    const total = typeof values.total === 'number' ? values.total : Number.NaN;
+    const covered = typeof values.covered === 'number' ? values.covered : Number.NaN;
+    const ratioValue = typeof values.ratio === 'number' ? values.ratio : Number.NaN;
+    coverage[key] = { total, covered, ratio: ratioValue };
+    if (!Number.isFinite(total) || total < target.minimum_total) {
+      errors.push(`coverage.${key}.total ${total} below ${target.minimum_total}`);
+    }
+    if (!Number.isFinite(covered) || covered < target.minimum_covered) {
+      errors.push(`coverage.${key}.covered ${covered} below ${target.minimum_covered}`);
+    }
+    if (!Number.isFinite(ratioValue) || ratioValue < target.minimum_ratio) {
+      errors.push(`coverage.${key}.coverage_ratio ${ratioValue} below ${target.minimum_ratio}`);
+    }
+  }
+
+  const readiness = isRecord(benchmarkReady.readiness) ? benchmarkReady.readiness : {};
+  const readinessScore =
+    typeof readiness.score === 'number' && Number.isFinite(readiness.score) ? readiness.score : 0;
+  return { errors, coverage, readinessScore };
+}
+
+function runPiBenchTask(task) {
+  const schemaErrors = validatePiBenchTask(task);
+  if (schemaErrors.length > 0) {
+    return { ok: false, errors: schemaErrors, summary: undefined };
+  }
+
+  return withTempDirSync('rizz-pi-bench-', (dir) => {
+    const repoDir = materializeFixture(task, dir);
+    const result = runCliInCwdSync(repoDir, ['brain'], '');
+    const errors = [];
+    if (result.error !== undefined) errors.push(String(result.error));
+    if (result.status !== 0) {
+      errors.push(`rizz brain exited ${result.status}: ${result.stderr || result.stdout}`);
+    }
+    errors.push(...assertExpectedArtifacts(task, repoDir));
+    errors.push(...assertArtifactContracts(task, repoDir));
+
+    let score;
+    try {
+      const benchmarkReady = readJsonArtifact(repoDir, '.rizz/research/benchmark_ready.json');
+      score = scoreBenchmarkReady(task, benchmarkReady);
+      errors.push(...score.errors);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`could not read benchmark_ready.json: ${message}`);
+    }
+
+    if (errors.length > 0 || score === undefined) {
+      return { ok: false, errors, summary: undefined };
+    }
+    return {
+      ok: true,
+      errors: [],
+      summary: {
+        readinessScore: score.readinessScore,
+        coverage: score.coverage,
+      },
+    };
+  });
+}
+
+function runPiBenchTasks(loadedTasks) {
+  console.log(`rizz eval — ${loadedTasks.length} PI-Bench task(s) loaded`);
+  let passed = 0;
+  let scoreTotal = 0;
+  for (const task of loadedTasks) {
+    const result = runPiBenchTask(task);
+    if (result.ok) {
+      passed += 1;
+      scoreTotal += result.summary.readinessScore;
+      const coverage = result.summary.coverage;
+      console.log(
+        `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}`,
+      );
+    } else {
+      console.log(`  ✗ ${task?.id ?? '(missing id)'} — ${result.errors.join('; ')}`);
+    }
+  }
+  const averageScore = loadedTasks.length === 0 ? 0 : Math.round(scoreTotal / loadedTasks.length);
+  console.log(`\n${passed}/${loadedTasks.length} PI-Bench task(s) passed`);
+  console.log(`PI-Bench average readiness score: ${averageScore}`);
+  return { passed, total: loadedTasks.length, ok: passed === loadedTasks.length, averageScore };
 }
 
 function assert(condition, message) {
@@ -880,4 +1121,4 @@ function runInstallShimSmoke() {
 
 const smokeOk = await runHeadlessSmoke();
 const installSmokeOk = runInstallShimSmoke();
-process.exit(passed === tasks.length && smokeOk && installSmokeOk ? 0 : 1);
+process.exit(piBenchResult.ok && smokeOk && installSmokeOk ? 0 : 1);
