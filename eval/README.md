@@ -19,9 +19,17 @@ Coverage targets are explicit for component, flow, evidence, and unknown surface
 `coverage.evidence.records`; evidence `minimum_covered` is checked against
 `coverage.evidence.claims_with_evidence`.
 
-Artifact assertions check that required files exist, parse as JSON when requested, and contain the
-expected top-level or dotted fields. The benchmark summary reports readiness score plus component,
-flow, evidence, and unknown coverage for each task.
+Artifact assertions check that required files exist, parse as JSON when requested, contain the
+expected top-level or dotted fields, include required substrings, and omit forbidden substrings.
+The benchmark summary reports readiness score plus component, flow, evidence, and unknown coverage
+for each task.
+
+The Next.js route-intelligence seed uses a deterministic app-router fixture with local-only
+`src/app/page.tsx`, dynamic docs page, layout, health API route, sitemap, robots, content loader,
+component import, and package-script evidence. It intentionally does not install fixture
+dependencies or contact a provider; it asserts that local research artifacts and Mission Control
+preserve route/API/render flows, mapped files/components/configs, contracts, confidence gaps, known
+unknowns, object labels, and expandable report details.
 
 Review benchmark tasks use category `review-blast-radius` and add a `review` block instead of
 `coverage_targets`. The runner initializes a git fixture, runs `rizz brain`, commits the baseline,

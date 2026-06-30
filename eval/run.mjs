@@ -145,6 +145,19 @@ function validateArtifactAssertions(assertions) {
     ) {
       errors.push(`artifact_assertions[${index}].required_fields must include strings`);
     }
+    if (
+      assertion.required_substrings !== undefined &&
+      (!isStringArray(assertion.required_substrings) || assertion.required_substrings.length === 0)
+    ) {
+      errors.push(`artifact_assertions[${index}].required_substrings must include strings`);
+    }
+    if (
+      assertion.forbidden_substrings !== undefined &&
+      (!isStringArray(assertion.forbidden_substrings) ||
+        assertion.forbidden_substrings.length === 0)
+    ) {
+      errors.push(`artifact_assertions[${index}].forbidden_substrings must include strings`);
+    }
   }
   return errors;
 }
@@ -429,10 +442,21 @@ function assertArtifactContracts(task, repoDir) {
       errors.push(`missing asserted artifact ${assertion.path}`);
       continue;
     }
+    const artifactText = readFileSync(artifactPath, 'utf8');
+    for (const substring of assertion.required_substrings ?? []) {
+      if (!artifactText.includes(substring)) {
+        errors.push(`${assertion.path} missing substring ${substring}`);
+      }
+    }
+    for (const substring of assertion.forbidden_substrings ?? []) {
+      if (artifactText.includes(substring)) {
+        errors.push(`${assertion.path} included forbidden substring ${substring}`);
+      }
+    }
     if (assertion.type !== 'json') continue;
     let json;
     try {
-      json = JSON.parse(readFileSync(artifactPath, 'utf8'));
+      json = JSON.parse(artifactText);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`${assertion.path} is not valid JSON: ${message}`);
