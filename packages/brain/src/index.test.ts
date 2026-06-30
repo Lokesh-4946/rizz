@@ -1555,6 +1555,187 @@ describe('project brain generation', () => {
     });
   });
 
+  it('understands static Express and Fastify-style HTTP route declarations', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src', 'orders'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'http-route-app',
+          scripts: { dev: 'tsx src/server.ts', test: 'vitest run' },
+          dependencies: { express: '^5.0.0', fastify: '^5.0.0' },
+          devDependencies: { tsx: '^4.0.0', vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'NodeNext', strict: true } }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import Fastify from "fastify";',
+          'import { createOrder } from "./orders/service.js";',
+          '',
+          'const app = express();',
+          'const server = Fastify();',
+          '',
+          'app.get("/health", (_req, res) => res.json({ ok: true }));',
+          'server.post("/orders", async (request, reply) => {',
+          '  const order = createOrder(await request.body);',
+          '  return reply.send(order);',
+          '});',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'orders', 'service.ts'),
+        [
+          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          '  if (input === undefined) throw new Error("invalid order");',
+          '  return { id: "order-1", input };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'orders', 'orders.test.ts'),
+        'import { it } from "vitest";\nit("covers the post orders route", () => {});\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:30:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          name: string;
+          data?: {
+            framework?: string;
+            route_path?: string;
+            route_type?: string;
+            kind?: string;
+            files?: string[];
+            dependencies?: string[];
+            configs?: string[];
+            tests?: string[];
+            entrypoints?: Array<{ type: string; path: string; symbol: string | null }>;
+            steps?: Array<{ type: string; path: string; symbol: string | null }>;
+            inputs?: string[];
+            outputs?: string[];
+            failure_modes?: string[];
+            confidence_reasons?: string[];
+            field_evidence?: Record<string, string[]>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const httpFlows = flows.entities.filter(
+        (flow) => flow.data?.framework === 'express-fastify-http',
+      );
+      expect(httpFlows).toHaveLength(2);
+
+      const healthFlow = httpFlows.find((flow) => flow.data?.route_path === '/health');
+      const ordersFlow = httpFlows.find((flow) => flow.data?.route_path === '/orders');
+      expect(healthFlow?.id).toBe('flow:http--get--health--src--server.ts');
+      expect(healthFlow?.data).toMatchObject({
+        kind: 'api',
+        route_type: 'GET',
+        files: expect.arrayContaining(['src/server.ts']),
+        configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
+        entrypoints: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'route',
+            path: 'src/server.ts',
+            symbol: 'GET /health',
+          }),
+        ]),
+        inputs: expect.arrayContaining(['HTTP request route input.']),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+      });
+      expect(ordersFlow?.id).toBe('flow:http--post--orders--src--server.ts');
+      expect(ordersFlow?.data).toMatchObject({
+        kind: 'api',
+        route_type: 'POST',
+        files: expect.arrayContaining(['src/server.ts', 'src/orders/service.ts']),
+        dependencies: expect.arrayContaining(['dependency:express', 'dependency:fastify']),
+        configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
+        tests: expect.arrayContaining(['src/orders/orders.test.ts']),
+        steps: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'route',
+            path: 'src/server.ts',
+            symbol: 'POST /orders',
+          }),
+          expect.objectContaining({
+            type: 'service',
+            path: 'src/orders/service.ts',
+          }),
+        ]),
+        failure_modes: expect.arrayContaining([
+          'Source evidence contains explicit error handling paths.',
+        ]),
+        confidence_reasons: expect.arrayContaining([
+          'Signal: http route declaration.',
+          'Linked test artifact is recorded.',
+        ]),
+      });
+      expect(ordersFlow?.data?.field_evidence).toMatchObject({
+        entrypoints: expect.arrayContaining(['evidence:file-src--server.ts']),
+        files: expect.arrayContaining([
+          'evidence:file-src--server.ts',
+          'evidence:file-src--orders--service.ts',
+        ]),
+        tests: expect.arrayContaining(['evidence:file-src--orders--orders.test.ts']),
+      });
+
+      const flowUnderstanding = await readJson<{
+        contracts: Array<{
+          id: string;
+          framework?: string;
+          route_path?: string;
+          route_type?: string;
+          outputs: string[];
+        }>;
+      }>(join(result.value.researchDir, 'flow_understanding.json'));
+      expect(flowUnderstanding.contracts).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:http--post--orders--src--server.ts',
+          framework: 'express-fastify-http',
+          route_path: '/orders',
+          route_type: 'POST',
+          outputs: expect.arrayContaining(['HTTP/API response.']),
+        }),
+      );
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'flow:http--post--orders--src--server.ts',
+        now: new Date('2026-06-28T12:31:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.flow).toMatchObject({
+        framework: 'express-fastify-http',
+        route_path: '/orders',
+        route_type: 'POST',
+        entrypoints: expect.arrayContaining([
+          expect.objectContaining({ path: 'src/server.ts', symbol: 'POST /orders' }),
+        ]),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+      });
+      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(explainReport).toContain('POST /orders');
+      expect(explainReport).toContain('HTTP POST /orders route enters src/server.ts');
+      expect(explainReport).not.toContain(dir);
+    });
+  });
+
   it('understands Next.js app router route, render, and metadata flows', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'src', 'app', 'docs', '[slug]'), { recursive: true });
