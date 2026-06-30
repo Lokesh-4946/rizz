@@ -9602,6 +9602,146 @@ function renderReadFirstPointers(score: unknown): string {
     .join('');
 }
 
+function recordString(value: unknown, key: string, fallback: string): string {
+  if (!isRecord(value)) return fallback;
+  const item = value[key];
+  return typeof item === 'string' ? item : fallback;
+}
+
+function nestedRecord(value: unknown, key: string): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const item = value[key];
+  return isRecord(item) ? item : {};
+}
+
+function renderFlagshipSummary(params: {
+  readonly understandingScore: unknown;
+  readonly evidenceQuality: unknown;
+  readonly incrementalUpdate: unknown;
+  readonly architectureReasoning: unknown;
+  readonly flowCount: number;
+  readonly evidenceCount: number;
+  readonly reviewReadiness: { readonly value: number; readonly posture: string };
+  readonly evidenceMetric: { readonly value: number; readonly posture: string };
+}): string {
+  const overallUnderstanding = recordNumber(params.understandingScore, 'overall_score');
+  const understandingBand = recordString(
+    params.understandingScore,
+    'score_band',
+    scoreBand(overallUnderstanding),
+  );
+  const dimensions = nestedRecord(params.understandingScore, 'dimensions');
+  const flowDimension = nestedRecord(dimensions, 'flows');
+  const evidenceCalibration = nestedRecord(params.evidenceQuality, 'evidence_calibration');
+  const redactionImpact = nestedRecord(evidenceCalibration, 'redaction_impact');
+  const confidenceDebt = nestedRecord(params.architectureReasoning, 'confidence_debt');
+  const changedFiles = recordNumber(params.incrementalUpdate, 'changed_file_count');
+  const changedEntities = recordNumber(params.incrementalUpdate, 'changed_entity_count');
+  const stableEntities = recordNumber(params.incrementalUpdate, 'stable_entity_count');
+  const reusedUnderstanding = recordNumber(params.incrementalUpdate, 'reused_understanding_count');
+  const recomputedUnderstanding = recordNumber(
+    params.incrementalUpdate,
+    'recomputed_understanding_count',
+  );
+  const scanEfficiency = recordNumber(params.incrementalUpdate, 'scan_efficiency_score');
+  const flowScore = recordNumber(flowDimension, 'score');
+  const flowStatus = recordString(flowDimension, 'status', scoreBand(flowScore));
+  const debtLevel = recordString(confidenceDebt, 'debt_level', 'unknown');
+  const debtCount = recordNumber(confidenceDebt, 'debt_count');
+  const unsupportedAssumptions = recordNumber(confidenceDebt, 'unsupported_assumption_count');
+  const blockingUnknowns = recordNumber(confidenceDebt, 'blocking_unknown_count');
+  const redactionImpactLabel = recordString(redactionImpact, 'impact', 'unknown');
+  const redactionSafety = recordNumber(params.evidenceQuality, 'redaction_safety_score');
+  const weakEvidenceClaims = recordNumber(params.evidenceQuality, 'weak_evidence_claims');
+  const unsupportedClaims = recordNumber(params.evidenceQuality, 'unsupported_claims');
+  const evidenceGaps = recordNumber(params.evidenceQuality, 'evidence_gap_count');
+  const reviewAttention = isRecord(params.understandingScore)
+    ? recordArray(params.understandingScore.review_readiness, 'required_attention')
+        .filter((item): item is string => typeof item === 'string')
+        .slice(0, 3)
+    : [];
+
+  return `<details class="object flagship" open>
+    <summary><span>Flagship Summary</span><span class="summary-meta"><span>PIE</span><span>${htmlEscape(
+      understandingBand,
+    )}</span></span></summary>
+    <p class="muted">Fast local answer to what Rizz understands, what changed, what to inspect first, and where confidence is weak.</p>
+    <div class="flagship-grid">
+      <article class="card compact">
+        <h3>Understanding Level</h3>
+        ${renderList([
+          `${overallUnderstanding}/100 overall`,
+          `${understandingBand} posture`,
+          metricSummaryFromScore(overallUnderstanding),
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Evidence Quality Calibration</h3>
+        ${renderList([
+          `${params.evidenceMetric.value}/100 evidence quality`,
+          `${params.evidenceMetric.posture} posture`,
+          `${unsupportedClaims} unsupported claim(s)`,
+          `${weakEvidenceClaims} weak evidence claim(s)`,
+          `${evidenceGaps} evidence gap(s)`,
+          `redaction impact: ${redactionImpactLabel}`,
+          `redaction safety: ${redactionSafety}/100`,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Flow Coverage</h3>
+        ${renderList([
+          `${params.flowCount} reconstructed flow(s)`,
+          `${flowScore}/100 flow score`,
+          `${flowStatus} flow posture`,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Architecture Confidence Debt</h3>
+        ${renderList([
+          `${debtLevel} debt level`,
+          `${debtCount} debt item(s)`,
+          `${unsupportedAssumptions} unsupported assumption(s)`,
+          `${blockingUnknowns} blocking unknown(s)`,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Review Readiness</h3>
+        ${renderList([
+          `${params.reviewReadiness.value}/100 review readiness`,
+          `${params.reviewReadiness.posture} posture`,
+          ...reviewAttention,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Incremental Changed / Stable</h3>
+        ${renderList([
+          `${changedFiles} changed file(s)`,
+          `${changedEntities} changed understanding item(s)`,
+          `${stableEntities} stable understanding item(s)`,
+          `${reusedUnderstanding} reused understanding item(s)`,
+          `${recomputedUnderstanding} recomputed understanding item(s)`,
+          `${scanEfficiency}/100 scan efficiency`,
+        ])}
+      </article>
+      <article class="card compact read-first-card">
+        <h3>Read First Pointers</h3>
+        ${renderReadFirstPointers(params.understandingScore)}
+      </article>
+      <article class="card compact">
+        <h3>Research Artifacts</h3>
+        ${renderList([
+          '.rizz/research/understanding_score.json',
+          '.rizz/research/evidence_quality.json',
+          '.rizz/research/flow_coverage.json',
+          '.rizz/research/architecture_reasoning.json',
+          '.rizz/research/incremental_update.json',
+        ])}
+        <p class="muted">${params.evidenceCount} local evidence record(s).</p>
+      </article>
+    </div>
+  </details>`;
+}
+
 function renderUnderstandingDashboard(score: unknown): string {
   if (!isRecord(score)) {
     return '<section><h2>Project Intelligence</h2><p class="muted">No understanding score is available yet.</p></section>';
@@ -9714,6 +9854,16 @@ function renderReport(params: {
   const evidenceQuality = evidenceQualityMetric(params.latest.latest_evidence_quality);
   const reviewReadiness = reviewReadinessMetric(understandingScore);
   const unknownRisk = unknownRiskMetric(unknownCount);
+  const flagshipSummary = renderFlagshipSummary({
+    understandingScore,
+    evidenceQuality: params.latest.latest_evidence_quality,
+    incrementalUpdate,
+    architectureReasoning: params.latest.latest_architecture_reasoning,
+    flowCount: params.buckets.flows.length,
+    evidenceCount: params.buckets.evidence.length,
+    reviewReadiness,
+    evidenceMetric: evidenceQuality,
+  });
   const componentObject = renderObjectDetails({
     title: 'Components',
     summary:
@@ -9808,6 +9958,9 @@ function renderReport(params: {
     .badge.warn { color: var(--warn); }
     .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
     .objects { display: grid; gap: 12px; margin-top: 18px; }
+    .flagship { margin: 18px 0; }
+    .flagship-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 0 16px 16px; }
+    .read-first-card { grid-column: 1 / -1; }
     .object { padding: 0; overflow: hidden; }
     .object > summary { display: flex; justify-content: space-between; gap: 12px; padding: 16px; cursor: pointer; font-weight: 750; }
     .object > summary::-webkit-details-marker { display: none; }
@@ -9827,7 +9980,7 @@ function renderReport(params: {
     th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
     summary { cursor: pointer; font-weight: 700; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-    @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .artifact-links { columns: 1; } }
+    @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .flagship-grid { grid-template-columns: 1fr; } .artifact-links { columns: 1; } }
     @media (max-width: 560px) { main { padding: 20px 12px 48px; } h1 { font-size: 28px; } .metrics { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } .metric-value { font-size: 36px; } }
     @media print { body { background: #fff; color: #000; } .card, details, .metric { break-inside: avoid; border-color: #999; } a { color: #000; } }
   </style>
@@ -9880,6 +10033,7 @@ function renderReport(params: {
         <span class="badge">${scanEfficiency}/100 scan efficiency</span>
       </div>
     </header>
+    ${flagshipSummary}
     <section class="objects" aria-label="Mission Control objects">
       ${componentObject}
       ${flowObject}
