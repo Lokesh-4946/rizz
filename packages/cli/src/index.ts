@@ -188,6 +188,16 @@ async function runExplainCommand(options: {
   process.stdout.write(`\nWhat this is\n  ${explanation.purpose}\n`);
   writeSection('Responsibilities', explanation.responsibilities);
   writeSection('Entry points', explanation.entry_points);
+  if (explanation.flow !== undefined) {
+    writeSection('Entry contract', explanation.flow.entry_contract);
+    writeSection('Exit contract', explanation.flow.exit_contract);
+    writeSection('Inputs', explanation.flow.inputs);
+    writeSection('Outputs', explanation.flow.outputs);
+    writeSection('Side effects', explanation.flow.side_effects);
+    writeSection('State transitions', explanation.flow.state_transitions);
+    writeSection('Required tests', explanation.flow.required_tests);
+    writeSection('Confidence reasons', explanation.flow.confidence_reasons);
+  }
   writeSection('Important files', explanation.important_files);
   writeSection('Dependencies', explanation.dependencies);
   writeSection('Dependency roles', explanation.dependency_roles);

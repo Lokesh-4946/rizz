@@ -1076,6 +1076,223 @@ describe('project brain generation', () => {
     });
   });
 
+  it('emits deterministic flow contracts for validation, side effects, outputs, tests, and configs', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'api', 'src', 'routes'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'api', 'package.json'),
+        JSON.stringify({
+          name: '@sample/api',
+          scripts: { test: 'vitest run packages/api' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'api', 'src', 'routes', 'createSession.route.ts'),
+        [
+          'import { saveSession } from "./session-store.js";',
+          'export async function POST(request: Request): Promise<Response> {',
+          '  const body = await request.json();',
+          '  if (!body.userId) throw new Error("invalid userId");',
+          '  const session = saveSession({ userId: body.userId });',
+          '  return Response.json({ sessionId: session.id });',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'packages', 'api', 'src', 'routes', 'session-store.ts'),
+        [
+          'const sessionCache = new Map<string, { userId: string }>();',
+          'const databaseSessions = new Map<string, { userId: string }>();',
+          'export function saveSession(input: { userId: string }): { id: string } {',
+          '  const id = `session-${input.userId}`;',
+          '  sessionCache.set(id, input);',
+          '  databaseSessions.set(id, input);',
+          '  return { id };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'packages', 'api', 'src', 'routes', 'createSession.route.test.ts'),
+        'import { it } from "vitest";\nit("validates and returns a session response", () => {});\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:20:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const flowId = 'flow:api--packages--api--src--routes--createsession.route.ts';
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            entry_contract?: string[];
+            exit_contract?: string[];
+            inputs?: string[];
+            outputs?: string[];
+            side_effects?: string[];
+            state_transitions?: string[];
+            failure_modes?: string[];
+            required_tests?: string[];
+            confidence_reasons?: string[];
+            field_evidence?: Record<string, string[]>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const routeFlow = flows.entities.find((flow) => flow.id === flowId);
+      expect(routeFlow?.data).toMatchObject({
+        entry_contract: expect.arrayContaining([
+          'Entrypoint performs validation before continuing to downstream steps.',
+        ]),
+        exit_contract: expect.arrayContaining([
+          'Returns an HTTP/API response from the route flow.',
+        ]),
+        inputs: expect.arrayContaining(['HTTP request route input.']),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+        side_effects: expect.arrayContaining([
+          'State/session/cache/database or filesystem side effect inferred from source.',
+        ]),
+        state_transitions: expect.arrayContaining([
+          'State changes when session, cache, database, store, or file mutation succeeds.',
+          'Invalid input transitions into validation failure instead of normal output.',
+        ]),
+        failure_modes: expect.arrayContaining([
+          'Source evidence contains explicit error handling paths.',
+          'Validation can reject malformed or missing input.',
+        ]),
+        required_tests: expect.arrayContaining([
+          'packages/api/src/routes/createSession.route.test.ts',
+          'validation failure coverage',
+          'state/session/cache/database side-effect coverage',
+          'response/output contract coverage',
+        ]),
+        confidence_reasons: expect.arrayContaining([
+          'Entrypoint evidence is recorded.',
+          'Validation evidence is recorded.',
+          'Side-effect evidence is recorded.',
+          'Linked test artifact is recorded.',
+        ]),
+      });
+      expect(routeFlow?.data?.field_evidence).toMatchObject({
+        entry_contract: expect.arrayContaining([
+          'evidence:file-packages--api--src--routes--createsession.route.ts',
+        ]),
+        side_effects: expect.arrayContaining([
+          'evidence:file-packages--api--src--routes--session-store.ts',
+        ]),
+        required_tests: expect.arrayContaining([
+          'evidence:file-packages--api--src--routes--createsession.route.test.ts',
+        ]),
+      });
+
+      const flowUnderstanding = await readJson<{
+        flows_with_contracts: number;
+        contracts: Array<{
+          id: string;
+          entry_contract: string[];
+          exit_contract: string[];
+          side_effects: string[];
+          required_tests: string[];
+        }>;
+      }>(join(result.value.researchDir, 'flow_understanding.json'));
+      expect(flowUnderstanding.flows_with_contracts).toBeGreaterThan(0);
+      expect(flowUnderstanding.contracts).toContainEqual(
+        expect.objectContaining({
+          id: flowId,
+          side_effects: expect.arrayContaining([
+            'State/session/cache/database or filesystem side effect inferred from source.',
+          ]),
+          required_tests: expect.arrayContaining(['validation failure coverage']),
+        }),
+      );
+
+      const flowCoverage = await readJson<{
+        contract_backed_flow_ratio: number;
+        flows: Array<{
+          id: string;
+          entry_contract: number;
+          exit_contract: number;
+          side_effects: number;
+          required_tests: number;
+        }>;
+      }>(join(result.value.researchDir, 'flow_coverage.json'));
+      expect(flowCoverage.contract_backed_flow_ratio).toBeGreaterThan(0);
+      expect(flowCoverage.flows).toContainEqual(
+        expect.objectContaining({
+          id: flowId,
+          entry_contract: expect.any(Number),
+          exit_contract: expect.any(Number),
+          side_effects: expect.any(Number),
+          required_tests: expect.any(Number),
+        }),
+      );
+
+      const evidenceQuality = await readJson<{
+        flow_field_evidence: Array<{
+          id: string;
+          fields: {
+            entry_contract?: number;
+            exit_contract?: number;
+            side_effects?: number;
+            required_tests?: number;
+          };
+        }>;
+        top_evidence_gaps: Array<{ id: string; field?: string }>;
+      }>(join(result.value.researchDir, 'evidence_quality.json'));
+      expect(evidenceQuality.flow_field_evidence).toContainEqual(
+        expect.objectContaining({
+          id: flowId,
+          fields: expect.objectContaining({
+            entry_contract: expect.any(Number),
+            exit_contract: expect.any(Number),
+            side_effects: expect.any(Number),
+            required_tests: expect.any(Number),
+          }),
+        }),
+      );
+      expect(evidenceQuality.top_evidence_gaps).not.toContainEqual(
+        expect.objectContaining({ id: flowId, field: 'entry_contract' }),
+      );
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: flowId,
+        now: new Date('2026-06-28T12:21:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.flow).toMatchObject({
+        entry_contract: expect.arrayContaining([
+          'Entrypoint performs validation before continuing to downstream steps.',
+        ]),
+        exit_contract: expect.arrayContaining([
+          'Returns an HTTP/API response from the route flow.',
+        ]),
+        inputs: expect.arrayContaining(['HTTP request route input.']),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+        side_effects: expect.arrayContaining([
+          'State/session/cache/database or filesystem side effect inferred from source.',
+        ]),
+        state_transitions: expect.arrayContaining([
+          'Invalid input transitions into validation failure instead of normal output.',
+        ]),
+        required_tests: expect.arrayContaining(['validation failure coverage']),
+        confidence_reasons: expect.arrayContaining(['Validation evidence is recorded.']),
+      });
+      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(explainReport).toContain('Entry Contract');
+      expect(explainReport).toContain('Side Effects');
+      expect(explainReport).toContain('validation failure coverage');
+      expect(explainReport).not.toContain(dir);
+    });
+  });
+
   it('does not count absence-only component heuristics as evidence-backed fields', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'lib'), { recursive: true });

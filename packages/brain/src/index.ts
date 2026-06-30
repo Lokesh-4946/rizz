@@ -225,6 +225,19 @@ interface FlowEvidence {
   readonly reason: string;
 }
 
+interface FlowContractSummary {
+  readonly entry_contract: readonly string[];
+  readonly exit_contract: readonly string[];
+  readonly inputs: readonly string[];
+  readonly outputs: readonly string[];
+  readonly side_effects: readonly string[];
+  readonly state_transitions: readonly string[];
+  readonly failure_modes: readonly string[];
+  readonly required_tests: readonly string[];
+  readonly confidence_reasons: readonly string[];
+  readonly field_evidence: Readonly<Record<string, readonly string[]>>;
+}
+
 interface FlowIntelligence {
   readonly flow_id: string;
   readonly name: string;
@@ -237,6 +250,15 @@ interface FlowIntelligence {
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly risks: readonly FlowRisk[];
+  readonly entry_contract: readonly string[];
+  readonly exit_contract: readonly string[];
+  readonly inputs: readonly string[];
+  readonly outputs: readonly string[];
+  readonly side_effects: readonly string[];
+  readonly state_transitions: readonly string[];
+  readonly failure_modes: readonly string[];
+  readonly required_tests: readonly string[];
+  readonly confidence_reasons: readonly string[];
   readonly confidence: FlowConfidence;
   readonly evidence: readonly FlowEvidence[];
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
@@ -509,6 +531,15 @@ interface ExplainSummaryData {
     readonly tests: readonly string[];
     readonly configs: readonly string[];
     readonly risks: readonly FlowRisk[];
+    readonly entry_contract: readonly string[];
+    readonly exit_contract: readonly string[];
+    readonly inputs: readonly string[];
+    readonly outputs: readonly string[];
+    readonly side_effects: readonly string[];
+    readonly state_transitions: readonly string[];
+    readonly failure_modes: readonly string[];
+    readonly required_tests: readonly string[];
+    readonly confidence_reasons: readonly string[];
     readonly confidence_score: number;
     readonly confidence_reason: string;
   };
@@ -2220,6 +2251,184 @@ function flowConfidenceFor(
   };
 }
 
+function matchingEvidenceIds(params: {
+  readonly rootDir: string;
+  readonly files: readonly string[];
+  readonly pattern: RegExp;
+}): string[] {
+  return unique(
+    params.files
+      .filter((file) => params.pattern.test(readTextIfAvailable(params.rootDir, file) ?? ''))
+      .map(evidenceId),
+  );
+}
+
+function fallbackEvidenceIds(
+  entrypoints: readonly FlowEntrypoint[],
+  steps: readonly FlowStep[],
+): string[] {
+  return unique([
+    ...entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+    ...steps.flatMap((step) => step.evidence),
+  ]).slice(0, 6);
+}
+
+function inferFlowContracts(params: {
+  readonly rootDir: string;
+  readonly kind: FlowKind;
+  readonly command?: string;
+  readonly entrypoints: readonly FlowEntrypoint[];
+  readonly steps: readonly FlowStep[];
+  readonly files: readonly string[];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly risks: readonly FlowRisk[];
+  readonly signals: readonly string[];
+  readonly confidenceReason: string;
+}): FlowContractSummary {
+  const entryEvidence = unique(params.entrypoints.flatMap((entrypoint) => entrypoint.evidence));
+  const stepEvidence = unique(params.steps.flatMap((step) => step.evidence));
+  const baseEvidence = fallbackEvidenceIds(params.entrypoints, params.steps);
+  const validationEvidence = matchingEvidenceIds({
+    rootDir: params.rootDir,
+    files: params.files,
+    pattern: /validate|schema|parse|assert|required|invalid|zod|safeParse/i,
+  });
+  const inputEvidence = matchingEvidenceIds({
+    rootDir: params.rootDir,
+    files: params.files,
+    pattern:
+      /process\.argv|commander|yargs|request\.json|req\.body|body|params|searchParams|query|process\.env/i,
+  });
+  const outputEvidence = matchingEvidenceIds({
+    rootDir: params.rootDir,
+    files: params.files,
+    pattern: /return|response|res\.|json|send|console\.log|stdout|writeHead/i,
+  });
+  const sideEffectEvidence = matchingEvidenceIds({
+    rootDir: params.rootDir,
+    files: params.files,
+    pattern:
+      /session|cache|database|db\.|prisma|sqlite|writeFile|appendFile|setItem|save|insert|update|delete|mutate|store/i,
+  });
+  const failureEvidence = matchingEvidenceIds({
+    rootDir: params.rootDir,
+    files: params.files,
+    pattern:
+      /throw|catch|invalid|error|unauthorized|forbidden|not found|ok:\s*false|status\((4|5)\d\d\)/i,
+  });
+  const hasRouteEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'route');
+  const hasCommandEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'command');
+  const commandInput =
+    params.command === undefined ? [] : [`Command invocation: ${safeText(params.command)}.`];
+
+  const entryContract = unique([
+    ...params.entrypoints.map(formatFlowEntrypoint),
+    ...(validationEvidence.length > 0
+      ? ['Entrypoint performs validation before continuing to downstream steps.']
+      : []),
+    ...(params.configs.length > 0
+      ? [`Entrypoint depends on config artifact(s): ${params.configs.slice(0, 4).join(', ')}.`]
+      : []),
+  ]);
+  const exitContract = unique([
+    ...(hasRouteEntry ? ['Returns an HTTP/API response from the route flow.'] : []),
+    ...(hasCommandEntry ? ['Exits through the package script command result.'] : []),
+    ...(outputEvidence.length > 0 ? ['Source evidence includes a return or response output.'] : []),
+    ...(params.tests.length > 0
+      ? [`Expected behavior is test-backed by ${params.tests.slice(0, 4).join(', ')}.`]
+      : []),
+  ]);
+  const inputs = unique([
+    ...commandInput,
+    ...(hasRouteEntry ? ['HTTP request route input.'] : []),
+    ...(inputEvidence.length > 0
+      ? ['Source evidence reads request, CLI, parameter, query, body, or environment input.']
+      : []),
+    ...(validationEvidence.length > 0 ? ['Validated input contract inferred from source.'] : []),
+  ]);
+  const outputs = unique([
+    ...(hasRouteEntry ? ['HTTP/API response.'] : []),
+    ...(hasCommandEntry ? ['Command completion status and command output.'] : []),
+    ...(outputEvidence.length > 0 ? ['Return value, JSON/send response, or stdout output.'] : []),
+  ]);
+  const sideEffects = unique([
+    ...(sideEffectEvidence.length > 0
+      ? ['State/session/cache/database or filesystem side effect inferred from source.']
+      : []),
+    ...(params.configs.length > 0 ? ['Reads configuration that can alter runtime behavior.'] : []),
+  ]);
+  const stateTransitions = unique([
+    ...(sideEffectEvidence.length > 0
+      ? ['State changes when session, cache, database, store, or file mutation succeeds.']
+      : []),
+    ...(validationEvidence.length > 0
+      ? ['Invalid input transitions into validation failure instead of normal output.']
+      : []),
+  ]);
+  const failureModes = unique([
+    ...params.risks.map(formatFlowRisk),
+    ...(failureEvidence.length > 0
+      ? ['Source evidence contains explicit error handling paths.']
+      : []),
+    ...(validationEvidence.length > 0 ? ['Validation can reject malformed or missing input.'] : []),
+    ...(params.tests.length === 0 ? ['No directly linked tests were detected for this flow.'] : []),
+    ...(params.configs.length === 0
+      ? ['No directly linked configs were detected for this flow.']
+      : []),
+  ]);
+  const requiredTests = unique([
+    ...params.tests,
+    ...(validationEvidence.length > 0 ? ['validation failure coverage'] : []),
+    ...(sideEffectEvidence.length > 0 ? ['state/session/cache/database side-effect coverage'] : []),
+    ...(outputEvidence.length > 0 ? ['response/output contract coverage'] : []),
+  ]);
+  const confidenceReasons = unique([
+    params.confidenceReason,
+    ...params.signals.map((signal) => `Signal: ${signal}.`),
+    ...(entryEvidence.length > 0 ? ['Entrypoint evidence is recorded.'] : []),
+    ...(stepEvidence.length > 0 ? ['Step evidence is recorded.'] : []),
+    ...(validationEvidence.length > 0 ? ['Validation evidence is recorded.'] : []),
+    ...(sideEffectEvidence.length > 0 ? ['Side-effect evidence is recorded.'] : []),
+    ...(params.tests.length > 0 ? ['Linked test artifact is recorded.'] : []),
+  ]);
+
+  return {
+    entry_contract: entryContract,
+    exit_contract: exitContract,
+    inputs,
+    outputs,
+    side_effects: sideEffects,
+    state_transitions: stateTransitions,
+    failure_modes: failureModes,
+    required_tests: requiredTests,
+    confidence_reasons: confidenceReasons,
+    field_evidence: {
+      entry_contract: entryEvidence.length > 0 ? entryEvidence : baseEvidence,
+      exit_contract: unique([...outputEvidence, ...params.tests.map(evidenceId), ...baseEvidence]),
+      inputs: unique([...inputEvidence, ...validationEvidence, ...entryEvidence]),
+      outputs: unique([...outputEvidence, ...baseEvidence]),
+      side_effects: sideEffectEvidence,
+      state_transitions: unique([...sideEffectEvidence, ...validationEvidence]),
+      failure_modes: unique([
+        ...params.risks.flatMap((risk) => risk.evidence),
+        ...failureEvidence,
+        ...validationEvidence,
+      ]),
+      required_tests: unique([
+        ...params.tests.map(evidenceId),
+        ...validationEvidence,
+        ...sideEffectEvidence,
+      ]),
+      confidence_reasons: unique([
+        ...entryEvidence,
+        ...stepEvidence,
+        ...params.tests.map(evidenceId),
+      ]),
+    },
+  };
+}
+
 function asFlowConfidenceScore(entity: BrainEntity): number {
   const confidence = entity.data?.confidence;
   if (!isRecord(confidence)) {
@@ -2543,6 +2752,19 @@ function inferScriptFlow(params: {
     });
   }
   const baseConfidence = flowConfidenceFor({ tests, signals, unknowns });
+  const contracts = inferFlowContracts({
+    rootDir: params.rootDir,
+    kind,
+    command: params.command,
+    entrypoints: [entrypoint],
+    steps,
+    files,
+    configs,
+    tests,
+    risks,
+    signals,
+    confidenceReason: baseConfidence.reason,
+  });
   return {
     flow_id: flowId,
     name: flowNameForScript(params.scriptName, kind),
@@ -2555,6 +2777,15 @@ function inferScriptFlow(params: {
     configs,
     tests,
     risks,
+    entry_contract: contracts.entry_contract,
+    exit_contract: contracts.exit_contract,
+    inputs: contracts.inputs,
+    outputs: contracts.outputs,
+    side_effects: contracts.side_effects,
+    state_transitions: contracts.state_transitions,
+    failure_modes: contracts.failure_modes,
+    required_tests: contracts.required_tests,
+    confidence_reasons: contracts.confidence_reasons,
     confidence: {
       score: baseConfidence.score,
       reason: baseConfidence.reason,
@@ -2585,6 +2816,7 @@ function inferScriptFlow(params: {
       configs: configs.map(evidenceId),
       tests: tests.map(evidenceId),
       risks: unique(risks.flatMap((risk) => risk.evidence)),
+      ...contracts.field_evidence,
     },
     unknowns,
     signals,
@@ -2700,29 +2932,52 @@ function inferRouteFlow(params: {
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
   const baseConfidence = flowConfidenceFor({ tests: relatedTests, signals, unknowns: [] });
+  const entrypoints: FlowEntrypoint[] = [
+    {
+      type: 'route',
+      path: safeText(params.file.relativePath),
+      symbol: null,
+      component_id: componentIds[0] ?? null,
+      evidence: [evId],
+    },
+  ];
+  const files = unique([
+    params.file.relativePath,
+    ...importContext.importedFiles.map((file) => file.relativePath),
+  ]);
+  const contracts = inferFlowContracts({
+    rootDir: params.rootDir,
+    kind: 'api',
+    entrypoints,
+    steps,
+    files,
+    configs,
+    tests: unique(relatedTests),
+    risks,
+    signals,
+    confidenceReason: baseConfidence.reason,
+  });
   return {
     flow_id: flowId,
     name: `${safeText(basename(params.file.relativePath))} API flow`,
     kind: 'api',
-    entrypoints: [
-      {
-        type: 'route',
-        path: safeText(params.file.relativePath),
-        symbol: null,
-        component_id: componentIds[0] ?? null,
-        evidence: [evId],
-      },
-    ],
+    entrypoints,
     steps,
     components: componentIds,
-    files: unique([
-      params.file.relativePath,
-      ...importContext.importedFiles.map((file) => file.relativePath),
-    ]),
+    files,
     dependencies,
     configs,
     tests: unique(relatedTests),
     risks,
+    entry_contract: contracts.entry_contract,
+    exit_contract: contracts.exit_contract,
+    inputs: contracts.inputs,
+    outputs: contracts.outputs,
+    side_effects: contracts.side_effects,
+    state_transitions: contracts.state_transitions,
+    failure_modes: contracts.failure_modes,
+    required_tests: contracts.required_tests,
+    confidence_reasons: contracts.confidence_reasons,
     confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
     evidence: [
       flowEvidenceForNeedle({
@@ -2747,6 +3002,7 @@ function inferRouteFlow(params: {
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
+      ...contracts.field_evidence,
     },
     unknowns:
       componentIds.length === 0 ? ['No owning component was detected for this route file.'] : [],
@@ -3246,6 +3502,15 @@ const FLOW_UNDERSTANDING_FIELDS = [
   'configs',
   'tests',
   'risks',
+  'entry_contract',
+  'exit_contract',
+  'inputs',
+  'outputs',
+  'side_effects',
+  'state_transitions',
+  'failure_modes',
+  'required_tests',
+  'confidence_reasons',
 ] as const;
 
 function fieldCoverageForFlows(flows: readonly BrainEntity[]): FieldCoverageSummary {
@@ -5075,6 +5340,11 @@ function buildResearchArtifacts(params: {
   const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
   const flowsWithoutTests = flows.filter((flow) => flowStringArray(flow, 'tests').length === 0);
   const lowConfidenceFlows = flows.filter((flow) => flow.confidence !== 'verified');
+  const flowsWithContracts = flows.filter(
+    (flow) =>
+      flowStringArray(flow, 'entry_contract').length > 0 &&
+      flowStringArray(flow, 'exit_contract').length > 0,
+  );
   const flowCoveredFiles = new Set(flows.flatMap((flow) => flowStringArray(flow, 'files')));
   const activeSourceFiles = activeFileEntities.filter((file) => isSourceFile(file.name));
   const activeTestFiles = activeFileEntities.filter((file) => isTestPath(file.name));
@@ -5354,6 +5624,7 @@ function buildResearchArtifacts(params: {
       flows_by_kind: countByValue(flows.map((flow) => stringData(flow, 'kind') ?? 'unknown')),
       flows_with_tests: flowsWithTests.length,
       flows_without_tests: flowsWithoutTests.length,
+      flows_with_contracts: flowsWithContracts.length,
       flow_steps: flowStepCount,
       mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
         .length,
@@ -5366,6 +5637,18 @@ function buildResearchArtifacts(params: {
         name: flow.name,
         confidence: flow.confidence,
         reason: flowConfidenceReason(flow),
+      })),
+      contracts: flows.map((flow) => ({
+        id: flow.id,
+        entry_contract: flowStringArray(flow, 'entry_contract'),
+        exit_contract: flowStringArray(flow, 'exit_contract'),
+        inputs: flowStringArray(flow, 'inputs'),
+        outputs: flowStringArray(flow, 'outputs'),
+        side_effects: flowStringArray(flow, 'side_effects'),
+        state_transitions: flowStringArray(flow, 'state_transitions'),
+        failure_modes: flowStringArray(flow, 'failure_modes'),
+        required_tests: flowStringArray(flow, 'required_tests'),
+        confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
       })),
       orphan_entrypoints: flows
         .filter((flow) => flowStringArray(flow, 'components').length === 0)
@@ -5397,6 +5680,7 @@ function buildResearchArtifacts(params: {
         flows.filter((flow) => flowStringArray(flow, 'configs').length > 0).length,
         flows.length,
       ),
+      contract_backed_flow_ratio: ratio(flowsWithContracts.length, flows.length),
       source_file_coverage_ratio: ratio(
         activeSourceFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
         activeSourceFiles.length,
@@ -5420,6 +5704,13 @@ function buildResearchArtifacts(params: {
         components: flowStringArray(flow, 'components').length,
         tests: flowStringArray(flow, 'tests').length,
         configs: flowStringArray(flow, 'configs').length,
+        entry_contract: flowStringArray(flow, 'entry_contract').length,
+        exit_contract: flowStringArray(flow, 'exit_contract').length,
+        inputs: flowStringArray(flow, 'inputs').length,
+        outputs: flowStringArray(flow, 'outputs').length,
+        side_effects: flowStringArray(flow, 'side_effects').length,
+        state_transitions: flowStringArray(flow, 'state_transitions').length,
+        required_tests: flowStringArray(flow, 'required_tests').length,
         risks: flowRisks(flow).length,
         confidence: flow.confidence,
       })),
@@ -5557,6 +5848,15 @@ function buildLatest(params: {
     file_count: flowStringArray(flow, 'files').length,
     test_count: flowStringArray(flow, 'tests').length,
     risk_count: flowRisks(flow).length,
+    entry_contract: flowStringArray(flow, 'entry_contract'),
+    exit_contract: flowStringArray(flow, 'exit_contract'),
+    inputs: flowStringArray(flow, 'inputs'),
+    outputs: flowStringArray(flow, 'outputs'),
+    side_effects: flowStringArray(flow, 'side_effects'),
+    state_transitions: flowStringArray(flow, 'state_transitions'),
+    failure_modes: flowStringArray(flow, 'failure_modes'),
+    required_tests: flowStringArray(flow, 'required_tests'),
+    confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
     confidence: flow.confidence,
     score: asFlowConfidenceScore(flow),
     evidence_ids: flow.evidence_ids,
@@ -5941,6 +6241,7 @@ function renderFlowCards(
       const kind = stringData(flow, 'kind') ?? 'unknown';
       const steps = flowSteps(flow);
       const risks = flowRisks(flow);
+      const fieldEvidence = recordStringArrayData(flow, 'field_evidence');
       const entrypoints = Array.isArray(flow.data?.entrypoints)
         ? flow.data.entrypoints.filter(isRecord).map((entrypoint) => {
             const type = typeof entrypoint.type === 'string' ? entrypoint.type : 'entrypoint';
@@ -5965,6 +6266,42 @@ function renderFlowCards(
         ${renderListWithEvidence(entrypoints, flow.evidence_ids, evidenceById)}
         <h4>Steps</h4>
         ${renderListWithEvidence(stepLabels, unique(steps.flatMap((step) => step.evidence)), evidenceById)}
+        <h4>Entry Contract</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'entry_contract'),
+          fieldEvidence.entry_contract ?? flow.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Exit Contract</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'exit_contract'),
+          fieldEvidence.exit_contract ?? flow.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Inputs</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'inputs'),
+          fieldEvidence.inputs ?? flow.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Outputs</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'outputs'),
+          fieldEvidence.outputs ?? flow.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Side Effects</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'side_effects'),
+          fieldEvidence.side_effects ?? flow.evidence_ids,
+          evidenceById,
+        )}
+        <h4>State Transitions</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'state_transitions'),
+          fieldEvidence.state_transitions ?? flow.evidence_ids,
+          evidenceById,
+        )}
         <h4>Coverage</h4>
         ${renderList([
           `${flowStringArray(flow, 'components').length} component(s)`,
@@ -5976,6 +6313,18 @@ function renderFlowCards(
         ${renderListWithEvidence(
           risks.map((risk) => `${risk.kind}: ${risk.description}`),
           unique(risks.flatMap((risk) => risk.evidence)),
+          evidenceById,
+        )}
+        <h4>Required Tests</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'required_tests'),
+          fieldEvidence.required_tests ?? flow.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Confidence Reasons</h4>
+        ${renderListWithEvidence(
+          stringArrayData(flow, 'confidence_reasons'),
+          fieldEvidence.confidence_reasons ?? flow.evidence_ids,
           evidenceById,
         )}
       </article>`;
@@ -7823,6 +8172,15 @@ function buildFlowExplanation(params: {
   const dependencies = flowStringArray(target, 'dependencies').map(safeText);
   const configs = flowStringArray(target, 'configs').map(safeText);
   const tests = flowStringArray(target, 'tests').map(safeText);
+  const entryContract = flowStringArray(target, 'entry_contract').map(safeText);
+  const exitContract = flowStringArray(target, 'exit_contract').map(safeText);
+  const inputs = flowStringArray(target, 'inputs').map(safeText);
+  const outputs = flowStringArray(target, 'outputs').map(safeText);
+  const sideEffects = flowStringArray(target, 'side_effects').map(safeText);
+  const stateTransitions = flowStringArray(target, 'state_transitions').map(safeText);
+  const contractFailureModes = flowStringArray(target, 'failure_modes').map(safeText);
+  const requiredTests = flowStringArray(target, 'required_tests').map(safeText);
+  const confidenceReasons = flowStringArray(target, 'confidence_reasons').map(safeText);
   const entrypointLabels = entrypoints.map(formatFlowEntrypoint);
   const stepLabels = steps.map(formatFlowStep);
   const riskLabels = flowRisksForTarget.map(formatFlowRisk);
@@ -7870,6 +8228,7 @@ function buildFlowExplanation(params: {
     responsibilities: unique([
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
       `Covers ${components.length} component(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
     ]).map(safeText),
     dependencies,
@@ -7887,13 +8246,14 @@ function buildFlowExplanation(params: {
           ]
         : []),
     ].map(safeText),
-    failure_modes: [
+    failure_modes: unique([
       ...(entrypoints.length === 0 ? ['No flow entrypoint was recorded.'] : []),
       ...(steps.length === 0 ? ['No flow steps were reconstructed.'] : []),
       ...(tests.length === 0 ? ['No directly linked tests were detected for this flow.'] : []),
       ...(configs.length === 0 ? ['No directly linked configs were detected for this flow.'] : []),
+      ...contractFailureModes,
       ...riskLabels,
-    ].map(safeText),
+    ]).map(safeText),
     breaks_if_changed: [
       `Review this flow when any mapped file changes: ${files.slice(0, 8).join(', ') || 'none recorded'}.`,
       ...relationshipContext.dependedOnBy.map(
@@ -7917,6 +8277,15 @@ function buildFlowExplanation(params: {
       tests,
       configs,
       risks: flowRisksForTarget,
+      entry_contract: entryContract,
+      exit_contract: exitContract,
+      inputs,
+      outputs,
+      side_effects: sideEffects,
+      state_transitions: stateTransitions,
+      failure_modes: contractFailureModes,
+      required_tests: requiredTests,
+      confidence_reasons: confidenceReasons,
       confidence_score: confidenceScore,
       confidence_reason: confidenceReason,
     },
@@ -8134,9 +8503,29 @@ function renderComponentExplanationCards(explanation: ExplainSummaryData): strin
 
 function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
   if (explanation.flow === undefined) return '';
-  return `<article class="card"><h2>Flow Steps</h2>${renderList(
-    explanation.flow.steps.map(formatFlowStep),
+  return `<article class="card"><h2>Entry Contract</h2>${renderList(
+    explanation.flow.entry_contract,
   )}</article>
+      <article class="card"><h2>Exit Contract</h2>${renderList(
+        explanation.flow.exit_contract,
+      )}</article>
+      <article class="card"><h2>Inputs</h2>${renderList(explanation.flow.inputs)}</article>
+      <article class="card"><h2>Outputs</h2>${renderList(explanation.flow.outputs)}</article>
+      <article class="card"><h2>Side Effects</h2>${renderList(
+        explanation.flow.side_effects,
+      )}</article>
+      <article class="card"><h2>State Transitions</h2>${renderList(
+        explanation.flow.state_transitions,
+      )}</article>
+      <article class="card"><h2>Required Tests</h2>${renderList(
+        explanation.flow.required_tests,
+      )}</article>
+      <article class="card"><h2>Confidence Reasons</h2>${renderList(
+        explanation.flow.confidence_reasons,
+      )}</article>
+      <article class="card"><h2>Flow Steps</h2>${renderList(
+        explanation.flow.steps.map(formatFlowStep),
+      )}</article>
       <article class="card"><h2>Flow Components</h2>${renderList(
         explanation.flow.components,
       )}</article>
