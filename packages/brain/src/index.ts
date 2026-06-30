@@ -4229,6 +4229,21 @@ interface EvidenceGap {
   readonly confidence?: Confidence;
 }
 
+interface EvidenceCalibrationClaimSet {
+  readonly name: string;
+  readonly claims: readonly BrainEntity[];
+}
+
+interface EvidenceCalibrationSurface {
+  readonly surface: string;
+  readonly total_claims: number;
+  readonly evidence_backed_claims: number;
+  readonly unsupported_claims: number;
+  readonly weak_evidence_claims: number;
+  readonly evidence_coverage_score: number;
+  readonly confidence_mix: Record<Confidence, number>;
+}
+
 function flowFieldHasValue(flow: BrainEntity, field: string): boolean {
   const value = flow.data?.[field];
   if (Array.isArray(value)) return value.length > 0;
@@ -4420,6 +4435,277 @@ function topEvidenceGaps(params: {
     .slice(0, 15);
 }
 
+function evidenceCalibrationSurface(params: {
+  readonly surface: string;
+  readonly claims: readonly BrainEntity[];
+}): EvidenceCalibrationSurface {
+  const evidenceBackedClaims = params.claims.filter((claim) => claim.evidence_ids.length > 0);
+  const unsupportedClaims = params.claims.length - evidenceBackedClaims.length;
+  const weakEvidenceClaims = evidenceBackedClaims.filter(
+    (claim) => claim.confidence !== 'verified',
+  ).length;
+  return {
+    surface: safeText(params.surface),
+    total_claims: params.claims.length,
+    evidence_backed_claims: evidenceBackedClaims.length,
+    unsupported_claims: unsupportedClaims,
+    weak_evidence_claims: weakEvidenceClaims,
+    evidence_coverage_score: scorePercent(evidenceBackedClaims.length, params.claims.length),
+    confidence_mix: countByConfidence(params.claims.map((claim) => claim.confidence)),
+  };
+}
+
+function relationshipCalibrationSurface(
+  relationships: readonly BrainRelationship[],
+): EvidenceCalibrationSurface {
+  const evidenceBackedClaims = relationships.filter(
+    (relationship) => relationship.evidence_ids.length > 0,
+  );
+  const weakEvidenceClaims = evidenceBackedClaims.filter(
+    (relationship) => relationship.confidence !== 'verified',
+  ).length;
+  return {
+    surface: 'relationship',
+    total_claims: relationships.length,
+    evidence_backed_claims: evidenceBackedClaims.length,
+    unsupported_claims: relationships.length - evidenceBackedClaims.length,
+    weak_evidence_claims: weakEvidenceClaims,
+    evidence_coverage_score: scorePercent(evidenceBackedClaims.length, relationships.length),
+    confidence_mix: countByConfidence(relationships.map((relationship) => relationship.confidence)),
+  };
+}
+
+function fieldCalibrationSurface(params: {
+  readonly surface: 'component_fields' | 'flow_fields';
+  readonly coverage: FieldCoverageSummary;
+}): EvidenceCalibrationSurface {
+  const confidenceMix: Record<Confidence, number> = {
+    verified: params.coverage.fields_with_evidence - params.coverage.weak_evidence_fields,
+    inferred: params.coverage.weak_evidence_fields,
+    uncertain: params.coverage.unsupported_fields,
+  };
+  return {
+    surface: params.surface,
+    total_claims: params.coverage.fields_with_values,
+    evidence_backed_claims: params.coverage.fields_with_evidence,
+    unsupported_claims: params.coverage.unsupported_fields,
+    weak_evidence_claims: params.coverage.weak_evidence_fields,
+    evidence_coverage_score: scorePercent(
+      params.coverage.fields_with_evidence,
+      params.coverage.fields_with_values,
+    ),
+    confidence_mix: confidenceMix,
+  };
+}
+
+function evidenceWeakAreaSeverity(params: {
+  readonly unsupportedClaims: number;
+  readonly weakEvidenceClaims: number;
+}): EvidenceGap['severity'] {
+  if (params.unsupportedClaims > 0) return 'high';
+  if (params.weakEvidenceClaims >= 5) return 'medium';
+  return 'low';
+}
+
+function evidenceWeakAreaReason(surface: EvidenceCalibrationSurface): string {
+  if (surface.unsupported_claims > 0) {
+    return `${surface.unsupported_claims} claim(s) have no evidence reference.`;
+  }
+  if (surface.weak_evidence_claims > 0) {
+    return `${surface.weak_evidence_claims} evidence-backed claim(s) are inferred or uncertain.`;
+  }
+  return 'No weak evidence area detected.';
+}
+
+function topEvidenceWeakAreas(
+  surfaces: readonly EvidenceCalibrationSurface[],
+): Array<Record<string, unknown>> {
+  return surfaces
+    .filter((surface) => surface.unsupported_claims > 0 || surface.weak_evidence_claims > 0)
+    .map((surface) => ({
+      surface: surface.surface,
+      severity: evidenceWeakAreaSeverity({
+        unsupportedClaims: surface.unsupported_claims,
+        weakEvidenceClaims: surface.weak_evidence_claims,
+      }),
+      unsupported_claims: surface.unsupported_claims,
+      weak_evidence_claims: surface.weak_evidence_claims,
+      evidence_coverage_score: surface.evidence_coverage_score,
+      reason: evidenceWeakAreaReason(surface),
+    }))
+    .sort((a, b) => {
+      const aUnsupported = typeof a.unsupported_claims === 'number' ? a.unsupported_claims : 0;
+      const bUnsupported = typeof b.unsupported_claims === 'number' ? b.unsupported_claims : 0;
+      const aWeak = typeof a.weak_evidence_claims === 'number' ? a.weak_evidence_claims : 0;
+      const bWeak = typeof b.weak_evidence_claims === 'number' ? b.weak_evidence_claims : 0;
+      const aCoverage =
+        typeof a.evidence_coverage_score === 'number' ? a.evidence_coverage_score : 0;
+      const bCoverage =
+        typeof b.evidence_coverage_score === 'number' ? b.evidence_coverage_score : 0;
+      const aSurface = typeof a.surface === 'string' ? a.surface : '';
+      const bSurface = typeof b.surface === 'string' ? b.surface : '';
+      return (
+        bUnsupported - aUnsupported ||
+        bWeak - aWeak ||
+        aCoverage - bCoverage ||
+        aSurface.localeCompare(bSurface)
+      );
+    })
+    .slice(0, 8);
+}
+
+function evidenceInspectHint(gap: EvidenceGap): string {
+  if (gap.kind === 'missing_reference') {
+    return 'Find the claim that references this evidence id and confirm the evidence record exists.';
+  }
+  if (gap.kind === 'unsupported_relationship') {
+    return 'Inspect the relationship source and add or verify direct evidence for the link.';
+  }
+  if (gap.kind === 'unsupported_field') {
+    return 'Inspect the field-specific evidence map for this component or flow.';
+  }
+  return 'Inspect the entity evidence_ids and source files before relying on this claim.';
+}
+
+function inspectFirstEvidenceGaps(gaps: readonly EvidenceGap[]): Array<Record<string, unknown>> {
+  return gaps.slice(0, 8).map((gap, index) => ({
+    priority: index + 1,
+    kind: safeText(gap.kind),
+    id: safeText(gap.id),
+    ...(gap.field === undefined ? {} : { field: safeText(gap.field) }),
+    severity: gap.severity,
+    reason: safeText(gap.reason),
+    inspect_hint: evidenceInspectHint(gap),
+  }));
+}
+
+function evidenceRedactionImpact(params: {
+  readonly redactedEvidenceCount: number;
+  readonly redactedReferenceCount: number;
+  readonly unsafeSensitiveReferenceCount: number;
+  readonly confidenceDowngradeCount: number;
+  readonly redactionSafetyScore: number;
+}): Record<string, unknown> {
+  let impact = 'none';
+  if (params.unsafeSensitiveReferenceCount > 0) impact = 'unsafe';
+  if (
+    params.unsafeSensitiveReferenceCount === 0 &&
+    (params.redactedEvidenceCount > 0 || params.redactedReferenceCount > 0)
+  ) {
+    impact = 'contained';
+  }
+  return {
+    impact,
+    redaction_safety_score: params.redactionSafetyScore,
+    redacted_evidence_count: params.redactedEvidenceCount,
+    redacted_reference_count: params.redactedReferenceCount,
+    unsafe_sensitive_reference_count: params.unsafeSensitiveReferenceCount,
+    confidence_downgrades: params.confidenceDowngradeCount,
+    note:
+      impact === 'unsafe'
+        ? 'Unsafe sensitive references remain and should be fixed before sharing artifacts.'
+        : 'Sensitive evidence is represented through redacted ids and does not expose raw secrets.',
+  };
+}
+
+function buildEvidenceCalibrationBreakdown(params: {
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly topGaps: readonly EvidenceGap[];
+  readonly redactedEvidenceCount: number;
+  readonly redactedReferenceCount: number;
+  readonly unsafeSensitiveReferenceCount: number;
+  readonly confidenceDowngradeCount: number;
+  readonly evidenceCoverageScore: number;
+  readonly redactionSafetyScore: number;
+  readonly referenceIntegrityScore: number;
+  readonly fieldEvidenceScore: number;
+}): Record<string, unknown> {
+  const claimSets: readonly EvidenceCalibrationClaimSet[] = [
+    {
+      name: 'project_map',
+      claims: [
+        ...params.buckets.projects,
+        ...params.buckets.files,
+        ...params.buckets.folders,
+        ...params.buckets.configs,
+        ...params.buckets.dependencies,
+      ],
+    },
+    {
+      name: 'architecture_surface',
+      claims: [
+        ...params.buckets.components,
+        ...params.buckets.services,
+        ...params.buckets.apis,
+        ...params.buckets.databaseTables,
+        ...params.buckets.flows,
+      ],
+    },
+    {
+      name: 'execution_surface',
+      claims: [...params.buckets.commands, ...params.buckets.tests],
+    },
+    {
+      name: 'review_surface',
+      claims: [
+        ...params.buckets.decisions,
+        ...params.buckets.risks,
+        ...params.buckets.reviews,
+        ...params.buckets.findings,
+        ...params.buckets.status,
+      ],
+    },
+    {
+      name: 'workspace_surface',
+      claims: [
+        ...params.buckets.agents,
+        ...params.buckets.tasks,
+        ...params.buckets.sessions,
+        ...params.buckets.handoffs,
+      ],
+    },
+    { name: 'evidence_records', claims: params.buckets.evidence },
+  ];
+  const categorySurfaces = claimSets.map((claimSet) =>
+    evidenceCalibrationSurface({ surface: claimSet.name, claims: claimSet.claims }),
+  );
+  const surfaceMix = [
+    evidenceCalibrationSurface({ surface: 'component', claims: params.buckets.components }),
+    evidenceCalibrationSurface({ surface: 'flow', claims: params.buckets.flows }),
+    relationshipCalibrationSurface(params.relationships),
+    fieldCalibrationSurface({
+      surface: 'component_fields',
+      coverage: params.fieldCoverage.component,
+    }),
+    fieldCalibrationSurface({ surface: 'flow_fields', coverage: params.fieldCoverage.flow }),
+  ];
+  const allSurfaces = [...categorySurfaces, ...surfaceMix];
+  const weakAreas = topEvidenceWeakAreas(allSurfaces);
+  return {
+    calibration_version: 1,
+    scoring_inputs: {
+      evidence_coverage_score: params.evidenceCoverageScore,
+      redaction_safety_score: params.redactionSafetyScore,
+      reference_integrity_score: params.referenceIntegrityScore,
+      field_evidence_score: params.fieldEvidenceScore,
+    },
+    claim_categories: categorySurfaces,
+    surface_confidence_mix: surfaceMix,
+    weak_evidence_areas: weakAreas,
+    redaction_impact: evidenceRedactionImpact({
+      redactedEvidenceCount: params.redactedEvidenceCount,
+      redactedReferenceCount: params.redactedReferenceCount,
+      unsafeSensitiveReferenceCount: params.unsafeSensitiveReferenceCount,
+      confidenceDowngradeCount: params.confidenceDowngradeCount,
+      redactionSafetyScore: params.redactionSafetyScore,
+    }),
+    inspect_first: inspectFirstEvidenceGaps(params.topGaps),
+    summary: `${weakAreas.length} weak evidence area(s); ${params.topGaps.length} prioritized evidence gap(s).`,
+  };
+}
+
 function buildEvidenceQualityArtifact(params: {
   readonly now: string;
   readonly buckets: BrainBuckets;
@@ -4531,6 +4817,20 @@ function buildEvidenceQualityArtifact(params: {
     missingEvidenceReferences,
     fieldGaps,
   });
+  const evidenceCalibration = buildEvidenceCalibrationBreakdown({
+    buckets: params.buckets,
+    relationships: params.relationships,
+    fieldCoverage,
+    topGaps,
+    redactedEvidenceCount,
+    redactedReferenceCount,
+    unsafeSensitiveReferenceCount,
+    confidenceDowngradeCount,
+    evidenceCoverageScore,
+    redactionSafetyScore,
+    referenceIntegrityScore,
+    fieldEvidenceScore,
+  });
 
   return {
     generated_at: params.now,
@@ -4550,6 +4850,7 @@ function buildEvidenceQualityArtifact(params: {
     redaction_safety_score: redactionSafetyScore,
     confidence_distribution: confidenceDistribution,
     field_coverage_by_entity_type: fieldCoverage,
+    evidence_calibration: evidenceCalibration,
     confidence_adjustments: {
       redaction_downgrades: confidenceDowngradeCount,
       weak_entity_claims: claimEntitiesWithWeakEvidence.length,
@@ -8565,6 +8866,53 @@ function renderArchitectureReasoning(value: unknown): string {
   </div>`;
 }
 
+function renderEvidenceCalibration(value: unknown): string {
+  if (!isRecord(value)) return '';
+  const surfaceMix = recordArray(value, 'surface_confidence_mix')
+    .filter(isRecord)
+    .slice(0, 5)
+    .map((surface) => {
+      const name = typeof surface.surface === 'string' ? surface.surface : 'unknown';
+      const coverage =
+        typeof surface.evidence_coverage_score === 'number' ? surface.evidence_coverage_score : 0;
+      const mix = isRecord(surface.confidence_mix) ? surface.confidence_mix : {};
+      return `${name}: ${String(mix.verified ?? 0)} verified, ${String(
+        mix.inferred ?? 0,
+      )} inferred, ${String(mix.uncertain ?? 0)} uncertain; ${coverage}/100 coverage`;
+    });
+  const weakAreas = recordArray(value, 'weak_evidence_areas')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((area) => {
+      const surface = typeof area.surface === 'string' ? area.surface : 'unknown';
+      const reason = typeof area.reason === 'string' ? area.reason : 'Weak evidence recorded.';
+      return `${surface}: ${reason}`;
+    });
+  const inspectFirst = recordArray(value, 'inspect_first')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((gap) => {
+      const priority = typeof gap.priority === 'number' ? gap.priority : 0;
+      const id = typeof gap.id === 'string' ? gap.id : 'unknown claim';
+      const hint =
+        typeof gap.inspect_hint === 'string' ? gap.inspect_hint : 'Inspect this evidence gap.';
+      return `P${priority} ${id}: ${hint}`;
+    });
+  const redactionImpact = isRecord(value.redaction_impact) ? value.redaction_impact : {};
+  const impact = typeof redactionImpact.impact === 'string' ? redactionImpact.impact : 'unknown';
+  const downgrades =
+    typeof redactionImpact.confidence_downgrades === 'number'
+      ? redactionImpact.confidence_downgrades
+      : 0;
+  return `<article class="card"><h3>Evidence Calibration</h3>${renderList([
+    `redaction impact: ${impact}`,
+    `redaction confidence downgrades: ${downgrades}`,
+    ...surfaceMix,
+  ])}</article>
+  <article class="card"><h3>Weak Evidence Areas</h3>${renderList(weakAreas)}</article>
+  <article class="card"><h3>Inspect First</h3>${renderList(inspectFirst)}</article>`;
+}
+
 function renderEvidenceQuality(value: unknown): string {
   if (!isRecord(value)) {
     return '<p class="muted">No evidence quality artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
@@ -8601,6 +8949,7 @@ function renderEvidenceQuality(value: unknown): string {
         })
     : [];
   const uncertainAreas = asStringArray(value.top_uncertain_areas).slice(0, 8);
+  const evidenceCalibration = renderEvidenceCalibration(value.evidence_calibration);
   return `<div class="grid">
     <article class="card"><h3>Evidence Quality Score</h3><p>${score}/100 · ${htmlEscape(band)}</p></article>
     <article class="card"><h3>Calibration</h3>${renderList([
@@ -8619,6 +8968,7 @@ function renderEvidenceQuality(value: unknown): string {
     <article class="card"><h3>Confidence Distribution</h3>${renderList(distribution)}</article>
     <article class="card"><h3>Top Evidence Gaps</h3>${renderList(topGaps)}</article>
     <article class="card"><h3>Unknown / Uncertain Areas</h3>${renderList(uncertainAreas)}</article>
+    ${evidenceCalibration}
   </div>`;
 }
 
