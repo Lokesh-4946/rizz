@@ -36,6 +36,7 @@ const PI_BENCH_TASK_CATEGORIES = [
   'unknown-coverage',
   'architecture-flow',
   'review-blast-radius',
+  'understanding-tasks',
 ];
 
 if (!ensureEvalBuild()) process.exit(1);
@@ -380,6 +381,104 @@ function validateExplainSpec(explain) {
   return errors;
 }
 
+function validateOptionalStringArrayWithLabel(value, label, errors) {
+  if (value !== undefined && (!isStringArray(value) || value.length === 0)) {
+    errors.push(`${label} must include strings`);
+  }
+}
+
+function validateMinimumNumbers(value, label, errors) {
+  if (value === undefined) return;
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  for (const [path, minimum] of Object.entries(value)) {
+    if (!isNonEmptyString(path) || !hasNonNegativeNumber(minimum)) {
+      errors.push(`${label} entries must map dotted fields to non-negative numbers`);
+    }
+  }
+}
+
+function validateUnderstandingTaskAssertions(assertions, index) {
+  const errors = [];
+  const label = `understanding_tasks[${index}].assertions`;
+  if (!isRecord(assertions)) return [`${label} must be an object`];
+  validateOptionalStringArrayWithLabel(
+    assertions.required_fields,
+    `${label}.required_fields`,
+    errors,
+  );
+  validateOptionalStringArrayWithLabel(
+    assertions.required_substrings,
+    `${label}.required_substrings`,
+    errors,
+  );
+  validateOptionalStringArrayWithLabel(
+    assertions.forbidden_substrings,
+    `${label}.forbidden_substrings`,
+    errors,
+  );
+  if (assertions.minimum_items !== undefined && !hasNonNegativeNumber(assertions.minimum_items)) {
+    errors.push(`${label}.minimum_items must be a non-negative number`);
+  }
+  validateMinimumNumbers(assertions.minimum_numbers, `${label}.minimum_numbers`, errors);
+  if (
+    assertions.required_fields === undefined &&
+    assertions.required_substrings === undefined &&
+    assertions.forbidden_substrings === undefined &&
+    assertions.minimum_items === undefined &&
+    assertions.minimum_numbers === undefined
+  ) {
+    errors.push(`${label} must include at least one assertion`);
+  }
+  return errors;
+}
+
+function validateUnderstandingTaskSource(source, index) {
+  const errors = [];
+  const label = `understanding_tasks[${index}].source`;
+  if (!isRecord(source)) return [`${label} must be an object`];
+  if (source.type !== 'artifact_json' && source.type !== 'explain_json') {
+    errors.push(`${label}.type must be artifact_json or explain_json`);
+  }
+  if (source.type === 'artifact_json' && !isSafeRelativePath(source.path)) {
+    errors.push(`${label}.path must be a safe relative path`);
+  }
+  if (source.type === 'explain_json' && !isNonEmptyString(source.target)) {
+    errors.push(`${label}.target must be a non-empty string`);
+  }
+  if (source.json_path !== undefined && !isNonEmptyString(source.json_path)) {
+    errors.push(`${label}.json_path must be a non-empty string`);
+  }
+  return errors;
+}
+
+function validateUnderstandingTasks(tasks) {
+  const errors = [];
+  if (tasks === undefined) return errors;
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    return ['understanding_tasks must include at least one task'];
+  }
+  for (const [index, task] of tasks.entries()) {
+    if (!isRecord(task)) {
+      errors.push(`understanding_tasks[${index}] must be an object`);
+      continue;
+    }
+    if (!isNonEmptyString(task.id) || !/^[a-z0-9][a-z0-9-]*$/.test(task.id)) {
+      errors.push(`understanding_tasks[${index}].id must be kebab-case`);
+    }
+    if (!isNonEmptyString(task.prompt)) {
+      errors.push(`understanding_tasks[${index}].prompt must be a non-empty string`);
+    }
+    errors.push(
+      ...validateUnderstandingTaskSource(task.source, index),
+      ...validateUnderstandingTaskAssertions(task.assertions, index),
+    );
+  }
+  return errors;
+}
+
 function validateRubric(rubric) {
   if (!isRecord(rubric)) return ['rubric must be an object'];
   const errors = [];
@@ -422,6 +521,7 @@ function validatePiBenchTask(task) {
     if (task.explain !== undefined) errors.push(...validateExplainSpec(task.explain));
     if (task.incremental !== undefined) errors.push(...validateIncrementalSpec(task.incremental));
   }
+  errors.push(...validateUnderstandingTasks(task.understanding_tasks));
   errors.push(...validateArtifactAssertions(task.artifact_assertions));
   errors.push(...validateRubric(task.rubric));
   return errors;
@@ -1058,6 +1158,108 @@ function readArtifactText(repoDir, relativePath) {
   return existsSync(artifactPath) ? readFileSync(artifactPath, 'utf8') : '';
 }
 
+function stringifyUnderstandingValue(value) {
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function selectUnderstandingValue(value, jsonPath, label, errors) {
+  if (jsonPath === undefined) return value;
+  const selected = getPathValue(value, jsonPath);
+  if (selected === undefined) {
+    errors.push(`${label} missing json_path ${jsonPath}`);
+  }
+  return selected;
+}
+
+function readUnderstandingSource(repoDir, understandingTask) {
+  const errors = [];
+  const source = understandingTask.source;
+  const label = `understanding_tasks.${understandingTask.id}`;
+  if (!isRecord(source)) return { errors: [`${label}.source must be an object`], value: undefined };
+
+  if (source.type === 'artifact_json') {
+    try {
+      const value = readJsonArtifact(repoDir, source.path);
+      return {
+        errors,
+        value: selectUnderstandingValue(value, source.json_path, label, errors),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { errors: [`${label} could not read ${source.path}: ${message}`], value: undefined };
+    }
+  }
+
+  if (source.type === 'explain_json') {
+    const result = runCliInCwdSync(repoDir, ['explain', source.target, '--json'], '');
+    if (result.error !== undefined) errors.push(String(result.error));
+    if (result.status !== 0) {
+      errors.push(
+        `understanding task explain exited ${result.status}: ${result.stderr || result.stdout}`,
+      );
+      return { errors, value: undefined };
+    }
+    try {
+      const value = JSON.parse(result.stdout);
+      return {
+        errors,
+        value: selectUnderstandingValue(value, source.json_path, label, errors),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { errors: [`${label} could not parse explain JSON: ${message}`], value: undefined };
+    }
+  }
+
+  return { errors: [`${label}.source.type is unsupported`], value: undefined };
+}
+
+function assertUnderstandingTasks(task, repoDir) {
+  if (task.understanding_tasks === undefined) return { errors: [], count: 0 };
+  const errors = [];
+  for (const understandingTask of task.understanding_tasks) {
+    const source = readUnderstandingSource(repoDir, understandingTask);
+    errors.push(...source.errors);
+    if (source.value === undefined) continue;
+
+    const label = `understanding_tasks.${understandingTask.id}`;
+    const answerText = stringifyUnderstandingValue(source.value);
+    const assertions = isRecord(understandingTask.assertions) ? understandingTask.assertions : {};
+    for (const substring of assertions.required_substrings ?? []) {
+      if (!answerText.includes(substring)) {
+        errors.push(`${label} answer missing substring ${substring}`);
+      }
+    }
+    for (const substring of assertions.forbidden_substrings ?? []) {
+      if (answerText.includes(substring)) {
+        errors.push(`${label} answer included forbidden substring ${substring}`);
+      }
+    }
+    for (const field of assertions.required_fields ?? []) {
+      if (getPathValue(source.value, field) === undefined) {
+        errors.push(`${label} answer missing field ${field}`);
+      }
+    }
+    if (assertions.minimum_items !== undefined) {
+      if (!Array.isArray(source.value)) {
+        errors.push(`${label} answer must be an array for minimum_items`);
+      } else if (source.value.length < assertions.minimum_items) {
+        errors.push(
+          `${label} answer item count ${source.value.length} below ${assertions.minimum_items}`,
+        );
+      }
+    }
+    for (const [field, minimum] of Object.entries(assertions.minimum_numbers ?? {})) {
+      const actual = getPathValue(source.value, field);
+      if (typeof actual !== 'number' || !Number.isFinite(actual) || actual < minimum) {
+        errors.push(`${label} answer field ${field} ${actual} below ${minimum}`);
+      }
+    }
+  }
+  return { errors, count: task.understanding_tasks.length };
+}
+
 function assertExplainContract(task, repoDir) {
   if (task.explain === undefined) return [];
   const result = runCliInCwdSync(repoDir, ['explain', task.explain.target], '');
@@ -1116,6 +1318,8 @@ function runReviewPiBenchTask(task) {
     }
     errors.push(...assertExpectedArtifacts(task, repoDir));
     errors.push(...assertArtifactContracts(task, repoDir));
+    const understandingScore = assertUnderstandingTasks(task, repoDir);
+    errors.push(...understandingScore.errors);
 
     let review;
     let reviewScore;
@@ -1131,7 +1335,15 @@ function runReviewPiBenchTask(task) {
     if (errors.length > 0 || reviewScore === undefined) {
       return { ok: false, errors, summary: undefined };
     }
-    return { ok: true, errors: [], summary: { kind: 'review', ...reviewScore.summary } };
+    return {
+      ok: true,
+      errors: [],
+      summary: {
+        kind: 'review',
+        ...reviewScore.summary,
+        understandingTasks: understandingScore.count,
+      },
+    };
   });
 }
 
@@ -1169,6 +1381,8 @@ function runPiBenchTask(task) {
     errors.push(...assertExpectedArtifacts(task, repoDir));
     errors.push(...assertArtifactContracts(task, repoDir));
     errors.push(...assertExplainContract(task, repoDir));
+    const understandingTaskScore = assertUnderstandingTasks(task, repoDir);
+    errors.push(...understandingTaskScore.errors);
 
     if (task.incremental !== undefined) {
       try {
@@ -1207,6 +1421,7 @@ function runPiBenchTask(task) {
         readinessScore: score.readinessScore,
         coverage: score.coverage,
         incremental: incrementalScore?.summary,
+        understandingTasks: understandingTaskScore.count,
       },
     };
   });
@@ -1222,8 +1437,12 @@ function runPiBenchTasks(loadedTasks) {
     if (result.ok) {
       passed += 1;
       if (result.summary.kind === 'review') {
+        const understanding =
+          result.summary.understandingTasks === 0
+            ? ''
+            : ` | understanding tasks ${result.summary.understandingTasks}`;
         console.log(
-          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, flows ${result.summary.affectedFlows}, relationships ${result.summary.affectedRelationships}`,
+          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, flows ${result.summary.affectedFlows}, relationships ${result.summary.affectedRelationships}${understanding}`,
         );
       } else {
         scoreTotal += result.summary.readinessScore;
@@ -1233,8 +1452,12 @@ function runPiBenchTasks(loadedTasks) {
           result.summary.incremental === undefined
             ? ''
             : ` | incremental changed ${result.summary.incremental.changedFiles}, stable entities ${result.summary.incremental.stableEntities}, reused ${result.summary.incremental.reusedUnderstanding}, recomputed ${result.summary.incremental.recomputedUnderstanding}, efficiency ${result.summary.incremental.scanEfficiency}`;
+        const understanding =
+          result.summary.understandingTasks === 0
+            ? ''
+            : ` | understanding tasks ${result.summary.understandingTasks}`;
         console.log(
-          `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}${incremental}`,
+          `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}${incremental}${understanding}`,
         );
       }
     } else {

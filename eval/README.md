@@ -20,6 +20,13 @@ network access.
   `.rizz/research/incremental_update.json` changed/stable entity counts, reused/recomputed
   understanding counts, file reuse, scan efficiency, fingerprint continuity, and secret-safe
   changed-path output.
+  Understanding-task seeds may include an `understanding_tasks` block. Each item asks one narrow
+  benchmark-ready repo-understanding prompt and validates the answer from an existing JSON artifact
+  slice or deterministic `rizz explain --json` output. Supported source types are
+  `artifact_json` (`path`, optional `json_path`) and `explain_json` (`target`, optional
+  `json_path`). Assertions can require fields, substrings, forbidden substrings, array item counts,
+  and minimum numeric values. This is intentionally artifact-based; it does not add provider calls,
+  network access, or a broad ask surface.
 
 Coverage targets are explicit for component, flow, evidence, and unknown surfaces:
 `{ minimum_total, minimum_covered, minimum_ratio }`. Evidence `minimum_total` is checked against
@@ -55,3 +62,11 @@ Route-aware review tasks can additionally assert affected flow metadata with
 linked tests, and linked configs. The Next.js route review seed uses this to prove alias-resolved
 component, content, and config imports support review blast-radius reasoning without exposing
 secret-like fixture paths.
+
+The understanding-task seed uses `understanding_tasks` to score answers a user would ask while
+orienting in a repo: what to read first, which component has review-impact evidence, which evidence
+gap should limit confidence, whether benchmark review readiness is strong, and whether
+`rizz explain --json` returns the cross-component dependency and read-first files. The runner checks
+these answers directly against `.rizz/research/understanding_score.json`,
+`.rizz/research/architecture_reasoning.json`, `.rizz/research/evidence_quality.json`,
+`.rizz/research/benchmark_ready.json`, and explain JSON output.
