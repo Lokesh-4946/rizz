@@ -1,0 +1,211 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-understanding-tasks",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "understanding-tasks",
+  "title": "Understanding task benchmark seed",
+  "prompt": "Build a local project brain for a two-package TypeScript workspace and answer deterministic repo-understanding prompts from generated research artifacts and explain output.",
+  "fixture": {
+    "root": "pi-bench-understanding-tasks",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-understanding-tasks\",\"workspaces\":[\"packages/*\"],\"scripts\":{\"test\":\"vitest run\",\"build\":\"tsc -b\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "packages/domain/package.json",
+        "contents": "{\"name\":\"@fixture/domain\",\"scripts\":{\"test\":\"vitest run packages/domain\"},\"dependencies\":{}}\n"
+      },
+      {
+        "path": "packages/domain/src/policy.ts",
+        "contents": "export interface PolicyInput {\n  readonly userId: string;\n  readonly tier: \"free\" | \"pro\";\n}\n\nexport function chooseRoute(input: PolicyInput): string {\n  if (input.tier === \"pro\") return `priority:${input.userId}`;\n  return `standard:${input.userId}`;\n}\n"
+      },
+      {
+        "path": "packages/domain/src/policy.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { chooseRoute } from \"./policy.js\";\n\nit(\"routes pro users to priority\", () => {\n  expect(chooseRoute({ userId: \"u1\", tier: \"pro\" })).toBe(\"priority:u1\");\n});\n"
+      },
+      {
+        "path": "packages/api/package.json",
+        "contents": "{\"name\":\"@fixture/api\",\"scripts\":{\"start\":\"node dist/server.js\",\"test\":\"vitest run packages/api\"},\"dependencies\":{\"@fixture/domain\":\"workspace:*\"}}\n"
+      },
+      {
+        "path": "packages/api/src/server.ts",
+        "contents": "import { chooseRoute, type PolicyInput } from \"@fixture/domain\";\n\nexport function handleRequest(input: PolicyInput): { readonly route: string; readonly accepted: boolean } {\n  const route = chooseRoute(input);\n  return { route, accepted: route.length > 0 };\n}\n"
+      },
+      {
+        "path": "packages/api/src/server.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { handleRequest } from \"./server.js\";\n\nit(\"accepts routed requests\", () => {\n  expect(handleRequest({ userId: \"u2\", tier: \"free\" })).toEqual({ route: \"standard:u2\", accepted: true });\n});\n"
+      }
+    ]
+  },
+  "expected_artifacts": [
+    ".rizz/research/understanding_score.json",
+    ".rizz/research/architecture_reasoning.json",
+    ".rizz/research/evidence_quality.json",
+    ".rizz/research/benchmark_ready.json"
+  ],
+  "coverage_targets": {
+    "component": { "minimum_total": 2, "minimum_covered": 2, "minimum_ratio": 1 },
+    "flow": { "minimum_total": 6, "minimum_covered": 6, "minimum_ratio": 0.75 },
+    "evidence": { "minimum_total": 7, "minimum_covered": 7, "minimum_ratio": 0.5 },
+    "unknown": { "minimum_total": 3, "minimum_covered": 3, "minimum_ratio": 1 }
+  },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/understanding_score.json",
+      "type": "json",
+      "required_fields": [
+        "schema_version",
+        "overall_score",
+        "read_first",
+        "review_readiness.score",
+        "review_readiness.status",
+        "dimensions.evidence.score"
+      ],
+      "required_substrings": [
+        "packages/api/package.json",
+        "packages/api/src/server.ts",
+        "component:packages--api"
+      ],
+      "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    {
+      "path": ".rizz/research/architecture_reasoning.json",
+      "type": "json",
+      "required_fields": ["evidence_gaps", "review_hints", "what_breaks", "confidence_debt"],
+      "required_substrings": [
+        "flow:packages--api--start",
+        "component:packages--api",
+        "runtime verified"
+      ],
+      "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    {
+      "path": ".rizz/research/evidence_quality.json",
+      "type": "json",
+      "required_fields": ["evidence_gap_count", "top_evidence_gaps"],
+      "required_substrings": ["Relationship claim has no evidence reference."],
+      "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "coverage.flow.covered",
+        "readiness.score"
+      ],
+      "required_substrings": [
+        "Benchmark readiness is computed from deterministic local brain facts only."
+      ],
+      "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+    }
+  ],
+  "understanding_tasks": [
+    {
+      "id": "what-to-read-first",
+      "prompt": "What should a reviewer read first to understand the API package?",
+      "source": {
+        "type": "artifact_json",
+        "path": ".rizz/research/understanding_score.json",
+        "json_path": "read_first"
+      },
+      "assertions": {
+        "minimum_items": 2,
+        "required_substrings": [
+          "packages/api/package.json",
+          "packages/api/src/server.ts",
+          "component:packages--api"
+        ],
+        "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+      }
+    },
+    {
+      "id": "critical-component-impact",
+      "prompt": "Which component has review-impact evidence and what would break if it changed?",
+      "source": {
+        "type": "artifact_json",
+        "path": ".rizz/research/architecture_reasoning.json",
+        "json_path": "what_breaks"
+      },
+      "assertions": {
+        "minimum_items": 1,
+        "required_substrings": [
+          "component:packages--api",
+          "Cross-component import consumers or callees need review",
+          "packages/api/src/server.test.ts"
+        ],
+        "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+      }
+    },
+    {
+      "id": "evidence-gap",
+      "prompt": "What evidence gap should block overconfident runtime conclusions?",
+      "source": {
+        "type": "artifact_json",
+        "path": ".rizz/research/architecture_reasoning.json",
+        "json_path": "evidence_gaps"
+      },
+      "assertions": {
+        "minimum_items": 1,
+        "required_substrings": ["flow:packages--api--start", "runtime verified", "severity"],
+        "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+      }
+    },
+    {
+      "id": "review-readiness",
+      "prompt": "Is the fixture ready for benchmark review based on local evidence?",
+      "source": {
+        "type": "artifact_json",
+        "path": ".rizz/research/benchmark_ready.json",
+        "json_path": "readiness"
+      },
+      "assertions": {
+        "required_fields": ["is_ready", "score", "blocking_gaps"],
+        "required_substrings": [
+          "Benchmark readiness is computed from deterministic local brain facts only."
+        ],
+        "minimum_numbers": { "score": 90 },
+        "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+      }
+    },
+    {
+      "id": "explain-api-component",
+      "prompt": "Explain the API component, including cross-component dependency and first files to inspect.",
+      "source": {
+        "type": "explain_json",
+        "target": "component:packages--api"
+      },
+      "assertions": {
+        "required_fields": [
+          "resolved_entity_id",
+          "dependencies",
+          "read_first",
+          "breaks_if_changed"
+        ],
+        "required_substrings": [
+          "component:packages--api",
+          "@fixture/domain",
+          "component:packages--domain",
+          "packages/api/src/server.ts"
+        ],
+        "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+      }
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The task evaluates deterministic repo-understanding answers rather than only artifact existence.",
+      "Answers come from existing local research artifacts or rizz explain JSON without provider calls.",
+      "Read-first, critical impact, evidence gap, review readiness, and explain output assertions remain narrow and artifact-backed."
+    ],
+    "fail": [
+      "The task requires a broad ask command, provider call, dependency install, or network access.",
+      "Assertions pass when the answer artifact omits the requested repo-understanding content.",
+      "Secret-like strings leak into the benchmark answer surfaces."
+    ]
+  }
+}
