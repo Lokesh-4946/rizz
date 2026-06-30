@@ -35,7 +35,14 @@
     {
       "path": ".rizz/research/architecture_reasoning.json",
       "type": "json",
-      "required_fields": ["boundary_candidates", "unknowns", "review_hints"]
+      "required_fields": [
+        "boundary_candidates",
+        "architecture_assumptions",
+        "assumption_confidence",
+        "evidence_gaps",
+        "unknowns",
+        "review_hints"
+      ]
     },
     {
       "path": ".rizz/research/evidence_quality.json",
@@ -57,6 +64,7 @@
   "rubric": {
     "pass": [
       "The benchmark-ready JSON preserves known-unknown items as structured local facts.",
+      "Architecture assumptions preserve explicit evidence gaps for sparse local evidence.",
       "Unknown coverage is measured even when flow coverage is sparse.",
       "The fixture runs without provider credentials."
     ],

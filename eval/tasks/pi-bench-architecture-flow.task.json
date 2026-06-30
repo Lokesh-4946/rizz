@@ -72,6 +72,13 @@
         "boundary_candidates",
         "coupling_hotspots",
         "cross_component_flows",
+        "architecture_assumptions",
+        "design_pressures",
+        "boundary_rationale",
+        "coupling_rationale",
+        "risk_tradeoff_summary",
+        "assumption_confidence",
+        "evidence_gaps",
         "review_hints",
         "unknowns"
       ]
@@ -92,6 +99,7 @@
     "pass": [
       "The fixture produces multiple local components and at least one reconstructed flow.",
       "Architecture reasoning reports boundary and flow surfaces from static files.",
+      "Architecture assumptions explain evidence-backed boundaries, design pressures, coupling rationale, confidence, and evidence gaps.",
       "Evidence and unknown coverage are scored from benchmark_ready.json without provider calls."
     ],
     "fail": [
