@@ -1,0 +1,131 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-nextjs-route-blast-radius",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Next.js route blast radius benchmark seed",
+  "prompt": "Review a deterministic content-loader change in a Next.js app-router fixture and verify that alias-resolved route flows, tests, configs, findings, and review readiness are surfaced without fake IDs or sensitive leakage.",
+  "fixture": {
+    "root": "pi-bench-nextjs-route-blast-radius",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-nextjs-route-blast-radius\",\"scripts\":{\"dev\":\"next dev\",\"test\":\"vitest run\",\"typecheck\":\"tsc --noEmit\"},\"dependencies\":{\"next\":\"15.0.0\",\"react\":\"19.0.0\",\"react-dom\":\"19.0.0\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "next.config.mjs",
+        "contents": "export default { experimental: { typedRoutes: true } };\n"
+      },
+      {
+        "path": "tsconfig.json",
+        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true,\"baseUrl\":\".\",\"paths\":{\"@/*\":[\"src/*\"]}},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
+      },
+      {
+        "path": "src/app/page.tsx",
+        "contents": "import { DashboardSummary } from \"@/components/dashboard-summary\";\nimport { getFeaturedDocs } from \"@/lib/content\";\n\nexport default function HomePage() {\n  return <DashboardSummary docs={getFeaturedDocs()} />;\n}\n"
+      },
+      {
+        "path": "src/app/docs/[slug]/page.tsx",
+        "contents": "import { getDocBySlug, getDocSlugs } from \"@/lib/content\";\n\nexport function generateStaticParams() {\n  return getDocSlugs().map((slug) => ({ slug }));\n}\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = getDocBySlug(params.slug);\n  return <article>{doc.title}</article>;\n}\n"
+      },
+      {
+        "path": "src/app/api/health/route.ts",
+        "contents": "export function GET(): Response {\n  return Response.json({ ok: true });\n}\n"
+      },
+      {
+        "path": "src/app/api/health/route.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { GET } from \"./route\";\n\nit(\"returns health\", () => {\n  expect(GET()).toBeInstanceOf(Response);\n});\n"
+      },
+      {
+        "path": "src/components/dashboard-summary.tsx",
+        "contents": "export function DashboardSummary({ docs }: { readonly docs: Array<{ readonly title: string }> }) {\n  return <section>{docs.map((doc) => <h2 key={doc.title}>{doc.title}</h2>)}</section>;\n}\n"
+      },
+      {
+        "path": "src/lib/content.ts",
+        "contents": "const docs = [{ slug: \"intro\", title: \"Intro\" }];\n\nexport function getFeaturedDocs() {\n  return docs;\n}\n\nexport function getDocSlugs() {\n  return docs.map((doc) => doc.slug);\n}\n\nexport function getDocBySlug(slug: string) {\n  return docs.find((doc) => doc.slug === slug) ?? docs[0];\n}\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/lib/content.ts",
+          "contents": "const docs = [\n  { slug: \"intro\", title: \"Intro\" },\n  { slug: \"api\", title: \"API\" },\n];\n\nexport function getFeaturedDocs() {\n  return docs;\n}\n\nexport function getDocSlugs() {\n  return docs.map((doc) => doc.slug);\n}\n\nexport function getDocBySlug(slug: string) {\n  return docs.find((doc) => doc.slug === slug) ?? docs[0];\n}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/lib/content.ts"],
+      "direct_components_include": ["component:src"],
+      "affected_flows_include": [
+        "flow:nextjs--page--src--app--page.tsx",
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx"
+      ],
+      "affected_tests_include": ["src/app/api/health/route.test.ts"],
+      "affected_configs_include": ["next.config.mjs", "package.json", "tsconfig.json"],
+      "required_tests_include": ["vitest run", "tsc --noEmit"],
+      "minimum_direct_components": 1,
+      "minimum_affected_flows": 2,
+      "minimum_affected_relationships": 8,
+      "blast_radius_reasons_include": [
+        "affected flow(s) link the change",
+        "graph relationship(s) touch the review blast radius"
+      ],
+      "findings_include": [
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" },
+        { "category": "Missing tests", "title_includes": "Runtime files changed" }
+      ],
+      "forbidden_output_substrings": [
+        "ACTUAL_FLOW_ID_HERE",
+        "TODO_FLOW_ID",
+        "sk-or-v1",
+        "OPENROUTER_API_KEY"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/brain/entities/reviews.json",
+    ".rizz/brain/entities/findings.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/brain/entities/reviews.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": [
+        "flow:nextjs--page--src--app--page.tsx",
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+        "src/lib/content.ts"
+      ],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "TODO_FLOW_ID", "sk-or-v1"]
+    },
+    {
+      "path": ".rizz/brain/entities/findings.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": ["Known flows overlap", "Runtime files changed"],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "TODO_FLOW_ID", "sk-or-v1"]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": ["Next.js / page render", "Next.js /docs/[slug] page render"],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "TODO_FLOW_ID", "sk-or-v1"]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "A content-loader change maps to concrete Next.js route flows through alias-resolved evidence.",
+      "Review output preserves affected tests, configs, findings, and reviewer focus areas for route blast radius.",
+      "Review artifacts avoid fake placeholder flow IDs and sensitive token-like leakage."
+    ],
+    "fail": [
+      "The task depends on installing Next.js, network access, or provider calls.",
+      "Alias-resolved route flows are missing from review blast radius.",
+      "Review output contains placeholder flow IDs or token-like sensitive strings."
+    ]
+  }
+}

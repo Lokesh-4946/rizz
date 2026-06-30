@@ -1504,7 +1504,17 @@ describe('project brain generation', () => {
         }),
       );
       await writeFile(join(dir, 'next.config.ts'), 'export default { typedRoutes: true };\n');
-      await writeFile(join(dir, 'tsconfig.json'), '{}\n');
+      await writeFile(
+        join(dir, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            baseUrl: '.',
+            paths: {
+              '@/*': ['src/*'],
+            },
+          },
+        }),
+      );
       await writeFile(
         join(dir, 'src', 'components', 'Hero.tsx'),
         [
@@ -1535,7 +1545,7 @@ describe('project brain generation', () => {
       await writeFile(
         join(dir, 'src', 'app', 'page.tsx'),
         [
-          'import { Hero } from "../components/Hero.js";',
+          'import { Hero } from "@/components/Hero.js";',
           'export default function Page(): JSX.Element {',
           '  return <Hero />;',
           '}',
@@ -1554,8 +1564,8 @@ describe('project brain generation', () => {
       await writeFile(
         join(dir, 'src', 'app', 'docs', '[slug]', 'page.tsx'),
         [
-          'import { DocPage } from "../../../components/DocPage.js";',
-          'import { docs } from "../../../content/docs.js";',
+          'import { DocPage } from "@/components/DocPage.js";',
+          'import { docs } from "@/content/docs.js";',
           'export default function Page(props: { params: { slug: string } }): JSX.Element {',
           '  const doc = docs.get(props.params.slug);',
           '  if (!doc) throw new Error("not found");',
@@ -1613,6 +1623,7 @@ describe('project brain generation', () => {
             files?: string[];
             configs?: string[];
             tests?: string[];
+            dependencies?: string[];
             entry_contract?: string[];
             exit_contract?: string[];
             inputs?: string[];
@@ -1654,6 +1665,7 @@ describe('project brain generation', () => {
         ]),
         outputs: expect.arrayContaining(['Rendered React route output.']),
       });
+      expect(homePage?.data?.dependencies ?? []).not.toContain('dependency:@/components/Hero.js');
       expect(docsPage?.data).toMatchObject({
         kind: 'ui',
         components: expect.arrayContaining(['component:src']),

@@ -21,15 +21,17 @@ Coverage targets are explicit for component, flow, evidence, and unknown surface
 
 Artifact assertions check that required files exist, parse as JSON when requested, contain the
 expected top-level or dotted fields, include required substrings, and omit forbidden substrings.
-The benchmark summary reports readiness score plus component, flow, evidence, and unknown coverage
-for each task.
+Use required substrings for benchmark-critical object signals and evidence trails, and forbidden
+substrings for placeholder IDs, fake flow examples, or sensitive path/token leakage. The benchmark
+summary reports readiness score plus component, flow, evidence, and unknown coverage for each task.
 
 The Next.js route-intelligence seed uses a deterministic app-router fixture with local-only
-`src/app/page.tsx`, dynamic docs page, layout, health API route, sitemap, robots, content loader,
-component import, and package-script evidence. It intentionally does not install fixture
-dependencies or contact a provider; it asserts that local research artifacts and Mission Control
-preserve route/API/render flows, mapped files/components/configs, contracts, confidence gaps, known
-unknowns, object labels, and expandable report details.
+`src/app/page.tsx`, dynamic docs page, layout, health API route, sitemap, robots, `@/*` alias
+imports, content loader, component import, and package-script evidence. It intentionally does not
+install fixture dependencies or contact a provider; it asserts that local research artifacts and
+Mission Control preserve route/API/render flows, alias-resolved route evidence, mapped
+files/components/configs, contracts, confidence gaps, known unknowns, object labels, and expandable
+report details while rejecting placeholder flow IDs and sensitive path leaks.
 
 Review benchmark tasks use category `review-blast-radius` and add a `review` block instead of
 `coverage_targets`. The runner initializes a git fixture, runs `rizz brain`, commits the baseline,
@@ -39,3 +41,8 @@ configs, blast-radius reasons, required tests, findings, and forbidden secret-li
 JSON/report output. Review tasks intentionally validate review JSON directly rather than writing a
 separate `.rizz/research/review_eval.json`; the measured product surface is the user-facing
 `rizz review --json` contract plus the existing local review report artifact.
+
+The Next.js route blast-radius seed validates the review side of route intelligence: a local
+content-loader change must map back to concrete app-router page flows through `@/*` alias-resolved
+evidence, preserve linked test/config readiness, and avoid placeholder flow IDs in JSON and HTML
+review artifacts.

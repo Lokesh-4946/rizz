@@ -172,6 +172,17 @@ interface FileFact {
   readonly hash: string;
 }
 
+interface ImportAliasPattern {
+  readonly prefix: string;
+  readonly suffix: string;
+}
+
+interface ImportAliasRule {
+  readonly source: ImportAliasPattern;
+  readonly baseUrl: string;
+  readonly targets: readonly ImportAliasPattern[];
+}
+
 interface IgnorePattern {
   readonly pattern: string;
   readonly negated: boolean;
@@ -1549,16 +1560,92 @@ function packageNameFromSpecifier(specifier: string): string {
   return specifier.split('/')[0] ?? specifier;
 }
 
-function resolveRelativeImportTarget(params: {
+function patternParts(pattern: string): ImportAliasPattern | undefined {
+  const normalized = normalizedPathHint(pattern);
+  const firstStar = normalized.indexOf('*');
+  if (firstStar === -1) return { prefix: normalized, suffix: '' };
+  if (firstStar !== normalized.lastIndexOf('*')) return undefined;
+  return {
+    prefix: normalized.slice(0, firstStar),
+    suffix: normalized.slice(firstStar + 1),
+  };
+}
+
+function aliasCandidateFromPattern(
+  specifier: string,
+  source: ImportAliasPattern,
+): string | undefined {
+  if (!specifier.startsWith(source.prefix) || !specifier.endsWith(source.suffix)) {
+    return undefined;
+  }
+  return specifier.slice(source.prefix.length, specifier.length - source.suffix.length);
+}
+
+function applyAliasTargetPattern(
+  target: ImportAliasPattern,
+  matched: string,
+  baseUrl: string,
+): string {
+  return normalizedPathHint(`${baseUrl}/${target.prefix}${matched}${target.suffix}`);
+}
+
+function importAliasRulesForRoot(rootDir: string): readonly ImportAliasRule[] {
+  const tsconfig = readJsonFileSync(join(rootDir, 'tsconfig.json'));
+  if (!isRecord(tsconfig) || !isRecord(tsconfig.compilerOptions)) return [];
+  const compilerOptions = tsconfig.compilerOptions;
+  const rawBaseUrl = typeof compilerOptions.baseUrl === 'string' ? compilerOptions.baseUrl : '.';
+  const baseUrl = normalizedPathHint(rawBaseUrl);
+  if (!isRecord(compilerOptions.paths)) return [];
+
+  const rules: ImportAliasRule[] = [];
+  for (const [sourcePattern, rawTargets] of Object.entries(compilerOptions.paths)) {
+    const source = patternParts(sourcePattern);
+    if (source === undefined) continue;
+    const targets = asStringArray(rawTargets)
+      .map(patternParts)
+      .filter((target): target is ImportAliasPattern => target !== undefined);
+    if (targets.length > 0) rules.push({ source, baseUrl, targets });
+  }
+  return rules;
+}
+
+function aliasPathHints(specifier: string, rules: readonly ImportAliasRule[]): string[] {
+  const hints: string[] = [];
+  for (const rule of rules) {
+    const matched = aliasCandidateFromPattern(specifier, rule.source);
+    if (matched === undefined) continue;
+    for (const target of rule.targets) {
+      hints.push(applyAliasTargetPattern(target, matched, rule.baseUrl));
+    }
+  }
+  return unique(hints);
+}
+
+function readJsonFileSync(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveImportTarget(params: {
   readonly fromFile: string;
   readonly specifier: string;
   readonly componentPaths: readonly string[];
+  readonly aliasRules: readonly ImportAliasRule[];
 }): string | undefined {
-  const importedPath = join(dirname(params.fromFile), params.specifier).split(sep).join('/');
+  const importedPath = params.specifier.startsWith('.')
+    ? join(dirname(params.fromFile), params.specifier).split(sep).join('/')
+    : undefined;
+  const aliasPaths = aliasPathHints(params.specifier, params.aliasRules);
+  const candidates = importedPath === undefined ? aliasPaths : [importedPath, ...aliasPaths];
   const matches = params.componentPaths
-    .filter((componentPath) => {
-      return importedPath === componentPath || importedPath.startsWith(`${componentPath}/`);
-    })
+    .filter((componentPath) =>
+      candidates.some(
+        (candidate) => candidate === componentPath || candidate.startsWith(`${componentPath}/`),
+      ),
+    )
     .sort((a, b) => b.length - a.length || a.localeCompare(b));
   return matches[0];
 }
@@ -1577,6 +1664,7 @@ function couplingForComponent(params: {
   );
   const internalImports = new Set<string>();
   const externalImports = new Set<string>();
+  const importAliasRules = importAliasRulesForRoot(params.rootDir);
   let staticImportCount = 0;
 
   for (const file of params.files.filter((item) => classifySourceKind(item) === 'source')) {
@@ -1585,11 +1673,12 @@ function couplingForComponent(params: {
     for (const specifier of importSpecifiersFromText(text)) {
       staticImportCount += 1;
       let targetPath: string | undefined;
-      if (specifier.startsWith('.')) {
-        targetPath = resolveRelativeImportTarget({
+      if (specifier.startsWith('.') || aliasPathHints(specifier, importAliasRules).length > 0) {
+        targetPath = resolveImportTarget({
           fromFile: file.relativePath,
           specifier,
           componentPaths: params.componentPaths,
+          aliasRules: importAliasRules,
         });
       } else {
         const packageName = packageNameFromSpecifier(specifier);
@@ -2162,14 +2251,19 @@ function filesReferencedByCommand(
   );
 }
 
-function resolveRelativeImportFiles(
+function resolveImportFiles(
   files: readonly FileFact[],
   fromPath: string,
   specifier: string,
+  aliasRules: readonly ImportAliasRule[],
 ): FileFact[] {
-  if (!specifier.startsWith('.')) return [];
-  const base = join(dirname(fromPath), specifier).split(sep).join('/');
-  return filesForPathHint(files, base);
+  if (specifier.startsWith('.')) {
+    const base = join(dirname(fromPath), specifier).split(sep).join('/');
+    return filesForPathHint(files, base);
+  }
+  return uniqueFileFacts(
+    aliasPathHints(specifier, aliasRules).flatMap((hint) => filesForPathHint(files, hint)),
+  );
 }
 
 function importContextForFiles(params: {
@@ -2179,11 +2273,14 @@ function importContextForFiles(params: {
 }): {
   readonly importedSpecifiers: readonly string[];
   readonly importedFiles: readonly FileFact[];
+  readonly unresolvedSpecifiers: readonly string[];
   readonly importEvidence: readonly FlowEvidence[];
 } {
   const importedSpecifiers = new Set<string>();
   const importedFiles: FileFact[] = [];
+  const unresolvedSpecifiers = new Set<string>();
   const importEvidence: FlowEvidence[] = [];
+  const aliasRules = importAliasRulesForRoot(params.rootDir);
   for (const file of params.entryFiles) {
     const text = readTextIfAvailable(params.rootDir, file.relativePath);
     if (text === undefined) continue;
@@ -2197,12 +2294,23 @@ function importContextForFiles(params: {
           reason: `Static import evidence for ${specifier}.`,
         }),
       );
-      importedFiles.push(...resolveRelativeImportFiles(params.files, file.relativePath, specifier));
+      const resolvedFiles = resolveImportFiles(
+        params.files,
+        file.relativePath,
+        specifier,
+        aliasRules,
+      );
+      if (resolvedFiles.length > 0) {
+        importedFiles.push(...resolvedFiles);
+      } else {
+        unresolvedSpecifiers.add(specifier);
+      }
     }
   }
   return {
     importedSpecifiers: [...importedSpecifiers].sort((a, b) => a.localeCompare(b)),
     importedFiles: uniqueFileFacts(importedFiles),
+    unresolvedSpecifiers: [...unresolvedSpecifiers].sort((a, b) => a.localeCompare(b)),
     importEvidence: uniqueFlowEvidence(importEvidence),
   };
 }
@@ -2729,10 +2837,16 @@ function inferScriptFlow(params: {
     entryFiles,
   });
   for (const specifier of importContext.importedSpecifiers) importedSpecifiers.add(specifier);
+  const dependencySpecifiers = new Set(
+    importContext.unresolvedSpecifiers.filter((specifier) => !specifier.startsWith('.')),
+  );
 
   const commandText = safeText(params.command);
   for (const pkg of params.packageFacts) {
-    if (pkg.name !== undefined && commandText.includes(pkg.name)) importedSpecifiers.add(pkg.name);
+    if (pkg.name !== undefined && commandText.includes(pkg.name)) {
+      importedSpecifiers.add(pkg.name);
+      dependencySpecifiers.add(pkg.name);
+    }
   }
 
   const relatedComponentIds = new Set<string>();
@@ -2769,7 +2883,7 @@ function inferScriptFlow(params: {
   const dependencies = unique([
     ...Object.keys(params.packageFact.dependencies),
     ...Object.keys(params.packageFact.devDependencies),
-    ...[...importedSpecifiers].filter((specifier) => !specifier.startsWith('.')),
+    ...dependencySpecifiers,
   ]).map((dependency) => entityId('dependency', dependency));
   const kind = flowKindForScript(params.packageFact, params.scriptName, params.command);
   const flowBase =
@@ -2856,7 +2970,7 @@ function inferScriptFlow(params: {
     ...(entryFiles.length > 0 ? ['source entry'] : []),
     ...(commandFiles.length > 0 ? ['command path'] : []),
     ...(importedSpecifiers.size > 0 ? ['static import'] : []),
-    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['resolved import'] : []),
     ...(tests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
@@ -3201,7 +3315,7 @@ function inferNextAppRouteFlow(params: {
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
   ]);
   const dependencies = unique(
-    importContext.importedSpecifiers
+    importContext.unresolvedSpecifiers
       .filter((specifier) => !specifier.startsWith('.'))
       .map((dependency) => entityId('dependency', dependency)),
   );
@@ -3291,7 +3405,7 @@ function inferNextAppRouteFlow(params: {
     'route file',
     `nextjs ${params.routeType} route`,
     ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
-    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['resolved import'] : []),
     ...(relatedTests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
@@ -3381,7 +3495,7 @@ function inferNextAppRouteFlow(params: {
         evId,
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
-      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      dependencies: importContext.unresolvedSpecifiers.length > 0 ? [evId] : [],
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -3443,7 +3557,7 @@ function inferRouteFlow(params: {
       .flatMap((component) => stringArrayData(component, 'configs')),
   );
   const dependencies = unique(
-    importContext.importedSpecifiers
+    importContext.unresolvedSpecifiers
       .filter((specifier) => !specifier.startsWith('.'))
       .map((dependency) => entityId('dependency', dependency)),
   );
@@ -3470,7 +3584,7 @@ function inferRouteFlow(params: {
   const signals = unique([
     'route file',
     ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
-    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['resolved import'] : []),
     ...(relatedTests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
@@ -3541,7 +3655,7 @@ function inferRouteFlow(params: {
         evId,
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
-      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      dependencies: importContext.unresolvedSpecifiers.length > 0 ? [evId] : [],
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
