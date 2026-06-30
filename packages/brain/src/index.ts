@@ -273,6 +273,8 @@ type FlowEntrypointType = 'route' | 'command' | 'function' | 'script' | 'file' |
 
 type NextAppRouteType = 'api' | 'layout' | 'metadata' | 'page';
 
+type HttpRouteMethod = 'ALL' | 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT';
+
 type FlowStepType =
   | 'route'
   | 'handler'
@@ -363,13 +365,21 @@ interface RouteContractContext {
   readonly entry_file: string;
 }
 
+interface HttpRouteDeclaration {
+  readonly receiver: string;
+  readonly method: HttpRouteMethod;
+  readonly routePath: string;
+  readonly line: number;
+  readonly source: string;
+}
+
 interface FlowIntelligence {
   readonly flow_id: string;
   readonly name: string;
   readonly kind: FlowKind;
   readonly framework?: string;
   readonly route_path?: string;
-  readonly route_type?: NextAppRouteType;
+  readonly route_type?: string;
   readonly entrypoints: readonly FlowEntrypoint[];
   readonly steps: readonly FlowStep[];
   readonly components: readonly string[];
@@ -3614,6 +3624,388 @@ function inferNextAppRouteFlow(params: {
   };
 }
 
+const HTTP_ROUTE_DECLARATION_PATTERN =
+  /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|del|head|options|all)\s*\(\s*(['"`])([^'"`${}]+)\3/g;
+
+function maskCommentsForStaticScan(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, ' '))
+    .replace(/\/\/.*$/gm, (match) => ' '.repeat(match.length));
+}
+
+function lineNumberAtOffset(text: string, offset: number): number {
+  return text.slice(0, offset).split(/\r?\n/).length;
+}
+
+function isHttpRouteReceiver(receiver: string): boolean {
+  const lower = receiver.toLowerCase();
+  return (
+    lower === 'app' ||
+    lower === 'router' ||
+    lower === 'server' ||
+    lower === 'fastify' ||
+    lower.endsWith('app') ||
+    lower.endsWith('router') ||
+    lower.endsWith('server')
+  );
+}
+
+function httpRouteMethod(method: string): HttpRouteMethod {
+  if (method.toLowerCase() === 'del') return 'DELETE';
+  return method.toUpperCase() as HttpRouteMethod;
+}
+
+function normalizeHttpRoutePath(routePath: string): string | undefined {
+  const trimmed = routePath.trim();
+  if (trimmed === '') return undefined;
+  if (containsSensitiveReference(trimmed)) return undefined;
+  return trimmed.startsWith('/') || trimmed === '*' ? trimmed : `/${trimmed}`;
+}
+
+function isHttpRouteSourceFile(file: FileFact): boolean {
+  return /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file.relativePath) && !isTestPath(file.relativePath);
+}
+
+function httpRouteDeclarationsForFile(params: {
+  readonly rootDir: string;
+  readonly file: FileFact;
+}): HttpRouteDeclaration[] {
+  if (!isHttpRouteSourceFile(params.file)) return [];
+  const text = readTextIfAvailable(params.rootDir, params.file.relativePath);
+  if (text === undefined) return [];
+  const masked = maskCommentsForStaticScan(text);
+  const declarations = new Map<string, HttpRouteDeclaration>();
+  for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
+    const receiver = match[1];
+    const rawMethod = match[2];
+    const rawRoutePath = match[4];
+    if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) continue;
+    if (!isHttpRouteReceiver(receiver)) continue;
+    const routePath = normalizeHttpRoutePath(rawRoutePath);
+    if (routePath === undefined) continue;
+    const method = httpRouteMethod(rawMethod);
+    const line = lineNumberAtOffset(masked, match.index ?? 0);
+    const source = `${receiver}.${rawMethod}`;
+    declarations.set(`${method}:${routePath}:${line}:${source}`, {
+      receiver,
+      method,
+      routePath,
+      line,
+      source,
+    });
+  }
+  return sorted(
+    [...declarations.values()],
+    (declaration) =>
+      `${declaration.method}:${declaration.routePath}:${declaration.line}:${declaration.source}`,
+  );
+}
+
+function owningPackageFactForFile(
+  packageFacts: readonly PackageJsonFact[],
+  filePath: string,
+): PackageJsonFact | undefined {
+  let owner: PackageJsonFact | undefined;
+  let ownerDirLength = -1;
+  for (const pkg of packageFacts) {
+    const dir = dirname(pkg.relativePath).split(sep).join('/');
+    if (dir !== '.' && filePath !== dir && !filePath.startsWith(`${dir}/`)) continue;
+    if (dir.length <= ownerDirLength) continue;
+    owner = pkg;
+    ownerDirLength = dir.length;
+  }
+  return owner;
+}
+
+function packageScopeDir(pkg: PackageJsonFact | undefined): string | undefined {
+  if (pkg === undefined) return undefined;
+  return dirname(pkg.relativePath).split(sep).join('/');
+}
+
+function fileIsInPackageScope(filePath: string, packageDir: string | undefined): boolean {
+  if (packageDir === undefined) return false;
+  return packageDir === '.' || filePath === packageDir || filePath.startsWith(`${packageDir}/`);
+}
+
+function httpRouteConfigs(params: {
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly routeFile: FileFact;
+  readonly relatedComponents: readonly BrainEntity[];
+}): string[] {
+  const ownerPackage = owningPackageFactForFile(params.packageFacts, params.routeFile.relativePath);
+  const packageDir = packageScopeDir(ownerPackage);
+  return unique([
+    ...(ownerPackage === undefined ? [] : [ownerPackage.relativePath]),
+    ...params.files
+      .filter(
+        (file) =>
+          file.relativePath !== ownerPackage?.relativePath &&
+          isConfigPath(file.relativePath) &&
+          fileIsInPackageScope(file.relativePath, packageDir),
+      )
+      .map((file) => file.relativePath),
+    ...params.relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
+  ]).slice(0, 12);
+}
+
+function httpRouteTestPaths(params: {
+  readonly routeFile: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+  readonly componentIds: readonly string[];
+  readonly tests: readonly BrainEntity[];
+}): string[] {
+  const fileStem = basename(params.routeFile.relativePath).replace(
+    /\.(ts|tsx|js|jsx|mjs|cjs)$/i,
+    '',
+  );
+  const routeNeedles = params.declaration.routePath
+    .split('/')
+    .map((segment) => segment.replace(/^:/, '').toLowerCase())
+    .filter((segment) => segment !== '' && segment !== '*');
+  const componentPathNeedles = params.componentIds.map(componentPathFromId);
+  return unique(
+    params.tests
+      .filter((test) =>
+        test.source_files.some((file) => {
+          const lower = file.toLowerCase();
+          return (
+            lower.includes(fileStem.toLowerCase()) ||
+            lower.includes(params.declaration.method.toLowerCase()) ||
+            routeNeedles.some((needle) => lower.includes(needle)) ||
+            componentPathNeedles.some((componentPath) => file.startsWith(`${componentPath}/`))
+          );
+        }),
+      )
+      .flatMap((test) => test.source_files),
+  );
+}
+
+function httpRouteDeclarationEvidence(params: {
+  readonly file: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+}): FlowEvidence {
+  return {
+    path: safeText(params.file.relativePath),
+    line_start: params.declaration.line,
+    line_end: params.declaration.line,
+    reason: safeText(
+      `HTTP ${params.declaration.method} ${params.declaration.routePath} route declaration is the flow entrypoint evidence.`,
+    ),
+  };
+}
+
+function inferHttpRouteDeclarationFlow(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly file: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+  readonly components: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly changedFiles: ReadonlySet<string>;
+}): FlowIntelligence {
+  const importContext = importContextForFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    entryFiles: [params.file],
+  });
+  const allScannedFiles = [params.file, ...importContext.importedFiles];
+  const componentIds = componentIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.components,
+  );
+  const relatedComponents = params.components.filter((component) =>
+    componentIds.includes(component.id),
+  );
+  const relatedTests = httpRouteTestPaths({
+    routeFile: params.file,
+    declaration: params.declaration,
+    componentIds,
+    tests: params.tests,
+  });
+  const configs = httpRouteConfigs({
+    files: params.files,
+    packageFacts: params.packageFacts,
+    routeFile: params.file,
+    relatedComponents,
+  });
+  const dependencies = unique(
+    externalImportSpecifiers(importContext).map((dependency) => entityId('dependency', dependency)),
+  );
+  const flowId = entityId(
+    'flow',
+    `http/${params.declaration.method}/${params.declaration.routePath}/${params.file.relativePath}`,
+  );
+  const evId = evidenceId(params.file.relativePath);
+  const risks: FlowRisk[] = [];
+  if (relatedTests.length === 0) {
+    risks.push({
+      risk_id: `${flowId}:missing-test`,
+      kind: 'missing_test',
+      description: `No directly linked test artifact was detected for HTTP ${params.declaration.method} ${params.declaration.routePath}.`,
+      evidence: [evId],
+    });
+  }
+  if (configs.length === 0) {
+    risks.push({
+      risk_id: `${flowId}:missing-config`,
+      kind: 'missing_config',
+      description: 'No package or config artifact was detected for this HTTP route flow.',
+      evidence: [evId],
+    });
+  }
+  if (params.changedFiles.has(params.file.relativePath)) {
+    risks.push({
+      risk_id: `${flowId}:changed-hotspot`,
+      kind: 'changed_hotspot',
+      description: 'The HTTP route declaration file changed in the latest scan.',
+      evidence: [evId],
+    });
+  }
+  const steps: FlowStep[] = [
+    {
+      step_id: flowStepId(flowId, 1),
+      order: 1,
+      type: 'route',
+      path: safeText(params.file.relativePath),
+      symbol: safeText(`${params.declaration.method} ${params.declaration.routePath}`),
+      description: `HTTP ${params.declaration.method} ${safeText(
+        params.declaration.routePath,
+      )} route enters ${safeText(params.file.relativePath)} via ${safeText(
+        params.declaration.source,
+      )}().`,
+      evidence: [evId],
+    },
+    ...importContext.importedFiles.slice(0, 8).map((file, index) => ({
+      step_id: flowStepId(flowId, index + 2),
+      order: index + 2,
+      type: 'service' as const,
+      path: safeText(file.relativePath),
+      symbol: null,
+      description: `HTTP route statically imports ${safeText(file.relativePath)}.`,
+      evidence: [evidenceId(file.relativePath)],
+    })),
+  ];
+  let order = steps.length + 1;
+  for (const config of configs.slice(0, 4)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'config',
+      path: safeText(config),
+      symbol: null,
+      description: `HTTP route behavior can be configured by ${safeText(config)}.`,
+      evidence: [evidenceId(config)],
+    });
+    order += 1;
+  }
+  for (const test of relatedTests.slice(0, 4)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'test',
+      path: safeText(test),
+      symbol: null,
+      description: 'Related test artifact for this HTTP route flow.',
+      evidence: [evidenceId(test)],
+    });
+    order += 1;
+  }
+  const signals = unique([
+    'http route declaration',
+    'route file',
+    `${params.declaration.method.toLowerCase()} route`,
+    ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(relatedTests.length > 0 ? ['test artifact'] : []),
+    ...(configs.length > 0 ? ['configuration'] : []),
+  ]);
+  const unknowns = unique([
+    ...(componentIds.length === 0
+      ? ['No owning component was detected for this HTTP route declaration.']
+      : []),
+    ...(readTextIfAvailable(params.rootDir, params.file.relativePath)?.includes('import(')
+      ? ['Dynamic import is static evidence only; runtime reachability is not traced.']
+      : []),
+  ]);
+  const baseConfidence = flowConfidenceFor({ tests: relatedTests, signals, unknowns });
+  const entrypoints: FlowEntrypoint[] = [
+    {
+      type: 'route',
+      path: safeText(params.file.relativePath),
+      symbol: safeText(`${params.declaration.method} ${params.declaration.routePath}`),
+      component_id: componentIds[0] ?? null,
+      evidence: [evId],
+    },
+  ];
+  const files = unique([
+    params.file.relativePath,
+    ...importContext.importedFiles.map((file) => file.relativePath),
+  ]);
+  const contracts = inferFlowContracts({
+    rootDir: params.rootDir,
+    kind: 'api',
+    entrypoints,
+    steps,
+    files,
+    configs,
+    tests: relatedTests,
+    risks,
+    signals,
+    confidenceReason: baseConfidence.reason,
+  });
+  const routeEvidence = httpRouteDeclarationEvidence({
+    file: params.file,
+    declaration: params.declaration,
+  });
+  return {
+    flow_id: flowId,
+    name: `${params.declaration.method} ${safeText(params.declaration.routePath)} HTTP route`,
+    kind: 'api',
+    framework: 'express-fastify-http',
+    route_path: safeText(params.declaration.routePath),
+    route_type: params.declaration.method,
+    entrypoints,
+    steps,
+    components: componentIds,
+    files,
+    dependencies,
+    configs,
+    tests: relatedTests,
+    risks,
+    entry_contract: contracts.entry_contract,
+    exit_contract: contracts.exit_contract,
+    inputs: contracts.inputs,
+    outputs: contracts.outputs,
+    side_effects: contracts.side_effects,
+    state_transitions: contracts.state_transitions,
+    failure_modes: contracts.failure_modes,
+    required_tests: contracts.required_tests,
+    confidence_reasons: contracts.confidence_reasons,
+    confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
+    evidence: uniqueFlowEvidence([routeEvidence, ...importContext.importEvidence]),
+    field_evidence: {
+      entrypoints: [evId],
+      steps: unique(steps.flatMap((step) => step.evidence)),
+      components: componentIds.flatMap(
+        (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
+      ),
+      files: unique([
+        evId,
+        ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
+      ]),
+      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      configs: configs.map(evidenceId),
+      tests: relatedTests.map(evidenceId),
+      risks: risks.flatMap((risk) => risk.evidence),
+      ...contracts.field_evidence,
+    },
+    unknowns,
+    signals,
+  };
+}
+
 function inferRouteFlow(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -3853,8 +4245,36 @@ function reconstructFlows(params: {
       }),
     );
   }
+  const httpRouteDeclarations = new Map<string, readonly HttpRouteDeclaration[]>();
   for (const file of params.files.filter(
-    (item) => isRouteLikeFile(item) && !nextAppRouteFilePaths.has(item.relativePath),
+    (item) => isHttpRouteSourceFile(item) && !nextAppRouteFilePaths.has(item.relativePath),
+  )) {
+    const declarations = httpRouteDeclarationsForFile({
+      rootDir: params.rootDir,
+      file,
+    });
+    if (declarations.length === 0) continue;
+    httpRouteDeclarations.set(file.relativePath, declarations);
+    for (const declaration of declarations) {
+      flowIntelligence.push(
+        inferHttpRouteDeclarationFlow({
+          rootDir: params.rootDir,
+          files: params.files,
+          packageFacts: params.packageFacts,
+          file,
+          declaration,
+          components: params.buckets.components,
+          tests: params.buckets.tests,
+          changedFiles: changedFileSet,
+        }),
+      );
+    }
+  }
+  for (const file of params.files.filter(
+    (item) =>
+      isRouteLikeFile(item) &&
+      !nextAppRouteFilePaths.has(item.relativePath) &&
+      !httpRouteDeclarations.has(item.relativePath),
   )) {
     flowIntelligence.push(
       inferRouteFlow({

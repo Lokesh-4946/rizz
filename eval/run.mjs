@@ -1507,7 +1507,7 @@ function withTempHomeSync(run) {
   try {
     return run(home);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTempDirSync(home);
   }
 }
 
@@ -1516,7 +1516,7 @@ async function withTempHomeAsync(run) {
   try {
     return await run(home);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTempDirSync(home);
   }
 }
 
@@ -1525,8 +1525,12 @@ function withTempDirSync(prefix, run) {
   try {
     return run(dir);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeTempDirSync(dir);
   }
+}
+
+function removeTempDirSync(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 function parseJsonLines(stdout) {
