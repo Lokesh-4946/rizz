@@ -15,6 +15,8 @@ import {
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
+type ReasoningType = 'component' | 'flow' | 'architecture' | 'review';
+
 type ComponentBoundaryType =
   | 'entrypoint'
   | 'orchestration'
@@ -90,6 +92,19 @@ interface BrainRelationship {
   readonly to: string;
   readonly evidence_ids: readonly string[];
   readonly confidence: Confidence;
+}
+
+interface ReasoningTrace {
+  readonly trace_id: string;
+  readonly entity_id: string;
+  readonly reasoning_type: ReasoningType;
+  readonly claim: string;
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly redacted_evidence_count: number;
 }
 
 interface FileFact {
@@ -598,6 +613,7 @@ const RESEARCH_ARTIFACT_FILES = {
   metrics: 'metrics.json',
   coverage: 'coverage.json',
   confidence: 'confidence.json',
+  reasoningTraces: 'reasoning_traces.json',
   componentIntelligence: 'component_intelligence.json',
   evidenceQuality: 'evidence_quality.json',
   incrementalUpdate: 'incremental_update.json',
@@ -606,6 +622,7 @@ const RESEARCH_ARTIFACT_FILES = {
   flowConfidence: 'flow_confidence.json',
   architectureReasoning: 'architecture_reasoning.json',
   benchmarkReady: 'benchmark_ready.json',
+  understandingScore: 'understanding_score.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -4069,6 +4086,330 @@ function buildArchitectureReasoningArtifact(params: {
   };
 }
 
+function confidenceScoreForValue(confidence: Confidence): number {
+  if (confidence === 'verified') return 1;
+  if (confidence === 'inferred') return 0.65;
+  return 0.35;
+}
+
+function averageConfidenceScore(scores: readonly number[]): number {
+  if (scores.length === 0) return 0;
+  return Number((scores.reduce((total, score) => total + score, 0) / scores.length).toFixed(4));
+}
+
+function componentConfidenceScore(component: BrainEntity): number {
+  const ownership = component.data?.ownership_confidence;
+  const ownershipScore =
+    isRecord(ownership) && typeof ownership.score === 'number' ? ownership.score : undefined;
+  if (ownershipScore === undefined) return confidenceScoreForValue(component.confidence);
+  return Number(
+    (
+      (confidenceScoreForValue(component.confidence) + Math.max(0, Math.min(1, ownershipScore))) /
+      2
+    ).toFixed(4),
+  );
+}
+
+function fieldEvidenceIds(entity: BrainEntity): string[] {
+  return unique(Object.values(recordStringArrayData(entity, 'field_evidence')).flat());
+}
+
+function traceRedactedEvidenceCount(params: {
+  readonly claim: string;
+  readonly evidenceIds: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}): number {
+  return redactedReferenceCount(
+    safeResearchValue({
+      claim: params.claim,
+      evidence_ids: params.evidenceIds,
+      rules: params.rules,
+      unknowns: params.unknowns,
+    }),
+  );
+}
+
+function reasoningTrace(params: {
+  readonly entityId: string;
+  readonly reasoningType: ReasoningType;
+  readonly suffix?: string;
+  readonly claim: string;
+  readonly evidenceIds: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidenceScore: number;
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}): ReasoningTrace {
+  const safeEntityId = safeText(params.entityId);
+  const safeClaim = safeText(params.claim);
+  const evidenceIds = unique(params.evidenceIds.map(safeText)).slice(0, 12);
+  const rules = unique(params.rules.map(safeText)).slice(0, 8);
+  const unknowns = unique(params.unknowns.map(safeText)).slice(0, 8);
+  const suffix = params.suffix === undefined ? '' : `:${stableSlug(safeText(params.suffix))}`;
+  return {
+    trace_id: `trace:${params.reasoningType}:${stableSlug(safeEntityId)}${suffix}`,
+    entity_id: safeEntityId,
+    reasoning_type: params.reasoningType,
+    claim: safeClaim,
+    evidence_ids: evidenceIds,
+    confidence: params.confidence,
+    confidence_score: Number(params.confidenceScore.toFixed(4)),
+    rules,
+    unknowns,
+    redacted_evidence_count: traceRedactedEvidenceCount({
+      claim: safeClaim,
+      evidenceIds,
+      rules,
+      unknowns,
+    }),
+  };
+}
+
+function evidenceIdsForComponent(component: BrainEntity): string[] {
+  return unique([...component.evidence_ids, ...fieldEvidenceIds(component)]);
+}
+
+function evidenceIdsForFlow(flow: BrainEntity): string[] {
+  return unique([
+    ...flow.evidence_ids,
+    ...fieldEvidenceIds(flow),
+    ...flowEntrypoints(flow).flatMap((entrypoint) => entrypoint.evidence),
+    ...flowSteps(flow).flatMap((step) => step.evidence),
+    ...flowRisks(flow).flatMap((risk) => risk.evidence),
+  ]);
+}
+
+function buildReasoningTracesArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly changedFiles: readonly string[];
+}): {
+  readonly generated_at: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly trace_count: number;
+  readonly trace_counts_by_type: Record<string, number>;
+  readonly traces: readonly ReasoningTrace[];
+} {
+  const projectId = entityId('project', params.projectName);
+  const changedFileSet = new Set(params.changedFiles);
+  const components = params.buckets.components.filter(
+    (component) => component.latest_status !== 'stale',
+  );
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const flowsByComponent = new Map<string, BrainEntity[]>();
+  for (const flow of flows) {
+    for (const componentId of flowStringArray(flow, 'components')) {
+      const existing = flowsByComponent.get(componentId) ?? [];
+      flowsByComponent.set(componentId, [...existing, flow]);
+    }
+  }
+
+  const componentTraces = components.map((component) => {
+    const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
+    const componentFlows = flowsByComponent.get(component.id) ?? [];
+    const tests = stringArrayData(component, 'tests');
+    const evidenceIds = evidenceIdsForComponent(component);
+    return reasoningTrace({
+      entityId: component.id,
+      reasoningType: 'component',
+      claim: `Component ${component.id} is classified as ${boundaryType} from local structure, declared interfaces, evidence-backed fields, and flow links.`,
+      evidenceIds,
+      confidence: component.confidence,
+      confidenceScore: componentConfidenceScore(component),
+      rules: [
+        `boundary_type:${boundaryType}`,
+        `field_evidence:${fieldEvidenceIds(component).length}`,
+        `flow_links:${componentFlows.length}`,
+        `test_links:${tests.length}`,
+      ],
+      unknowns: [
+        ...stringArrayData(component, 'unknowns'),
+        ...(evidenceIds.length === 0 ? ['No direct component evidence IDs were found.'] : []),
+        ...(componentFlows.length === 0
+          ? ['No reconstructed flow currently reaches this component.']
+          : []),
+      ],
+    });
+  });
+
+  const flowTraces = flows.map((flow) => {
+    const kind = flowKind(flow);
+    const steps = flowSteps(flow);
+    const tests = flowStringArray(flow, 'tests');
+    const evidenceIds = evidenceIdsForFlow(flow);
+    return reasoningTrace({
+      entityId: flow.id,
+      reasoningType: 'flow',
+      claim: `Flow ${flow.id} is reconstructed as ${kind} from entrypoint, step, component, test, and config evidence.`,
+      evidenceIds,
+      confidence: flow.confidence,
+      confidenceScore: asFlowConfidenceScore(flow),
+      rules: [
+        `kind:${kind}`,
+        `entrypoints:${flowEntrypoints(flow).length}`,
+        `steps:${steps.length}`,
+        `components:${flowStringArray(flow, 'components').length}`,
+        `test_links:${tests.length}`,
+      ],
+      unknowns: [
+        ...stringArrayData(flow, 'unknowns'),
+        ...(flow.confidence === 'verified' ? [] : [flowConfidenceReason(flow)]),
+        ...(evidenceIds.length === 0 ? ['No direct flow evidence IDs were found.'] : []),
+      ],
+    });
+  });
+
+  const architectureTraces = components
+    .filter((component) => {
+      const coupling = componentCouplingRecord(component);
+      return (
+        (flowsByComponent.get(component.id) ?? []).length > 0 ||
+        coupling.score > 0 ||
+        stringData(component, 'blast_radius') === 'broad' ||
+        stringData(component, 'criticality') === 'high'
+      );
+    })
+    .map((component) => {
+      const componentFlows = flowsByComponent.get(component.id) ?? [];
+      const coupling = componentCouplingRecord(component);
+      const architectureConfidence = weakestConfidence([
+        component.confidence,
+        ...componentFlows.map((flow) => flow.confidence),
+      ]);
+      const evidenceIds = unique([
+        ...evidenceIdsForComponent(component),
+        ...componentFlows.flatMap(evidenceIdsForFlow),
+        ...params.relationships
+          .filter(
+            (relationship) =>
+              relationship.from === component.id || relationship.to === component.id,
+          )
+          .flatMap((relationship) => relationship.evidence_ids),
+      ]);
+      return reasoningTrace({
+        entityId: component.id,
+        reasoningType: 'architecture',
+        suffix: 'component-boundary',
+        claim: `Architecture reasoning for ${component.id} combines boundary type, coupling, blast radius, flow coverage, and relationship evidence.`,
+        evidenceIds,
+        confidence: architectureConfidence,
+        confidenceScore: averageConfidenceScore([
+          componentConfidenceScore(component),
+          ...componentFlows.map(asFlowConfidenceScore),
+        ]),
+        rules: [
+          `coupling:${coupling.level}`,
+          `static_imports:${coupling.static_import_count}`,
+          `blast_radius:${stringData(component, 'blast_radius') ?? 'unknown'}`,
+          `flow_links:${componentFlows.length}`,
+        ],
+        unknowns: [
+          ...stringArrayData(component, 'unknowns'),
+          ...(componentFlows.filter((flow) => flow.confidence !== 'verified').length > 0
+            ? ['One or more linked flows are reconstructed rather than runtime verified.']
+            : []),
+        ],
+      });
+    });
+
+  const projectArchitectureTrace = reasoningTrace({
+    entityId: projectId,
+    reasoningType: 'architecture',
+    suffix: 'project-summary',
+    claim: `Project architecture confidence is calibrated from ${components.length} component(s), ${flows.length} flow(s), and ${params.relationships.length} relationship claim(s).`,
+    evidenceIds: unique([
+      ...components.flatMap(evidenceIdsForComponent),
+      ...flows.flatMap(evidenceIdsForFlow),
+      ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+    ]),
+    confidence: weakestConfidence([...components, ...flows].map((entity) => entity.confidence)),
+    confidenceScore: averageConfidenceScore([
+      ...components.map(componentConfidenceScore),
+      ...flows.map(asFlowConfidenceScore),
+    ]),
+    rules: [
+      `components:${components.length}`,
+      `flows:${flows.length}`,
+      `relationships:${params.relationships.length}`,
+      `relationship_evidence:${params.relationships.filter((relationship) => relationship.evidence_ids.length > 0).length}`,
+    ],
+    unknowns: [
+      ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
+      ...(flows.filter((flow) => flow.confidence !== 'verified').length > 0
+        ? [
+            `${flows.filter((flow) => flow.confidence !== 'verified').length} reconstructed flow(s) are not verified yet.`,
+          ]
+        : []),
+    ],
+  });
+
+  const changedFlows = flows.filter((flow) =>
+    flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
+  );
+  const changedComponents = components.filter((component) =>
+    component.source_files.some((file) => changedFileSet.has(file)),
+  );
+  const reviewTraces = [
+    ...changedFlows.map((flow) =>
+      reasoningTrace({
+        entityId: flow.id,
+        reasoningType: 'review',
+        suffix: 'changed-flow',
+        claim: `Review confidence includes ${flow.id} because changed files overlap reconstructed flow evidence.`,
+        evidenceIds: evidenceIdsForFlow(flow),
+        confidence: flow.confidence,
+        confidenceScore: asFlowConfidenceScore(flow),
+        rules: [
+          'changed_files_overlap_flow',
+          `tests:${flowStringArray(flow, 'tests').length}`,
+          `risks:${flowRisks(flow).length}`,
+        ],
+        unknowns: flow.confidence === 'verified' ? [] : [flowConfidenceReason(flow)],
+      }),
+    ),
+    ...changedComponents.map((component) =>
+      reasoningTrace({
+        entityId: component.id,
+        reasoningType: 'review',
+        suffix: 'changed-component',
+        claim: `Review confidence includes ${component.id} because changed files overlap component ownership evidence.`,
+        evidenceIds: evidenceIdsForComponent(component),
+        confidence: component.confidence,
+        confidenceScore: componentConfidenceScore(component),
+        rules: [
+          'changed_files_overlap_component',
+          `criticality:${stringData(component, 'criticality') ?? 'unknown'}`,
+          `blast_radius:${stringData(component, 'blast_radius') ?? 'unknown'}`,
+        ],
+        unknowns: stringArrayData(component, 'unknowns'),
+      }),
+    ),
+  ];
+
+  const traces = sorted(
+    [
+      ...componentTraces,
+      ...flowTraces,
+      ...architectureTraces,
+      projectArchitectureTrace,
+      ...reviewTraces,
+    ],
+    (trace) => trace.trace_id,
+  );
+  return {
+    generated_at: params.now,
+    deterministic: true,
+    provider_calls_required: false,
+    trace_count: traces.length,
+    trace_counts_by_type: countByValue(traces.map((trace) => trace.reasoning_type)),
+    traces,
+  };
+}
+
 function completeRatio(numerator: number, denominator: number): number {
   if (denominator === 0) return 1;
   return ratio(numerator, denominator);
@@ -4251,6 +4592,309 @@ function buildBenchmarkReadyArtifact(params: {
         'Coverage ratios track component, flow, evidence, and known-unknown surfaces for PI-Bench seed fixtures.',
       ],
     },
+  };
+}
+
+function boundedScore(score: number): number {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function scoreBand(score: number): string {
+  if (score >= 85) return 'strong';
+  if (score >= 70) return 'usable';
+  if (score >= 45) return 'weak';
+  return 'not ready';
+}
+
+function recordNumber(value: unknown, key: string): number {
+  if (!isRecord(value)) return 0;
+  const item = value[key];
+  return typeof item === 'number' ? item : 0;
+}
+
+function recordArray(value: unknown, key: string): readonly unknown[] {
+  if (!isRecord(value)) return [];
+  const item = value[key];
+  return Array.isArray(item) ? item : [];
+}
+
+function readinessScore(value: unknown): number {
+  if (!isRecord(value)) return 0;
+  const readiness = value.readiness;
+  if (!isRecord(readiness)) return 0;
+  return typeof readiness.score === 'number' ? readiness.score : 0;
+}
+
+function readFirstPointers(components: readonly BrainEntity[]): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return [...components]
+    .sort((a, b) => {
+      const aScore = numberData(a, 'criticality_score') ?? 0;
+      const bScore = numberData(b, 'criticality_score') ?? 0;
+      return bScore - aScore || a.name.localeCompare(b.name);
+    })
+    .flatMap((component) =>
+      stringArrayData(component, 'read_first').map((path) => ({
+        path: safeText(path),
+        component_id: safeText(component.id),
+        reason: `${stringData(component, 'criticality') ?? 'unknown'} criticality; ${
+          stringData(component, 'boundary_type') ?? 'unknown'
+        } boundary.`,
+        evidence_ids: component.evidence_ids.map(safeText),
+      })),
+    )
+    .filter((pointer) => {
+      const path = typeof pointer.path === 'string' ? pointer.path : '';
+      if (seen.has(path)) return false;
+      seen.add(path);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+function topUnknowns(params: {
+  readonly buckets: BrainBuckets;
+  readonly architectureReasoning: unknown;
+  readonly evidenceQuality: unknown;
+}): string[] {
+  const componentUnknowns = params.buckets.components.flatMap((component) =>
+    stringArrayData(component, 'unknowns').map(
+      (unknown) => `${component.id}: ${safeText(unknown)}`,
+    ),
+  );
+  const flowUnknowns = params.buckets.flows.flatMap((flow) =>
+    stringArrayData(flow, 'unknowns').map((unknown) => `${flow.id}: ${safeText(unknown)}`),
+  );
+  const architectureUnknowns = asStringArray(
+    isRecord(params.architectureReasoning) ? params.architectureReasoning.unknowns : undefined,
+  );
+  const evidenceGaps = recordArray(params.evidenceQuality, 'top_evidence_gaps')
+    .filter(isRecord)
+    .map((gap) => {
+      const id = typeof gap.id === 'string' ? gap.id : 'unknown claim';
+      const reason = typeof gap.reason === 'string' ? gap.reason : 'Evidence gap recorded.';
+      return `${safeText(id)}: ${safeText(reason)}`;
+    });
+  return unique([...componentUnknowns, ...flowUnknowns, ...architectureUnknowns, ...evidenceGaps])
+    .slice(0, 10)
+    .map(safeText);
+}
+
+function dimensionRecord(params: {
+  readonly score: number;
+  readonly summary: string;
+  readonly signals: readonly string[];
+  readonly weakSpots: readonly string[];
+}): Record<string, unknown> {
+  const score = boundedScore(params.score);
+  return {
+    score,
+    status: scoreBand(score),
+    summary: safeText(params.summary),
+    signals: params.signals.map(safeText),
+    weak_spots: params.weakSpots.map(safeText),
+  };
+}
+
+function buildUnderstandingScoreArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+  readonly componentIntelligence: unknown;
+  readonly evidenceQuality: unknown;
+  readonly architectureReasoning: unknown;
+  readonly benchmarkReady: unknown;
+}): Record<string, unknown> {
+  const components = params.buckets.components.filter(
+    (component) => component.latest_status !== 'stale',
+  );
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const flowsWithSteps = flows.filter((flow) => flowSteps(flow).length > 0);
+  const flowsWithEvidence = flows.filter((flow) => flow.evidence_ids.length > 0);
+  const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
+  const averageFlowConfidence =
+    flows.length === 0
+      ? 0
+      : flows.reduce((total, flow) => total + asFlowConfidenceScore(flow), 0) / flows.length;
+  const flowScore = boundedScore(
+    scorePercent(flowsWithSteps.length, flows.length) * 0.3 +
+      scorePercent(flowsWithEvidence.length, flows.length) * 0.25 +
+      scorePercent(flowsWithTests.length, flows.length) * 0.2 +
+      averageFlowConfidence * 100 * 0.25,
+  );
+  const knownBoundaryComponents = components.filter(
+    (component) => stringData(component, 'boundary_type') !== 'unknown',
+  );
+  const architectureUnknowns = asStringArray(
+    isRecord(params.architectureReasoning) ? params.architectureReasoning.unknowns : undefined,
+  );
+  const architectureScore = boundedScore(
+    scorePercent(knownBoundaryComponents.length, components.length) * 0.4 +
+      scorePercent(
+        components.filter((component) => componentCouplingRecord(component).reasons.length > 0)
+          .length,
+        components.length,
+      ) *
+        0.25 +
+      Math.max(0, 100 - architectureUnknowns.length * 12) * 0.35,
+  );
+  const incrementalScore = boundedScore(
+    Math.max(0, 100 - params.incrementalMetrics.stale_fact_count * 12) * 0.45 +
+      params.incrementalMetrics.scan_efficiency_score * 0.35 +
+      Math.round(params.incrementalMetrics.file_reuse_ratio * 100) * 0.2,
+  );
+  const unknownItems = topUnknowns({
+    buckets: params.buckets,
+    architectureReasoning: params.architectureReasoning,
+    evidenceQuality: params.evidenceQuality,
+  });
+  const unknownScore = boundedScore(Math.max(0, 100 - unknownItems.length * 8));
+  const componentScore = recordNumber(
+    params.componentIntelligence,
+    'component_understanding_score',
+  );
+  const evidenceScore = recordNumber(params.evidenceQuality, 'overall_score');
+  const reviewReadinessScore = readinessScore(params.benchmarkReady);
+  const dimensions = {
+    components: dimensionRecord({
+      score: componentScore,
+      summary: `${components.length} component(s), ${recordNumber(
+        params.componentIntelligence,
+        'flow_coverage_score',
+      )}/100 flow coverage.`,
+      signals: [
+        `${recordNumber(params.componentIntelligence, 'field_coverage_score')}/100 field coverage`,
+        `${recordNumber(
+          params.componentIntelligence,
+          'evidence_backed_field_score',
+        )}/100 evidence-backed fields`,
+      ],
+      weakSpots: asStringArray(
+        isRecord(params.componentIntelligence)
+          ? params.componentIntelligence.high_criticality_without_tests
+          : undefined,
+      ),
+    }),
+    flows: dimensionRecord({
+      score: flowScore,
+      summary: `${flows.length} reconstructed flow(s), ${flowsWithTests.length} with tests.`,
+      signals: [
+        `${flowsWithSteps.length} flow(s) with steps`,
+        `${flowsWithEvidence.length} flow(s) with evidence`,
+      ],
+      weakSpots: flows
+        .filter((flow) => flow.confidence !== 'verified')
+        .slice(0, 6)
+        .map((flow) => flow.id),
+    }),
+    architecture: dimensionRecord({
+      score: architectureScore,
+      summary: `${knownBoundaryComponents.length}/${components.length} component boundary type(s) known.`,
+      signals: [
+        `${recordArray(params.architectureReasoning, 'coupling_hotspots').length} coupling hotspot(s)`,
+        `${recordArray(params.architectureReasoning, 'critical_paths').length} critical path(s)`,
+      ],
+      weakSpots: architectureUnknowns,
+    }),
+    evidence: dimensionRecord({
+      score: evidenceScore,
+      summary: `${recordNumber(params.evidenceQuality, 'claims_with_evidence')} evidence-backed claim(s).`,
+      signals: [
+        `${recordNumber(params.evidenceQuality, 'evidence_coverage_score')}/100 evidence coverage`,
+        `${recordNumber(params.evidenceQuality, 'redaction_safety_score')}/100 redaction safety`,
+      ],
+      weakSpots: topUnknowns({
+        buckets: { ...params.buckets, components: [], flows: [] },
+        architectureReasoning: {},
+        evidenceQuality: params.evidenceQuality,
+      }).slice(0, 6),
+    }),
+    incremental_status: dimensionRecord({
+      score: incrementalScore,
+      summary: `${params.incrementalMetrics.changed_file_count} changed file(s), ${params.incrementalMetrics.changed_entity_count} changed entity/entities.`,
+      signals: [
+        `${params.incrementalMetrics.reused_understanding_count} reused understanding item(s)`,
+        `${params.incrementalMetrics.scan_efficiency_score}/100 scan efficiency`,
+      ],
+      weakSpots: params.incrementalMetrics.stale_fact_candidates.slice(0, 6),
+    }),
+    review_readiness: dimensionRecord({
+      score: reviewReadinessScore,
+      summary: `${readinessScore(params.benchmarkReady)}/100 deterministic review readiness.`,
+      signals: [
+        `${components.filter((component) => stringArrayData(component, 'tests').length > 0).length} component(s) with tests`,
+        `${flowsWithTests.length} flow(s) with tests`,
+      ],
+      weakSpots: asStringArray(
+        isRecord(params.benchmarkReady) && isRecord(params.benchmarkReady.readiness)
+          ? params.benchmarkReady.readiness.blocking_gaps
+          : undefined,
+      ),
+    }),
+    unknowns: dimensionRecord({
+      score: unknownScore,
+      summary: `${unknownItems.length} top unknown(s) need confirmation.`,
+      signals: [
+        `${components.filter((component) => stringArrayData(component, 'unknowns').length > 0).length} component(s) with unknowns`,
+        `${flows.filter((flow) => stringArrayData(flow, 'unknowns').length > 0).length} flow(s) with unknowns`,
+      ],
+      weakSpots: unknownItems,
+    }),
+  };
+  const dimensionScores = Object.values(dimensions).map((dimension) =>
+    recordNumber(dimension, 'score'),
+  );
+  const overallScore = boundedScore(
+    recordNumber(dimensions.components, 'score') * 0.2 +
+      recordNumber(dimensions.flows, 'score') * 0.16 +
+      recordNumber(dimensions.architecture, 'score') * 0.16 +
+      recordNumber(dimensions.evidence, 'score') * 0.18 +
+      recordNumber(dimensions.incremental_status, 'score') * 0.1 +
+      recordNumber(dimensions.review_readiness, 'score') * 0.12 +
+      recordNumber(dimensions.unknowns, 'score') * 0.08,
+  );
+
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    project_id: entityId('project', params.projectName),
+    project_name: safeText(params.projectName),
+    overall_score: overallScore,
+    score_band: scoreBand(overallScore),
+    dimension_count: dimensionScores.length,
+    dimensions,
+    top_unknowns: unknownItems,
+    read_first: readFirstPointers(components),
+    changed: {
+      changed_file_count: params.incrementalMetrics.changed_file_count,
+      changed_entity_count: params.incrementalMetrics.changed_entity_count,
+      affected_flows: params.incrementalMetrics.affected_flows.map(safeText),
+      stale_fact_count: params.incrementalMetrics.stale_fact_count,
+      scan_efficiency_score: params.incrementalMetrics.scan_efficiency_score,
+    },
+    review_readiness: {
+      score: reviewReadinessScore,
+      status: scoreBand(reviewReadinessScore),
+      required_attention: asStringArray(
+        isRecord(params.benchmarkReady) && isRecord(params.benchmarkReady.readiness)
+          ? params.benchmarkReady.readiness.blocking_gaps
+          : undefined,
+      ),
+    },
+    redaction_safety: {
+      redaction_safety_score: recordNumber(params.evidenceQuality, 'redaction_safety_score'),
+      unsafe_sensitive_reference_count: recordNumber(
+        params.evidenceQuality,
+        'unsafe_sensitive_reference_count',
+      ),
+    },
+    scoring_notes: [
+      'Understanding score is deterministic and derived only from local brain, research, and incremental artifacts.',
+      'Scores reflect static project intelligence coverage; they do not claim runtime execution certainty.',
+      'Secret safety is part of evidence scoring so sensitive fixture paths or tokens do not improve the score by leaking.',
+    ],
   };
 }
 
@@ -4451,6 +5095,62 @@ function buildResearchArtifacts(params: {
             flows.reduce((total, flow) => total + asFlowConfidenceScore(flow), 0) / flows.length
           ).toFixed(4),
         );
+  const componentIntelligence = buildComponentIntelligenceArtifact({
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+  });
+  const evidenceQuality = buildEvidenceQualityArtifact({
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+  });
+  const reasoningTraces = buildReasoningTracesArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+    changedFiles,
+  });
+  const architectureReasoning = buildArchitectureReasoningArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+    changedFiles,
+  });
+  const benchmarkReady = buildBenchmarkReadyArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+  });
+  const understandingScore = buildUnderstandingScoreArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+    incrementalMetrics: params.incrementalMetrics,
+    componentIntelligence,
+    evidenceQuality,
+    architectureReasoning,
+    benchmarkReady,
+  });
+  const referencedEvidenceIds = unique([
+    ...entities.flatMap((entity) => entity.evidence_ids),
+    ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+  ]);
+  const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
+  const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
+  const componentUnknownCount = params.buckets.components.reduce(
+    (count, component) => count + stringArrayData(component, 'unknowns').length,
+    0,
+  );
+  const flowUnknownCount = flows.reduce(
+    (count, flow) => count + stringArrayData(flow, 'unknowns').length,
+    0,
+  );
+  const reviewTraces = reasoningTraces.traces.filter((trace) => trace.reasoning_type === 'review');
 
   return {
     metrics: {
@@ -4545,6 +5245,79 @@ function buildResearchArtifacts(params: {
       relationship_confidence_counts: countByConfidence(
         params.relationships.map((relationship) => relationship.confidence),
       ),
+      surface_calibration: {
+        component: {
+          total: params.buckets.components.length,
+          confidence_counts: countByConfidence(
+            params.buckets.components.map((component) => component.confidence),
+          ),
+          average_score: averageConfidenceScore(
+            params.buckets.components.map(componentConfidenceScore),
+          ),
+          evidence_backed: params.buckets.components.filter(
+            (component) => component.evidence_ids.length > 0,
+          ).length,
+          unknowns: componentUnknownCount,
+        },
+        flow: {
+          total: flows.length,
+          confidence_counts: countByConfidence(flows.map((flow) => flow.confidence)),
+          average_score: averageFlowConfidence,
+          evidence_backed: flows.filter((flow) => evidenceIdsForFlow(flow).length > 0).length,
+          unknowns: flowUnknownCount,
+        },
+        architecture: {
+          total: reasoningTraces.traces.filter((trace) => trace.reasoning_type === 'architecture')
+            .length,
+          confidence_counts: countByConfidence(
+            reasoningTraces.traces
+              .filter((trace) => trace.reasoning_type === 'architecture')
+              .map((trace) => trace.confidence),
+          ),
+          average_score: averageConfidenceScore(
+            reasoningTraces.traces
+              .filter((trace) => trace.reasoning_type === 'architecture')
+              .map((trace) => trace.confidence_score),
+          ),
+          evidence_backed: reasoningTraces.traces.filter(
+            (trace) => trace.reasoning_type === 'architecture' && trace.evidence_ids.length > 0,
+          ).length,
+          unknowns: reasoningTraces.traces
+            .filter((trace) => trace.reasoning_type === 'architecture')
+            .reduce((count, trace) => count + trace.unknowns.length, 0),
+        },
+        evidence: {
+          total: params.buckets.evidence.length,
+          confidence_counts: countByConfidence(
+            params.buckets.evidence.map((entity) => entity.confidence),
+          ),
+          average_score: averageConfidenceScore(
+            params.buckets.evidence.map((entity) => confidenceScoreForValue(entity.confidence)),
+          ),
+          evidence_backed: referencedEvidenceIds.length,
+          unknowns: missingEvidenceReferences.length,
+        },
+        review: {
+          total: reviewTraces.length,
+          confidence_counts: countByConfidence(reviewTraces.map((trace) => trace.confidence)),
+          average_score: averageConfidenceScore(
+            reviewTraces.map((trace) => trace.confidence_score),
+          ),
+          evidence_backed: reviewTraces.filter((trace) => trace.evidence_ids.length > 0).length,
+          unknowns: reviewTraces.reduce((count, trace) => count + trace.unknowns.length, 0),
+        },
+        unknowns: {
+          total: componentUnknownCount + flowUnknownCount + missingEvidenceReferences.length,
+          evidence_backed: reasoningTraces.traces.filter(
+            (trace) => trace.unknowns.length > 0 && trace.evidence_ids.length > 0,
+          ).length,
+          confidence_counts: countByConfidence(
+            reasoningTraces.traces
+              .filter((trace) => trace.unknowns.length > 0)
+              .map((trace) => trace.confidence),
+          ),
+        },
+      },
       component_confidence: params.buckets.components.map((component) => ({
         id: component.id,
         name: component.name,
@@ -4571,16 +5344,9 @@ function buildResearchArtifacts(params: {
           evidence_ids: risk.evidence_ids,
         })),
     },
-    componentIntelligence: buildComponentIntelligenceArtifact({
-      now: params.now,
-      buckets: params.buckets,
-      relationships: params.relationships,
-    }),
-    evidenceQuality: buildEvidenceQualityArtifact({
-      now: params.now,
-      buckets: params.buckets,
-      relationships: params.relationships,
-    }),
+    componentIntelligence,
+    evidenceQuality,
+    reasoningTraces,
     incrementalUpdate: params.incrementalMetrics,
     flowUnderstanding: {
       generated_at: params.now,
@@ -4680,19 +5446,9 @@ function buildResearchArtifacts(params: {
         })),
       })),
     },
-    architectureReasoning: buildArchitectureReasoningArtifact({
-      projectName: params.projectName,
-      now: params.now,
-      buckets: params.buckets,
-      relationships: params.relationships,
-      changedFiles,
-    }),
-    benchmarkReady: buildBenchmarkReadyArtifact({
-      projectName: params.projectName,
-      now: params.now,
-      buckets: params.buckets,
-      relationships: params.relationships,
-    }),
+    architectureReasoning,
+    benchmarkReady,
+    understandingScore,
   };
 }
 
@@ -4824,6 +5580,28 @@ function buildLatest(params: {
     buckets: params.buckets,
     relationships: params.relationships,
   });
+  const componentIntelligence = buildComponentIntelligenceArtifact({
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+  });
+  const benchmarkReady = buildBenchmarkReadyArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+  });
+  const understandingScore = buildUnderstandingScoreArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+    incrementalMetrics: params.incrementalMetrics,
+    componentIntelligence,
+    evidenceQuality,
+    architectureReasoning,
+    benchmarkReady,
+  });
   const confidenceGaps = params.buckets.risks
     .filter((risk) => risk.confidence !== 'verified')
     .map((risk) => risk.description);
@@ -4839,6 +5617,7 @@ function buildLatest(params: {
     latest_flow_map: flowMap,
     latest_architecture_reasoning: architectureReasoning,
     latest_evidence_quality: evidenceQuality,
+    latest_understanding_score: understandingScore,
     latest_incremental_update: {
       previous_brain_fingerprint: params.incrementalMetrics.previous_brain_fingerprint,
       current_brain_fingerprint: params.incrementalMetrics.current_brain_fingerprint,
@@ -5537,6 +6316,104 @@ function renderIncrementalUnderstanding(value: unknown): string {
   </div>`;
 }
 
+function renderDimensionCards(score: unknown): string {
+  if (!isRecord(score) || !isRecord(score.dimensions)) {
+    return '<p class="muted">No understanding score is available yet.</p>';
+  }
+  const dimensions = score.dimensions;
+  const labels: ReadonlyArray<readonly [string, string]> = [
+    ['components', 'Components'],
+    ['flows', 'Flows'],
+    ['architecture', 'Architecture'],
+    ['evidence', 'Evidence'],
+    ['incremental_status', 'Incremental Status'],
+    ['review_readiness', 'Review Readiness'],
+    ['unknowns', 'Unknowns'],
+  ];
+  return labels
+    .map(([key, label]) => {
+      const dimension = dimensions[key];
+      if (!isRecord(dimension)) {
+        return `<article class="card compact"><h3>${htmlEscape(label)}</h3><p class="muted">No score.</p></article>`;
+      }
+      const value = recordNumber(dimension, 'score');
+      const status = typeof dimension.status === 'string' ? dimension.status : scoreBand(value);
+      const summary = typeof dimension.summary === 'string' ? dimension.summary : '';
+      const weakSpots = asStringArray(dimension.weak_spots).slice(0, 3);
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${label} ${status} ${summary} ${weakSpots.join(' ')}`,
+      )}" data-kind="${htmlEscape(key === 'unknowns' ? 'unknown' : 'score')}">
+        <div class="badge">${value}/100 · ${htmlEscape(status)}</div>
+        <h3>${htmlEscape(label)}</h3>
+        <p>${htmlEscape(summary)}</p>
+        <h4>Weak</h4>
+        ${renderList(weakSpots)}
+      </article>`;
+    })
+    .join('');
+}
+
+function renderReadFirstPointers(score: unknown): string {
+  const pointers = recordArray(score, 'read_first').filter(isRecord).slice(0, 6);
+  if (pointers.length === 0) return '<p class="muted">No read-first pointers recorded yet.</p>';
+  return pointers
+    .map((pointer) => {
+      const path = typeof pointer.path === 'string' ? pointer.path : 'unknown path';
+      const componentId =
+        typeof pointer.component_id === 'string' ? pointer.component_id : 'unknown component';
+      const reason = typeof pointer.reason === 'string' ? pointer.reason : 'Read first.';
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${path} ${componentId} ${reason}`,
+      )}">
+        <h3>${htmlEscape(path)}</h3>
+        <p>${htmlEscape(reason)}</p>
+        <p class="muted">${htmlEscape(componentId)}</p>
+      </article>`;
+    })
+    .join('');
+}
+
+function renderUnderstandingDashboard(score: unknown): string {
+  if (!isRecord(score)) {
+    return '<section><h2>Project Intelligence</h2><p class="muted">No understanding score is available yet.</p></section>';
+  }
+  const overallScore = recordNumber(score, 'overall_score');
+  const band = typeof score.score_band === 'string' ? score.score_band : scoreBand(overallScore);
+  const unknowns = asStringArray(score.top_unknowns).slice(0, 6);
+  const changed = isRecord(score.changed) ? score.changed : {};
+  const changedLabels = [
+    `${String(changed.changed_file_count ?? 0)} changed file(s)`,
+    `${String(changed.changed_entity_count ?? 0)} changed entity/entities`,
+    `${String(changed.stale_fact_count ?? 0)} stale fact candidate(s)`,
+    `${String(changed.scan_efficiency_score ?? 0)}/100 scan efficiency`,
+  ];
+  return `<section class="intelligence-summary">
+    <h2>Project Intelligence</h2>
+    <div class="scoreline">
+      <article class="card scorecard" data-search="${htmlEscape(
+        `understanding score ${overallScore} ${band}`,
+      )}">
+        <p class="muted">Understanding Score</p>
+        <p class="score">${overallScore}</p>
+        <p>${htmlEscape(band)}</p>
+      </article>
+      <article class="card" data-kind="unknown" data-search="${htmlEscape(
+        `top unknowns ${unknowns.join(' ')}`,
+      )}">
+        <h3>Top Unknowns</h3>
+        ${renderList(unknowns)}
+      </article>
+      <article class="card" data-search="${htmlEscape(`changed ${changedLabels.join(' ')}`)}">
+        <h3>What Changed</h3>
+        ${renderList(changedLabels)}
+      </article>
+    </div>
+    <div class="grid">${renderDimensionCards(score)}</div>
+    <h3>Read First</h3>
+    <div class="grid">${renderReadFirstPointers(score)}</div>
+  </section>`;
+}
+
 function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
   if (evidence.length === 0) return '<p class="muted">No evidence records detected yet.</p>';
   return evidence
@@ -5600,6 +6477,10 @@ function renderReport(params: {
     typeof incrementalUpdate.scan_efficiency_score === 'number'
       ? incrementalUpdate.scan_efficiency_score
       : 0;
+  const understandingScore = isRecord(params.latest.latest_understanding_score)
+    ? params.latest.latest_understanding_score
+    : {};
+  const overallUnderstanding = recordNumber(understandingScore, 'overall_score');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -5611,10 +6492,13 @@ function renderReport(params: {
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
-    h1 { font-size: clamp(32px, 6vw, 68px); margin: 0 0 8px; letter-spacing: 0; }
+    h1 { font-size: clamp(28px, 4vw, 44px); margin: 0 0 8px; letter-spacing: 0; }
     h2 { margin-top: 34px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+    .scoreline { display: grid; grid-template-columns: minmax(180px, 0.8fr) repeat(2, minmax(240px, 1fr)); gap: 14px; margin-bottom: 14px; }
     .card, details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .scorecard { display: flex; flex-direction: column; justify-content: space-between; min-height: 150px; }
+    .score { font-size: 64px; line-height: 0.95; margin: 8px 0; font-weight: 800; }
     .compact { padding: 12px; }
     .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .badge.warn { color: var(--warn); }
@@ -5634,7 +6518,8 @@ function renderReport(params: {
     th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
     summary { cursor: pointer; font-weight: 700; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-    @media (max-width: 520px) { main { padding: 20px 12px 48px; } table { display: block; overflow-x: auto; } }
+    @media (max-width: 760px) { .scoreline { grid-template-columns: 1fr; } }
+    @media (max-width: 520px) { main { padding: 20px 12px 48px; } table { display: block; overflow-x: auto; } .score { font-size: 48px; } }
     @media print { .toolbar, script { display: none; } body { background: #fff; color: #000; } .card, details { break-inside: avoid; border-color: #999; } a { color: #000; } }
   </style>
 </head>
@@ -5653,10 +6538,12 @@ function renderReport(params: {
         <span class="badge warn">${unknownCount} unknowns</span>
         <span class="badge">${params.buckets.evidence.length} evidence records</span>
         <span class="badge">${params.relationships.length} relationships</span>
+        <span class="badge">${overallUnderstanding}/100 understanding</span>
         <span class="badge">${changedUnderstanding} changed understanding</span>
         <span class="badge">${scanEfficiency}/100 scan efficiency</span>
       </div>
     </header>
+    ${renderUnderstandingDashboard(understandingScore)}
     <section class="toolbar" aria-label="Portal filters">
       <label class="sr-only" for="global-filter">Search project intelligence</label>
       <input id="global-filter" placeholder="Search components, files, risks, commands, evidence..." autocomplete="off">
@@ -6320,6 +7207,7 @@ export async function generateProjectBrain(
         metrics: '.rizz/research/metrics.json',
         coverage: '.rizz/research/coverage.json',
         confidence: '.rizz/research/confidence.json',
+        reasoning_traces: '.rizz/research/reasoning_traces.json',
         component_intelligence: '.rizz/research/component_intelligence.json',
         evidence_quality: '.rizz/research/evidence_quality.json',
         incremental_update: '.rizz/research/incremental_update.json',
@@ -6328,6 +7216,7 @@ export async function generateProjectBrain(
         flow_confidence: '.rizz/research/flow_confidence.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
+        understanding_score: '.rizz/research/understanding_score.json',
       },
     };
     const researchArtifacts = buildResearchArtifacts({
