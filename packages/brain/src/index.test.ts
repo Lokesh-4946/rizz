@@ -1482,6 +1482,296 @@ describe('project brain generation', () => {
     });
   });
 
+  it('understands Next.js app router route, render, and metadata flows', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src', 'app', 'docs', '[slug]'), { recursive: true });
+      await mkdir(join(dir, 'src', 'app', 'api', 'health'), { recursive: true });
+      await mkdir(join(dir, 'src', 'components'), { recursive: true });
+      await mkdir(join(dir, 'src', 'content'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'next-app',
+          scripts: { dev: 'next dev', test: 'vitest run' },
+          dependencies: { next: '^15.0.0', react: '^19.0.0' },
+          devDependencies: { vitest: '^2.0.0', typescript: '^5.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'next.config.ts'), 'export default { typedRoutes: true };\n');
+      await writeFile(join(dir, 'tsconfig.json'), '{}\n');
+      await writeFile(
+        join(dir, 'src', 'components', 'Hero.tsx'),
+        [
+          'export function Hero(): JSX.Element {',
+          '  return <section>Home</section>;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'components', 'DocPage.tsx'),
+        [
+          'export function DocPage(props: { title: string }): JSX.Element {',
+          '  return <article>{props.title}</article>;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'content', 'docs.ts'),
+        [
+          'export const docs = new Map<string, { title: string }>([',
+          '  ["intro", { title: "Intro" }],',
+          ']);',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'page.tsx'),
+        [
+          'import { Hero } from "../components/Hero.js";',
+          'export default function Page(): JSX.Element {',
+          '  return <Hero />;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'layout.tsx'),
+        [
+          'export default function RootLayout(props: { children: React.ReactNode }): JSX.Element {',
+          '  return <html lang="en"><body>{props.children}</body></html>;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'docs', '[slug]', 'page.tsx'),
+        [
+          'import { DocPage } from "../../../components/DocPage.js";',
+          'import { docs } from "../../../content/docs.js";',
+          'export default function Page(props: { params: { slug: string } }): JSX.Element {',
+          '  const doc = docs.get(props.params.slug);',
+          '  if (!doc) throw new Error("not found");',
+          '  return <DocPage title={doc.title} />;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'api', 'health', 'route.ts'),
+        [
+          'export function GET(): Response {',
+          '  return Response.json({ ok: true });',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'opengraph-image.tsx'),
+        [
+          'import { ImageResponse } from "next/og";',
+          'export const size = { width: 1200, height: 630 };',
+          'export default function Image(): ImageResponse {',
+          '  return new ImageResponse(<div>Docs</div>, size);',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'docs', '[slug]', 'page.test.tsx'),
+        'import { it } from "vitest";\nit("renders the docs slug page", () => {});\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'api', 'health', 'route.test.ts'),
+        'import { it } from "vitest";\nit("returns health", () => {});\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:40:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            framework?: string;
+            route_path?: string;
+            route_type?: string;
+            kind?: string;
+            components?: string[];
+            files?: string[];
+            configs?: string[];
+            tests?: string[];
+            entry_contract?: string[];
+            exit_contract?: string[];
+            inputs?: string[];
+            outputs?: string[];
+            failure_modes?: string[];
+            confidence_reasons?: string[];
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const nextFlows = flows.entities.filter(
+        (flow) => flow.data?.framework === 'nextjs-app-router',
+      );
+      expect(nextFlows).toHaveLength(5);
+
+      const homePage = nextFlows.find(
+        (flow) => flow.data?.route_path === '/' && flow.data?.route_type === 'page',
+      );
+      const docsPage = nextFlows.find(
+        (flow) => flow.data?.route_path === '/docs/[slug]' && flow.data?.route_type === 'page',
+      );
+      const layout = nextFlows.find(
+        (flow) => flow.data?.route_path === '/' && flow.data?.route_type === 'layout',
+      );
+      const apiRoute = nextFlows.find(
+        (flow) => flow.data?.route_path === '/api/health' && flow.data?.route_type === 'api',
+      );
+      const metadataRoute = nextFlows.find(
+        (flow) =>
+          flow.data?.route_path === '/opengraph-image' && flow.data?.route_type === 'metadata',
+      );
+
+      expect(homePage?.data).toMatchObject({
+        kind: 'ui',
+        components: expect.arrayContaining(['component:src']),
+        files: expect.arrayContaining(['src/app/page.tsx', 'src/components/Hero.tsx']),
+        configs: expect.arrayContaining(['next.config.ts', 'package.json', 'tsconfig.json']),
+        entry_contract: expect.arrayContaining([
+          'Next.js app route / from src/app/page.tsx renders a page component.',
+        ]),
+        outputs: expect.arrayContaining(['Rendered React route output.']),
+      });
+      expect(docsPage?.data).toMatchObject({
+        kind: 'ui',
+        components: expect.arrayContaining(['component:src']),
+        files: expect.arrayContaining([
+          'src/app/docs/[slug]/page.tsx',
+          'src/components/DocPage.tsx',
+          'src/content/docs.ts',
+        ]),
+        tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+        inputs: expect.arrayContaining([
+          'Next.js route params, search params, children, or render context input.',
+          'Source evidence reads request, CLI, parameter, query, body, or environment input.',
+        ]),
+        failure_modes: expect.arrayContaining([
+          'Render can fail when imported components, dynamic route params, or content modules drift.',
+          'Source evidence contains explicit error handling paths.',
+        ]),
+        confidence_reasons: expect.arrayContaining([
+          'Next.js app-router file maps to route path /docs/[slug].',
+          'Next.js route type is page.',
+          'Linked test artifact is recorded.',
+        ]),
+      });
+      expect(layout?.data).toMatchObject({
+        route_type: 'layout',
+        exit_contract: expect.arrayContaining([
+          'Exits by returning a React layout shell for nested route content.',
+        ]),
+      });
+      expect(apiRoute?.data).toMatchObject({
+        kind: 'api',
+        tests: expect.arrayContaining(['src/app/api/health/route.test.ts']),
+        entry_contract: expect.arrayContaining([
+          'Next.js app route /api/health from src/app/api/health/route.ts handles HTTP requests with a route handler.',
+        ]),
+        exit_contract: expect.arrayContaining([
+          'Returns an HTTP/API response from the route flow.',
+        ]),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+      });
+      expect(metadataRoute?.data).toMatchObject({
+        kind: 'ui',
+        route_type: 'metadata',
+        entry_contract: expect.arrayContaining([
+          'Next.js metadata route /opengraph-image from src/app/opengraph-image.tsx serves a generated metadata asset.',
+        ]),
+        outputs: expect.arrayContaining(['Generated metadata asset output.']),
+      });
+
+      const flowUnderstanding = await readJson<{
+        flows_by_kind: Record<string, number>;
+        contracts: Array<{
+          id: string;
+          framework?: string;
+          route_path?: string;
+          route_type?: string;
+          outputs: string[];
+          confidence_reasons: string[];
+        }>;
+      }>(join(result.value.researchDir, 'flow_understanding.json'));
+      expect(flowUnderstanding.flows_by_kind.ui).toBeGreaterThanOrEqual(4);
+      expect(flowUnderstanding.contracts).toContainEqual(
+        expect.objectContaining({
+          id: docsPage?.id,
+          framework: 'nextjs-app-router',
+          route_path: '/docs/[slug]',
+          route_type: 'page',
+          outputs: expect.arrayContaining(['Rendered React route output.']),
+          confidence_reasons: expect.arrayContaining([
+            'Next.js app-router file maps to route path /docs/[slug].',
+          ]),
+        }),
+      );
+
+      const evidenceQuality = await readJson<{
+        flow_field_evidence: Array<{ id: string; fields: Record<string, number> }>;
+        unsafe_sensitive_reference_count: number;
+      }>(join(result.value.researchDir, 'evidence_quality.json'));
+      expect(evidenceQuality.unsafe_sensitive_reference_count).toBe(0);
+      expect(evidenceQuality.flow_field_evidence).toContainEqual(
+        expect.objectContaining({
+          id: docsPage?.id,
+          fields: expect.objectContaining({
+            entry_contract: expect.any(Number),
+            exit_contract: expect.any(Number),
+            inputs: expect.any(Number),
+            outputs: expect.any(Number),
+            confidence_reasons: expect.any(Number),
+          }),
+        }),
+      );
+
+      expect(docsPage).toBeDefined();
+      if (docsPage === undefined) return;
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: docsPage.id,
+        now: new Date('2026-06-28T12:41:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.flow).toMatchObject({
+        framework: 'nextjs-app-router',
+        route_path: '/docs/[slug]',
+        route_type: 'page',
+        components: expect.arrayContaining(['component:src']),
+        files: expect.arrayContaining([
+          'src/app/docs/[slug]/page.tsx',
+          'src/components/DocPage.tsx',
+          'src/content/docs.ts',
+        ]),
+        tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+        outputs: expect.arrayContaining(['Rendered React route output.']),
+        confidence_reasons: expect.arrayContaining([
+          'Next.js app-router file maps to route path /docs/[slug].',
+        ]),
+      });
+      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(explainReport).toContain('Next.js app-router file maps to route path /docs/[slug].');
+      expect(explainReport).toContain('Rendered React route output.');
+      expect(explainReport).not.toContain(dir);
+    });
+  });
+
   it('does not count absence-only component heuristics as evidence-backed fields', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'lib'), { recursive: true });
