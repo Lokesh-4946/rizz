@@ -268,6 +268,7 @@ describe('project brain generation', () => {
         'metrics.json',
         'coverage.json',
         'confidence.json',
+        'reasoning_traces.json',
         'evidence_quality.json',
         'architecture_reasoning.json',
         'component_intelligence.json',
@@ -331,6 +332,14 @@ describe('project brain generation', () => {
       const confidence = await readJson<{
         entity_confidence_counts: { verified: number; inferred: number; uncertain: number };
         relationship_confidence_counts: { verified: number; inferred: number; uncertain: number };
+        surface_calibration: {
+          component: { total: number; average_score: number; evidence_backed: number };
+          flow: { total: number; average_score: number; evidence_backed: number };
+          architecture: { total: number; average_score: number; evidence_backed: number };
+          evidence: { total: number; evidence_backed: number; unknowns: number };
+          review: { total: number; average_score: number; evidence_backed: number };
+          unknowns: { total: number; evidence_backed: number };
+        };
         component_confidence: Array<{ id: string; confidence: string; evidence_ids: string[] }>;
         flow_confidence: Array<{ id: string; confidence: string; evidence_ids: string[] }>;
       }>(join(researchDir, 'confidence.json'));
@@ -351,6 +360,68 @@ describe('project brain generation', () => {
         expect.objectContaining({
           id: 'flow:packages--brain--test',
           confidence: 'inferred',
+        }),
+      );
+      expect(confidence.surface_calibration).toMatchObject({
+        component: { total: 1, evidence_backed: 1 },
+        flow: { total: 2, evidence_backed: 2 },
+        evidence: { total: 3, unknowns: 0 },
+      });
+      expect(confidence.surface_calibration.component.average_score).toBeGreaterThan(0);
+      expect(confidence.surface_calibration.flow.average_score).toBeGreaterThan(0);
+      expect(confidence.surface_calibration.architecture.total).toBeGreaterThan(0);
+      expect(confidence.surface_calibration.review.total).toBeGreaterThan(0);
+
+      const reasoningTraces = await readJson<{
+        deterministic: boolean;
+        provider_calls_required: boolean;
+        trace_count: number;
+        trace_counts_by_type: Record<string, number>;
+        traces: Array<{
+          trace_id: string;
+          entity_id: string;
+          reasoning_type: string;
+          claim: string;
+          evidence_ids: string[];
+          confidence: string;
+          confidence_score: number;
+          rules: string[];
+          unknowns: string[];
+          redacted_evidence_count: number;
+        }>;
+      }>(join(researchDir, 'reasoning_traces.json'));
+      expect(reasoningTraces).toMatchObject({
+        deterministic: true,
+        provider_calls_required: false,
+      });
+      expect(reasoningTraces.trace_count).toBe(reasoningTraces.traces.length);
+      expect(reasoningTraces.trace_counts_by_type.component).toBeGreaterThan(0);
+      expect(reasoningTraces.trace_counts_by_type.flow).toBeGreaterThan(0);
+      expect(reasoningTraces.trace_counts_by_type.architecture).toBeGreaterThan(0);
+      expect(reasoningTraces.trace_counts_by_type.review).toBeGreaterThan(0);
+      expect(reasoningTraces.traces).toContainEqual(
+        expect.objectContaining({
+          entity_id: 'component:packages--brain',
+          reasoning_type: 'component',
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--brain--package.json']),
+          rules: expect.arrayContaining(['boundary_type:service']),
+          redacted_evidence_count: 0,
+        }),
+      );
+      expect(reasoningTraces.traces).toContainEqual(
+        expect.objectContaining({
+          entity_id: 'flow:packages--brain--test',
+          reasoning_type: 'flow',
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--brain--src--index.ts']),
+          confidence_score: expect.any(Number),
+        }),
+      );
+      expect(reasoningTraces.traces).toContainEqual(
+        expect.objectContaining({
+          entity_id: 'component:packages--brain',
+          reasoning_type: 'architecture',
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--brain--package.json']),
+          claim: expect.stringContaining('Architecture reasoning'),
         }),
       );
 
@@ -856,6 +927,7 @@ describe('project brain generation', () => {
         flow_index_path: string;
         research_paths: {
           metrics: string;
+          reasoning_traces: string;
           component_intelligence: string;
           incremental_update: string;
           flow_understanding: string;
@@ -866,6 +938,7 @@ describe('project brain generation', () => {
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
       expect(index.research_paths).toMatchObject({
         metrics: '.rizz/research/metrics.json',
+        reasoning_traces: '.rizz/research/reasoning_traces.json',
         component_intelligence: '.rizz/research/component_intelligence.json',
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
@@ -2055,6 +2128,26 @@ describe('project brain generation', () => {
       expect(JSON.stringify(understandingScore)).not.toContain('secret-token-flow.test.ts');
       expect(JSON.stringify(understandingScore)).not.toContain('OPENAI_API_KEY');
       expect(JSON.stringify(understandingScore)).toContain('redacted:sensitive-file:');
+
+      const reasoningTraces = await readJson<{
+        traces: Array<{
+          entity_id: string;
+          evidence_ids: string[];
+          redacted_evidence_count: number;
+        }>;
+      }>(join(dir, '.rizz', 'research', 'reasoning_traces.json'));
+      const reasoningTraceText = JSON.stringify(reasoningTraces);
+      expect(reasoningTraceText).not.toContain('client_secret_handler.ts');
+      expect(reasoningTraceText).not.toContain('secret-token-flow.test.ts');
+      expect(reasoningTraceText).toContain('redacted:sensitive-file:');
+      expect(reasoningTraces.traces.some((trace) => trace.redacted_evidence_count > 0)).toBe(true);
+      expect(reasoningTraces.traces).toContainEqual(
+        expect.objectContaining({
+          evidence_ids: expect.arrayContaining([
+            expect.stringMatching(/^evidence:redacted:sensitive-file:/),
+          ]),
+        }),
+      );
 
       expect(JSON.stringify(review.value.review)).not.toContain('client_secret_handler.ts');
       expect(review.value.review.changed_files).toContainEqual(

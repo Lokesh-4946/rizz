@@ -15,6 +15,8 @@ import {
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
+type ReasoningType = 'component' | 'flow' | 'architecture' | 'review';
+
 type ComponentBoundaryType =
   | 'entrypoint'
   | 'orchestration'
@@ -90,6 +92,19 @@ interface BrainRelationship {
   readonly to: string;
   readonly evidence_ids: readonly string[];
   readonly confidence: Confidence;
+}
+
+interface ReasoningTrace {
+  readonly trace_id: string;
+  readonly entity_id: string;
+  readonly reasoning_type: ReasoningType;
+  readonly claim: string;
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly redacted_evidence_count: number;
 }
 
 interface FileFact {
@@ -598,6 +613,7 @@ const RESEARCH_ARTIFACT_FILES = {
   metrics: 'metrics.json',
   coverage: 'coverage.json',
   confidence: 'confidence.json',
+  reasoningTraces: 'reasoning_traces.json',
   componentIntelligence: 'component_intelligence.json',
   evidenceQuality: 'evidence_quality.json',
   incrementalUpdate: 'incremental_update.json',
@@ -4070,6 +4086,330 @@ function buildArchitectureReasoningArtifact(params: {
   };
 }
 
+function confidenceScoreForValue(confidence: Confidence): number {
+  if (confidence === 'verified') return 1;
+  if (confidence === 'inferred') return 0.65;
+  return 0.35;
+}
+
+function averageConfidenceScore(scores: readonly number[]): number {
+  if (scores.length === 0) return 0;
+  return Number((scores.reduce((total, score) => total + score, 0) / scores.length).toFixed(4));
+}
+
+function componentConfidenceScore(component: BrainEntity): number {
+  const ownership = component.data?.ownership_confidence;
+  const ownershipScore =
+    isRecord(ownership) && typeof ownership.score === 'number' ? ownership.score : undefined;
+  if (ownershipScore === undefined) return confidenceScoreForValue(component.confidence);
+  return Number(
+    (
+      (confidenceScoreForValue(component.confidence) + Math.max(0, Math.min(1, ownershipScore))) /
+      2
+    ).toFixed(4),
+  );
+}
+
+function fieldEvidenceIds(entity: BrainEntity): string[] {
+  return unique(Object.values(recordStringArrayData(entity, 'field_evidence')).flat());
+}
+
+function traceRedactedEvidenceCount(params: {
+  readonly claim: string;
+  readonly evidenceIds: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}): number {
+  return redactedReferenceCount(
+    safeResearchValue({
+      claim: params.claim,
+      evidence_ids: params.evidenceIds,
+      rules: params.rules,
+      unknowns: params.unknowns,
+    }),
+  );
+}
+
+function reasoningTrace(params: {
+  readonly entityId: string;
+  readonly reasoningType: ReasoningType;
+  readonly suffix?: string;
+  readonly claim: string;
+  readonly evidenceIds: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidenceScore: number;
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}): ReasoningTrace {
+  const safeEntityId = safeText(params.entityId);
+  const safeClaim = safeText(params.claim);
+  const evidenceIds = unique(params.evidenceIds.map(safeText)).slice(0, 12);
+  const rules = unique(params.rules.map(safeText)).slice(0, 8);
+  const unknowns = unique(params.unknowns.map(safeText)).slice(0, 8);
+  const suffix = params.suffix === undefined ? '' : `:${stableSlug(safeText(params.suffix))}`;
+  return {
+    trace_id: `trace:${params.reasoningType}:${stableSlug(safeEntityId)}${suffix}`,
+    entity_id: safeEntityId,
+    reasoning_type: params.reasoningType,
+    claim: safeClaim,
+    evidence_ids: evidenceIds,
+    confidence: params.confidence,
+    confidence_score: Number(params.confidenceScore.toFixed(4)),
+    rules,
+    unknowns,
+    redacted_evidence_count: traceRedactedEvidenceCount({
+      claim: safeClaim,
+      evidenceIds,
+      rules,
+      unknowns,
+    }),
+  };
+}
+
+function evidenceIdsForComponent(component: BrainEntity): string[] {
+  return unique([...component.evidence_ids, ...fieldEvidenceIds(component)]);
+}
+
+function evidenceIdsForFlow(flow: BrainEntity): string[] {
+  return unique([
+    ...flow.evidence_ids,
+    ...fieldEvidenceIds(flow),
+    ...flowEntrypoints(flow).flatMap((entrypoint) => entrypoint.evidence),
+    ...flowSteps(flow).flatMap((step) => step.evidence),
+    ...flowRisks(flow).flatMap((risk) => risk.evidence),
+  ]);
+}
+
+function buildReasoningTracesArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly changedFiles: readonly string[];
+}): {
+  readonly generated_at: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly trace_count: number;
+  readonly trace_counts_by_type: Record<string, number>;
+  readonly traces: readonly ReasoningTrace[];
+} {
+  const projectId = entityId('project', params.projectName);
+  const changedFileSet = new Set(params.changedFiles);
+  const components = params.buckets.components.filter(
+    (component) => component.latest_status !== 'stale',
+  );
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const flowsByComponent = new Map<string, BrainEntity[]>();
+  for (const flow of flows) {
+    for (const componentId of flowStringArray(flow, 'components')) {
+      const existing = flowsByComponent.get(componentId) ?? [];
+      flowsByComponent.set(componentId, [...existing, flow]);
+    }
+  }
+
+  const componentTraces = components.map((component) => {
+    const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
+    const componentFlows = flowsByComponent.get(component.id) ?? [];
+    const tests = stringArrayData(component, 'tests');
+    const evidenceIds = evidenceIdsForComponent(component);
+    return reasoningTrace({
+      entityId: component.id,
+      reasoningType: 'component',
+      claim: `Component ${component.id} is classified as ${boundaryType} from local structure, declared interfaces, evidence-backed fields, and flow links.`,
+      evidenceIds,
+      confidence: component.confidence,
+      confidenceScore: componentConfidenceScore(component),
+      rules: [
+        `boundary_type:${boundaryType}`,
+        `field_evidence:${fieldEvidenceIds(component).length}`,
+        `flow_links:${componentFlows.length}`,
+        `test_links:${tests.length}`,
+      ],
+      unknowns: [
+        ...stringArrayData(component, 'unknowns'),
+        ...(evidenceIds.length === 0 ? ['No direct component evidence IDs were found.'] : []),
+        ...(componentFlows.length === 0
+          ? ['No reconstructed flow currently reaches this component.']
+          : []),
+      ],
+    });
+  });
+
+  const flowTraces = flows.map((flow) => {
+    const kind = flowKind(flow);
+    const steps = flowSteps(flow);
+    const tests = flowStringArray(flow, 'tests');
+    const evidenceIds = evidenceIdsForFlow(flow);
+    return reasoningTrace({
+      entityId: flow.id,
+      reasoningType: 'flow',
+      claim: `Flow ${flow.id} is reconstructed as ${kind} from entrypoint, step, component, test, and config evidence.`,
+      evidenceIds,
+      confidence: flow.confidence,
+      confidenceScore: asFlowConfidenceScore(flow),
+      rules: [
+        `kind:${kind}`,
+        `entrypoints:${flowEntrypoints(flow).length}`,
+        `steps:${steps.length}`,
+        `components:${flowStringArray(flow, 'components').length}`,
+        `test_links:${tests.length}`,
+      ],
+      unknowns: [
+        ...stringArrayData(flow, 'unknowns'),
+        ...(flow.confidence === 'verified' ? [] : [flowConfidenceReason(flow)]),
+        ...(evidenceIds.length === 0 ? ['No direct flow evidence IDs were found.'] : []),
+      ],
+    });
+  });
+
+  const architectureTraces = components
+    .filter((component) => {
+      const coupling = componentCouplingRecord(component);
+      return (
+        (flowsByComponent.get(component.id) ?? []).length > 0 ||
+        coupling.score > 0 ||
+        stringData(component, 'blast_radius') === 'broad' ||
+        stringData(component, 'criticality') === 'high'
+      );
+    })
+    .map((component) => {
+      const componentFlows = flowsByComponent.get(component.id) ?? [];
+      const coupling = componentCouplingRecord(component);
+      const architectureConfidence = weakestConfidence([
+        component.confidence,
+        ...componentFlows.map((flow) => flow.confidence),
+      ]);
+      const evidenceIds = unique([
+        ...evidenceIdsForComponent(component),
+        ...componentFlows.flatMap(evidenceIdsForFlow),
+        ...params.relationships
+          .filter(
+            (relationship) =>
+              relationship.from === component.id || relationship.to === component.id,
+          )
+          .flatMap((relationship) => relationship.evidence_ids),
+      ]);
+      return reasoningTrace({
+        entityId: component.id,
+        reasoningType: 'architecture',
+        suffix: 'component-boundary',
+        claim: `Architecture reasoning for ${component.id} combines boundary type, coupling, blast radius, flow coverage, and relationship evidence.`,
+        evidenceIds,
+        confidence: architectureConfidence,
+        confidenceScore: averageConfidenceScore([
+          componentConfidenceScore(component),
+          ...componentFlows.map(asFlowConfidenceScore),
+        ]),
+        rules: [
+          `coupling:${coupling.level}`,
+          `static_imports:${coupling.static_import_count}`,
+          `blast_radius:${stringData(component, 'blast_radius') ?? 'unknown'}`,
+          `flow_links:${componentFlows.length}`,
+        ],
+        unknowns: [
+          ...stringArrayData(component, 'unknowns'),
+          ...(componentFlows.filter((flow) => flow.confidence !== 'verified').length > 0
+            ? ['One or more linked flows are reconstructed rather than runtime verified.']
+            : []),
+        ],
+      });
+    });
+
+  const projectArchitectureTrace = reasoningTrace({
+    entityId: projectId,
+    reasoningType: 'architecture',
+    suffix: 'project-summary',
+    claim: `Project architecture confidence is calibrated from ${components.length} component(s), ${flows.length} flow(s), and ${params.relationships.length} relationship claim(s).`,
+    evidenceIds: unique([
+      ...components.flatMap(evidenceIdsForComponent),
+      ...flows.flatMap(evidenceIdsForFlow),
+      ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+    ]),
+    confidence: weakestConfidence([...components, ...flows].map((entity) => entity.confidence)),
+    confidenceScore: averageConfidenceScore([
+      ...components.map(componentConfidenceScore),
+      ...flows.map(asFlowConfidenceScore),
+    ]),
+    rules: [
+      `components:${components.length}`,
+      `flows:${flows.length}`,
+      `relationships:${params.relationships.length}`,
+      `relationship_evidence:${params.relationships.filter((relationship) => relationship.evidence_ids.length > 0).length}`,
+    ],
+    unknowns: [
+      ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
+      ...(flows.filter((flow) => flow.confidence !== 'verified').length > 0
+        ? [
+            `${flows.filter((flow) => flow.confidence !== 'verified').length} reconstructed flow(s) are not verified yet.`,
+          ]
+        : []),
+    ],
+  });
+
+  const changedFlows = flows.filter((flow) =>
+    flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
+  );
+  const changedComponents = components.filter((component) =>
+    component.source_files.some((file) => changedFileSet.has(file)),
+  );
+  const reviewTraces = [
+    ...changedFlows.map((flow) =>
+      reasoningTrace({
+        entityId: flow.id,
+        reasoningType: 'review',
+        suffix: 'changed-flow',
+        claim: `Review confidence includes ${flow.id} because changed files overlap reconstructed flow evidence.`,
+        evidenceIds: evidenceIdsForFlow(flow),
+        confidence: flow.confidence,
+        confidenceScore: asFlowConfidenceScore(flow),
+        rules: [
+          'changed_files_overlap_flow',
+          `tests:${flowStringArray(flow, 'tests').length}`,
+          `risks:${flowRisks(flow).length}`,
+        ],
+        unknowns: flow.confidence === 'verified' ? [] : [flowConfidenceReason(flow)],
+      }),
+    ),
+    ...changedComponents.map((component) =>
+      reasoningTrace({
+        entityId: component.id,
+        reasoningType: 'review',
+        suffix: 'changed-component',
+        claim: `Review confidence includes ${component.id} because changed files overlap component ownership evidence.`,
+        evidenceIds: evidenceIdsForComponent(component),
+        confidence: component.confidence,
+        confidenceScore: componentConfidenceScore(component),
+        rules: [
+          'changed_files_overlap_component',
+          `criticality:${stringData(component, 'criticality') ?? 'unknown'}`,
+          `blast_radius:${stringData(component, 'blast_radius') ?? 'unknown'}`,
+        ],
+        unknowns: stringArrayData(component, 'unknowns'),
+      }),
+    ),
+  ];
+
+  const traces = sorted(
+    [
+      ...componentTraces,
+      ...flowTraces,
+      ...architectureTraces,
+      projectArchitectureTrace,
+      ...reviewTraces,
+    ],
+    (trace) => trace.trace_id,
+  );
+  return {
+    generated_at: params.now,
+    deterministic: true,
+    provider_calls_required: false,
+    trace_count: traces.length,
+    trace_counts_by_type: countByValue(traces.map((trace) => trace.reasoning_type)),
+    traces,
+  };
+}
+
 function completeRatio(numerator: number, denominator: number): number {
   if (denominator === 0) return 1;
   return ratio(numerator, denominator);
@@ -4765,6 +5105,13 @@ function buildResearchArtifacts(params: {
     buckets: params.buckets,
     relationships: params.relationships,
   });
+  const reasoningTraces = buildReasoningTracesArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    relationships: params.relationships,
+    changedFiles,
+  });
   const architectureReasoning = buildArchitectureReasoningArtifact({
     projectName: params.projectName,
     now: params.now,
@@ -4789,6 +5136,21 @@ function buildResearchArtifacts(params: {
     architectureReasoning,
     benchmarkReady,
   });
+  const referencedEvidenceIds = unique([
+    ...entities.flatMap((entity) => entity.evidence_ids),
+    ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+  ]);
+  const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
+  const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
+  const componentUnknownCount = params.buckets.components.reduce(
+    (count, component) => count + stringArrayData(component, 'unknowns').length,
+    0,
+  );
+  const flowUnknownCount = flows.reduce(
+    (count, flow) => count + stringArrayData(flow, 'unknowns').length,
+    0,
+  );
+  const reviewTraces = reasoningTraces.traces.filter((trace) => trace.reasoning_type === 'review');
 
   return {
     metrics: {
@@ -4883,6 +5245,79 @@ function buildResearchArtifacts(params: {
       relationship_confidence_counts: countByConfidence(
         params.relationships.map((relationship) => relationship.confidence),
       ),
+      surface_calibration: {
+        component: {
+          total: params.buckets.components.length,
+          confidence_counts: countByConfidence(
+            params.buckets.components.map((component) => component.confidence),
+          ),
+          average_score: averageConfidenceScore(
+            params.buckets.components.map(componentConfidenceScore),
+          ),
+          evidence_backed: params.buckets.components.filter(
+            (component) => component.evidence_ids.length > 0,
+          ).length,
+          unknowns: componentUnknownCount,
+        },
+        flow: {
+          total: flows.length,
+          confidence_counts: countByConfidence(flows.map((flow) => flow.confidence)),
+          average_score: averageFlowConfidence,
+          evidence_backed: flows.filter((flow) => evidenceIdsForFlow(flow).length > 0).length,
+          unknowns: flowUnknownCount,
+        },
+        architecture: {
+          total: reasoningTraces.traces.filter((trace) => trace.reasoning_type === 'architecture')
+            .length,
+          confidence_counts: countByConfidence(
+            reasoningTraces.traces
+              .filter((trace) => trace.reasoning_type === 'architecture')
+              .map((trace) => trace.confidence),
+          ),
+          average_score: averageConfidenceScore(
+            reasoningTraces.traces
+              .filter((trace) => trace.reasoning_type === 'architecture')
+              .map((trace) => trace.confidence_score),
+          ),
+          evidence_backed: reasoningTraces.traces.filter(
+            (trace) => trace.reasoning_type === 'architecture' && trace.evidence_ids.length > 0,
+          ).length,
+          unknowns: reasoningTraces.traces
+            .filter((trace) => trace.reasoning_type === 'architecture')
+            .reduce((count, trace) => count + trace.unknowns.length, 0),
+        },
+        evidence: {
+          total: params.buckets.evidence.length,
+          confidence_counts: countByConfidence(
+            params.buckets.evidence.map((entity) => entity.confidence),
+          ),
+          average_score: averageConfidenceScore(
+            params.buckets.evidence.map((entity) => confidenceScoreForValue(entity.confidence)),
+          ),
+          evidence_backed: referencedEvidenceIds.length,
+          unknowns: missingEvidenceReferences.length,
+        },
+        review: {
+          total: reviewTraces.length,
+          confidence_counts: countByConfidence(reviewTraces.map((trace) => trace.confidence)),
+          average_score: averageConfidenceScore(
+            reviewTraces.map((trace) => trace.confidence_score),
+          ),
+          evidence_backed: reviewTraces.filter((trace) => trace.evidence_ids.length > 0).length,
+          unknowns: reviewTraces.reduce((count, trace) => count + trace.unknowns.length, 0),
+        },
+        unknowns: {
+          total: componentUnknownCount + flowUnknownCount + missingEvidenceReferences.length,
+          evidence_backed: reasoningTraces.traces.filter(
+            (trace) => trace.unknowns.length > 0 && trace.evidence_ids.length > 0,
+          ).length,
+          confidence_counts: countByConfidence(
+            reasoningTraces.traces
+              .filter((trace) => trace.unknowns.length > 0)
+              .map((trace) => trace.confidence),
+          ),
+        },
+      },
       component_confidence: params.buckets.components.map((component) => ({
         id: component.id,
         name: component.name,
@@ -4911,6 +5346,7 @@ function buildResearchArtifacts(params: {
     },
     componentIntelligence,
     evidenceQuality,
+    reasoningTraces,
     incrementalUpdate: params.incrementalMetrics,
     flowUnderstanding: {
       generated_at: params.now,
@@ -6771,6 +7207,7 @@ export async function generateProjectBrain(
         metrics: '.rizz/research/metrics.json',
         coverage: '.rizz/research/coverage.json',
         confidence: '.rizz/research/confidence.json',
+        reasoning_traces: '.rizz/research/reasoning_traces.json',
         component_intelligence: '.rizz/research/component_intelligence.json',
         evidence_quality: '.rizz/research/evidence_quality.json',
         incremental_update: '.rizz/research/incremental_update.json',
