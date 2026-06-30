@@ -229,6 +229,8 @@ type FlowKind = 'api' | 'cli' | 'job' | 'ui' | 'config' | 'test' | 'unknown';
 
 type FlowEntrypointType = 'route' | 'command' | 'function' | 'script' | 'file' | 'config';
 
+type NextAppRouteType = 'api' | 'layout' | 'metadata' | 'page';
+
 type FlowStepType =
   | 'route'
   | 'handler'
@@ -296,10 +298,20 @@ interface FlowContractSummary {
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
 }
 
+interface RouteContractContext {
+  readonly framework: 'nextjs-app-router';
+  readonly route_path: string;
+  readonly route_type: NextAppRouteType;
+  readonly entry_file: string;
+}
+
 interface FlowIntelligence {
   readonly flow_id: string;
   readonly name: string;
   readonly kind: FlowKind;
+  readonly framework?: string;
+  readonly route_path?: string;
+  readonly route_type?: NextAppRouteType;
   readonly entrypoints: readonly FlowEntrypoint[];
   readonly steps: readonly FlowStep[];
   readonly components: readonly string[];
@@ -581,6 +593,9 @@ interface ExplainSummaryData {
   };
   readonly flow?: {
     readonly kind: FlowKind;
+    readonly framework?: string;
+    readonly route_path?: string;
+    readonly route_type?: string;
     readonly entrypoints: readonly FlowEntrypoint[];
     readonly steps: readonly FlowStep[];
     readonly components: readonly string[];
@@ -768,6 +783,9 @@ const CONFIG_FILES = new Set([
   'pnpm-lock.yaml',
   'pyproject.toml',
   'requirements.txt',
+  'next.config.js',
+  'next.config.mjs',
+  'next.config.ts',
   'tsconfig.json',
   'vite.config.ts',
 ]);
@@ -2343,6 +2361,7 @@ function inferFlowContracts(params: {
   readonly risks: readonly FlowRisk[];
   readonly signals: readonly string[];
   readonly confidenceReason: string;
+  readonly routeContract?: RouteContractContext;
 }): FlowContractSummary {
   const entryEvidence = unique(params.entrypoints.flatMap((entrypoint) => entrypoint.evidence));
   const stepEvidence = unique(params.steps.flatMap((step) => step.evidence));
@@ -2377,11 +2396,35 @@ function inferFlowContracts(params: {
   });
   const hasRouteEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'route');
   const hasCommandEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'command');
+  const isNextPageRoute = params.routeContract?.route_type === 'page';
+  const isNextLayoutRoute = params.routeContract?.route_type === 'layout';
+  const isNextMetadataRoute = params.routeContract?.route_type === 'metadata';
+  const isNextApiRoute = params.routeContract?.route_type === 'api';
   const commandInput =
     params.command === undefined ? [] : [`Command invocation: ${safeText(params.command)}.`];
+  const nextRouteLabel =
+    params.routeContract === undefined
+      ? undefined
+      : `${params.routeContract.route_path} from ${params.routeContract.entry_file}`;
 
   const entryContract = unique([
     ...params.entrypoints.map(formatFlowEntrypoint),
+    ...(isNextPageRoute && nextRouteLabel !== undefined
+      ? [`Next.js app route ${safeText(nextRouteLabel)} renders a page component.`]
+      : []),
+    ...(isNextLayoutRoute && nextRouteLabel !== undefined
+      ? [
+          `Next.js app route ${safeText(nextRouteLabel)} wraps nested route rendering with a layout.`,
+        ]
+      : []),
+    ...(isNextApiRoute && nextRouteLabel !== undefined
+      ? [
+          `Next.js app route ${safeText(nextRouteLabel)} handles HTTP requests with a route handler.`,
+        ]
+      : []),
+    ...(isNextMetadataRoute && nextRouteLabel !== undefined
+      ? [`Next.js metadata route ${safeText(nextRouteLabel)} serves a generated metadata asset.`]
+      : []),
     ...(validationEvidence.length > 0
       ? ['Entrypoint performs validation before continuing to downstream steps.']
       : []),
@@ -2390,7 +2433,16 @@ function inferFlowContracts(params: {
       : []),
   ]);
   const exitContract = unique([
-    ...(hasRouteEntry ? ['Returns an HTTP/API response from the route flow.'] : []),
+    ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
+      ? ['Returns an HTTP/API response from the route flow.']
+      : []),
+    ...(isNextPageRoute ? ['Exits by returning a React component tree for the route.'] : []),
+    ...(isNextLayoutRoute
+      ? ['Exits by returning a React layout shell for nested route content.']
+      : []),
+    ...(isNextMetadataRoute
+      ? ['Exits by returning metadata asset content or a metadata response.']
+      : []),
     ...(hasCommandEntry ? ['Exits through the package script command result.'] : []),
     ...(outputEvidence.length > 0 ? ['Source evidence includes a return or response output.'] : []),
     ...(params.tests.length > 0
@@ -2399,18 +2451,33 @@ function inferFlowContracts(params: {
   ]);
   const inputs = unique([
     ...commandInput,
-    ...(hasRouteEntry ? ['HTTP request route input.'] : []),
+    ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
+      ? ['HTTP request route input.']
+      : []),
+    ...(isNextPageRoute || isNextLayoutRoute
+      ? ['Next.js route params, search params, children, or render context input.']
+      : []),
+    ...(isNextMetadataRoute ? ['Next.js metadata route request or generation context input.'] : []),
     ...(inputEvidence.length > 0
       ? ['Source evidence reads request, CLI, parameter, query, body, or environment input.']
       : []),
     ...(validationEvidence.length > 0 ? ['Validated input contract inferred from source.'] : []),
   ]);
   const outputs = unique([
-    ...(hasRouteEntry ? ['HTTP/API response.'] : []),
+    ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
+      ? ['HTTP/API response.']
+      : []),
+    ...(isNextPageRoute || isNextLayoutRoute ? ['Rendered React route output.'] : []),
+    ...(isNextMetadataRoute ? ['Generated metadata asset output.'] : []),
     ...(hasCommandEntry ? ['Command completion status and command output.'] : []),
     ...(outputEvidence.length > 0 ? ['Return value, JSON/send response, or stdout output.'] : []),
   ]);
   const sideEffects = unique([
+    ...(params.routeContract !== undefined
+      ? [
+          'No stateful side effects were inferred beyond framework rendering or route response work.',
+        ]
+      : []),
     ...(sideEffectEvidence.length > 0
       ? ['State/session/cache/database or filesystem side effect inferred from source.']
       : []),
@@ -2429,6 +2496,14 @@ function inferFlowContracts(params: {
     ...(failureEvidence.length > 0
       ? ['Source evidence contains explicit error handling paths.']
       : []),
+    ...(isNextPageRoute || isNextLayoutRoute
+      ? [
+          'Render can fail when imported components, dynamic route params, or content modules drift.',
+        ]
+      : []),
+    ...(isNextMetadataRoute
+      ? ['Metadata generation can fail if asset generation dependencies drift.']
+      : []),
     ...(validationEvidence.length > 0 ? ['Validation can reject malformed or missing input.'] : []),
     ...(params.tests.length === 0 ? ['No directly linked tests were detected for this flow.'] : []),
     ...(params.configs.length === 0
@@ -2443,6 +2518,12 @@ function inferFlowContracts(params: {
   ]);
   const confidenceReasons = unique([
     params.confidenceReason,
+    ...(params.routeContract !== undefined
+      ? [
+          `Next.js app-router file maps to route path ${safeText(params.routeContract.route_path)}.`,
+          `Next.js route type is ${safeText(params.routeContract.route_type)}.`,
+        ]
+      : []),
     ...params.signals.map((signal) => `Signal: ${signal}.`),
     ...(entryEvidence.length > 0 ? ['Entrypoint evidence is recorded.'] : []),
     ...(stepEvidence.length > 0 ? ['Step evidence is recorded.'] : []),
@@ -2467,11 +2548,15 @@ function inferFlowContracts(params: {
       inputs: unique([...inputEvidence, ...validationEvidence, ...entryEvidence]),
       outputs: unique([...outputEvidence, ...baseEvidence]),
       side_effects: sideEffectEvidence,
+      ...(params.routeContract !== undefined && sideEffectEvidence.length === 0
+        ? { side_effects: baseEvidence }
+        : {}),
       state_transitions: unique([...sideEffectEvidence, ...validationEvidence]),
       failure_modes: unique([
         ...params.risks.flatMap((risk) => risk.evidence),
         ...failureEvidence,
         ...validationEvidence,
+        ...(params.routeContract !== undefined ? baseEvidence : []),
       ]),
       required_tests: unique([
         ...params.tests.map(evidenceId),
@@ -2482,6 +2567,7 @@ function inferFlowContracts(params: {
         ...entryEvidence,
         ...stepEvidence,
         ...params.tests.map(evidenceId),
+        ...(params.routeContract !== undefined ? baseEvidence : []),
       ]),
     },
   };
@@ -2907,6 +2993,405 @@ function isRouteLikeFile(file: FileFact): boolean {
   );
 }
 
+const NEXT_APP_ROUTE_FILE_NAMES = new Set([
+  'page.ts',
+  'page.tsx',
+  'page.js',
+  'page.jsx',
+  'layout.ts',
+  'layout.tsx',
+  'layout.js',
+  'layout.jsx',
+  'route.ts',
+  'route.js',
+]);
+
+const NEXT_METADATA_ROUTE_NAMES = new Set([
+  'apple-icon',
+  'favicon',
+  'icon',
+  'manifest',
+  'opengraph-image',
+  'robots',
+  'sitemap',
+  'twitter-image',
+]);
+
+function routeSegmentForMetadataFile(fileName: string): string {
+  const extension = extname(fileName);
+  const stem = extension === '' ? fileName : fileName.slice(0, -extension.length);
+  return stem.replace(/\.(ts|tsx|js|jsx)$/i, '');
+}
+
+function routePathFromNextSegments(segments: readonly string[]): string {
+  const urlSegments = segments.filter(
+    (segment) =>
+      segment !== '' &&
+      !segment.startsWith('(') &&
+      !segment.endsWith(')') &&
+      !segment.startsWith('@') &&
+      !segment.startsWith('_'),
+  );
+  return urlSegments.length === 0 ? '/' : `/${urlSegments.join('/')}`;
+}
+
+function nextAppIndex(parts: readonly string[]): number {
+  return parts.findIndex(
+    (part, index) => part === 'app' && (index === 0 || parts[index - 1] === 'src'),
+  );
+}
+
+function nextAppRouteInfo(file: FileFact):
+  | {
+      readonly routePath: string;
+      readonly routeType: NextAppRouteType;
+    }
+  | undefined {
+  const parts = file.relativePath.split('/');
+  const appIndex = nextAppIndex(parts);
+  if (appIndex < 0) return undefined;
+  const fileName = parts[parts.length - 1]?.toLowerCase();
+  if (fileName === undefined) return undefined;
+  const routeSegments = parts.slice(appIndex + 1, -1);
+  const metadataSegment = routeSegmentForMetadataFile(fileName);
+  if (!NEXT_APP_ROUTE_FILE_NAMES.has(fileName) && !NEXT_METADATA_ROUTE_NAMES.has(metadataSegment)) {
+    return undefined;
+  }
+  if (fileName.startsWith('page.')) {
+    return { routePath: routePathFromNextSegments(routeSegments), routeType: 'page' };
+  }
+  if (fileName.startsWith('layout.')) {
+    return { routePath: routePathFromNextSegments(routeSegments), routeType: 'layout' };
+  }
+  if (fileName.startsWith('route.')) {
+    return { routePath: routePathFromNextSegments(routeSegments), routeType: 'api' };
+  }
+  if (NEXT_METADATA_ROUTE_NAMES.has(metadataSegment)) {
+    return {
+      routePath: routePathFromNextSegments([...routeSegments, metadataSegment]),
+      routeType: 'metadata',
+    };
+  }
+  return undefined;
+}
+
+function isNextAppRouteFile(file: FileFact): boolean {
+  return nextAppRouteInfo(file) !== undefined;
+}
+
+function nextRouteTypeLabel(routeType: NextAppRouteType): string {
+  switch (routeType) {
+    case 'api':
+      return 'API route';
+    case 'layout':
+      return 'layout render';
+    case 'metadata':
+      return 'metadata asset route';
+    case 'page':
+      return 'page render';
+  }
+}
+
+function nextRouteFlowKind(routeType: NextAppRouteType): FlowKind {
+  if (routeType === 'api') return 'api';
+  return 'ui';
+}
+
+function nextRouteStepType(routeType: NextAppRouteType): FlowStepType {
+  if (routeType === 'api') return 'route';
+  if (routeType === 'metadata') return 'route';
+  return 'handler';
+}
+
+function nextRouteSymbol(routeType: NextAppRouteType): string {
+  if (routeType === 'api') return 'route handler';
+  return routeType;
+}
+
+function nextRouteConfigs(files: readonly FileFact[]): string[] {
+  return files
+    .filter((file) => {
+      const name = basename(file.relativePath).toLowerCase();
+      return (
+        name === 'next.config.js' ||
+        name === 'next.config.mjs' ||
+        name === 'next.config.ts' ||
+        name === 'package.json' ||
+        name === 'tsconfig.json'
+      );
+    })
+    .map((file) => file.relativePath);
+}
+
+function nextRouteTestPaths(params: {
+  readonly routeFile: FileFact;
+  readonly routePath: string;
+  readonly componentIds: readonly string[];
+  readonly tests: readonly BrainEntity[];
+}): string[] {
+  const routeDir = dirname(params.routeFile.relativePath).split(sep).join('/');
+  const fileStem = basename(params.routeFile.relativePath).replace(/\.(ts|tsx|js|jsx)$/i, '');
+  const routePathNeedle = params.routePath.replace(/^\//, '').toLowerCase();
+  const componentPathNeedles = params.componentIds.map(componentPathFromId);
+  return unique(
+    params.tests
+      .filter((test) =>
+        test.source_files.some((file) => {
+          const lower = file.toLowerCase();
+          return (
+            file.startsWith(`${routeDir}/`) ||
+            lower.includes(fileStem.toLowerCase()) ||
+            (routePathNeedle !== '' && lower.includes(routePathNeedle)) ||
+            componentPathNeedles.some((componentPath) => file.startsWith(`${componentPath}/`))
+          );
+        }),
+      )
+      .flatMap((test) => test.source_files),
+  );
+}
+
+function nextRouteDescription(
+  routeType: NextAppRouteType,
+  routePath: string,
+  filePath: string,
+): string {
+  switch (routeType) {
+    case 'api':
+      return `Next.js app-router API route ${safeText(routePath)} enters ${safeText(filePath)}.`;
+    case 'layout':
+      return `Next.js app-router layout ${safeText(routePath)} renders through ${safeText(filePath)}.`;
+    case 'metadata':
+      return `Next.js app-router metadata asset ${safeText(routePath)} is generated by ${safeText(filePath)}.`;
+    case 'page':
+      return `Next.js app-router page ${safeText(routePath)} renders through ${safeText(filePath)}.`;
+  }
+}
+
+function inferNextAppRouteFlow(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly file: FileFact;
+  readonly routePath: string;
+  readonly routeType: NextAppRouteType;
+  readonly components: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly changedFiles: ReadonlySet<string>;
+}): FlowIntelligence {
+  const importContext = importContextForFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    entryFiles: [params.file],
+  });
+  const allScannedFiles = [params.file, ...importContext.importedFiles];
+  const componentIds = componentIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.components,
+  );
+  const relatedComponents = params.components.filter((component) =>
+    componentIds.includes(component.id),
+  );
+  const relatedTests = nextRouteTestPaths({
+    routeFile: params.file,
+    routePath: params.routePath,
+    componentIds,
+    tests: params.tests,
+  });
+  const configs = unique([
+    ...nextRouteConfigs(params.files),
+    ...relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
+  ]);
+  const dependencies = unique(
+    importContext.importedSpecifiers
+      .filter((specifier) => !specifier.startsWith('.'))
+      .map((dependency) => entityId('dependency', dependency)),
+  );
+  const flowId = entityId(
+    'flow',
+    `nextjs/${params.routeType}/${params.routePath}/${params.file.relativePath}`,
+  );
+  const evId = evidenceId(params.file.relativePath);
+  const risks: FlowRisk[] = [];
+  if (relatedTests.length === 0) {
+    risks.push({
+      risk_id: `${flowId}:missing-test`,
+      kind: 'missing_test',
+      description: `No directly linked test artifact was detected for this Next.js ${nextRouteTypeLabel(
+        params.routeType,
+      )}.`,
+      evidence: [evId],
+    });
+  }
+  if (configs.length === 0) {
+    risks.push({
+      risk_id: `${flowId}:missing-config`,
+      kind: 'missing_config',
+      description: 'No Next.js package or config artifact was detected for this route flow.',
+      evidence: [evId],
+    });
+  }
+  if (params.changedFiles.has(params.file.relativePath)) {
+    risks.push({
+      risk_id: `${flowId}:changed-hotspot`,
+      kind: 'changed_hotspot',
+      description: 'The Next.js route file changed in the latest scan.',
+      evidence: [evId],
+    });
+  }
+  const steps: FlowStep[] = [
+    {
+      step_id: flowStepId(flowId, 1),
+      order: 1,
+      type: nextRouteStepType(params.routeType),
+      path: safeText(params.file.relativePath),
+      symbol: nextRouteSymbol(params.routeType),
+      description: nextRouteDescription(
+        params.routeType,
+        params.routePath,
+        params.file.relativePath,
+      ),
+      evidence: [evId],
+    },
+    ...importContext.importedFiles.slice(0, 8).map((file, index) => ({
+      step_id: flowStepId(flowId, index + 2),
+      order: index + 2,
+      type: 'service' as const,
+      path: safeText(file.relativePath),
+      symbol: null,
+      description: `Next.js route statically imports ${safeText(file.relativePath)}.`,
+      evidence: [evidenceId(file.relativePath)],
+    })),
+  ];
+  let order = steps.length + 1;
+  for (const config of configs.slice(0, 4)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'config',
+      path: safeText(config),
+      symbol: null,
+      description: `Next.js route behavior can be configured by ${safeText(config)}.`,
+      evidence: [evidenceId(config)],
+    });
+    order += 1;
+  }
+  for (const test of relatedTests.slice(0, 4)) {
+    steps.push({
+      step_id: flowStepId(flowId, order),
+      order,
+      type: 'test',
+      path: safeText(test),
+      symbol: null,
+      description: 'Related test artifact for this Next.js route flow.',
+      evidence: [evidenceId(test)],
+    });
+    order += 1;
+  }
+  const signals = unique([
+    'nextjs app router',
+    'route file',
+    `nextjs ${params.routeType} route`,
+    ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
+    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(relatedTests.length > 0 ? ['test artifact'] : []),
+    ...(configs.length > 0 ? ['configuration'] : []),
+  ]);
+  const unknowns = unique([
+    ...(componentIds.length === 0
+      ? ['No owning component was detected for this Next.js route file.']
+      : []),
+    ...(readTextIfAvailable(params.rootDir, params.file.relativePath)?.includes('import(')
+      ? ['Dynamic import is static evidence only; runtime reachability is not traced.']
+      : []),
+  ]);
+  const kind = nextRouteFlowKind(params.routeType);
+  const baseConfidence = flowConfidenceFor({ tests: relatedTests, signals, unknowns });
+  const entrypoints: FlowEntrypoint[] = [
+    {
+      type: 'route',
+      path: safeText(params.file.relativePath),
+      symbol: safeText(params.routePath),
+      component_id: componentIds[0] ?? null,
+      evidence: [evId],
+    },
+  ];
+  const files = unique([
+    params.file.relativePath,
+    ...importContext.importedFiles.map((file) => file.relativePath),
+  ]);
+  const routeContract: RouteContractContext = {
+    framework: 'nextjs-app-router',
+    route_path: params.routePath,
+    route_type: params.routeType,
+    entry_file: params.file.relativePath,
+  };
+  const contracts = inferFlowContracts({
+    rootDir: params.rootDir,
+    kind,
+    entrypoints,
+    steps,
+    files,
+    configs,
+    tests: relatedTests,
+    risks,
+    signals,
+    confidenceReason: baseConfidence.reason,
+    routeContract,
+  });
+  return {
+    flow_id: flowId,
+    name: `Next.js ${safeText(params.routePath)} ${nextRouteTypeLabel(params.routeType)}`,
+    kind,
+    framework: 'nextjs-app-router',
+    route_path: safeText(params.routePath),
+    route_type: params.routeType,
+    entrypoints,
+    steps,
+    components: componentIds,
+    files,
+    dependencies,
+    configs,
+    tests: relatedTests,
+    risks,
+    entry_contract: contracts.entry_contract,
+    exit_contract: contracts.exit_contract,
+    inputs: contracts.inputs,
+    outputs: contracts.outputs,
+    side_effects: contracts.side_effects,
+    state_transitions: contracts.state_transitions,
+    failure_modes: contracts.failure_modes,
+    required_tests: contracts.required_tests,
+    confidence_reasons: contracts.confidence_reasons,
+    confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
+    evidence: [
+      flowEvidenceForNeedle({
+        rootDir: params.rootDir,
+        path: params.file.relativePath,
+        needle: /export|default|GET|POST|ImageResponse|metadata/i,
+        reason: 'Next.js app-router file pattern is the flow entrypoint evidence.',
+      }),
+      ...importContext.importEvidence,
+    ],
+    field_evidence: {
+      entrypoints: [evId],
+      steps: unique(steps.flatMap((step) => step.evidence)),
+      components: componentIds.flatMap(
+        (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
+      ),
+      files: unique([
+        evId,
+        ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
+      ]),
+      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      configs: configs.map(evidenceId),
+      tests: relatedTests.map(evidenceId),
+      risks: risks.flatMap((risk) => risk.evidence),
+      ...contracts.field_evidence,
+    },
+    unknowns,
+    signals,
+  };
+}
+
 function inferRouteFlow(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -3130,7 +3615,27 @@ function reconstructFlows(params: {
       );
     }
   }
-  for (const file of params.files.filter(isRouteLikeFile)) {
+  const nextAppRouteFiles = params.files.filter(isNextAppRouteFile);
+  const nextAppRouteFilePaths = new Set(nextAppRouteFiles.map((file) => file.relativePath));
+  for (const file of nextAppRouteFiles) {
+    const routeInfo = nextAppRouteInfo(file);
+    if (routeInfo === undefined) continue;
+    flowIntelligence.push(
+      inferNextAppRouteFlow({
+        rootDir: params.rootDir,
+        files: params.files,
+        file,
+        routePath: routeInfo.routePath,
+        routeType: routeInfo.routeType,
+        components: params.buckets.components,
+        tests: params.buckets.tests,
+        changedFiles: changedFileSet,
+      }),
+    );
+  }
+  for (const file of params.files.filter(
+    (item) => isRouteLikeFile(item) && !nextAppRouteFilePaths.has(item.relativePath),
+  )) {
     flowIntelligence.push(
       inferRouteFlow({
         rootDir: params.rootDir,
@@ -3435,28 +3940,18 @@ function sourceFileFromSignal(signal: string, knownFiles: ReadonlySet<string>): 
 }
 
 function configFiles(files: readonly FileFact[]): FileFact[] {
-  return files.filter(
-    (file) =>
-      CONFIG_FILES.has(basename(file.relativePath)) || file.relativePath.startsWith('.github/'),
-  );
+  return files.filter((file) => isConfigPath(file.relativePath));
 }
 
 function testFiles(files: readonly FileFact[]): FileFact[] {
-  return files.filter(
-    (file) =>
-      file.relativePath.includes('__tests__') ||
-      file.relativePath.endsWith('.test.ts') ||
-      file.relativePath.endsWith('.test.js') ||
-      file.relativePath.endsWith('.spec.ts') ||
-      file.relativePath.endsWith('.spec.js'),
-  );
+  return files.filter((file) => isTestPath(file.relativePath));
 }
 
 function classifySourceKind(file: FileFact): string {
   if (file.relativePath.endsWith('package.json')) return 'package-manifest';
-  if (CONFIG_FILES.has(basename(file.relativePath))) return 'config';
-  if (file.relativePath.includes('.test.') || file.relativePath.includes('.spec.')) return 'test';
-  if (file.extension === '.ts' || file.extension === '.js') return 'source';
+  if (isConfigPath(file.relativePath)) return 'config';
+  if (isTestPath(file.relativePath)) return 'test';
+  if (isSourceFile(file.relativePath)) return 'source';
   if (file.extension === '.md') return 'documentation';
   return file.extension === '' ? 'file' : file.extension.slice(1);
 }
@@ -6054,6 +6549,9 @@ function buildResearchArtifacts(params: {
         id: flow.id,
         name: flow.name,
         kind: stringData(flow, 'kind') ?? 'unknown',
+        framework: stringData(flow, 'framework'),
+        route_path: stringData(flow, 'route_path'),
+        route_type: stringData(flow, 'route_type'),
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
         tests: flowStringArray(flow, 'tests'),
@@ -6198,11 +6696,16 @@ function buildResearchArtifacts(params: {
       low_confidence_flows: lowConfidenceFlows.map((flow) => ({
         id: flow.id,
         name: flow.name,
+        route_path: stringData(flow, 'route_path'),
+        route_type: stringData(flow, 'route_type'),
         confidence: flow.confidence,
         reason: flowConfidenceReason(flow),
       })),
       contracts: flows.map((flow) => ({
         id: flow.id,
+        framework: stringData(flow, 'framework'),
+        route_path: stringData(flow, 'route_path'),
+        route_type: stringData(flow, 'route_type'),
         entry_contract: flowStringArray(flow, 'entry_contract'),
         exit_contract: flowStringArray(flow, 'exit_contract'),
         inputs: flowStringArray(flow, 'inputs'),
@@ -6336,6 +6839,9 @@ async function writeFlowMirrors(
       id: flow.id,
       name: flow.name,
       kind: stringData(flow, 'kind') ?? 'unknown',
+      framework: stringData(flow, 'framework'),
+      route_path: stringData(flow, 'route_path'),
+      route_type: stringData(flow, 'route_type'),
       file: `.rizz/brain/flows/${flowMirrorFileName(flow)}`,
       entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
       components: flowStringArray(flow, 'components').length,
@@ -6406,6 +6912,9 @@ function buildLatest(params: {
     id: flow.id,
     name: flow.name,
     kind: stringData(flow, 'kind') ?? 'unknown',
+    framework: stringData(flow, 'framework'),
+    route_path: stringData(flow, 'route_path'),
+    route_type: stringData(flow, 'route_type'),
     entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
     component_count: flowStringArray(flow, 'components').length,
     file_count: flowStringArray(flow, 'files').length,
@@ -8793,6 +9302,9 @@ function buildFlowExplanation(params: {
   const contractFailureModes = flowStringArray(target, 'failure_modes').map(safeText);
   const requiredTests = flowStringArray(target, 'required_tests').map(safeText);
   const confidenceReasons = flowStringArray(target, 'confidence_reasons').map(safeText);
+  const framework = stringData(target, 'framework');
+  const routePath = stringData(target, 'route_path');
+  const routeType = stringData(target, 'route_type');
   const entrypointLabels = entrypoints.map(formatFlowEntrypoint);
   const stepLabels = steps.map(formatFlowStep);
   const riskLabels = flowRisksForTarget.map(formatFlowRisk);
@@ -8881,6 +9393,9 @@ function buildFlowExplanation(params: {
     unknowns: flowUnknowns.map(safeText),
     flow: {
       kind: flowKind(target),
+      ...(framework !== undefined ? { framework: safeText(framework) } : {}),
+      ...(routePath !== undefined ? { route_path: safeText(routePath) } : {}),
+      ...(routeType !== undefined ? { route_type: safeText(routeType) } : {}),
       entrypoints,
       steps,
       components,
