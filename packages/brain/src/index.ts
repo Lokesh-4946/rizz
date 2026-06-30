@@ -1259,6 +1259,26 @@ function couplingForComponent(params: {
   };
 }
 
+function couplingEvidenceIdsForComponent(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly packages: readonly PackageJsonFact[];
+}): string[] {
+  const evidenceIds = new Set<string>();
+  for (const file of params.files.filter((item) => classifySourceKind(item) === 'source')) {
+    const text = readTextIfAvailable(params.rootDir, file.relativePath);
+    if (text !== undefined && importSpecifiersFromText(text).length > 0) {
+      evidenceIds.add(evidenceId(file.relativePath));
+    }
+  }
+  for (const pkg of params.packages) {
+    if (Object.keys(pkg.dependencies).length > 0 || Object.keys(pkg.devDependencies).length > 0) {
+      evidenceIds.add(evidenceId(pkg.relativePath));
+    }
+  }
+  return [...evidenceIds].sort((a, b) => a.localeCompare(b));
+}
+
 function testPathsForComponent(files: readonly FileFact[]): string[] {
   return files
     .filter((file) => classifySourceKind(file) === 'test')
@@ -2652,6 +2672,7 @@ function inferComponentIntelligence(
     packageFacts,
     componentPaths,
   });
+  const couplingEvidenceIds = couplingEvidenceIdsForComponent({ rootDir, files, packages });
   const criticality = criticalityForComponent(componentPath, files, packages);
   const blastRadius = blastRadiusForComponent({
     criticality: criticality.label,
@@ -2778,7 +2799,7 @@ function inferComponentIntelligence(
       exposed_apis: apiEvidenceIds,
       tests: testEvidenceIds,
       configs: configEvidenceIds,
-      coupling: componentEvidenceIds,
+      coupling: couplingEvidenceIds,
       criticality: componentEvidenceIds,
       blast_radius: componentEvidenceIds,
       ownership_confidence: unique([
@@ -2805,6 +2826,12 @@ function inferComponentIntelligence(
 function confidenceForComponent(intelligence: ComponentIntelligence): Confidence {
   if (intelligence.ownership_confidence.score < 0.5) return 'uncertain';
   if (intelligence.signals.length <= 1) return 'uncertain';
+  if (
+    intelligence.coupling.level !== 'low' &&
+    (intelligence.field_evidence.coupling ?? []).length === 0
+  ) {
+    return 'uncertain';
+  }
   if (
     intelligence.ownership_confidence.score >= 0.85 &&
     intelligence.tests.length > 0 &&
@@ -2886,12 +2913,215 @@ function evidenceQualityBand(score: number, redactionSafetyScore: number): strin
   return 'unsafe';
 }
 
+interface FieldCoverageSummary {
+  readonly total_fields: number;
+  readonly fields_with_values: number;
+  readonly fields_with_evidence: number;
+  readonly unsupported_fields: number;
+  readonly weak_evidence_fields: number;
+  readonly field_coverage_ratio: number;
+  readonly evidence_coverage_ratio: number;
+}
+
+interface EvidenceGap {
+  readonly kind: string;
+  readonly id: string;
+  readonly severity: 'high' | 'medium' | 'low';
+  readonly reason: string;
+  readonly entity_type?: EntityType | 'relationship';
+  readonly field?: string;
+  readonly confidence?: Confidence;
+}
+
+function flowFieldHasValue(flow: BrainEntity, field: string): boolean {
+  const value = flow.data?.[field];
+  if (Array.isArray(value)) return value.length > 0;
+  return false;
+}
+
+function fieldCoverageForComponents(components: readonly BrainEntity[]): FieldCoverageSummary {
+  let fieldsWithValues = 0;
+  let fieldsWithEvidence = 0;
+  let unsupportedFields = 0;
+  let weakEvidenceFields = 0;
+  for (const component of components) {
+    const fieldEvidence = recordStringArrayData(component, 'field_evidence');
+    for (const field of COMPONENT_UNDERSTANDING_FIELDS) {
+      if (!componentFieldHasValue(component, field)) continue;
+      fieldsWithValues += 1;
+      const evidenceCount = (fieldEvidence[field] ?? []).length;
+      if (evidenceCount === 0) {
+        unsupportedFields += 1;
+        continue;
+      }
+      fieldsWithEvidence += 1;
+      if (component.confidence !== 'verified') weakEvidenceFields += 1;
+    }
+  }
+  const totalFields = components.length * COMPONENT_UNDERSTANDING_FIELDS.length;
+  return {
+    total_fields: totalFields,
+    fields_with_values: fieldsWithValues,
+    fields_with_evidence: fieldsWithEvidence,
+    unsupported_fields: unsupportedFields,
+    weak_evidence_fields: weakEvidenceFields,
+    field_coverage_ratio: ratio(fieldsWithValues, totalFields),
+    evidence_coverage_ratio: ratio(fieldsWithEvidence, fieldsWithValues),
+  };
+}
+
+const FLOW_UNDERSTANDING_FIELDS = [
+  'entrypoints',
+  'steps',
+  'components',
+  'files',
+  'dependencies',
+  'configs',
+  'tests',
+  'risks',
+] as const;
+
+function fieldCoverageForFlows(flows: readonly BrainEntity[]): FieldCoverageSummary {
+  let fieldsWithValues = 0;
+  let fieldsWithEvidence = 0;
+  let unsupportedFields = 0;
+  let weakEvidenceFields = 0;
+  for (const flow of flows) {
+    const fieldEvidence = recordStringArrayData(flow, 'field_evidence');
+    for (const field of FLOW_UNDERSTANDING_FIELDS) {
+      if (!flowFieldHasValue(flow, field)) continue;
+      fieldsWithValues += 1;
+      const evidenceCount = (fieldEvidence[field] ?? []).length;
+      if (evidenceCount === 0) {
+        unsupportedFields += 1;
+        continue;
+      }
+      fieldsWithEvidence += 1;
+      if (flow.confidence !== 'verified') weakEvidenceFields += 1;
+    }
+  }
+  const totalFields = flows.length * FLOW_UNDERSTANDING_FIELDS.length;
+  return {
+    total_fields: totalFields,
+    fields_with_values: fieldsWithValues,
+    fields_with_evidence: fieldsWithEvidence,
+    unsupported_fields: unsupportedFields,
+    weak_evidence_fields: weakEvidenceFields,
+    field_coverage_ratio: ratio(fieldsWithValues, totalFields),
+    evidence_coverage_ratio: ratio(fieldsWithEvidence, fieldsWithValues),
+  };
+}
+
+function fieldCoverageByEntityType(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
+}): Record<'component' | 'flow', FieldCoverageSummary> {
+  return {
+    component: fieldCoverageForComponents(params.components),
+    flow: fieldCoverageForFlows(params.flows),
+  };
+}
+
+function fieldEvidenceGapRecords(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
+}): EvidenceGap[] {
+  const gaps: EvidenceGap[] = [];
+  for (const component of params.components) {
+    const fieldEvidence = recordStringArrayData(component, 'field_evidence');
+    for (const field of COMPONENT_UNDERSTANDING_FIELDS) {
+      if (!componentFieldHasValue(component, field)) continue;
+      const evidenceCount = (fieldEvidence[field] ?? []).length;
+      if (evidenceCount === 0) {
+        gaps.push({
+          kind: 'unsupported_field',
+          id: component.id,
+          entity_type: 'component',
+          field,
+          severity: 'medium',
+          confidence: component.confidence,
+          reason: 'Field has a value but no field-specific evidence reference.',
+        });
+      }
+    }
+  }
+  for (const flow of params.flows) {
+    const fieldEvidence = recordStringArrayData(flow, 'field_evidence');
+    for (const field of FLOW_UNDERSTANDING_FIELDS) {
+      if (!flowFieldHasValue(flow, field)) continue;
+      const evidenceCount = (fieldEvidence[field] ?? []).length;
+      if (evidenceCount === 0) {
+        gaps.push({
+          kind: 'unsupported_field',
+          id: flow.id,
+          entity_type: 'flow',
+          field,
+          severity: 'medium',
+          confidence: flow.confidence,
+          reason: 'Flow field has a value but no field-specific evidence reference.',
+        });
+      }
+    }
+  }
+  return gaps;
+}
+
+function topEvidenceGaps(params: {
+  readonly entitiesWithoutEvidence: readonly BrainEntity[];
+  readonly relationshipsWithoutEvidence: readonly BrainRelationship[];
+  readonly missingEvidenceReferences: readonly string[];
+  readonly fieldGaps: readonly EvidenceGap[];
+}): EvidenceGap[] {
+  const gaps: EvidenceGap[] = [
+    ...params.missingEvidenceReferences.map((id) => ({
+      kind: 'missing_reference',
+      id: safeText(id),
+      severity: 'high' as const,
+      reason: 'Claim references an evidence id that was not emitted.',
+    })),
+    ...params.relationshipsWithoutEvidence.map((relationship) => ({
+      kind: 'unsupported_relationship',
+      id: `${safeText(relationship.from)} ${relationship.relation} ${safeText(relationship.to)}`,
+      entity_type: 'relationship' as const,
+      severity: 'high' as const,
+      confidence: relationship.confidence,
+      reason: 'Relationship claim has no evidence reference.',
+    })),
+    ...params.entitiesWithoutEvidence
+      .filter((entity) => entity.type !== 'evidence')
+      .map((entity) => ({
+        kind: 'unsupported_entity',
+        id: entity.id,
+        entity_type: entity.type,
+        severity: 'medium' as const,
+        confidence: entity.confidence,
+        reason: 'Entity claim has no evidence reference.',
+      })),
+    ...params.fieldGaps,
+  ];
+  const severityRank = (severity: EvidenceGap['severity']): number => {
+    if (severity === 'high') return 0;
+    if (severity === 'medium') return 1;
+    return 2;
+  };
+  return gaps
+    .sort(
+      (a, b) =>
+        severityRank(a.severity) - severityRank(b.severity) ||
+        a.kind.localeCompare(b.kind) ||
+        a.id.localeCompare(b.id) ||
+        (a.field ?? '').localeCompare(b.field ?? ''),
+    )
+    .slice(0, 15);
+}
+
 function buildEvidenceQualityArtifact(params: {
   readonly now: string;
   readonly buckets: BrainBuckets;
   readonly relationships: readonly BrainRelationship[];
 }): Record<string, unknown> {
   const entities = allBucketEntities(params.buckets);
+  const claimEntities = entities.filter((entity) => entity.type !== 'evidence');
   const referencedEvidenceIds = unique([
     ...entities.flatMap((entity) => entity.evidence_ids),
     ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
@@ -2910,6 +3140,15 @@ function buildEvidenceQualityArtifact(params: {
   const claimsWithEvidence = entitiesWithEvidence.length + relationshipsWithEvidence.length;
   const claimsWithoutEvidence =
     entitiesWithoutEvidence.length + relationshipsWithoutEvidence.length;
+  const claimEntitiesWithoutEvidence = claimEntities.filter(
+    (entity) => entity.evidence_ids.length === 0,
+  );
+  const claimEntitiesWithWeakEvidence = claimEntities.filter(
+    (entity) => entity.evidence_ids.length > 0 && entity.confidence !== 'verified',
+  );
+  const relationshipsWithWeakEvidence = relationshipsWithEvidence.filter(
+    (relationship) => relationship.confidence !== 'verified',
+  );
   const confidenceDistribution = countByConfidence([
     ...entities.map((entity) => entity.confidence),
     ...params.relationships.map((relationship) => relationship.confidence),
@@ -2942,6 +3181,28 @@ function buildEvidenceQualityArtifact(params: {
   ];
   const fieldsWithEvidence = fieldEvidenceEntries.filter((ids) => ids.length > 0).length;
   const fieldEvidenceScore = scorePercent(fieldsWithEvidence, fieldEvidenceEntries.length);
+  const fieldCoverage = fieldCoverageByEntityType({
+    components: params.buckets.components,
+    flows: params.buckets.flows,
+  });
+  const fieldGaps = fieldEvidenceGapRecords({
+    components: params.buckets.components,
+    flows: params.buckets.flows,
+  });
+  const unsupportedFieldClaims =
+    fieldCoverage.component.unsupported_fields + fieldCoverage.flow.unsupported_fields;
+  const weakEvidenceFieldClaims =
+    fieldCoverage.component.weak_evidence_fields + fieldCoverage.flow.weak_evidence_fields;
+  const unsupportedClaims =
+    claimEntitiesWithoutEvidence.length +
+    relationshipsWithoutEvidence.length +
+    unsupportedFieldClaims;
+  const weakEvidenceClaims =
+    claimEntitiesWithWeakEvidence.length +
+    relationshipsWithWeakEvidence.length +
+    weakEvidenceFieldClaims;
+  const evidenceGapCount =
+    missingEvidenceReferences.length + unsupportedClaims + weakEvidenceClaims;
   const evidenceCoverageScore = scorePercent(claimsWithEvidence, totalClaims);
   const referenceIntegrityScore = Math.max(0, 100 - missingEvidenceReferences.length * 10);
   const redactionSafetyScore = Math.max(0, 100 - unsafeSensitiveReferenceCount * 25);
@@ -2959,12 +3220,21 @@ function buildEvidenceQualityArtifact(params: {
       .map((entity) => `${entity.type}: ${entity.id}`),
     ...missingEvidenceReferences.slice(0, 8).map((id) => `missing evidence: ${id}`),
   ]).slice(0, 12);
+  const topGaps = topEvidenceGaps({
+    entitiesWithoutEvidence,
+    relationshipsWithoutEvidence,
+    missingEvidenceReferences,
+    fieldGaps,
+  });
 
   return {
     generated_at: params.now,
     total_claims: totalClaims,
     claims_with_evidence: claimsWithEvidence,
     claims_without_evidence: claimsWithoutEvidence,
+    unsupported_claims: unsupportedClaims,
+    weak_evidence_claims: weakEvidenceClaims,
+    evidence_gap_count: evidenceGapCount,
     redacted_evidence_count: redactedEvidenceCount,
     redacted_reference_count: redactedReferenceCount,
     unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
@@ -2974,6 +3244,17 @@ function buildEvidenceQualityArtifact(params: {
     evidence_coverage_score: evidenceCoverageScore,
     redaction_safety_score: redactionSafetyScore,
     confidence_distribution: confidenceDistribution,
+    field_coverage_by_entity_type: fieldCoverage,
+    confidence_adjustments: {
+      redaction_downgrades: confidenceDowngradeCount,
+      weak_entity_claims: claimEntitiesWithWeakEvidence.length,
+      weak_relationship_claims: relationshipsWithWeakEvidence.length,
+      weak_field_claims: weakEvidenceFieldClaims,
+      unsupported_entity_claims: claimEntitiesWithoutEvidence.length,
+      unsupported_relationship_claims: relationshipsWithoutEvidence.length,
+      unsupported_field_claims: unsupportedFieldClaims,
+    },
+    top_evidence_gaps: topGaps,
     top_uncertain_areas: topUncertainAreas,
     overall_score: overallScore,
     quality_band: evidenceQualityBand(overallScore, redactionSafetyScore),
@@ -4726,6 +5007,9 @@ function renderEvidenceQuality(value: unknown): string {
     typeof value.evidence_coverage_score === 'number' ? value.evidence_coverage_score : 0;
   const safety =
     typeof value.redaction_safety_score === 'number' ? value.redaction_safety_score : 0;
+  const unsupported = typeof value.unsupported_claims === 'number' ? value.unsupported_claims : 0;
+  const weak = typeof value.weak_evidence_claims === 'number' ? value.weak_evidence_claims : 0;
+  const gaps = typeof value.evidence_gap_count === 'number' ? value.evidence_gap_count : 0;
   const distribution = isRecord(value.confidence_distribution)
     ? [
         `verified: ${String(value.confidence_distribution.verified ?? 0)}`,
@@ -4733,9 +5017,25 @@ function renderEvidenceQuality(value: unknown): string {
         `uncertain: ${String(value.confidence_distribution.uncertain ?? 0)}`,
       ]
     : [];
+  const topGaps = Array.isArray(value.top_evidence_gaps)
+    ? value.top_evidence_gaps
+        .filter(isRecord)
+        .slice(0, 6)
+        .map((gap) => {
+          const id = typeof gap.id === 'string' ? gap.id : 'unknown claim';
+          const field = typeof gap.field === 'string' ? `.${gap.field}` : '';
+          const reason = typeof gap.reason === 'string' ? gap.reason : 'Evidence gap recorded.';
+          return `${id}${field}: ${reason}`;
+        })
+    : [];
   const uncertainAreas = asStringArray(value.top_uncertain_areas).slice(0, 8);
   return `<div class="grid">
     <article class="card"><h3>Evidence Quality Score</h3><p>${score}/100 · ${htmlEscape(band)}</p></article>
+    <article class="card"><h3>Calibration</h3>${renderList([
+      `unsupported claims: ${unsupported}`,
+      `weak evidence claims: ${weak}`,
+      `evidence gaps: ${gaps}`,
+    ])}</article>
     <article class="card"><h3>Redacted Sensitive Evidence</h3>${renderList([
       `${redactedCount} evidence record(s)`,
       `${redactedReferences} redacted reference(s)`,
@@ -4745,6 +5045,7 @@ function renderEvidenceQuality(value: unknown): string {
       `redaction safety: ${safety}/100`,
     ])}</article>
     <article class="card"><h3>Confidence Distribution</h3>${renderList(distribution)}</article>
+    <article class="card"><h3>Top Evidence Gaps</h3>${renderList(topGaps)}</article>
     <article class="card"><h3>Unknown / Uncertain Areas</h3>${renderList(uncertainAreas)}</article>
   </div>`;
 }
