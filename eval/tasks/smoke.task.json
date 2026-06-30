@@ -1,8 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "pi-bench-seed-smoke",
   "suite": "pi-bench-seed",
   "mode": "local",
+  "category": "smoke",
   "title": "PI-Bench seed schema smoke",
   "prompt": "Build a local project brain for the fixture and emit deterministic research metrics.",
   "fixture": {
@@ -16,11 +17,33 @@
   },
   "expected_artifacts": [".rizz/research/metrics.json", ".rizz/research/benchmark_ready.json"],
   "coverage_targets": {
-    "component": { "minimum_total": 0 },
-    "flow": { "minimum_total": 0 },
-    "evidence": { "minimum_total": 1 },
-    "unknown": { "minimum_total": 0 }
+    "component": { "minimum_total": 0, "minimum_covered": 0, "minimum_ratio": 0 },
+    "flow": { "minimum_total": 0, "minimum_covered": 0, "minimum_ratio": 0 },
+    "evidence": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.1 },
+    "unknown": { "minimum_total": 0, "minimum_covered": 0, "minimum_ratio": 0 }
   },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/metrics.json",
+      "type": "json",
+      "required_fields": ["scanned_files", "evidence_records"]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "benchmark_suite",
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "coverage.component.total",
+        "coverage.flow.total",
+        "coverage.evidence.records",
+        "coverage.unknown.total",
+        "readiness.score"
+      ]
+    }
+  ],
   "rubric": {
     "pass": [
       "The fixture is processed locally without provider calls.",

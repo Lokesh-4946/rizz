@@ -1,13 +1,20 @@
 # eval/
 
-The rizz eval harness (brief §4.6). Coding-task suite + footprint/latency benchmarks that run in
-CI and write baselines to the Labs brain.
+The rizz eval harness runs local deterministic checks for the PI-Bench seed plus CLI/install smoke
+gates. It does not require live providers, credentials, package installation inside fixtures, or
+network access.
 
-- `run.mjs` — the runner. Loads every `tasks/*.task.json`, validates the PI-Bench seed schema,
-  then drives tasks through the loop when M5 scoring lands.
-- `tasks/*.task.json` — one local deterministic task per file:
-  `{ schema_version, id, suite, mode, title, prompt, fixture, expected_artifacts, coverage_targets, rubric }`.
+- `run.mjs` loads every `tasks/*.task.json`, validates the task schema, materializes each fixture
+  into a temp repo, runs `rizz brain`, checks expected research artifacts, scores
+  `.rizz/research/benchmark_ready.json`, and prints a concise benchmark summary.
+- `tasks/*.task.json` describes one local deterministic PI-Bench seed task:
+  `{ schema_version, id, suite, mode, category, title, prompt, fixture, expected_artifacts, coverage_targets, artifact_assertions, rubric }`.
 
-Status: **M0** — runner skeleton + PI-Bench seed schema validation only (green in CI).
-Loop-backed scoring lands in **M5**, with baselines written to
-`/My Labs/Valoir/rizz/03_baselines-benchmarks/`.
+Coverage targets are explicit for component, flow, evidence, and unknown surfaces:
+`{ minimum_total, minimum_covered, minimum_ratio }`. Evidence `minimum_total` is checked against
+`coverage.evidence.records`; evidence `minimum_covered` is checked against
+`coverage.evidence.claims_with_evidence`.
+
+Artifact assertions check that required files exist, parse as JSON when requested, and contain the
+expected top-level or dotted fields. The benchmark summary reports readiness score plus component,
+flow, evidence, and unknown coverage for each task.
