@@ -19,7 +19,7 @@
       },
       {
         "path": "tsconfig.json",
-        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
+        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true,\"baseUrl\":\".\",\"paths\":{\"@/*\":[\"src/*\"],\"~/*\":[\"src/*\"]}},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
       },
       {
         "path": "src/app/layout.tsx",
@@ -27,15 +27,15 @@
       },
       {
         "path": "src/app/page.tsx",
-        "contents": "import { DashboardSummary } from \"../components/dashboard-summary\";\nimport { getFeaturedDocs } from \"../lib/content\";\n\nexport default function HomePage() {\n  return (\n    <main>\n      <DashboardSummary docs={getFeaturedDocs()} />\n    </main>\n  );\n}\n"
+        "contents": "import { DashboardSummary } from \"@/components/dashboard-summary\";\nimport { getFeaturedDocs } from \"~/lib/content\";\n\nexport default function HomePage() {\n  return (\n    <main>\n      <DashboardSummary docs={getFeaturedDocs()} />\n    </main>\n  );\n}\n"
       },
       {
         "path": "src/app/docs/[slug]/page.tsx",
-        "contents": "import { getDocBySlug, getDocSlugs } from \"../../../lib/content\";\n\nexport function generateStaticParams() {\n  return getDocSlugs().map((slug) => ({ slug }));\n}\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = getDocBySlug(params.slug);\n  return <article>{doc.title}</article>;\n}\n"
+        "contents": "import { getDocBySlug, getDocSlugs } from \"@/lib/content\";\n\nexport function generateStaticParams() {\n  return getDocSlugs().map((slug) => ({ slug }));\n}\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = getDocBySlug(params.slug);\n  return <article>{doc.title}</article>;\n}\n"
       },
       {
         "path": "src/app/api/health/route.ts",
-        "contents": "import { healthSummary } from \"../../../lib/health\";\n\nexport function GET(): Response {\n  return Response.json(healthSummary());\n}\n"
+        "contents": "import { healthSummary } from \"@/lib/health\";\n\nexport function GET(): Response {\n  return Response.json(healthSummary());\n}\n"
       },
       {
         "path": "src/app/api/health/route.test.ts",
@@ -70,6 +70,7 @@
     ".rizz/research/evidence_quality.json",
     ".rizz/research/architecture_reasoning.json",
     ".rizz/research/benchmark_ready.json",
+    ".rizz/brain/entities/flows.json",
     ".rizz/reports/index.html"
   ],
   "coverage_targets": {
@@ -103,6 +104,40 @@
         "Returns an HTTP/API response from the route flow.",
         "src/app/api/health/route.ts",
         "confidence_reasons"
+      ],
+      "forbidden_substrings": [
+        "dependency:@/lib/health",
+        "dependency:@/lib/content",
+        "dependency:~--lib--content",
+        "ACTUAL_FLOW_ID_HERE",
+        "TODO_FLOW_ID",
+        "sk-or-v1",
+        ".env"
+      ]
+    },
+    {
+      "path": ".rizz/brain/entities/flows.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": [
+        "flow:nextjs--api--api--health--src--app--api--health--route.ts",
+        "Static import evidence for @/lib/health.",
+        "Static import evidence for ~/lib/content.",
+        "Next.js route statically imports src/lib/health.ts.",
+        "Next.js route statically imports src/lib/content.ts.",
+        "src/components/dashboard-summary.tsx",
+        "src/lib/content.ts",
+        "src/lib/health.ts"
+      ],
+      "forbidden_substrings": [
+        "dependency:@/components/dashboard-summary",
+        "dependency:@/lib/content",
+        "dependency:@/lib/health",
+        "dependency:~--lib--content",
+        "ACTUAL_FLOW_ID_HERE",
+        "TODO_FLOW_ID",
+        "sk-or-v1",
+        ".env"
       ]
     },
     {
@@ -133,8 +168,10 @@
         "component:src",
         "package.json",
         "src/app/api/health/route.ts",
+        "src/components/dashboard-summary.tsx",
         "src/lib/health.ts"
-      ]
+      ],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "TODO_FLOW_ID", "sk-or-v1", ".env"]
     },
     {
       "path": ".rizz/research/architecture_reasoning.json",
@@ -162,14 +199,21 @@
       "required_substrings": [
         "flow:scripts--dev",
         "No source entry file was detected for this package script."
-      ]
+      ],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "TODO_FLOW_ID", "sk-or-v1", ".env"]
     },
     {
       "path": ".rizz/reports/index.html",
       "type": "file",
       "required_substrings": [
         "Mission Control ·",
+        "Understanding Score",
         "Evidence",
+        "Components",
+        "Flows",
+        "Architecture",
+        "Review Blast Radius",
+        "Unknowns",
         "<details",
         "data-kind=\"component\"",
         "data-kind=\"flow\"",
@@ -177,7 +221,15 @@
         "src/app/docs/[slug]/page.tsx",
         "src/app/api/health/route.ts"
       ],
-      "forbidden_substrings": ["<script src=", "<link rel=\"stylesheet\"", "fetch("]
+      "forbidden_substrings": [
+        "<script src=",
+        "<link rel=\"stylesheet\"",
+        "fetch(",
+        "ACTUAL_FLOW_ID_HERE",
+        "TODO_FLOW_ID",
+        "sk-or-v1",
+        ".env"
+      ]
     }
   ],
   "rubric": {
