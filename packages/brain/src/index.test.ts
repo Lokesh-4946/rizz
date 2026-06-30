@@ -276,6 +276,7 @@ describe('project brain generation', () => {
         'flow_understanding.json',
         'incremental_update.json',
         'benchmark_ready.json',
+        'understanding_score.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
         artifactNames,
@@ -567,6 +568,63 @@ describe('project brain generation', () => {
       expect(benchmarkReady.coverage.unknown.coverage_ratio).toBeGreaterThanOrEqual(0);
       expect(benchmarkReady.readiness.score).toBeGreaterThan(0);
 
+      const understandingScore = await readJson<{
+        schema_version: number;
+        overall_score: number;
+        score_band: string;
+        dimensions: {
+          components: { score: number; weak_spots: string[] };
+          flows: { score: number; weak_spots: string[] };
+          architecture: { score: number; weak_spots: string[] };
+          evidence: { score: number; weak_spots: string[] };
+          incremental_status: { score: number; weak_spots: string[] };
+          review_readiness: { score: number; weak_spots: string[] };
+          unknowns: { score: number; weak_spots: string[] };
+        };
+        top_unknowns: string[];
+        read_first: Array<{ path: string; component_id: string; reason: string }>;
+        changed: {
+          changed_file_count: number;
+          changed_entity_count: number;
+          scan_efficiency_score: number;
+        };
+        review_readiness: { score: number; status: string; required_attention: string[] };
+        redaction_safety: {
+          redaction_safety_score: number;
+          unsafe_sensitive_reference_count: number;
+        };
+      }>(join(researchDir, 'understanding_score.json'));
+      expect(understandingScore).toMatchObject({
+        schema_version: 1,
+        dimensions: {
+          components: expect.objectContaining({ score: expect.any(Number) }),
+          flows: expect.objectContaining({ score: expect.any(Number) }),
+          architecture: expect.objectContaining({ score: expect.any(Number) }),
+          evidence: expect.objectContaining({ score: expect.any(Number) }),
+          incremental_status: expect.objectContaining({ score: expect.any(Number) }),
+          review_readiness: expect.objectContaining({ score: expect.any(Number) }),
+          unknowns: expect.objectContaining({ score: expect.any(Number) }),
+        },
+      });
+      expect(understandingScore.overall_score).toBeGreaterThan(0);
+      expect(understandingScore.score_band).toMatch(/strong|usable|weak|not ready/);
+      expect(understandingScore.read_first).toContainEqual(
+        expect.objectContaining({
+          path: 'packages/brain/package.json',
+          component_id: 'component:packages--brain',
+        }),
+      );
+      expect(understandingScore.changed).toMatchObject({
+        changed_file_count: 1,
+        changed_entity_count: expect.any(Number),
+        scan_efficiency_score: expect.any(Number),
+      });
+      expect(understandingScore.review_readiness.score).toBe(benchmarkReady.readiness.score);
+      expect(understandingScore.redaction_safety).toMatchObject({
+        redaction_safety_score: 100,
+        unsafe_sensitive_reference_count: 0,
+      });
+
       const incremental = await readJson<{
         previous_brain_fingerprint: string;
         current_brain_fingerprint: string;
@@ -635,8 +693,23 @@ describe('project brain generation', () => {
       expect(incremental.recomputed_understanding_count).toBeGreaterThan(0);
       expect(incremental.stale_fact_count).toBe(0);
       expect(incremental.scan_efficiency_score).toBeGreaterThan(0);
+      expect(understandingScore.changed).toMatchObject({
+        changed_file_count: 1,
+        changed_entity_count: incremental.changed_entity_count,
+        scan_efficiency_score: incremental.scan_efficiency_score,
+      });
 
       const latest = await readJson<{
+        latest_understanding_score: {
+          overall_score: number;
+          dimensions: {
+            components: { score: number };
+            flows: { score: number };
+            evidence: { score: number };
+            review_readiness: { score: number };
+          };
+          read_first: Array<{ path: string }>;
+        };
         latest_incremental_update: {
           changed_file_count: number;
           changed_entity_count: number;
@@ -654,7 +727,29 @@ describe('project brain generation', () => {
         stale_fact_count: 0,
         scan_efficiency_score: incremental.scan_efficiency_score,
       });
+      expect(latest.latest_understanding_score).toMatchObject({
+        overall_score: understandingScore.overall_score,
+        dimensions: {
+          components: expect.objectContaining({ score: expect.any(Number) }),
+          flows: expect.objectContaining({ score: expect.any(Number) }),
+          evidence: expect.objectContaining({ score: expect.any(Number) }),
+          review_readiness: expect.objectContaining({ score: expect.any(Number) }),
+        },
+        read_first: expect.arrayContaining([
+          expect.objectContaining({ path: 'packages/brain/package.json' }),
+        ]),
+      });
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('Project Intelligence');
+      expect(report).toContain('Understanding Score');
+      expect(report).toContain('Components');
+      expect(report).toContain('Flows');
+      expect(report).toContain('Architecture');
+      expect(report).toContain('Evidence');
+      expect(report).toContain('Incremental Status');
+      expect(report).toContain('Review Readiness');
+      expect(report).toContain('Top Unknowns');
+      expect(report).toContain('Read First');
       expect(report).toContain('Incremental Understanding');
       expect(report).toContain('changed understanding');
       expect(report).toContain('scan efficiency');
@@ -776,6 +871,7 @@ describe('project brain generation', () => {
         flow_understanding: '.rizz/research/flow_understanding.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
+        understanding_score: '.rizz/research/understanding_score.json',
       });
     });
   });
@@ -1952,6 +2048,13 @@ describe('project brain generation', () => {
       expect(evidenceQuality.redacted_evidence_count).toBeGreaterThan(0);
       expect(JSON.stringify(evidenceQuality)).not.toContain('client_secret_handler.ts');
       expect(JSON.stringify(evidenceQuality)).not.toContain('OPENAI_API_KEY');
+      const understandingScore = await readJson<Record<string, unknown>>(
+        join(dir, '.rizz', 'research', 'understanding_score.json'),
+      );
+      expect(JSON.stringify(understandingScore)).not.toContain('client_secret_handler.ts');
+      expect(JSON.stringify(understandingScore)).not.toContain('secret-token-flow.test.ts');
+      expect(JSON.stringify(understandingScore)).not.toContain('OPENAI_API_KEY');
+      expect(JSON.stringify(understandingScore)).toContain('redacted:sensitive-file:');
 
       expect(JSON.stringify(review.value.review)).not.toContain('client_secret_handler.ts');
       expect(review.value.review.changed_files).toContainEqual(
