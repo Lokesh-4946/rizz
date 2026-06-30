@@ -2070,6 +2070,16 @@ describe('project brain generation', () => {
         ].join('\n'),
       );
       await writeFile(
+        join(dir, 'src', 'content', 'docs.ts'),
+        [
+          'export const docs = new Map<string, { title: string }>([',
+          '  ["intro", { title: "Intro" }],',
+          '  ["routing", { title: "Routing" }],',
+          ']);',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
         join(dir, 'src', 'app', 'docs', '[slug]', 'page.tsx'),
         [
           'import { DocPage } from "../../../components/DocPage.js";',
@@ -2107,12 +2117,32 @@ describe('project brain generation', () => {
           'src/app/docs/[slug]/page.tsx',
           'src/app/docs/[slug]/page.test.tsx',
           'src/components/DocPage.tsx',
+          'src/content/docs.ts',
         ]),
         tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
         configs: expect.arrayContaining(['next.config.ts', 'package.json', 'tsconfig.json']),
+        reasons: expect.arrayContaining([
+          '/docs/[slug] route flow (page) includes changed component evidence: src/components/DocPage.tsx.',
+          '/docs/[slug] route flow (page) includes changed config evidence: next.config.ts.',
+          '/docs/[slug] route flow (page) includes changed content evidence: src/content/docs.ts.',
+          '/docs/[slug] route flow (page) includes changed entrypoint evidence: src/app/docs/[slug]/page.tsx.',
+          '/docs/[slug] route flow (page) includes changed test evidence: src/app/docs/[slug]/page.test.tsx.',
+        ]),
       });
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('/docs/[slug] route flow (page) is affected'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('changed component evidence: src/components/DocPage.tsx'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('changed content evidence: src/content/docs.ts'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('changed config evidence: next.config.ts'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('changed test evidence: src/app/docs/[slug]/page.test.tsx'),
       );
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('Linked tests: src/app/docs/[slug]/page.test.tsx'),
@@ -2131,6 +2161,18 @@ describe('project brain generation', () => {
       );
       expect(result.value.review.suggested_reviewer_focus_areas).toContain(
         'route flow: /docs/[slug]',
+      );
+      expect(result.value.review.suggested_reviewer_focus_areas).toContain(
+        'route flow: /docs/[slug] component evidence',
+      );
+      expect(result.value.review.suggested_reviewer_focus_areas).toContain(
+        'route flow: /docs/[slug] content evidence',
+      );
+      expect(result.value.review.suggested_reviewer_focus_areas).toContain(
+        'route flow: /docs/[slug] config evidence',
+      );
+      expect(result.value.review.suggested_reviewer_focus_areas).toContain(
+        'route flow: /docs/[slug] test evidence',
       );
 
       const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');

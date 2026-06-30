@@ -92,6 +92,9 @@
       "minimum_affected_relationships": 5,
       "blast_radius_reasons_include": [
         "/docs/[slug] route flow (page) is affected",
+        "changed component evidence: src/components/doc-article.tsx",
+        "changed content evidence: src/content/docs.ts",
+        "changed config evidence: src/config/site.ts",
         "Entrypoints: src/app/docs/[slug]/page.tsx#/docs/[slug]",
         "Linked tests: src/app/docs/[slug]/page.test.tsx",
         "Linked configs: next.config.ts"
