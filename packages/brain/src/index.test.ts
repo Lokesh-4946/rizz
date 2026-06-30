@@ -572,6 +572,23 @@ describe('project brain generation', () => {
         what_breaks: Array<{ component_id: string; impacts: string[] }>;
         risk_concentrations: Array<{ entity_id: string; kind: string }>;
         review_hints: Array<{ reason: string; affected_flows: string[] }>;
+        confidence_debt: {
+          debt_level: string;
+          debt_count: number;
+          unsupported_assumption_count: number;
+          inferred_tradeoff_count: number;
+          low_confidence_area_count: number;
+          blocking_unknown_count: number;
+          unsupported_assumptions: Array<{
+            assumption_id: string;
+            reason: string;
+            evidence_gap_ids: string[];
+          }>;
+          inferred_tradeoffs: Array<{ entity_id: string; tradeoff: string; confidence: string }>;
+          low_confidence_areas: Array<{ area_id: string; reason: string; confidence: string }>;
+          blocking_unknowns: string[];
+          calibration_rule: string;
+        };
         unknowns: string[];
       }>(join(researchDir, 'architecture_reasoning.json'));
       expect(architectureReasoning.boundary_candidates).toContainEqual(
@@ -596,6 +613,19 @@ describe('project brain generation', () => {
         }),
       );
       expect(architectureReasoning.unknowns).toContain(
+        '2 reconstructed flow(s) are not verified yet.',
+      );
+      expect(architectureReasoning.confidence_debt).toMatchObject({
+        debt_level: expect.stringMatching(/low|medium|high/),
+        debt_count: expect.any(Number),
+        unsupported_assumption_count: expect.any(Number),
+        inferred_tradeoff_count: expect.any(Number),
+        low_confidence_area_count: expect.any(Number),
+        blocking_unknown_count: expect.any(Number),
+        calibration_rule: expect.stringContaining('local architecture assumptions'),
+      });
+      expect(architectureReasoning.confidence_debt.low_confidence_areas.length).toBeGreaterThan(0);
+      expect(architectureReasoning.confidence_debt.blocking_unknowns).toContain(
         '2 reconstructed flow(s) are not verified yet.',
       );
 
@@ -819,6 +849,7 @@ describe('project brain generation', () => {
       expect(report).toContain('Components');
       expect(report).toContain('Flows');
       expect(report).toContain('Architecture');
+      expect(report).toContain('Confidence Debt');
       expect(report).toContain('Evidence');
       expect(report).toContain('Review Readiness');
       expect(report).toContain('Unknowns');
@@ -1120,6 +1151,25 @@ describe('project brain generation', () => {
           low_confidence_assumptions: string[];
           calibration_rule: string;
         };
+        confidence_debt: {
+          unsupported_assumption_count: number;
+          inferred_tradeoff_count: number;
+          low_confidence_area_count: number;
+          blocking_unknown_count: number;
+          unsupported_assumptions: Array<{
+            assumption_id: string;
+            evidence_gap_ids: string[];
+            confidence: string;
+          }>;
+          low_confidence_areas: Array<{
+            area_id: string;
+            entity_id: string;
+            area_type: string;
+            reason: string;
+          }>;
+          blocking_unknowns: string[];
+          summary: string;
+        };
         evidence_gaps: Array<{
           gap_id: string;
           entity_id: string;
@@ -1217,6 +1267,22 @@ describe('project brain generation', () => {
         average_score: expect.any(Number),
         calibration_rule: expect.stringContaining('component confidence'),
       });
+      expect(architectureReasoning.confidence_debt).toMatchObject({
+        unsupported_assumption_count: expect.any(Number),
+        inferred_tradeoff_count: expect.any(Number),
+        low_confidence_area_count: expect.any(Number),
+        blocking_unknown_count: expect.any(Number),
+        summary: expect.stringContaining('unsupported assumption'),
+      });
+      expect(architectureReasoning.confidence_debt.low_confidence_areas).toContainEqual(
+        expect.objectContaining({
+          entity_id: 'flow:packages--cli--start',
+          area_type: 'evidence_gap',
+        }),
+      );
+      expect(architectureReasoning.confidence_debt.blocking_unknowns).toContainEqual(
+        expect.stringContaining('not runtime verified'),
+      );
       expect(architectureReasoning.evidence_gaps).toContainEqual(
         expect.objectContaining({
           entity_id: 'flow:packages--cli--start',
@@ -1248,6 +1314,7 @@ describe('project brain generation', () => {
 
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(report).toContain('Architecture Assumptions');
+      expect(report).toContain('Confidence Debt');
       expect(report).toContain('Design Pressures');
       expect(report).toContain('Coupling Rationale');
       expect(report).toContain('Evidence Gaps');
