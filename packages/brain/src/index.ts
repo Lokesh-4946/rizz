@@ -537,11 +537,61 @@ type ReviewCategory =
   | 'Backward compatibility'
   | 'Overengineering';
 
+const REVIEW_SEVERITIES: readonly ReviewSeverity[] = ['low', 'medium', 'high', 'critical'];
+
+const REVIEW_CATEGORIES: readonly ReviewCategory[] = [
+  'Correctness',
+  'Regression risk',
+  'Architecture drift',
+  'Hidden coupling',
+  'Missing tests',
+  'Security',
+  'Performance',
+  'Maintainability',
+  'Backward compatibility',
+  'Overengineering',
+];
+
 type OverallRisk = 'low' | 'medium' | 'high' | 'critical';
 
 type BlastRadius = 'narrow' | 'moderate' | 'broad';
 
 type RecommendedAction = 'approve' | 'request changes' | 'investigate';
+
+interface ReviewEvalArtifactData {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly review_id: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly total_findings: number;
+  readonly findings_by_severity: Record<ReviewSeverity, number>;
+  readonly findings_by_category: Record<ReviewCategory, number>;
+  readonly affected_component_count: number;
+  readonly direct_affected_component_count: number;
+  readonly dependent_component_count: number;
+  readonly affected_flow_count: number;
+  readonly affected_relationship_count: number;
+  readonly required_test_count: number;
+  readonly evidence_id_count: number;
+  readonly blast_radius: BlastRadius;
+  readonly overall_risk: OverallRisk;
+  readonly surgicality_score: number;
+  readonly review_readiness_score: number;
+  readonly secret_safety: {
+    readonly redaction_applied: boolean;
+    readonly redacted_reference_count: number;
+    readonly unsafe_sensitive_reference_count: number;
+    readonly output_secret_safe: boolean;
+  };
+  readonly redaction: {
+    readonly redacted_reference_count: number;
+    readonly unsafe_sensitive_reference_count: number;
+    readonly note: string;
+  };
+  readonly scoring_notes: readonly string[];
+}
 
 interface ReviewFindingData {
   readonly id: string;
@@ -725,6 +775,7 @@ export interface ReviewProjectChangesOptions {
 export interface ReviewProjectChangesSummary {
   readonly rootDir: string;
   readonly reviewPath: string;
+  readonly reviewEvalPath: string;
   readonly latestPath: string;
   readonly reportPath: string;
   readonly changedFiles: number;
@@ -736,6 +787,7 @@ export interface ReviewProjectChangesSummary {
   readonly blastRadius: BlastRadius;
   readonly recommendedAction: RecommendedAction;
   readonly review: ReviewSummaryData;
+  readonly reviewEval: ReviewEvalArtifactData;
 }
 
 export type ReviewProjectChangesResult =
@@ -10535,8 +10587,10 @@ export async function reviewProjectChanges(
 
     const brainDir = join(rootDir, '.rizz', 'brain');
     const entitiesDir = join(brainDir, 'entities');
+    const researchDir = join(rootDir, '.rizz', 'research');
     const reportsDir = join(rootDir, '.rizz', 'reports');
     await mkdir(entitiesDir, { recursive: true });
+    await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
 
     const schemaErrors = await validateBrainSchema(rootDir);
@@ -10570,6 +10624,7 @@ export async function reviewProjectChanges(
       changedFiles: gitChanges.value.changedFiles,
       diffText: gitChanges.value.diffText,
     });
+    const reviewEval = buildReviewEvalArtifact(review);
 
     const reviewEntity = makeEntity({
       id: review.id,
@@ -10629,6 +10684,13 @@ export async function reviewProjectChanges(
         dependent_components: review.dependent_components.map((component) => component.id),
         affected_flows: review.affected_flows.map((flow) => flow.id),
         review_evidence_summary: review.review_evidence_summary,
+        research_artifacts: {
+          review_eval: '.rizz/research/review_eval.json',
+        },
+      },
+      latest_research_artifacts: {
+        ...(isRecord(latest.latest_research_artifacts) ? latest.latest_research_artifacts : {}),
+        review_eval: '.rizz/research/review_eval.json',
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
       latest_open_questions: mergeStrings(latest.latest_open_questions, [
@@ -10648,6 +10710,8 @@ export async function reviewProjectChanges(
       },
     };
     await writeVerifiedFile(latestPath, jsonString(safeBrainValue(updatedLatest)));
+    await writeVerifiedFile(join(researchDir, 'review_eval.json'), jsonString(reviewEval));
+    await updateBrainIndexReviewEvalPath(join(brainDir, 'index.json'));
 
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
@@ -10675,6 +10739,7 @@ export async function reviewProjectChanges(
       value: {
         rootDir,
         reviewPath: join(entitiesDir, 'reviews.json'),
+        reviewEvalPath: join(researchDir, 'review_eval.json'),
         latestPath,
         reportPath,
         changedFiles: review.changed_files.length,
@@ -10686,6 +10751,7 @@ export async function reviewProjectChanges(
         blastRadius: review.blast_radius,
         recommendedAction: review.recommended_action,
         review,
+        reviewEval,
       },
     };
   } catch (error: unknown) {
@@ -11990,6 +12056,127 @@ function buildReview(params: {
     ),
     recommended_action: recommendAction(overallRisk, findings),
   };
+}
+
+function countReviewFindingsBySeverity(
+  findings: readonly ReviewFindingData[],
+): Record<ReviewSeverity, number> {
+  const counts = Object.fromEntries(REVIEW_SEVERITIES.map((severity) => [severity, 0])) as Record<
+    ReviewSeverity,
+    number
+  >;
+  for (const finding of findings) counts[finding.severity] += 1;
+  return counts;
+}
+
+function countReviewFindingsByCategory(
+  findings: readonly ReviewFindingData[],
+): Record<ReviewCategory, number> {
+  const counts = Object.fromEntries(REVIEW_CATEGORIES.map((category) => [category, 0])) as Record<
+    ReviewCategory,
+    number
+  >;
+  for (const finding of findings) counts[finding.category] += 1;
+  return counts;
+}
+
+function riskPenalty(risk: OverallRisk): number {
+  if (risk === 'critical') return 45;
+  if (risk === 'high') return 30;
+  if (risk === 'medium') return 18;
+  return 5;
+}
+
+function blastRadiusPenalty(blastRadius: BlastRadius): number {
+  if (blastRadius === 'broad') return 20;
+  if (blastRadius === 'moderate') return 10;
+  return 3;
+}
+
+function scoreReviewReadiness(
+  review: ReviewSummaryData,
+  unsafeSensitiveReferenceCount: number,
+): number {
+  const evidenceBonus = Math.min(12, review.review_evidence_summary.evidence_ids.length);
+  const testBonus = Math.min(8, review.required_tests.length * 2);
+  const findingPenalty = review.findings.length * 4;
+  const secretPenalty = unsafeSensitiveReferenceCount * 25;
+  return Math.max(
+    0,
+    Math.min(
+      100,
+      review.surgicality_score * 10 +
+        evidenceBonus +
+        testBonus -
+        findingPenalty -
+        riskPenalty(review.overall_risk) -
+        blastRadiusPenalty(review.blast_radius) -
+        secretPenalty,
+    ),
+  );
+}
+
+function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactData {
+  const safeReview = safeResearchValue(review);
+  const redactedCount = redactedReferenceCount(safeReview);
+  const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeReview);
+  return {
+    schema_version: 1,
+    generated_at: review.generated_at,
+    review_id: review.id,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    total_findings: review.findings.length,
+    findings_by_severity: countReviewFindingsBySeverity(review.findings),
+    findings_by_category: countReviewFindingsByCategory(review.findings),
+    affected_component_count: review.affected_components.length,
+    direct_affected_component_count: review.direct_affected_components.length,
+    dependent_component_count: review.dependent_components.length,
+    affected_flow_count: review.affected_flows.length,
+    affected_relationship_count: review.affected_relationships.length,
+    required_test_count: review.required_tests.length,
+    evidence_id_count: review.review_evidence_summary.evidence_ids.length,
+    blast_radius: review.blast_radius,
+    overall_risk: review.overall_risk,
+    surgicality_score: review.surgicality_score,
+    review_readiness_score: scoreReviewReadiness(review, unsafeSensitiveReferenceCount),
+    secret_safety: {
+      redaction_applied: redactedCount > 0,
+      redacted_reference_count: redactedCount,
+      unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+      output_secret_safe: unsafeSensitiveReferenceCount === 0,
+    },
+    redaction: {
+      redacted_reference_count: redactedCount,
+      unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+      note:
+        unsafeSensitiveReferenceCount === 0
+          ? 'Review eval output is safe to share; sensitive references are omitted or redacted.'
+          : 'Review eval output still contains unsafe sensitive references.',
+    },
+    scoring_notes: [
+      'Review eval is computed from deterministic local review, brain, graph, and evidence artifacts.',
+      'Readiness combines surgicality, risk, blast radius, findings, test guidance, evidence, and secret safety.',
+    ],
+  };
+}
+
+async function updateBrainIndexReviewEvalPath(indexPath: string): Promise<void> {
+  const index = (await readJsonFile<Record<string, unknown>>(indexPath)) ?? {};
+  const researchPaths = isRecord(index.research_paths) ? index.research_paths : {};
+  await writeVerifiedFile(
+    indexPath,
+    jsonString(
+      safeBrainValue({
+        ...index,
+        research_paths: {
+          ...researchPaths,
+          review_eval: '.rizz/research/review_eval.json',
+        },
+      }),
+    ),
+  );
 }
 
 function isSourceFile(path: string): boolean {

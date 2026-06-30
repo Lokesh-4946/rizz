@@ -115,6 +115,7 @@
   "expected_artifacts": [
     ".rizz/brain/entities/reviews.json",
     ".rizz/brain/entities/findings.json",
+    ".rizz/research/review_eval.json",
     ".rizz/reports/review.html"
   ],
   "artifact_assertions": [
@@ -127,6 +128,44 @@
       "path": ".rizz/brain/entities/findings.json",
       "type": "json",
       "required_fields": ["entities"]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "schema_version",
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "total_findings",
+        "findings_by_severity.medium",
+        "findings_by_category.Hidden coupling",
+        "findings_by_category.Missing tests",
+        "affected_component_count",
+        "affected_flow_count",
+        "affected_relationship_count",
+        "required_test_count",
+        "evidence_id_count",
+        "blast_radius",
+        "overall_risk",
+        "surgicality_score",
+        "review_readiness_score",
+        "secret_safety.output_secret_safe",
+        "secret_safety.unsafe_sensitive_reference_count",
+        "redaction.redacted_reference_count"
+      ],
+      "required_substrings": [
+        "\"deterministic\": true",
+        "\"provider_calls_required\": false",
+        "\"network_required\": false",
+        "\"blast_radius\": \"moderate\"",
+        "\"output_secret_safe\": true"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ]
     },
     {
       "path": ".rizz/reports/review.html",
