@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -23,6 +24,7 @@ const repoRoot = dirname(evalDir);
 const tasksDir = join(evalDir, 'tasks');
 const cliBin = join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
 const installLocalScript = join(repoRoot, 'scripts', 'install-local.mjs');
+const EVAL_LOCAL_PACKAGES = ['brain', 'providers', 'core', 'tui', 'cli'];
 const PI_BENCH_TASK_SCHEMA_VERSION = 2;
 const PI_BENCH_TASK_SUITE = 'pi-bench-seed';
 const PI_BENCH_TASK_MODE = 'local';
@@ -32,7 +34,10 @@ const PI_BENCH_TASK_CATEGORIES = [
   'research-metrics',
   'unknown-coverage',
   'architecture-flow',
+  'review-blast-radius',
 ];
+
+if (!ensureEvalBuild()) process.exit(1);
 
 /** Load every *.task.json under eval/tasks. */
 function loadTasks() {
@@ -144,6 +149,95 @@ function validateArtifactAssertions(assertions) {
   return errors;
 }
 
+function validateReviewDiff(diff) {
+  const errors = [];
+  if (!isRecord(diff)) return ['review.diff must be an object'];
+  if (!Array.isArray(diff.files) || diff.files.length === 0) {
+    errors.push('review.diff.files must include at least one file');
+  } else {
+    for (const [index, file] of diff.files.entries()) {
+      if (!isRecord(file)) {
+        errors.push(`review.diff.files[${index}] must be an object`);
+        continue;
+      }
+      if (!isSafeRelativePath(file.path)) {
+        errors.push(`review.diff.files[${index}].path must be a safe relative path`);
+      }
+      if (typeof file.contents !== 'string') {
+        errors.push(`review.diff.files[${index}].contents must be a string`);
+      }
+    }
+  }
+  return errors;
+}
+
+function validateOptionalStringArray(assertions, field, errors) {
+  if (
+    assertions[field] !== undefined &&
+    (!isStringArray(assertions[field]) || assertions[field].length === 0)
+  ) {
+    errors.push(`review.assertions.${field} must include strings`);
+  }
+}
+
+function validateReviewAssertions(assertions) {
+  const errors = [];
+  if (!isRecord(assertions)) return ['review.assertions must be an object'];
+  for (const field of [
+    'changed_files_include',
+    'changed_files_exclude',
+    'direct_components_include',
+    'dependent_components_include',
+    'affected_flows_include',
+    'affected_tests_include',
+    'affected_configs_include',
+    'required_tests_include',
+    'blast_radius_reasons_include',
+    'forbidden_output_substrings',
+  ]) {
+    validateOptionalStringArray(assertions, field, errors);
+  }
+  for (const field of [
+    'minimum_direct_components',
+    'minimum_dependent_components',
+    'minimum_affected_flows',
+    'minimum_affected_relationships',
+  ]) {
+    if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
+      errors.push(`review.assertions.${field} must be a non-negative number`);
+    }
+  }
+  if (
+    assertions.blast_radius !== undefined &&
+    !['narrow', 'moderate', 'broad'].includes(assertions.blast_radius)
+  ) {
+    errors.push('review.assertions.blast_radius must be narrow, moderate, or broad');
+  }
+  if (assertions.findings_include !== undefined) {
+    if (!Array.isArray(assertions.findings_include) || assertions.findings_include.length === 0) {
+      errors.push('review.assertions.findings_include must include objects');
+    } else {
+      for (const [index, finding] of assertions.findings_include.entries()) {
+        if (!isRecord(finding)) {
+          errors.push(`review.assertions.findings_include[${index}] must be an object`);
+          continue;
+        }
+        if (!isNonEmptyString(finding.category) && !isNonEmptyString(finding.title_includes)) {
+          errors.push(
+            `review.assertions.findings_include[${index}] must include category or title_includes`,
+          );
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+function validateReviewSpec(review) {
+  if (!isRecord(review)) return ['review must be an object for review-blast-radius tasks'];
+  return [...validateReviewDiff(review.diff), ...validateReviewAssertions(review.assertions)];
+}
+
 function validateRubric(rubric) {
   if (!isRecord(rubric)) return ['rubric must be an object'];
   const errors = [];
@@ -172,16 +266,118 @@ function validatePiBenchTask(task) {
   }
   if (!isNonEmptyString(task.title)) errors.push('title must be a non-empty string');
   if (!isNonEmptyString(task.prompt)) errors.push('prompt must be a non-empty string');
+  const isReviewTask = task.category === 'review-blast-radius';
   if (!Array.isArray(task.expected_artifacts) || task.expected_artifacts.length === 0) {
     errors.push('expected_artifacts must include at least one path');
   } else if (!task.expected_artifacts.every(isSafeRelativePath)) {
     errors.push('expected_artifacts must be safe relative paths');
   }
   errors.push(...validateFixture(task.fixture));
-  errors.push(...validateCoverageTargets(task.coverage_targets));
+  if (isReviewTask) {
+    errors.push(...validateReviewSpec(task.review));
+  } else {
+    errors.push(...validateCoverageTargets(task.coverage_targets));
+  }
   errors.push(...validateArtifactAssertions(task.artifact_assertions));
   errors.push(...validateRubric(task.rubric));
   return errors;
+}
+
+function walkFiles(root, relativePrefix = '') {
+  if (!existsSync(root)) return [];
+  const files = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const relativePath = relativePrefix === '' ? entry.name : `${relativePrefix}/${entry.name}`;
+    const absolutePath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== 'dist' && entry.name !== 'node_modules') {
+        files.push(...walkFiles(absolutePath, relativePath));
+      }
+      continue;
+    }
+    if (entry.isFile()) files.push({ absolutePath, relativePath });
+  }
+  return files;
+}
+
+function latestMtimeMs(paths) {
+  return paths.reduce((latest, path) => {
+    if (!existsSync(path)) return latest;
+    return Math.max(latest, statSync(path).mtimeMs);
+  }, 0);
+}
+
+function packageBuildState(packageName) {
+  const packageDir = join(repoRoot, 'packages', packageName);
+  const distEntry = join(packageDir, 'dist', 'index.js');
+  if (!existsSync(distEntry)) {
+    return { stale: true, reason: `packages/${packageName}/dist/index.js is missing` };
+  }
+  const inputs = [
+    join(repoRoot, 'tsconfig.base.json'),
+    join(repoRoot, 'tsconfig.json'),
+    join(packageDir, 'package.json'),
+    join(packageDir, 'tsconfig.json'),
+    ...walkFiles(join(packageDir, 'src'))
+      .filter((file) => /\.(ts|tsx|js|json)$/.test(file.relativePath))
+      .map((file) => file.absolutePath),
+  ];
+  const inputMtime = latestMtimeMs(inputs);
+  const outputMtime = statSync(distEntry).mtimeMs;
+  if (inputMtime > outputMtime) {
+    return { stale: true, reason: `packages/${packageName}/dist/index.js is older than sources` };
+  }
+  return { stale: false, reason: '' };
+}
+
+function buildCommand() {
+  if (process.env.npm_execpath !== undefined && process.env.npm_execpath.trim() !== '') {
+    return {
+      command: process.execPath,
+      args: [process.env.npm_execpath, 'exec', 'tsc', '-b', '--force'],
+    };
+  }
+  return { command: 'pnpm', args: ['exec', 'tsc', '-b', '--force'] };
+}
+
+function stalePackageReasons() {
+  return EVAL_LOCAL_PACKAGES.map(packageBuildState)
+    .filter((state) => state.stale)
+    .map((state) => state.reason);
+}
+
+function ensureEvalBuild() {
+  const staleReasons = stalePackageReasons();
+  if (staleReasons.length === 0) return true;
+
+  console.error('rizz eval: refreshing stale local package dist before scoring');
+  for (const reason of staleReasons) console.error(`  - ${reason}`);
+
+  const { command, args } = buildCommand();
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: 'inherit',
+    timeout: 60_000,
+  });
+  if (result.error !== undefined) {
+    console.error(`rizz eval: build required but could not start ${command}: ${result.error}`);
+    return false;
+  }
+  if (result.status !== 0) {
+    console.error(
+      `rizz eval: build required but ${command} ${args.join(' ')} exited ${result.status}`,
+    );
+    return false;
+  }
+
+  const remainingStaleReasons = stalePackageReasons();
+  if (remainingStaleReasons.length > 0) {
+    console.error('rizz eval: build completed but required dist output is still stale or missing');
+    for (const reason of remainingStaleReasons) console.error(`  - ${reason}`);
+    return false;
+  }
+  return true;
 }
 
 function safeJoin(root, relativePath) {
@@ -322,11 +518,241 @@ function scoreBenchmarkReady(task, benchmarkReady) {
   return { errors, coverage, readinessScore };
 }
 
+function applyReviewDiff(task, repoDir) {
+  for (const file of task.review.diff.files) {
+    const filePath = safeJoin(repoDir, file.path);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, file.contents);
+  }
+}
+
+function idsFromRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => (isRecord(row) && typeof row.id === 'string' ? row.id : undefined))
+    .filter((id) => id !== undefined);
+}
+
+function reviewArray(review, field) {
+  const value = review[field];
+  return Array.isArray(value) ? value : [];
+}
+
+function assertIncludesAll(actual, expected, label) {
+  const errors = [];
+  for (const item of expected ?? []) {
+    if (!actual.includes(item)) errors.push(`${label} missing ${item}`);
+  }
+  return errors;
+}
+
+function assertExcludesAll(actual, expected, label) {
+  const errors = [];
+  for (const item of expected ?? []) {
+    if (actual.includes(item)) errors.push(`${label} leaked ${item}`);
+  }
+  return errors;
+}
+
+function assertSubstringMatches(actual, expected, label) {
+  const errors = [];
+  for (const item of expected ?? []) {
+    if (!actual.some((value) => typeof value === 'string' && value.includes(item))) {
+      errors.push(`${label} missing substring ${item}`);
+    }
+  }
+  return errors;
+}
+
+function assertReviewFindings(review, expected) {
+  const findings = reviewArray(review, 'findings');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matched = findings.some((finding) => {
+      if (!isRecord(finding)) return false;
+      const categoryMatches =
+        item.category === undefined || String(finding.category ?? '') === item.category;
+      const titleMatches =
+        item.title_includes === undefined ||
+        String(finding.title ?? '').includes(item.title_includes);
+      return categoryMatches && titleMatches;
+    });
+    if (!matched) {
+      errors.push(
+        `findings missing ${item.category ?? '(any category)'} ${item.title_includes ?? ''}`.trim(),
+      );
+    }
+  }
+  return errors;
+}
+
+function assertNoForbiddenReviewOutput(output, forbidden) {
+  const errors = [];
+  for (const item of forbidden ?? []) {
+    if (output.includes(item)) errors.push(`review output leaked forbidden substring ${item}`);
+  }
+  return errors;
+}
+
+function assertReviewContract(task, repoDir, review, stdout) {
+  const assertions = task.review.assertions;
+  const errors = [];
+  const directComponentIds = idsFromRows(review.direct_affected_components);
+  const dependentComponentIds = idsFromRows(review.dependent_components);
+  const affectedFlowIds = idsFromRows(review.affected_flows);
+  const affectedRelationships = reviewArray(review, 'affected_relationships');
+  const evidenceSummary = isRecord(review.review_evidence_summary)
+    ? review.review_evidence_summary
+    : {};
+  const affectedTests = Array.isArray(evidenceSummary.affected_tests)
+    ? evidenceSummary.affected_tests
+    : [];
+  const affectedConfigs = Array.isArray(evidenceSummary.affected_configs)
+    ? evidenceSummary.affected_configs
+    : [];
+
+  errors.push(
+    ...assertIncludesAll(
+      reviewArray(review, 'changed_files'),
+      assertions.changed_files_include,
+      'changed_files',
+    ),
+    ...assertExcludesAll(
+      reviewArray(review, 'changed_files'),
+      assertions.changed_files_exclude,
+      'changed_files',
+    ),
+    ...assertIncludesAll(
+      directComponentIds,
+      assertions.direct_components_include,
+      'direct_affected_components',
+    ),
+    ...assertIncludesAll(
+      dependentComponentIds,
+      assertions.dependent_components_include,
+      'dependent_components',
+    ),
+    ...assertIncludesAll(affectedFlowIds, assertions.affected_flows_include, 'affected_flows'),
+    ...assertIncludesAll(affectedTests, assertions.affected_tests_include, 'affected_tests'),
+    ...assertIncludesAll(affectedConfigs, assertions.affected_configs_include, 'affected_configs'),
+    ...assertSubstringMatches(
+      reviewArray(review, 'required_tests'),
+      assertions.required_tests_include,
+      'required_tests',
+    ),
+    ...assertSubstringMatches(
+      reviewArray(review, 'blast_radius_reasons'),
+      assertions.blast_radius_reasons_include,
+      'blast_radius_reasons',
+    ),
+    ...assertReviewFindings(review, assertions.findings_include),
+  );
+
+  if (
+    assertions.minimum_direct_components !== undefined &&
+    directComponentIds.length < assertions.minimum_direct_components
+  ) {
+    errors.push(
+      `direct_affected_components ${directComponentIds.length} below ${assertions.minimum_direct_components}`,
+    );
+  }
+  if (
+    assertions.minimum_dependent_components !== undefined &&
+    dependentComponentIds.length < assertions.minimum_dependent_components
+  ) {
+    errors.push(
+      `dependent_components ${dependentComponentIds.length} below ${assertions.minimum_dependent_components}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_flows !== undefined &&
+    affectedFlowIds.length < assertions.minimum_affected_flows
+  ) {
+    errors.push(
+      `affected_flows ${affectedFlowIds.length} below ${assertions.minimum_affected_flows}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_relationships !== undefined &&
+    affectedRelationships.length < assertions.minimum_affected_relationships
+  ) {
+    errors.push(
+      `affected_relationships ${affectedRelationships.length} below ${assertions.minimum_affected_relationships}`,
+    );
+  }
+  if (assertions.blast_radius !== undefined && review.blast_radius !== assertions.blast_radius) {
+    errors.push(`blast_radius ${review.blast_radius} did not match ${assertions.blast_radius}`);
+  }
+
+  const reportPath = safeJoin(repoDir, '.rizz/reports/review.html');
+  const report = existsSync(reportPath) ? readFileSync(reportPath, 'utf8') : '';
+  errors.push(
+    ...assertNoForbiddenReviewOutput(
+      `${stdout}\n${report}`,
+      assertions.forbidden_output_substrings,
+    ),
+  );
+  return {
+    errors,
+    summary: {
+      directComponents: directComponentIds.length,
+      dependentComponents: dependentComponentIds.length,
+      affectedFlows: affectedFlowIds.length,
+      affectedRelationships: affectedRelationships.length,
+      blastRadius: review.blast_radius,
+    },
+  };
+}
+
+function runReviewPiBenchTask(task) {
+  return withTempDirSync('rizz-pi-bench-review-', (dir) => {
+    const repoDir = materializeFixture(task, dir);
+    const errors = [];
+    gitInCwd(repoDir, ['init', '-b', 'develop']);
+    gitInCwd(repoDir, ['config', 'user.email', 'rizz@example.com']);
+    gitInCwd(repoDir, ['config', 'user.name', 'rizz eval']);
+
+    const brain = runCliInCwdSync(repoDir, ['brain'], '');
+    if (brain.error !== undefined) errors.push(String(brain.error));
+    if (brain.status !== 0) {
+      errors.push(`rizz brain exited ${brain.status}: ${brain.stderr || brain.stdout}`);
+    }
+    gitInCwd(repoDir, ['add', '.']);
+    gitInCwd(repoDir, ['commit', '-m', 'initial fixture']);
+    applyReviewDiff(task, repoDir);
+
+    const result = runCliInCwdWithGitSync(repoDir, ['review', '--json'], '');
+    if (result.error !== undefined) errors.push(String(result.error));
+    if (result.status !== 0) {
+      errors.push(`rizz review exited ${result.status}: ${result.stderr || result.stdout}`);
+    }
+    errors.push(...assertExpectedArtifacts(task, repoDir));
+    errors.push(...assertArtifactContracts(task, repoDir));
+
+    let review;
+    let reviewScore;
+    try {
+      review = JSON.parse(result.stdout);
+      reviewScore = assertReviewContract(task, repoDir, review, result.stdout);
+      errors.push(...reviewScore.errors);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`could not parse review JSON: ${message}`);
+    }
+
+    if (errors.length > 0 || reviewScore === undefined) {
+      return { ok: false, errors, summary: undefined };
+    }
+    return { ok: true, errors: [], summary: { kind: 'review', ...reviewScore.summary } };
+  });
+}
+
 function runPiBenchTask(task) {
   const schemaErrors = validatePiBenchTask(task);
   if (schemaErrors.length > 0) {
     return { ok: false, errors: schemaErrors, summary: undefined };
   }
+  if (task.category === 'review-blast-radius') return runReviewPiBenchTask(task);
 
   return withTempDirSync('rizz-pi-bench-', (dir) => {
     const repoDir = materializeFixture(task, dir);
@@ -356,6 +782,7 @@ function runPiBenchTask(task) {
       ok: true,
       errors: [],
       summary: {
+        kind: 'research',
         readinessScore: score.readinessScore,
         coverage: score.coverage,
       },
@@ -367,22 +794,30 @@ function runPiBenchTasks(loadedTasks) {
   console.log(`rizz eval — ${loadedTasks.length} PI-Bench task(s) loaded`);
   let passed = 0;
   let scoreTotal = 0;
+  let scoredTasks = 0;
   for (const task of loadedTasks) {
     const result = runPiBenchTask(task);
     if (result.ok) {
       passed += 1;
-      scoreTotal += result.summary.readinessScore;
-      const coverage = result.summary.coverage;
-      console.log(
-        `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}`,
-      );
+      if (result.summary.kind === 'review') {
+        console.log(
+          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, flows ${result.summary.affectedFlows}, relationships ${result.summary.affectedRelationships}`,
+        );
+      } else {
+        scoreTotal += result.summary.readinessScore;
+        scoredTasks += 1;
+        const coverage = result.summary.coverage;
+        console.log(
+          `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}`,
+        );
+      }
     } else {
       console.log(`  ✗ ${task?.id ?? '(missing id)'} — ${result.errors.join('; ')}`);
     }
   }
-  const averageScore = loadedTasks.length === 0 ? 0 : Math.round(scoreTotal / loadedTasks.length);
+  const averageScore = scoredTasks === 0 ? 0 : Math.round(scoreTotal / scoredTasks);
   console.log(`\n${passed}/${loadedTasks.length} PI-Bench task(s) passed`);
-  console.log(`PI-Bench average readiness score: ${averageScore}`);
+  console.log(`PI-Bench average research readiness score: ${averageScore}`);
   return { passed, total: loadedTasks.length, ok: passed === loadedTasks.length, averageScore };
 }
 
