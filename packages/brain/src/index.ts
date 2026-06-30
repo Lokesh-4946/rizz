@@ -521,6 +521,7 @@ interface AffectedFlowData {
   readonly configs: readonly string[];
   readonly risks: number;
   readonly evidence_ids: readonly string[];
+  readonly reasons: readonly string[];
 }
 
 interface ReviewAffectedComponentData {
@@ -11052,6 +11053,11 @@ function affectedFlowEntities(
       : [];
     const matchedChangedFiles = unique([...directChangedFiles, ...componentChangedFiles]);
     if (matchedChangedFiles.length === 0) return [];
+    const reasons = affectedFlowReasons({
+      flow,
+      matchedChangedFiles,
+      componentChangedFiles,
+    });
     return [
       {
         id: safeText(flow.id),
@@ -11067,10 +11073,87 @@ function affectedFlowEntities(
         configs: flowStringArray(flow, 'configs').map(safeText),
         risks: flowRisks(flow).length,
         evidence_ids: flow.evidence_ids.map(safeText),
+        reasons,
       },
     ];
   });
   return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+type FlowEvidenceCategory =
+  | 'entrypoint'
+  | 'component'
+  | 'content'
+  | 'config'
+  | 'test'
+  | 'dependency'
+  | 'source';
+
+function affectedFlowReasons(params: {
+  readonly flow: BrainEntity;
+  readonly matchedChangedFiles: readonly string[];
+  readonly componentChangedFiles: readonly string[];
+}): string[] {
+  const routeLabel = reviewFlowDescriptionLabel({
+    id: params.flow.id,
+    name: params.flow.name,
+    kind: flowKind(params.flow),
+    ...reviewRouteFlowFields(params.flow),
+    confidence: params.flow.confidence,
+    score: asFlowConfidenceScore(params.flow),
+    entrypoints: reviewFlowEntrypointLabels(params.flow),
+    changed_files: [],
+    components: flowStringArray(params.flow, 'components'),
+    tests: flowStringArray(params.flow, 'tests'),
+    configs: flowStringArray(params.flow, 'configs'),
+    risks: flowRisks(params.flow).length,
+    evidence_ids: params.flow.evidence_ids,
+    reasons: [],
+  });
+  const reasons = params.matchedChangedFiles.map((file) => {
+    const category = flowEvidenceCategoryForFile({
+      flow: params.flow,
+      file,
+      componentChangedFiles: params.componentChangedFiles,
+    });
+    return `${routeLabel} includes changed ${category} evidence: ${safeText(file)}.`;
+  });
+  return unique(reasons).slice(0, 8);
+}
+
+function flowEvidenceCategoryForFile(params: {
+  readonly flow: BrainEntity;
+  readonly file: string;
+  readonly componentChangedFiles: readonly string[];
+}): FlowEvidenceCategory {
+  const entrypointFiles = new Set(
+    flowEntrypoints(params.flow).map((entrypoint) => entrypoint.path),
+  );
+  const tests = new Set(flowStringArray(params.flow, 'tests'));
+  const configs = new Set(flowStringArray(params.flow, 'configs'));
+  if (entrypointFiles.has(params.file)) return 'entrypoint';
+  if (tests.has(params.file) || isTestPath(params.file)) return 'test';
+  if (configs.has(params.file) || isConfigPath(params.file) || isRouteConfigPath(params.file)) {
+    return 'config';
+  }
+  if (isDependencyPath(params.file)) return 'dependency';
+  if (isContentPath(params.file)) return 'content';
+  if (params.componentChangedFiles.includes(params.file) || isComponentPath(params.file)) {
+    return 'component';
+  }
+  return 'source';
+}
+
+function isContentPath(path: string): boolean {
+  return /(^|\/)(content|contents|data)\//i.test(path);
+}
+
+function isRouteConfigPath(path: string): boolean {
+  return /(^|\/)config\//i.test(path);
+}
+
+function isComponentPath(path: string): boolean {
+  return /(^|\/)(components|ui)\//i.test(path);
 }
 
 function reviewRouteFlowFields(
@@ -11187,12 +11270,13 @@ function affectedRouteFlowReasons(flows: readonly AffectedFlowData[]): string[] 
       const artifactSummary = reviewRouteArtifactSummary(linkedTests, linkedConfigs);
       const entrypointSummary = reviewRouteListSummary('Entrypoints', flow.entrypoints);
       const componentSummary = reviewRouteListSummary('Components', flow.components);
-      return `${routePath} route flow (${routeType}) is affected through ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
+      const reasonSummary = reviewRouteListSummary('Causality', flow.reasons, 5);
+      return `${routePath} route flow (${routeType}) is affected through ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${reasonSummary} ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
     });
 }
 
-function reviewRouteListSummary(label: string, values: readonly string[]): string {
-  const visibleValues = values.slice(0, 3);
+function reviewRouteListSummary(label: string, values: readonly string[], limit = 3): string {
+  const visibleValues = values.slice(0, limit);
   if (visibleValues.length === 0) return `${label}: none recorded.`;
   return `${label}: ${visibleValues.join(', ')}.`;
 }
@@ -11266,15 +11350,43 @@ function suggestedFocusAreas(
     ...componentNames.map((name) => `component: ${name}`),
     ...dependentNames.map((name) => `dependent component: ${name}`),
     ...affectedFlows.map(reviewFlowFocusLabel),
+    ...affectedFlows.flatMap(reviewFlowCausalityFocusLabels),
     ...blastRadiusReasons.slice(0, 2),
     ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
     ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
-  ]).slice(0, 8);
+  ]).slice(0, 12);
 }
 
 function reviewFlowFocusLabel(flow: AffectedFlowData): string {
   if (flow.route_path !== undefined) return `route flow: ${flow.route_path}`;
   return `flow: ${flow.name}`;
+}
+
+function reviewFlowCausalityFocusLabels(flow: AffectedFlowData): string[] {
+  if (flow.route_path === undefined) return [];
+  return flow.reasons
+    .map((reason) => routeEvidenceCategoryFromReason(reason))
+    .filter((category): category is FlowEvidenceCategory => category !== undefined)
+    .map((category) => `route flow: ${flow.route_path} ${category} evidence`);
+}
+
+function routeEvidenceCategoryFromReason(reason: string): FlowEvidenceCategory | undefined {
+  const match =
+    /changed (entrypoint|component|content|config|test|dependency|source) evidence/.exec(reason);
+  if (match === null) return undefined;
+  const category = match[1];
+  if (
+    category === 'entrypoint' ||
+    category === 'component' ||
+    category === 'content' ||
+    category === 'config' ||
+    category === 'test' ||
+    category === 'dependency' ||
+    category === 'source'
+  ) {
+    return category;
+  }
+  return undefined;
 }
 
 function reviewFlowDescriptionLabel(flow: AffectedFlowData): string {
