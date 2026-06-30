@@ -209,20 +209,31 @@ describe('project brain generation', () => {
       if (!first.ok) return;
 
       const firstIncremental = await readJson<{
+        previous_brain_fingerprint: string | null;
+        current_brain_fingerprint: string;
         scanned_files: number;
         changed_files: string[];
+        changed_file_count: number;
         new_files: string[];
         reused_files: number;
         recomputed_files: number;
         file_reuse_ratio: number;
+        added_entity_count: number;
+        changed_entity_count: number;
+        stable_entity_count: number;
+        reused_understanding_count: number;
+        recomputed_understanding_count: number;
+        scan_efficiency_score: number;
       }>(join(first.value.researchDir, 'incremental_update.json'));
       expect(firstIncremental).toMatchObject({
+        previous_brain_fingerprint: null,
         scanned_files: 3,
         changed_files: [
           'packages/brain/package.json',
           'packages/brain/src/index.test.ts',
           'packages/brain/src/index.ts',
         ],
+        changed_file_count: 3,
         new_files: [
           'packages/brain/package.json',
           'packages/brain/src/index.test.ts',
@@ -232,6 +243,13 @@ describe('project brain generation', () => {
         recomputed_files: 3,
         file_reuse_ratio: 0,
       });
+      expect(firstIncremental.current_brain_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(firstIncremental.added_entity_count).toBeGreaterThan(0);
+      expect(firstIncremental.changed_entity_count).toBe(0);
+      expect(firstIncremental.stable_entity_count).toBe(0);
+      expect(firstIncremental.reused_understanding_count).toBe(0);
+      expect(firstIncremental.recomputed_understanding_count).toBeGreaterThan(0);
+      expect(firstIncremental.scan_efficiency_score).toBe(0);
 
       await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 2;');
       const second = await generateProjectBrain({
@@ -550,9 +568,31 @@ describe('project brain generation', () => {
       expect(benchmarkReady.readiness.score).toBeGreaterThan(0);
 
       const incremental = await readJson<{
+        previous_brain_fingerprint: string;
+        current_brain_fingerprint: string;
         scanned_files: number;
         changed_files: string[];
+        changed_file_count: number;
         stale_files: string[];
+        changed_entity_count: number;
+        stable_entity_count: number;
+        added_entities: Array<{ id: string; type: string; name: string }>;
+        changed_entities: Array<{ id: string; type: string; name: string }>;
+        relationship_delta: {
+          added_count: number;
+          removed_count: number;
+          changed_count: number;
+        };
+        evidence_delta: {
+          added_count: number;
+          removed_count: number;
+          changed_count: number;
+          changed: string[];
+        };
+        reused_understanding_count: number;
+        recomputed_understanding_count: number;
+        stale_fact_count: number;
+        scan_efficiency_score: number;
         reused_files: number;
         recomputed_files: number;
         file_reuse_ratio: number;
@@ -561,12 +601,63 @@ describe('project brain generation', () => {
       expect(incremental).toMatchObject({
         scanned_files: 3,
         changed_files: ['packages/brain/src/index.ts'],
+        changed_file_count: 1,
         stale_files: [],
         reused_files: 2,
         recomputed_files: 1,
         file_reuse_ratio: 0.6667,
         file_status_counts: { changed: 1, current: 2 },
       });
+      expect(incremental.previous_brain_fingerprint).toBe(
+        firstIncremental.current_brain_fingerprint,
+      );
+      expect(incremental.current_brain_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(incremental.current_brain_fingerprint).not.toBe(
+        incremental.previous_brain_fingerprint,
+      );
+      expect(incremental.changed_entity_count).toBeGreaterThan(0);
+      expect(incremental.stable_entity_count).toBeGreaterThan(0);
+      expect(incremental.changed_entities).toContainEqual(
+        expect.objectContaining({ id: 'evidence:file-packages--brain--src--index.ts' }),
+      );
+      expect(incremental.relationship_delta).toMatchObject({
+        added_count: 0,
+        removed_count: 0,
+        changed_count: 0,
+      });
+      expect(incremental.evidence_delta).toMatchObject({
+        added_count: 0,
+        removed_count: 0,
+        changed_count: 1,
+        changed: ['evidence:file-packages--brain--src--index.ts'],
+      });
+      expect(incremental.reused_understanding_count).toBe(incremental.stable_entity_count);
+      expect(incremental.recomputed_understanding_count).toBeGreaterThan(0);
+      expect(incremental.stale_fact_count).toBe(0);
+      expect(incremental.scan_efficiency_score).toBeGreaterThan(0);
+
+      const latest = await readJson<{
+        latest_incremental_update: {
+          changed_file_count: number;
+          changed_entity_count: number;
+          reused_understanding_count: number;
+          recomputed_understanding_count: number;
+          stale_fact_count: number;
+          scan_efficiency_score: number;
+        };
+      }>(join(dir, '.rizz', 'brain', 'latest.json'));
+      expect(latest.latest_incremental_update).toMatchObject({
+        changed_file_count: 1,
+        changed_entity_count: incremental.changed_entity_count,
+        reused_understanding_count: incremental.reused_understanding_count,
+        recomputed_understanding_count: incremental.recomputed_understanding_count,
+        stale_fact_count: 0,
+        scan_efficiency_score: incremental.scan_efficiency_score,
+      });
+      const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('Incremental Understanding');
+      expect(report).toContain('changed understanding');
+      expect(report).toContain('scan efficiency');
 
       await writeFile(join(dir, 'packages', 'brain', 'src', 'extra.ts'), 'export const extra = 1;');
       const third = await generateProjectBrain({
@@ -578,6 +669,8 @@ describe('project brain generation', () => {
       const mixedIncremental = await readJson<{
         scanned_files: number;
         changed_files: string[];
+        added_entity_count: number;
+        relationship_delta: { added_count: number };
         new_files: string[];
         reused_files: number;
         recomputed_files: number;
@@ -591,6 +684,8 @@ describe('project brain generation', () => {
         recomputed_files: 1,
         file_reuse_ratio: 0.75,
       });
+      expect(mixedIncremental.added_entity_count).toBeGreaterThan(0);
+      expect(mixedIncremental.relationship_delta.added_count).toBeGreaterThan(0);
 
       const flows = await readJson<{
         entities: Array<{
@@ -1601,6 +1696,62 @@ describe('project brain generation', () => {
       const research = await readTreeText(join(dir, '.rizz', 'research'));
       expect(research).not.toContain('sk-or-v1-brainsecret');
       expect(research).toContain('redacted:sensitive-file:');
+    });
+  });
+
+  it('keeps incremental understanding metrics secret-safe for sensitive changed paths', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      const sensitivePath = join(dir, 'src', 'client_secret_incremental.ts');
+      await writeFile(sensitivePath, 'export const tokenHandler = "first";\n');
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:08:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      await writeFile(sensitivePath, 'export const tokenHandler = "second";\n');
+      const second = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:09:00.000Z'),
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+
+      const incremental = await readJson<{
+        previous_brain_fingerprint: string | null;
+        current_brain_fingerprint: string;
+        changed_file_count: number;
+        changed_files: string[];
+        changed_entity_count: number;
+        stable_entity_count: number;
+        evidence_delta: { changed_count: number; changed: string[] };
+        changed_entities: Array<{ id: string; name: string }>;
+        scan_efficiency_score: number;
+      }>(join(second.value.researchDir, 'incremental_update.json'));
+      expect(incremental.previous_brain_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(incremental.current_brain_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(incremental.changed_file_count).toBe(1);
+      expect(incremental.changed_files).toHaveLength(1);
+      expect(incremental.changed_files[0]).toMatch(/^redacted:sensitive-file:/);
+      expect(incremental.changed_entity_count).toBeGreaterThan(0);
+      expect(incremental.stable_entity_count).toBeGreaterThan(0);
+      expect(incremental.evidence_delta.changed_count).toBeGreaterThan(0);
+      expect(incremental.evidence_delta.changed).toContainEqual(
+        expect.stringMatching(/^evidence:redacted:sensitive-file:/),
+      );
+      expect(incremental.changed_entities).toContainEqual(
+        expect.objectContaining({
+          id: expect.stringMatching(/^evidence:redacted:sensitive-file:/),
+          name: expect.stringMatching(/^redacted:sensitive-file:/),
+        }),
+      );
+      expect(incremental.scan_efficiency_score).toBeGreaterThan(0);
+
+      const generated = await readTreeText(join(dir, '.rizz'));
+      expect(generated).not.toContain('client_secret_incremental.ts');
+      expect(generated).toContain('redacted:sensitive-file:');
     });
   });
 

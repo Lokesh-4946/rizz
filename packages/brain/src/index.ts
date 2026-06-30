@@ -237,6 +237,92 @@ interface PreviousFileFact {
   readonly createdAt: string;
 }
 
+interface PreviousUnderstandingState {
+  readonly entities: readonly BrainEntity[];
+  readonly relationships: readonly BrainRelationship[];
+  readonly fingerprint: string | null;
+}
+
+interface IncrementalUnderstandingMetrics {
+  readonly generated_at: string;
+  readonly previous_brain_fingerprint: string | null;
+  readonly current_brain_fingerprint: string;
+  readonly scanned_files: number;
+  readonly changed_files: readonly string[];
+  readonly changed_file_count: number;
+  readonly stale_files: readonly string[];
+  readonly stale_file_count: number;
+  readonly file_status_counts: Readonly<Record<string, number>>;
+  readonly reused_files: number;
+  readonly recomputed_files: number;
+  readonly file_reuse_ratio: number;
+  readonly current_files: readonly string[];
+  readonly new_files: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly previous_entity_count: number;
+  readonly current_entity_count: number;
+  readonly added_entity_count: number;
+  readonly removed_entity_count: number;
+  readonly changed_entity_count: number;
+  readonly stable_entity_count: number;
+  readonly added_entities: readonly IncrementalEntityDelta[];
+  readonly removed_entities: readonly IncrementalEntityDelta[];
+  readonly changed_entities: readonly IncrementalEntityDelta[];
+  readonly relationship_delta: IncrementalRelationshipDelta;
+  readonly evidence_delta: IncrementalEvidenceDelta;
+  readonly reused_understanding_count: number;
+  readonly recomputed_understanding_count: number;
+  readonly stale_fact_count: number;
+  readonly stale_fact_candidates: readonly string[];
+  readonly scan_efficiency_score: number;
+}
+
+interface IncrementalEntityDelta {
+  readonly id: string;
+  readonly type: EntityType;
+  readonly name: string;
+}
+
+interface IncrementalRelationshipDelta {
+  readonly previous_count: number;
+  readonly current_count: number;
+  readonly added_count: number;
+  readonly removed_count: number;
+  readonly changed_count: number;
+  readonly added: readonly IncrementalRelationshipItem[];
+  readonly removed: readonly IncrementalRelationshipItem[];
+  readonly changed: readonly IncrementalRelationshipItem[];
+}
+
+interface IncrementalRelationshipItem {
+  readonly from: string;
+  readonly relation: BrainRelationship['relation'];
+  readonly to: string;
+}
+
+interface IncrementalEvidenceDelta {
+  readonly previous_count: number;
+  readonly current_count: number;
+  readonly added_count: number;
+  readonly removed_count: number;
+  readonly changed_count: number;
+  readonly added: readonly string[];
+  readonly removed: readonly string[];
+  readonly changed: readonly string[];
+}
+
+interface EntitySemanticValue {
+  readonly id: string;
+  readonly type: EntityType;
+  readonly name: string;
+  readonly description: string;
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly related_entity_ids: readonly string[];
+  readonly source_files: readonly string[];
+  readonly data: unknown;
+}
+
 interface BrainBuckets {
   readonly projects: BrainEntity[];
   readonly files: BrainEntity[];
@@ -832,6 +918,132 @@ function previousEntityMap(entities: readonly BrainEntity[] | undefined): Map<st
   const out = new Map<string, BrainEntity>();
   for (const entity of entities ?? []) out.set(entity.id, entity);
   return out;
+}
+
+const UNDERSTANDING_ENTITY_TYPES = new Set<EntityType>([
+  'project',
+  'file',
+  'folder',
+  'component',
+  'service',
+  'api',
+  'database/table',
+  'config',
+  'dependency',
+  'command',
+  'test',
+  'flow',
+  'decision',
+  'risk',
+  'task',
+  'evidence',
+]);
+
+async function readPreviousUnderstandingState(
+  entitiesDir: string,
+  graphPath: string,
+): Promise<PreviousUnderstandingState> {
+  const entities: BrainEntity[] = [];
+  for (const [, fileName] of ENTITY_FILES) {
+    const entityFile = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
+      join(entitiesDir, fileName),
+    );
+    entities.push(...(entityFile?.entities ?? []));
+  }
+  const graph = await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(
+    graphPath,
+  );
+  const understandingEntities = filterUnderstandingEntities(entities);
+  const relationships = graph?.relationships ?? [];
+  return {
+    entities,
+    relationships,
+    fingerprint:
+      understandingEntities.length === 0 && relationships.length === 0
+        ? null
+        : brainFingerprint(understandingEntities, relationships),
+  };
+}
+
+function filterUnderstandingEntities(entities: readonly BrainEntity[]): BrainEntity[] {
+  return entities.filter((entity) => UNDERSTANDING_ENTITY_TYPES.has(entity.type));
+}
+
+function brainFingerprint(
+  entities: readonly BrainEntity[],
+  relationships: readonly BrainRelationship[],
+): string {
+  return stableHash({
+    entities: sorted(entities.map(entitySemanticValue), (entity) => entity.id),
+    relationships: sorted(relationships.map(relationshipSemanticValue), relationshipDeltaKey),
+  });
+}
+
+function stableHash(value: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalJsonValue(safeBrainValue(value))))
+    .digest('hex');
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => [key, canonicalJsonValue(item)]),
+  );
+}
+
+function entitySemanticValue(entity: BrainEntity): EntitySemanticValue {
+  return {
+    id: entity.id,
+    type: entity.type,
+    name: entity.name,
+    description: entity.description,
+    confidence: entity.confidence,
+    evidence_ids: unique([...entity.evidence_ids]),
+    related_entity_ids: unique([...entity.related_entity_ids]),
+    source_files: unique([...entity.source_files]),
+    data: entity.data ?? {},
+  };
+}
+
+function entitySemanticHash(entity: BrainEntity): string {
+  return stableHash(entitySemanticValue(entity));
+}
+
+function relationshipSemanticValue(relationship: BrainRelationship): IncrementalRelationshipItem & {
+  readonly confidence: Confidence;
+  readonly evidence_ids: string[];
+} {
+  return {
+    from: relationship.from,
+    relation: relationship.relation,
+    to: relationship.to,
+    confidence: relationship.confidence,
+    evidence_ids: unique([...relationship.evidence_ids]),
+  };
+}
+
+function relationshipDeltaKey(relationship: IncrementalRelationshipItem): string {
+  return `${relationship.from}\u0000${relationship.relation}\u0000${relationship.to}`;
+}
+
+function relationshipSemanticHash(relationship: BrainRelationship): string {
+  return stableHash(relationshipSemanticValue(relationship));
+}
+
+function incrementalEntityDelta(entity: BrainEntity): IncrementalEntityDelta {
+  return { id: entity.id, type: entity.type, name: entity.name };
+}
+
+function relationshipDeltaItem(relationship: BrainRelationship): IncrementalRelationshipItem {
+  return {
+    from: relationship.from,
+    relation: relationship.relation,
+    to: relationship.to,
+  };
 }
 
 function makeEntity(params: {
@@ -4004,6 +4216,151 @@ function buildBenchmarkReadyArtifact(params: {
   };
 }
 
+function buildIncrementalUnderstandingMetrics(params: {
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly buckets: BrainBuckets;
+  readonly relationships: readonly BrainRelationship[];
+  readonly changedFiles: readonly string[];
+  readonly staleFiles: readonly string[];
+  readonly previous: PreviousUnderstandingState;
+}): IncrementalUnderstandingMetrics {
+  const changedFiles = unique(params.changedFiles);
+  const staleFiles = unique(params.staleFiles);
+  const activeFileEntities = params.buckets.files.filter((file) => file.latest_status !== 'stale');
+  const currentFiles = activeFileEntities.filter((file) => file.latest_status === 'current');
+  const newFiles = activeFileEntities.filter((file) => file.latest_status === 'new');
+  const filesByStatus = countByValue(params.buckets.files.map((file) => file.latest_status));
+  const changedFileSet = new Set(changedFiles);
+  const changedFlows = params.buckets.flows.filter((flow) =>
+    flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
+  );
+  const previousEntities = filterUnderstandingEntities(params.previous.entities);
+  const currentEntities = filterUnderstandingEntities(allBucketEntities(params.buckets));
+  const previousEntityById = new Map(previousEntities.map((entity) => [entity.id, entity]));
+  const currentEntityById = new Map(currentEntities.map((entity) => [entity.id, entity]));
+  const addedEntities = currentEntities.filter((entity) => !previousEntityById.has(entity.id));
+  const removedEntities = previousEntities.filter((entity) => !currentEntityById.has(entity.id));
+  const changedEntities = currentEntities.filter((entity) => {
+    const previous = previousEntityById.get(entity.id);
+    return previous !== undefined && entitySemanticHash(previous) !== entitySemanticHash(entity);
+  });
+  const stableEntityCount = currentEntities.filter((entity) => {
+    const previous = previousEntityById.get(entity.id);
+    return previous !== undefined && entitySemanticHash(previous) === entitySemanticHash(entity);
+  }).length;
+  const relationshipDelta = buildRelationshipDelta(
+    params.previous.relationships,
+    params.relationships,
+  );
+  const evidenceDelta = buildEvidenceDelta(previousEntities, currentEntities);
+  const staleFactCandidates = unique([
+    ...staleFiles.map((file) => entityId('file', file)),
+    ...currentEntities
+      .filter((entity) => entity.latest_status === 'stale')
+      .map((entity) => entity.id),
+  ]);
+  const recomputedUnderstandingCount =
+    addedEntities.length + changedEntities.length + relationshipDelta.added_count;
+  const efficiencyDenominator =
+    stableEntityCount + recomputedUnderstandingCount + staleFactCandidates.length;
+
+  return {
+    generated_at: params.now,
+    previous_brain_fingerprint: params.previous.fingerprint,
+    current_brain_fingerprint: brainFingerprint(currentEntities, params.relationships),
+    scanned_files: params.files.length,
+    changed_files: changedFiles,
+    changed_file_count: changedFiles.length,
+    stale_files: staleFiles,
+    stale_file_count: staleFiles.length,
+    file_status_counts: filesByStatus,
+    reused_files: currentFiles.length,
+    recomputed_files: changedFiles.length,
+    file_reuse_ratio: ratio(currentFiles.length, params.files.length),
+    current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
+    new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
+    affected_flows: changedFlows.map((flow) => flow.id),
+    previous_entity_count: previousEntities.length,
+    current_entity_count: currentEntities.length,
+    added_entity_count: addedEntities.length,
+    removed_entity_count: removedEntities.length,
+    changed_entity_count: changedEntities.length,
+    stable_entity_count: stableEntityCount,
+    added_entities: sorted(addedEntities.map(incrementalEntityDelta), (entity) => entity.id),
+    removed_entities: sorted(removedEntities.map(incrementalEntityDelta), (entity) => entity.id),
+    changed_entities: sorted(changedEntities.map(incrementalEntityDelta), (entity) => entity.id),
+    relationship_delta: relationshipDelta,
+    evidence_delta: evidenceDelta,
+    reused_understanding_count: stableEntityCount,
+    recomputed_understanding_count: recomputedUnderstandingCount,
+    stale_fact_count: staleFactCandidates.length,
+    stale_fact_candidates: staleFactCandidates,
+    scan_efficiency_score: scorePercent(stableEntityCount, efficiencyDenominator),
+  };
+}
+
+function buildRelationshipDelta(
+  previousRelationships: readonly BrainRelationship[],
+  currentRelationships: readonly BrainRelationship[],
+): IncrementalRelationshipDelta {
+  const previousByKey = new Map(
+    previousRelationships.map((rel) => [relationshipDeltaKey(rel), rel]),
+  );
+  const currentByKey = new Map(currentRelationships.map((rel) => [relationshipDeltaKey(rel), rel]));
+  const added = currentRelationships.filter((relationship) => {
+    return !previousByKey.has(relationshipDeltaKey(relationship));
+  });
+  const removed = previousRelationships.filter((relationship) => {
+    return !currentByKey.has(relationshipDeltaKey(relationship));
+  });
+  const changed = currentRelationships.filter((relationship) => {
+    const previous = previousByKey.get(relationshipDeltaKey(relationship));
+    return (
+      previous !== undefined &&
+      relationshipSemanticHash(previous) !== relationshipSemanticHash(relationship)
+    );
+  });
+
+  return {
+    previous_count: previousRelationships.length,
+    current_count: currentRelationships.length,
+    added_count: added.length,
+    removed_count: removed.length,
+    changed_count: changed.length,
+    added: sorted(added.map(relationshipDeltaItem), relationshipDeltaKey),
+    removed: sorted(removed.map(relationshipDeltaItem), relationshipDeltaKey),
+    changed: sorted(changed.map(relationshipDeltaItem), relationshipDeltaKey),
+  };
+}
+
+function buildEvidenceDelta(
+  previousEntities: readonly BrainEntity[],
+  currentEntities: readonly BrainEntity[],
+): IncrementalEvidenceDelta {
+  const previousEvidence = previousEntities.filter((entity) => entity.type === 'evidence');
+  const currentEvidence = currentEntities.filter((entity) => entity.type === 'evidence');
+  const previousById = new Map(previousEvidence.map((entity) => [entity.id, entity]));
+  const currentById = new Map(currentEvidence.map((entity) => [entity.id, entity]));
+  const added = currentEvidence.filter((entity) => !previousById.has(entity.id));
+  const removed = previousEvidence.filter((entity) => !currentById.has(entity.id));
+  const changed = currentEvidence.filter((entity) => {
+    const previous = previousById.get(entity.id);
+    return previous !== undefined && entitySemanticHash(previous) !== entitySemanticHash(entity);
+  });
+
+  return {
+    previous_count: previousEvidence.length,
+    current_count: currentEvidence.length,
+    added_count: added.length,
+    removed_count: removed.length,
+    changed_count: changed.length,
+    added: added.map((entity) => entity.id).sort((a, b) => a.localeCompare(b)),
+    removed: removed.map((entity) => entity.id).sort((a, b) => a.localeCompare(b)),
+    changed: changed.map((entity) => entity.id).sort((a, b) => a.localeCompare(b)),
+  };
+}
+
 function buildResearchArtifacts(params: {
   readonly projectName: string;
   readonly now: string;
@@ -4014,6 +4371,7 @@ function buildResearchArtifacts(params: {
   readonly packageManager: string;
   readonly changedFiles: readonly string[];
   readonly staleFiles: readonly string[];
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
 }): Record<keyof typeof RESEARCH_ARTIFACT_FILES, unknown> {
   const entities = allBucketEntities(params.buckets);
   const entityCounts = Object.fromEntries(
@@ -4029,8 +4387,6 @@ function buildResearchArtifacts(params: {
   const mappedActiveFiles = activeFileEntities.filter((file) =>
     componentSourceFiles.has(file.name),
   );
-  const currentFiles = activeFileEntities.filter((file) => file.latest_status === 'current');
-  const newFiles = activeFileEntities.filter((file) => file.latest_status === 'new');
   const flows = params.buckets.flows;
   const flowStepCount = flows.reduce((count, flow) => count + flowSteps(flow).length, 0);
   const flowRiskCount = flows.reduce((count, flow) => count + flowRisks(flow).length, 0);
@@ -4187,19 +4543,7 @@ function buildResearchArtifacts(params: {
       buckets: params.buckets,
       relationships: params.relationships,
     }),
-    incrementalUpdate: {
-      generated_at: params.now,
-      scanned_files: params.files.length,
-      changed_files: changedFiles,
-      stale_files: staleFiles,
-      file_status_counts: filesByStatus,
-      reused_files: currentFiles.length,
-      recomputed_files: changedFiles.length,
-      file_reuse_ratio: ratio(currentFiles.length, params.files.length),
-      current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
-      new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
-      affected_flows: changedFlows.map((flow) => flow.id),
-    },
+    incrementalUpdate: params.incrementalMetrics,
     flowUnderstanding: {
       generated_at: params.now,
       total_flows: flows.length,
@@ -4375,6 +4719,7 @@ function buildLatest(params: {
   readonly relationships: readonly BrainRelationship[];
   readonly changedFiles: readonly string[];
   readonly staleFiles: readonly string[];
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
 }): Record<string, unknown> {
   const componentMap = params.buckets.components.map((component) => ({
     id: component.id,
@@ -4456,6 +4801,30 @@ function buildLatest(params: {
     latest_flow_map: flowMap,
     latest_architecture_reasoning: architectureReasoning,
     latest_evidence_quality: evidenceQuality,
+    latest_incremental_update: {
+      previous_brain_fingerprint: params.incrementalMetrics.previous_brain_fingerprint,
+      current_brain_fingerprint: params.incrementalMetrics.current_brain_fingerprint,
+      changed_file_count: params.incrementalMetrics.changed_file_count,
+      changed_entity_count: params.incrementalMetrics.changed_entity_count,
+      stable_entity_count: params.incrementalMetrics.stable_entity_count,
+      added_entity_count: params.incrementalMetrics.added_entity_count,
+      removed_entity_count: params.incrementalMetrics.removed_entity_count,
+      reused_understanding_count: params.incrementalMetrics.reused_understanding_count,
+      recomputed_understanding_count: params.incrementalMetrics.recomputed_understanding_count,
+      stale_fact_count: params.incrementalMetrics.stale_fact_count,
+      stale_fact_candidates: params.incrementalMetrics.stale_fact_candidates.slice(0, 25),
+      scan_efficiency_score: params.incrementalMetrics.scan_efficiency_score,
+      relationship_delta: {
+        added_count: params.incrementalMetrics.relationship_delta.added_count,
+        removed_count: params.incrementalMetrics.relationship_delta.removed_count,
+        changed_count: params.incrementalMetrics.relationship_delta.changed_count,
+      },
+      evidence_delta: {
+        added_count: params.incrementalMetrics.evidence_delta.added_count,
+        removed_count: params.incrementalMetrics.evidence_delta.removed_count,
+        changed_count: params.incrementalMetrics.evidence_delta.changed_count,
+      },
+    },
     latest_risks: risks,
     latest_review_status: {
       status: 'not_run',
@@ -5050,6 +5419,64 @@ function renderEvidenceQuality(value: unknown): string {
   </div>`;
 }
 
+function renderIncrementalUnderstanding(value: unknown): string {
+  if (!isRecord(value)) {
+    return '<p class="muted">No incremental understanding summary is available yet. Run <code>rizz brain</code> to refresh.</p>';
+  }
+  const changedFiles = typeof value.changed_file_count === 'number' ? value.changed_file_count : 0;
+  const changedEntities =
+    typeof value.changed_entity_count === 'number' ? value.changed_entity_count : 0;
+  const addedEntities = typeof value.added_entity_count === 'number' ? value.added_entity_count : 0;
+  const removedEntities =
+    typeof value.removed_entity_count === 'number' ? value.removed_entity_count : 0;
+  const stableEntities =
+    typeof value.stable_entity_count === 'number' ? value.stable_entity_count : 0;
+  const reusedUnderstanding =
+    typeof value.reused_understanding_count === 'number'
+      ? value.reused_understanding_count
+      : stableEntities;
+  const recomputedUnderstanding =
+    typeof value.recomputed_understanding_count === 'number'
+      ? value.recomputed_understanding_count
+      : changedEntities + addedEntities;
+  const staleFacts = typeof value.stale_fact_count === 'number' ? value.stale_fact_count : 0;
+  const scanEfficiency =
+    typeof value.scan_efficiency_score === 'number' ? value.scan_efficiency_score : 0;
+  const staleCandidates = asStringArray(value.stale_fact_candidates).slice(0, 8);
+  const relationshipDelta = isRecord(value.relationship_delta) ? value.relationship_delta : {};
+  const evidenceDelta = isRecord(value.evidence_delta) ? value.evidence_delta : {};
+  const relationshipLabels = [
+    `added: ${String(relationshipDelta.added_count ?? 0)}`,
+    `removed: ${String(relationshipDelta.removed_count ?? 0)}`,
+    `changed: ${String(relationshipDelta.changed_count ?? 0)}`,
+  ];
+  const evidenceLabels = [
+    `added: ${String(evidenceDelta.added_count ?? 0)}`,
+    `removed: ${String(evidenceDelta.removed_count ?? 0)}`,
+    `changed: ${String(evidenceDelta.changed_count ?? 0)}`,
+  ];
+  return `<div class="grid">
+    <article class="card"><h3>Changed Understanding</h3>${renderList([
+      `${changedFiles} changed file(s)`,
+      `${changedEntities} changed entity/entities`,
+      `${addedEntities} added entity/entities`,
+      `${removedEntities} removed entity/entities`,
+    ])}</article>
+    <article class="card"><h3>Reuse</h3>${renderList([
+      `${reusedUnderstanding} reused understanding item(s)`,
+      `${recomputedUnderstanding} recomputed understanding item(s)`,
+      `${stableEntities} stable entity/entities`,
+    ])}</article>
+    <article class="card"><h3>Stale Candidates</h3>${renderList([
+      `${staleFacts} stale fact candidate(s)`,
+      ...staleCandidates,
+    ])}</article>
+    <article class="card"><h3>Scan Efficiency</h3><p>${scanEfficiency}/100</p></article>
+    <article class="card"><h3>Relationship Delta</h3>${renderList(relationshipLabels)}</article>
+    <article class="card"><h3>Evidence Delta</h3>${renderList(evidenceLabels)}</article>
+  </div>`;
+}
+
 function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
   if (evidence.length === 0) return '<p class="muted">No evidence records detected yet.</p>';
   return evidence
@@ -5102,6 +5529,17 @@ function renderReport(params: {
     confidenceGaps.length +
     params.buckets.components.filter((component) => component.confidence !== 'verified').length;
   const generatedAt = String(params.latest.generated_at ?? 'unknown');
+  const incrementalUpdate = isRecord(params.latest.latest_incremental_update)
+    ? params.latest.latest_incremental_update
+    : {};
+  const changedUnderstanding =
+    typeof incrementalUpdate.changed_entity_count === 'number'
+      ? incrementalUpdate.changed_entity_count
+      : 0;
+  const scanEfficiency =
+    typeof incrementalUpdate.scan_efficiency_score === 'number'
+      ? incrementalUpdate.scan_efficiency_score
+      : 0;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -5155,6 +5593,8 @@ function renderReport(params: {
         <span class="badge warn">${unknownCount} unknowns</span>
         <span class="badge">${params.buckets.evidence.length} evidence records</span>
         <span class="badge">${params.relationships.length} relationships</span>
+        <span class="badge">${changedUnderstanding} changed understanding</span>
+        <span class="badge">${scanEfficiency}/100 scan efficiency</span>
       </div>
     </header>
     <section class="toolbar" aria-label="Portal filters">
@@ -5190,6 +5630,11 @@ function renderReport(params: {
       <h2>Evidence Quality</h2>
       <p class="muted">Trust posture for local Project Intelligence claims, evidence references, confidence, and redaction safety.</p>
       ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
+    </section>
+    <section>
+      <h2>Incremental Understanding</h2>
+      <p class="muted">How much project understanding changed, reused prior facts, or may now be stale after the latest scan.</p>
+      ${renderIncrementalUnderstanding(params.latest.latest_incremental_update)}
     </section>
     <section>
       <h2>How To Run Locally</h2>
@@ -5753,6 +6198,10 @@ export async function generateProjectBrain(
     const previousFlowFile = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'flows.json'),
     );
+    const previousUnderstanding = await readPreviousUnderstandingState(
+      entitiesDir,
+      join(brainDir, 'graph.json'),
+    );
     const ignorePatterns = await readRizzIgnore(rootDir);
     const previousFiles = previousFileFacts(previous?.entities);
     const previousFlows = previousEntityMap(previousFlowFile?.entities);
@@ -5770,15 +6219,29 @@ export async function generateProjectBrain(
       previousFlows,
       packageFacts,
     });
+    const graph = {
+      generated_at: now,
+      relationships: sorted(built.relationships, (rel) => `${rel.from}:${rel.relation}:${rel.to}`),
+    };
+    const incrementalMetrics = buildIncrementalUnderstandingMetrics({
+      now,
+      files,
+      buckets: built.buckets,
+      relationships: graph.relationships,
+      changedFiles: built.changedFiles,
+      staleFiles: built.staleFiles,
+      previous: previousUnderstanding,
+    });
     const latest = buildLatest({
       projectName,
       now,
       stack: built.stack,
       packageManager: built.packageManager,
       buckets: built.buckets,
-      relationships: built.relationships,
+      relationships: graph.relationships,
       changedFiles: built.changedFiles,
       staleFiles: built.staleFiles,
+      incrementalMetrics,
     });
     const index = {
       generated_at: now,
@@ -5807,10 +6270,6 @@ export async function generateProjectBrain(
         benchmark_ready: '.rizz/research/benchmark_ready.json',
       },
     };
-    const graph = {
-      generated_at: now,
-      relationships: sorted(built.relationships, (rel) => `${rel.from}:${rel.relation}:${rel.to}`),
-    };
     const researchArtifacts = buildResearchArtifacts({
       projectName,
       now,
@@ -5821,6 +6280,7 @@ export async function generateProjectBrain(
       packageManager: built.packageManager,
       changedFiles: built.changedFiles,
       staleFiles: built.staleFiles,
+      incrementalMetrics,
     });
     const report = renderReport({
       projectName,
