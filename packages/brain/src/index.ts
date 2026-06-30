@@ -7277,6 +7277,101 @@ function renderIncrementalUnderstanding(value: unknown): string {
   </div>`;
 }
 
+function qualityBandFromScore(score: number): 'weak' | 'usable' | 'strong' {
+  if (score >= 80) return 'strong';
+  if (score >= 50) return 'usable';
+  return 'weak';
+}
+
+function metricCard(params: {
+  readonly label: string;
+  readonly value: string;
+  readonly posture: string;
+  readonly summary: string;
+}): string {
+  return `<article class="metric ${htmlEscape(params.posture)}">
+    <p class="metric-label">${htmlEscape(params.label)}</p>
+    <p class="metric-value">${htmlEscape(params.value)}</p>
+    <p class="metric-posture">${htmlEscape(params.posture)}</p>
+    <p class="muted">${htmlEscape(params.summary)}</p>
+  </article>`;
+}
+
+function metricSummaryFromScore(score: number): string {
+  const posture = qualityBandFromScore(score);
+  if (posture === 'strong') return 'Direct evidence is good enough for review orientation.';
+  if (posture === 'usable') return 'Usable for orientation; verify before relying on it.';
+  return 'Weak data. Treat this report as a starting point, not a decision record.';
+}
+
+function reviewReadinessMetric(score: unknown): {
+  readonly value: number;
+  readonly posture: string;
+} {
+  if (!isRecord(score) || !isRecord(score.dimensions)) {
+    return { value: 0, posture: 'weak' };
+  }
+  const review = score.dimensions.review_readiness;
+  if (!isRecord(review)) return { value: 0, posture: 'weak' };
+  const value = recordNumber(review, 'score');
+  return { value, posture: qualityBandFromScore(value) };
+}
+
+function evidenceQualityMetric(value: unknown): {
+  readonly value: number;
+  readonly posture: string;
+} {
+  if (!isRecord(value)) return { value: 0, posture: 'weak' };
+  const score = typeof value.overall_score === 'number' ? value.overall_score : 0;
+  const posture =
+    typeof value.quality_band === 'string' ? value.quality_band : qualityBandFromScore(score);
+  return { value: score, posture };
+}
+
+function unknownRiskMetric(unknownCount: number): {
+  readonly value: string;
+  readonly posture: string;
+} {
+  if (unknownCount <= 2) return { value: String(unknownCount), posture: 'strong' };
+  if (unknownCount <= 8) return { value: String(unknownCount), posture: 'usable' };
+  return { value: String(unknownCount), posture: 'weak' };
+}
+
+function renderArtifactLinks(): string {
+  const artifacts = [
+    '.rizz/brain/latest.json',
+    '.rizz/brain/graph.json',
+    '.rizz/brain/entities/components.json',
+    '.rizz/brain/entities/flows.json',
+    '.rizz/brain/entities/evidence.json',
+    '.rizz/research/evidence_quality.json',
+    '.rizz/research/understanding_score.json',
+    '.rizz/research/architecture_reasoning.json',
+  ];
+  return `<ul class="artifact-links">${artifacts
+    .map((artifact) => `<li><code>${htmlEscape(artifact)}</code></li>`)
+    .join('')}</ul>`;
+}
+
+function renderObjectDetails(params: {
+  readonly title: string;
+  readonly summary: string;
+  readonly body: string;
+  readonly count?: number;
+  readonly posture?: string;
+}): string {
+  const count = params.count === undefined ? '' : `<span>${params.count}</span>`;
+  const posture = params.posture === undefined ? '' : `<span>${htmlEscape(params.posture)}</span>`;
+  return `<details class="object">
+    <summary>
+      <span>${htmlEscape(params.title)}</span>
+      <span class="summary-meta">${count}${posture}</span>
+    </summary>
+    <p class="muted">${htmlEscape(params.summary)}</p>
+    ${params.body}
+  </details>`;
+}
+
 function renderDimensionCards(score: unknown): string {
   if (!isRecord(score) || !isRecord(score.dimensions)) {
     return '<p class="muted">No understanding score is available yet.</p>';
@@ -7442,6 +7537,74 @@ function renderReport(params: {
     ? params.latest.latest_understanding_score
     : {};
   const overallUnderstanding = recordNumber(understandingScore, 'overall_score');
+  const understandingPosture = qualityBandFromScore(overallUnderstanding);
+  const evidenceQuality = evidenceQualityMetric(params.latest.latest_evidence_quality);
+  const reviewReadiness = reviewReadinessMetric(understandingScore);
+  const unknownRisk = unknownRiskMetric(unknownCount);
+  const componentObject = renderObjectDetails({
+    title: 'Components',
+    summary:
+      'Product and code boundaries reconstructed from manifests, source files, imports, tests, and local evidence.',
+    count: params.buckets.components.length,
+    posture: params.buckets.components.length === 0 ? 'weak' : 'usable',
+    body: `<div class="grid">${renderComponentCards(params.buckets.components, evidenceById)}</div>`,
+  });
+  const flowObject = renderObjectDetails({
+    title: 'Flows',
+    summary:
+      'Static local flow maps. Use them for review orientation, then confirm important paths in source.',
+    count: params.buckets.flows.length,
+    posture: params.buckets.flows.length === 0 ? 'weak' : 'usable',
+    body: `<div class="grid">${renderFlowCards(params.buckets.flows, evidenceById)}</div>`,
+  });
+  const architectureObject = renderObjectDetails({
+    title: 'Architecture',
+    summary:
+      'Reasoning from relationships, component pressure, coupling, boundaries, and evidence gaps.',
+    posture: understandingPosture,
+    body: `<p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
+      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}`,
+  });
+  const reviewObject = renderObjectDetails({
+    title: 'Review Blast Radius',
+    summary: 'Latest review posture from the current git diff and project brain.',
+    posture: reviewReadiness.posture,
+    body: `${renderLatestReview(params.latest)}
+      <h3>Risk Areas</h3>
+      <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>`,
+  });
+  const evidenceObject = renderObjectDetails({
+    title: 'Evidence',
+    summary: 'Raw local evidence records and artifact paths. Keep these links visible for audit.',
+    count: params.buckets.evidence.length,
+    posture: evidenceQuality.posture,
+    body: `<h3>Quality</h3>
+      ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
+      <h3>Raw Artifacts</h3>
+      ${renderArtifactLinks()}
+      <h3>Evidence Records</h3>
+      <div class="grid">${renderEvidenceIndex(params.buckets.evidence)}</div>`,
+  });
+  const unknownObject = renderObjectDetails({
+    title: 'Unknowns',
+    summary: 'Open questions and low-confidence areas. Weak data stays visible as weak data.',
+    count: unknownCount,
+    posture: unknownRisk.posture,
+    body: `<div class="grid">${renderUnknowns({
+      latest: params.latest,
+      components: params.buckets.components,
+    })}</div>`,
+  });
+  const readFirstObject = renderObjectDetails({
+    title: 'Read First',
+    summary: 'Smallest useful entry points before changing or reviewing the project.',
+    body: `<h2>Start Here</h2>
+      <div class="grid">${renderReadFirstPointers(understandingScore)}</div>
+      <h3>Entry Points</h3>
+      <div class="grid">${renderStartHere(params.buckets.components, evidenceById)}</div>
+      <h3>Recommended Next Actions</h3>
+      ${renderList(recommendedActions.slice(0, 5))}`,
+  });
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -7449,39 +7612,49 @@ function renderReport(params: {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mission Control · ${htmlEscape(params.projectName)}</title>
   <style>
-    :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; --danger: #fda4af; }
+    :root { color-scheme: light dark; --bg: #101114; --panel: #17191f; --text: #f2efe7; --muted: #aaa59a; --line: #30333b; --accent: #e3b341; --ok: #5fb3a1; --warn: #fbbf24; --danger: #d98a7a; }
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
-    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 64px; }
+    main { max-width: 1120px; margin: 0 auto; padding: 28px 18px 56px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
-    h1 { font-size: clamp(28px, 4vw, 44px); margin: 0 0 8px; letter-spacing: 0; }
-    h2 { margin-top: 34px; }
+    h1 { font-size: 34px; margin: 0 0 8px; letter-spacing: 0; }
+    h2 { margin-top: 28px; }
+    h3 { margin-bottom: 8px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-    .scoreline { display: grid; grid-template-columns: minmax(180px, 0.8fr) repeat(2, minmax(240px, 1fr)); gap: 14px; margin-bottom: 14px; }
-    .card, details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-    .scorecard { display: flex; flex-direction: column; justify-content: space-between; min-height: 150px; }
-    .score { font-size: 64px; line-height: 0.95; margin: 8px 0; font-weight: 800; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 22px 0; }
+    .metric, .card, details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    .metric.strong { border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); }
+    .metric.usable { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+    .metric.weak { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
+    .metric-label { color: var(--muted); margin: 0 0 8px; }
+    .metric-value { font-size: 42px; line-height: 1; margin: 0; font-weight: 750; }
+    .metric-posture { margin: 8px 0; text-transform: lowercase; color: var(--accent); }
     .compact { padding: 12px; }
     .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .badge.warn { color: var(--warn); }
     .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-    .toolbar { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 92%, transparent); border-bottom: 1px solid var(--line); padding: 10px 0; }
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-    .chip { border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); padding: 6px 10px; cursor: pointer; }
-    .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+    .objects { display: grid; gap: 12px; margin-top: 18px; }
+    .object { padding: 0; overflow: hidden; }
+    .object > summary { display: flex; justify-content: space-between; gap: 12px; padding: 16px; cursor: pointer; font-weight: 750; }
+    .object > summary::-webkit-details-marker { display: none; }
+    .object > summary::before { content: "+"; color: var(--accent); margin-right: 8px; }
+    .object[open] > summary::before { content: "-"; }
+    .object > :not(summary) { margin-left: 16px; margin-right: 16px; }
+    .object > :last-child { margin-bottom: 16px; }
+    .summary-meta { display: flex; gap: 8px; color: var(--muted); font-weight: 500; }
     .muted { color: var(--muted); }
     .evidence-block { border-left: 2px solid var(--line); margin-top: 8px; padding-left: 10px; }
     .evidence-links { padding-left: 18px; }
+    .artifact-links { columns: 2; }
     a { color: var(--accent); overflow-wrap: anywhere; }
     h4 { margin: 16px 0 6px; }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
-    input { width: 100%; box-sizing: border-box; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: #05070a; color: var(--text); margin: 8px 0 14px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
     summary { cursor: pointer; font-weight: 700; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-    @media (max-width: 760px) { .scoreline { grid-template-columns: 1fr; } }
-    @media (max-width: 520px) { main { padding: 20px 12px 48px; } table { display: block; overflow-x: auto; } .score { font-size: 48px; } }
-    @media print { .toolbar, script { display: none; } body { background: #fff; color: #000; } .card, details { break-inside: avoid; border-color: #999; } a { color: #000; } }
+    @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .artifact-links { columns: 1; } }
+    @media (max-width: 560px) { main { padding: 20px 12px 48px; } h1 { font-size: 28px; } .metrics { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } .metric-value { font-size: 36px; } }
+    @media print { body { background: #fff; color: #000; } .card, details, .metric { break-inside: avoid; border-color: #999; } a { color: #000; } }
   </style>
 </head>
 <body>
@@ -7492,6 +7665,35 @@ function renderReport(params: {
       <p class="muted">Static local view generated from <code>.rizz/brain</code>. No server. No network. No model call.</p>
       <p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
       <p class="muted">Generated ${htmlEscape(generatedAt)} · Project Intelligence Store · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
+      <div class="metrics" aria-label="Mission Control scorecard">
+        ${metricCard({
+          label: 'Understanding Score',
+          value: `${overallUnderstanding}/100`,
+          posture: understandingPosture,
+          summary: metricSummaryFromScore(overallUnderstanding),
+        })}
+        ${metricCard({
+          label: 'Evidence Quality',
+          value: `${evidenceQuality.value}/100`,
+          posture: evidenceQuality.posture,
+          summary: metricSummaryFromScore(evidenceQuality.value),
+        })}
+        ${metricCard({
+          label: 'Review Readiness',
+          value: `${reviewReadiness.value}/100`,
+          posture: reviewReadiness.posture,
+          summary: metricSummaryFromScore(reviewReadiness.value),
+        })}
+        ${metricCard({
+          label: 'Unknown Risk',
+          value: unknownRisk.value,
+          posture: unknownRisk.posture,
+          summary:
+            unknownCount === 0
+              ? 'No open unknowns recorded.'
+              : 'Open unknowns need source confirmation.',
+        })}
+      </div>
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
         <span class="badge">${params.buckets.flows.length} flows</span>
@@ -7499,87 +7701,34 @@ function renderReport(params: {
         <span class="badge warn">${unknownCount} unknowns</span>
         <span class="badge">${params.buckets.evidence.length} evidence records</span>
         <span class="badge">${params.relationships.length} relationships</span>
-        <span class="badge">${overallUnderstanding}/100 understanding</span>
         <span class="badge">${changedUnderstanding} changed understanding</span>
         <span class="badge">${scanEfficiency}/100 scan efficiency</span>
       </div>
     </header>
-    ${renderUnderstandingDashboard(understandingScore)}
-    <section class="toolbar" aria-label="Portal filters">
-      <label class="sr-only" for="global-filter">Search project intelligence</label>
-      <input id="global-filter" placeholder="Search components, files, risks, commands, evidence..." autocomplete="off">
-      <div class="chips" aria-label="Filter chips">
-        <button class="chip" type="button" data-filter="all" aria-pressed="true">All</button>
-        <button class="chip" type="button" data-filter="critical">High criticality</button>
-        <button class="chip" type="button" data-filter="risk">Risks</button>
-        <button class="chip" type="button" data-filter="unknown">Unknowns</button>
-        <button class="chip" type="button" data-filter="verified">Verified</button>
-        <button class="chip" type="button" data-filter="inferred">Inferred</button>
-        <button class="chip" type="button" data-filter="uncertain">Uncertain</button>
-      </div>
-      <p class="muted" id="filter-count">Showing all local intelligence.</p>
+    <section class="objects" aria-label="Mission Control objects">
+      ${componentObject}
+      ${flowObject}
+      ${architectureObject}
+      ${reviewObject}
+      ${evidenceObject}
+      ${unknownObject}
+      ${readFirstObject}
     </section>
-    <section>
-      <h2>Start Here</h2>
-      <p class="muted">Read this first. Open high-criticality components before editing, then check risks and unknowns before trusting inferred facts.</p>
-      <div class="grid">${renderStartHere(params.buckets.components, evidenceById)}</div>
-      <h3>Recommended Next Actions</h3>
-      ${renderList(recommendedActions.slice(0, 5))}
-    </section>
-    <section>
-      <h2>Overview</h2>
+    <details class="object">
+      <summary><span>Runbook</span><span class="summary-meta"><span>local</span></span></summary>
+      <h3>Overview</h3>
       <div class="grid">
         <article class="card"><h3>Tech Stack</h3>${renderList(params.stack)}</article>
         <article class="card"><h3>Package Manager</h3><p>${htmlEscape(params.packageManager)}</p></article>
         <article class="card"><h3>Relationships</h3><p>${params.relationships.length}</p></article>
       </div>
-    </section>
-    <section>
-      <h2>Evidence Quality</h2>
-      <p class="muted">Trust posture for local Project Intelligence claims, evidence references, confidence, and redaction safety.</p>
-      ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
-    </section>
-    <section>
-      <h2>Incremental Understanding</h2>
-      <p class="muted">How much project understanding changed, reused prior facts, or may now be stale after the latest scan.</p>
-      ${renderIncrementalUnderstanding(params.latest.latest_incremental_update)}
-    </section>
-    <section>
-      <h2>How To Run Locally</h2>
-      <p class="muted">Detected commands are copied from project manifests and should be verified by a human before release docs rely on them.</p>
+      <h3>How To Run Locally</h3>
       ${renderList(commands)}
-    </section>
-    <section>
-      <h2>How To Test</h2>
+      <h3>How To Test</h3>
       ${renderList(testCommands)}
-    </section>
-    <section>
-      <h2>Risk Areas</h2>
-      <p class="muted">Known or inferred places where edits deserve extra attention.</p>
-      <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>
-    </section>
-    <section>
-      <h2>Latest Review</h2>
-      <p class="muted">Latest review reads the current git diff against the project brain.</p>
-      ${renderLatestReview(params.latest)}
-    </section>
-    <section>
-      <h2>Component Intelligence</h2>
-      <div class="grid">${renderComponentCards(params.buckets.components, evidenceById)}</div>
-    </section>
-    <section>
-      <h2>Architecture Reasoning</h2>
-      <details open><summary>Current reasoning</summary><p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p></details>
-      <p class="muted">Deterministic static reasoning from components, flows, relationships, evidence, and confidence. It is not runtime tracing.</p>
-      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}
-    </section>
-    <section>
-      <h2>Flow Understanding</h2>
-      <p class="muted">Static local flow maps reconstructed from scripts, routes, imports, configs, tests, and component evidence.</p>
-      <div class="grid">${renderFlowCards(params.buckets.flows, evidenceById)}</div>
-    </section>
-    <section>
-      <h2>Dependency Graph</h2>
+      <h3>Incremental Understanding</h3>
+      ${renderIncrementalUnderstanding(params.latest.latest_incremental_update)}
+      <h3>Dependency Graph</h3>
       <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>
         ${params.relationships
           .map(
@@ -7590,78 +7739,16 @@ function renderReport(params: {
           )
           .join('')}
       </tbody></table>
-    </section>
-    <section>
-      <h2>Configuration & Environment</h2>
+      <h3>Configuration & Environment</h3>
       <div class="grid">${renderEntityCards(params.buckets.configs)}</div>
-    </section>
-    <section>
-      <h2>New Developer Onboarding Guide</h2>
-      <p>Start with the component map, then open the evidence index. Prefer verified facts before inferred facts.</p>
-    </section>
-    <section>
-      <h2>Unknowns</h2>
-      <p class="muted">Questions the brain cannot answer confidently yet. Treat these as read-before-edit prompts.</p>
-      <div class="grid">${renderUnknowns({
-        latest: params.latest,
-        components: params.buckets.components,
-      })}</div>
-    </section>
-    <section>
-      <h2>Confidence Guide</h2>
+      <h3>Confidence Guide</h3>
       <div class="grid">
-        <article class="card"><h3>verified</h3><p>Backed by direct file or manifest evidence.</p></article>
-        <article class="card"><h3>inferred</h3><p>Derived from names, paths, scripts, or relationships.</p></article>
-        <article class="card"><h3>uncertain</h3><p>Weak or incomplete evidence. Confirm before relying on it.</p></article>
+        <article class="card"><h3>strong</h3><p>Direct evidence is good enough for review orientation.</p></article>
+        <article class="card"><h3>usable</h3><p>Useful for navigation; confirm before relying on it.</p></article>
+        <article class="card"><h3>weak</h3><p>Incomplete or unsupported. Treat as a queue for evidence work.</p></article>
       </div>
-    </section>
-    <section>
-      <h2>FAQ</h2>
-      <details><summary>Where did this come from?</summary><p>From <code>.rizz/brain</code>: deterministic local scan output and review artifacts.</p></details>
-      <details><summary>Should agents reread every file?</summary><p>No. Agents should read <code>.rizz/brain/latest.json</code>, then relevant entities and evidence before opening source files.</p></details>
-      <details><summary>Can I trust inferred facts?</summary><p>Use them for orientation. Depend on verified evidence for decisions.</p></details>
-      <details><summary>How do I refresh this?</summary><p>Run <code>rizz brain</code> after meaningful repo changes.</p></details>
-      <details><summary>How do reviews appear here?</summary><p>Run <code>rizz review</code>; the latest review status and findings are added to the brain.</p></details>
-    </section>
-    <section>
-      <h2>Evidence</h2>
-      <p class="muted">Facts are only useful when their source is visible. Prefer verified evidence before inferred claims.</p>
-      <div class="grid">${renderEvidenceIndex(params.buckets.evidence)}</div>
-    </section>
+    </details>
   </main>
-  <script>
-    const filter = document.getElementById('global-filter');
-    const count = document.getElementById('filter-count');
-    const chips = Array.from(document.querySelectorAll('.chip'));
-    const items = Array.from(document.querySelectorAll('[data-search]'));
-    let activeFilter = 'all';
-    function matchesKind(item) {
-      if (activeFilter === 'all') return true;
-      if (activeFilter === 'critical') return item.dataset.criticality === 'high';
-      if (activeFilter === 'risk') return item.dataset.kind === 'risk';
-      if (activeFilter === 'unknown') return item.dataset.kind === 'unknown';
-      return item.dataset.confidence === activeFilter;
-    }
-    function applyFilter() {
-      const q = (filter?.value ?? '').toLowerCase();
-      let shown = 0;
-      for (const item of items) {
-        const ok = item.dataset.search.toLowerCase().includes(q) && matchesKind(item);
-        item.style.display = ok ? '' : 'none';
-        if (ok) shown += 1;
-      }
-      if (count) count.textContent = shown === 0 ? 'No local intelligence matches this filter.' : 'Showing ' + shown + ' of ' + items.length + ' items.';
-    }
-    filter?.addEventListener('input', applyFilter);
-    for (const chip of chips) {
-      chip.addEventListener('click', () => {
-        activeFilter = chip.dataset.filter ?? 'all';
-        for (const other of chips) other.setAttribute('aria-pressed', String(other === chip));
-        applyFilter();
-      });
-    }
-    applyFilter();
-  </script>
 </body>
 </html>
 `;

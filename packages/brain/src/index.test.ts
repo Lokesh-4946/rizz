@@ -813,17 +813,23 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(report).toContain('Project Intelligence');
       expect(report).toContain('Understanding Score');
+      expect(report).toContain('Evidence Quality');
+      expect(report).toContain('Unknown Risk');
+      expect(report).toContain('Mission Control scorecard');
       expect(report).toContain('Components');
       expect(report).toContain('Flows');
       expect(report).toContain('Architecture');
       expect(report).toContain('Evidence');
-      expect(report).toContain('Incremental Status');
       expect(report).toContain('Review Readiness');
-      expect(report).toContain('Top Unknowns');
+      expect(report).toContain('Unknowns');
       expect(report).toContain('Read First');
       expect(report).toContain('Incremental Understanding');
       expect(report).toContain('changed understanding');
       expect(report).toContain('scan efficiency');
+      expect(report).toContain('<section class="objects" aria-label="Mission Control objects">');
+      expect(report).toContain('<h3>weak</h3>');
+      expect(report).toContain('<h3>usable</h3>');
+      expect(report).toContain('<h3>strong</h3>');
 
       await writeFile(join(dir, 'packages', 'brain', 'src', 'extra.ts'), 'export const extra = 1;');
       const third = await generateProjectBrain({
@@ -1909,7 +1915,12 @@ describe('project brain generation', () => {
       expect(report).toContain('local project intelligence');
       expect(report).toContain('Static local view generated from <code>.rizz/brain</code>');
       expect(report).toContain('No server. No network. No model call.');
+      expect(report).toContain('Review Blast Radius');
+      expect(report).toContain('Unknown Risk');
+      expect(report).toContain('Raw Artifacts');
+      expect(report).toContain('.rizz/research/evidence_quality.json');
       expect(report).toContain('<h2>Start Here</h2>');
+      expect(report).toContain('<h3>Entry Points</h3>');
       expect(report).toContain('Responsibilities');
       expect(report).toContain('Coupling');
       expect(report).toContain('If Removed');
@@ -1917,12 +1928,6 @@ describe('project brain generation', () => {
       expect(report).toContain('Important Files');
       expect(report).toContain('Evidence');
       expect(report).toContain('Command-line surface');
-      expect(report).toContain('Search components, files, risks, commands, evidence...');
-      expect(report).toContain(
-        '<label class="sr-only" for="global-filter">Search project intelligence</label>',
-      );
-      expect(report).toContain("document.querySelectorAll('[data-search]')");
-      expect(report).toContain('data-filter="unknown"');
       expect(report).toContain('data-kind="unknown"');
       expect(report).toContain(
         'No risk records detected yet. This does not mean the project is risk-free.',
@@ -1935,10 +1940,10 @@ describe('project brain generation', () => {
       expect(report).toContain('Critical Paths');
       expect(report).toContain('Tradeoff Matrix');
       expect(report).toContain('What Breaks');
-      expect(report.indexOf('<h2>Start Here</h2>')).toBeLessThan(
-        report.indexOf('<h2>Component Intelligence</h2>'),
-      );
+      expect(report.indexOf('>Components<')).toBeLessThan(report.indexOf('>Flows<'));
+      expect(report.indexOf('>Evidence<')).toBeLessThan(report.indexOf('>Unknowns<'));
       expect(report).not.toContain('<script src=');
+      expect(report).not.toContain('<script>');
       expect(report).not.toContain('<link rel="stylesheet"');
       expect(report).not.toContain('fetch(');
       expect(report).not.toContain('https://');

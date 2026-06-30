@@ -1264,14 +1264,27 @@ async function runHeadlessSmoke() {
           const report = readFileSync(reportPath, 'utf8');
           assert(report.includes('Mission Control ·'), 'missing Mission Control title');
           assert(report.includes('local project intelligence'), 'missing portal positioning');
-          assert(report.includes('<h2>Start Here</h2>'), 'missing Start Here section');
-          assert(report.includes('<h2>Risk Areas</h2>'), 'missing risk section');
-          assert(report.includes('<h2>Unknowns</h2>'), 'missing unknowns section');
-          assert(report.includes('<h2>Evidence</h2>'), 'missing evidence section');
+          assert(report.includes('Mission Control scorecard'), 'missing Mission Control scorecard');
+          assert(report.includes('Understanding Score'), 'missing understanding score');
+          assert(report.includes('Evidence Quality'), 'missing evidence quality');
+          assert(report.includes('Review Readiness'), 'missing review readiness');
+          assert(report.includes('Unknown Risk'), 'missing unknown risk');
           assert(
-            report.includes('placeholder="Search components, files, risks, commands, evidence..."'),
-            'missing global portal search',
+            report.includes('<section class="objects" aria-label="Mission Control objects">'),
+            'missing Mission Control objects',
           );
+          assert(report.includes('<span>Components</span>'), 'missing components object');
+          assert(report.includes('<span>Flows</span>'), 'missing flows object');
+          assert(report.includes('<span>Architecture</span>'), 'missing architecture object');
+          assert(report.includes('<span>Review Blast Radius</span>'), 'missing review object');
+          assert(report.includes('<span>Evidence</span>'), 'missing evidence object');
+          assert(report.includes('<span>Unknowns</span>'), 'missing unknowns object');
+          assert(report.includes('<span>Read First</span>'), 'missing read-first object');
+          assert(report.includes('<h2>Start Here</h2>'), 'missing Start Here section');
+          assert(report.includes('<h3>Risk Areas</h3>'), 'missing risk section');
+          assert(report.includes('<h3>Raw Artifacts</h3>'), 'missing raw artifact links');
+          assert(!report.includes('<script'), 'report should not include scripts');
+          assert(!report.includes('fetch('), 'report should not fetch');
           assert(report.includes('href="#evidence-file-package-json"'), 'missing evidence link');
           assert(report.includes('id="evidence-file-package-json"'), 'missing evidence anchor');
           assert(!report.includes('<script src='), 'portal references external script');
