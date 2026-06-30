@@ -1,0 +1,189 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-incremental-understanding",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "incremental-understanding",
+  "title": "Incremental understanding benchmark seed",
+  "prompt": "Build a local project brain, apply deterministic source and sensitive-path changes, and report what understanding was reused versus recomputed.",
+  "fixture": {
+    "root": "pi-bench-incremental-understanding",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-incremental-understanding\",\"scripts\":{\"test\":\"vitest run\",\"build\":\"tsc -b\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/index.ts",
+        "contents": "export function label(value: string): string {\n  return value.trim();\n}\n"
+      },
+      {
+        "path": "src/index.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { label } from \"./index.js\";\n\nit(\"labels stable values\", () => {\n  expect(label(\" ok \")).toBe(\"ok\");\n});\n"
+      },
+      {
+        "path": "src/client_secret_incremental.ts",
+        "contents": "export const tokenHandler = \"first\";\n"
+      }
+    ]
+  },
+  "incremental": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/index.ts",
+          "contents": "export function label(value: string): string {\n  return value.trim().toUpperCase();\n}\n"
+        },
+        {
+          "path": "src/client_secret_incremental.ts",
+          "contents": "export const tokenHandler = \"sk-or-v1-incremental-secret\";\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/index.ts"],
+      "changed_files_exclude": [
+        "src/client_secret_incremental.ts",
+        "client_secret_incremental.ts",
+        "sk-or-v1-incremental-secret",
+        "OPENROUTER_API_KEY"
+      ],
+      "evidence_delta_changed_include": ["evidence:file-src--index.ts"],
+      "changed_entities_include": ["file:src--index.ts"],
+      "forbidden_output_substrings": [
+        "src/client_secret_incremental.ts",
+        "client_secret_incremental.ts",
+        "sk-or-v1-incremental-secret",
+        "OPENROUTER_API_KEY"
+      ],
+      "expected_changed_file_count": 2,
+      "expected_stale_file_count": 0,
+      "expected_reused_files": 2,
+      "expected_recomputed_files": 2,
+      "expected_file_reuse_ratio": 0.5,
+      "expected_redacted_changed_file_count": 1,
+      "minimum_changed_entity_count": 2,
+      "minimum_stable_entity_count": 1,
+      "minimum_reused_understanding_count": 1,
+      "minimum_recomputed_understanding_count": 2,
+      "minimum_scan_efficiency_score": 1,
+      "require_previous_fingerprint": true,
+      "require_fingerprint_changed": true
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/metrics.json",
+    ".rizz/research/incremental_update.json",
+    ".rizz/research/understanding_score.json",
+    ".rizz/research/benchmark_ready.json",
+    ".rizz/brain/latest.json",
+    ".rizz/reports/index.html"
+  ],
+  "coverage_targets": {
+    "component": { "minimum_total": 1, "minimum_covered": 0, "minimum_ratio": 0 },
+    "flow": { "minimum_total": 2, "minimum_covered": 2, "minimum_ratio": 0.5 },
+    "evidence": { "minimum_total": 4, "minimum_covered": 4, "minimum_ratio": 0.1 },
+    "unknown": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.8 }
+  },
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/incremental_update.json",
+      "type": "json",
+      "required_fields": [
+        "previous_brain_fingerprint",
+        "current_brain_fingerprint",
+        "changed_file_count",
+        "changed_files",
+        "stable_entity_count",
+        "changed_entity_count",
+        "reused_understanding_count",
+        "recomputed_understanding_count",
+        "scan_efficiency_score",
+        "reused_files",
+        "recomputed_files",
+        "file_reuse_ratio"
+      ],
+      "required_substrings": ["src/index.ts", "redacted:sensitive-file:"],
+      "forbidden_substrings": [
+        "src/client_secret_incremental.ts",
+        "client_secret_incremental.ts",
+        "sk-or-v1-incremental-secret",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
+      "path": ".rizz/research/understanding_score.json",
+      "type": "json",
+      "required_fields": [
+        "dimensions.incremental_status.score",
+        "changed.changed_file_count",
+        "changed.changed_entity_count",
+        "changed.scan_efficiency_score"
+      ],
+      "forbidden_substrings": [
+        "src/client_secret_incremental.ts",
+        "client_secret_incremental.ts",
+        "sk-or-v1-incremental-secret",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
+      "path": ".rizz/brain/latest.json",
+      "type": "json",
+      "required_fields": [
+        "latest_incremental_update.changed_file_count",
+        "latest_incremental_update.reused_understanding_count",
+        "latest_incremental_update.recomputed_understanding_count",
+        "latest_incremental_update.scan_efficiency_score"
+      ],
+      "forbidden_substrings": [
+        "src/client_secret_incremental.ts",
+        "client_secret_incremental.ts",
+        "sk-or-v1-incremental-secret",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
+      "path": ".rizz/reports/index.html",
+      "type": "file",
+      "required_substrings": [
+        "Incremental Understanding",
+        "changed understanding",
+        "scan efficiency"
+      ],
+      "forbidden_substrings": [
+        "src/client_secret_incremental.ts",
+        "client_secret_incremental.ts",
+        "sk-or-v1-incremental-secret",
+        "OPENROUTER_API_KEY",
+        "<script src=",
+        "<link rel=\"stylesheet\"",
+        "fetch("
+      ]
+    },
+    {
+      "path": ".rizz/research/benchmark_ready.json",
+      "type": "json",
+      "required_fields": [
+        "coverage.component.covered",
+        "coverage.flow.covered",
+        "coverage.evidence.claims_with_evidence",
+        "coverage.unknown.covered",
+        "readiness.score"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The second scan reports changed and stable entity counts from local artifacts.",
+      "The incremental artifact distinguishes reused and recomputed understanding counts.",
+      "Scan efficiency and file reuse metrics are deterministic and benchmark-visible.",
+      "Sensitive changed paths and secret-like changed contents are redacted from emitted artifacts."
+    ],
+    "fail": [
+      "The task depends on provider calls, network access, or package installation.",
+      "Incremental update metrics are missing or only report raw changed files.",
+      "Sensitive changed path or secret-like content appears in research artifacts or reports."
+    ]
+  }
+}

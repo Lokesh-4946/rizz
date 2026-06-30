@@ -32,6 +32,7 @@ const COVERAGE_TARGETS = ['component', 'flow', 'evidence', 'unknown'];
 const PI_BENCH_TASK_CATEGORIES = [
   'smoke',
   'research-metrics',
+  'incremental-understanding',
   'unknown-coverage',
   'architecture-flow',
   'review-blast-radius',
@@ -184,6 +185,28 @@ function validateReviewDiff(diff) {
   return errors;
 }
 
+function validateIncrementalDiff(diff) {
+  const errors = [];
+  if (!isRecord(diff)) return ['incremental.diff must be an object'];
+  if (!Array.isArray(diff.files) || diff.files.length === 0) {
+    errors.push('incremental.diff.files must include at least one file');
+  } else {
+    for (const [index, file] of diff.files.entries()) {
+      if (!isRecord(file)) {
+        errors.push(`incremental.diff.files[${index}] must be an object`);
+        continue;
+      }
+      if (!isSafeRelativePath(file.path)) {
+        errors.push(`incremental.diff.files[${index}].path must be a safe relative path`);
+      }
+      if (typeof file.contents !== 'string') {
+        errors.push(`incremental.diff.files[${index}].contents must be a string`);
+      }
+    }
+  }
+  return errors;
+}
+
 function validateOptionalStringArray(assertions, field, errors) {
   if (
     assertions[field] !== undefined &&
@@ -283,6 +306,58 @@ function validateReviewAssertions(assertions) {
   return errors;
 }
 
+function validateIncrementalAssertions(assertions) {
+  const errors = [];
+  if (!isRecord(assertions)) return ['incremental.assertions must be an object'];
+  for (const field of [
+    'changed_files_include',
+    'changed_files_exclude',
+    'evidence_delta_changed_include',
+    'changed_entities_include',
+    'forbidden_output_substrings',
+  ]) {
+    validateOptionalStringArray(assertions, field, errors);
+  }
+  for (const field of [
+    'expected_changed_file_count',
+    'expected_stale_file_count',
+    'expected_reused_files',
+    'expected_recomputed_files',
+    'expected_redacted_changed_file_count',
+    'minimum_changed_entity_count',
+    'minimum_stable_entity_count',
+    'minimum_reused_understanding_count',
+    'minimum_recomputed_understanding_count',
+    'minimum_scan_efficiency_score',
+  ]) {
+    if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
+      errors.push(`incremental.assertions.${field} must be a non-negative number`);
+    }
+  }
+  if (
+    assertions.expected_file_reuse_ratio !== undefined &&
+    !hasRatioNumber(assertions.expected_file_reuse_ratio)
+  ) {
+    errors.push(
+      'incremental.assertions.expected_file_reuse_ratio must be a number between 0 and 1',
+    );
+  }
+  for (const field of ['require_previous_fingerprint', 'require_fingerprint_changed']) {
+    if (assertions[field] !== undefined && typeof assertions[field] !== 'boolean') {
+      errors.push(`incremental.assertions.${field} must be a boolean`);
+    }
+  }
+  return errors;
+}
+
+function validateIncrementalSpec(incremental) {
+  if (!isRecord(incremental)) return ['incremental must be an object'];
+  return [
+    ...validateIncrementalDiff(incremental.diff),
+    ...validateIncrementalAssertions(incremental.assertions),
+  ];
+}
+
 function validateReviewSpec(review) {
   if (!isRecord(review)) return ['review must be an object for review-blast-radius tasks'];
   return [...validateReviewDiff(review.diff), ...validateReviewAssertions(review.assertions)];
@@ -345,6 +420,7 @@ function validatePiBenchTask(task) {
   } else {
     errors.push(...validateCoverageTargets(task.coverage_targets));
     if (task.explain !== undefined) errors.push(...validateExplainSpec(task.explain));
+    if (task.incremental !== undefined) errors.push(...validateIncrementalSpec(task.incremental));
   }
   errors.push(...validateArtifactAssertions(task.artifact_assertions));
   errors.push(...validateRubric(task.rubric));
@@ -605,6 +681,15 @@ function applyReviewDiff(task, repoDir) {
   }
 }
 
+function applyIncrementalDiff(task, repoDir) {
+  if (task.incremental === undefined) return;
+  for (const file of task.incremental.diff.files) {
+    const filePath = safeJoin(repoDir, file.path);
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, file.contents);
+  }
+}
+
 function idsFromRows(rows) {
   if (!Array.isArray(rows)) return [];
   return rows
@@ -829,6 +914,150 @@ function assertReviewContract(task, repoDir, review, stdout) {
   };
 }
 
+function assertIncrementalContract(task, repoDir, incremental, outputs) {
+  if (task.incremental === undefined) return { errors: [], summary: undefined };
+  const assertions = task.incremental.assertions;
+  const errors = [];
+  const changedFiles = reviewArray(incremental, 'changed_files');
+  const changedEntities = reviewArray(incremental, 'changed_entities')
+    .map((entity) => (isRecord(entity) ? String(entity.id ?? '') : ''))
+    .filter((id) => id !== '');
+  const evidenceDelta = isRecord(incremental.evidence_delta) ? incremental.evidence_delta : {};
+  const evidenceDeltaChanged = Array.isArray(evidenceDelta.changed) ? evidenceDelta.changed : [];
+
+  errors.push(
+    ...assertIncludesAll(
+      changedFiles,
+      assertions.changed_files_include,
+      'incremental.changed_files',
+    ),
+    ...assertExcludesAll(
+      changedFiles,
+      assertions.changed_files_exclude,
+      'incremental.changed_files',
+    ),
+    ...assertSubstringMatches(
+      evidenceDeltaChanged,
+      assertions.evidence_delta_changed_include,
+      'incremental.evidence_delta.changed',
+    ),
+    ...assertSubstringMatches(
+      changedEntities,
+      assertions.changed_entities_include,
+      'incremental.changed_entities',
+    ),
+  );
+
+  const exactNumberFields = [
+    ['changed_file_count', 'expected_changed_file_count'],
+    ['stale_file_count', 'expected_stale_file_count'],
+    ['reused_files', 'expected_reused_files'],
+    ['recomputed_files', 'expected_recomputed_files'],
+  ];
+  for (const [artifactField, assertionField] of exactNumberFields) {
+    if (
+      assertions[assertionField] !== undefined &&
+      incremental[artifactField] !== assertions[assertionField]
+    ) {
+      errors.push(
+        `incremental.${artifactField} ${incremental[artifactField]} did not match ${assertions[assertionField]}`,
+      );
+    }
+  }
+
+  if (
+    assertions.expected_file_reuse_ratio !== undefined &&
+    incremental.file_reuse_ratio !== assertions.expected_file_reuse_ratio
+  ) {
+    errors.push(
+      `incremental.file_reuse_ratio ${incremental.file_reuse_ratio} did not match ${assertions.expected_file_reuse_ratio}`,
+    );
+  }
+
+  const minimumNumberFields = [
+    ['changed_entity_count', 'minimum_changed_entity_count'],
+    ['stable_entity_count', 'minimum_stable_entity_count'],
+    ['reused_understanding_count', 'minimum_reused_understanding_count'],
+    ['recomputed_understanding_count', 'minimum_recomputed_understanding_count'],
+    ['scan_efficiency_score', 'minimum_scan_efficiency_score'],
+  ];
+  for (const [artifactField, assertionField] of minimumNumberFields) {
+    if (
+      assertions[assertionField] !== undefined &&
+      (typeof incremental[artifactField] !== 'number' ||
+        incremental[artifactField] < assertions[assertionField])
+    ) {
+      errors.push(
+        `incremental.${artifactField} ${incremental[artifactField]} below ${assertions[assertionField]}`,
+      );
+    }
+  }
+
+  if (assertions.expected_redacted_changed_file_count !== undefined) {
+    const redactedCount = changedFiles.filter(
+      (file) => typeof file === 'string' && file.startsWith('redacted:sensitive-file:'),
+    ).length;
+    if (redactedCount !== assertions.expected_redacted_changed_file_count) {
+      errors.push(
+        `incremental.changed_files redacted count ${redactedCount} did not match ${assertions.expected_redacted_changed_file_count}`,
+      );
+    }
+  }
+
+  if (
+    assertions.require_previous_fingerprint === true &&
+    !/^[a-f0-9]{64}$/.test(String(incremental.previous_brain_fingerprint ?? ''))
+  ) {
+    errors.push('incremental.previous_brain_fingerprint must be a sha256 fingerprint');
+  }
+  if (!/^[a-f0-9]{64}$/.test(String(incremental.current_brain_fingerprint ?? ''))) {
+    errors.push('incremental.current_brain_fingerprint must be a sha256 fingerprint');
+  }
+  if (
+    assertions.require_fingerprint_changed === true &&
+    incremental.previous_brain_fingerprint === incremental.current_brain_fingerprint
+  ) {
+    errors.push('incremental.current_brain_fingerprint must differ from previous');
+  }
+
+  const artifactOutput = [
+    outputs,
+    readArtifactText(repoDir, '.rizz/research/incremental_update.json'),
+    readArtifactText(repoDir, '.rizz/research/understanding_score.json'),
+    readArtifactText(repoDir, '.rizz/brain/latest.json'),
+    readArtifactText(repoDir, '.rizz/reports/index.html'),
+  ].join('\n');
+  errors.push(
+    ...assertNoForbiddenReviewOutput(artifactOutput, assertions.forbidden_output_substrings),
+  );
+
+  return {
+    errors,
+    summary: {
+      changedFiles: changedFiles.length,
+      stableEntities:
+        typeof incremental.stable_entity_count === 'number' ? incremental.stable_entity_count : 0,
+      reusedUnderstanding:
+        typeof incremental.reused_understanding_count === 'number'
+          ? incremental.reused_understanding_count
+          : 0,
+      recomputedUnderstanding:
+        typeof incremental.recomputed_understanding_count === 'number'
+          ? incremental.recomputed_understanding_count
+          : 0,
+      scanEfficiency:
+        typeof incremental.scan_efficiency_score === 'number'
+          ? incremental.scan_efficiency_score
+          : 0,
+    },
+  };
+}
+
+function readArtifactText(repoDir, relativePath) {
+  const artifactPath = safeJoin(repoDir, relativePath);
+  return existsSync(artifactPath) ? readFileSync(artifactPath, 'utf8') : '';
+}
+
 function assertExplainContract(task, repoDir) {
   if (task.explain === undefined) return [];
   const result = runCliInCwdSync(repoDir, ['explain', task.explain.target], '');
@@ -915,15 +1144,47 @@ function runPiBenchTask(task) {
 
   return withTempDirSync('rizz-pi-bench-', (dir) => {
     const repoDir = materializeFixture(task, dir);
-    const result = runCliInCwdSync(repoDir, ['brain'], '');
+    const firstResult = runCliInCwdSync(repoDir, ['brain'], '');
     const errors = [];
-    if (result.error !== undefined) errors.push(String(result.error));
-    if (result.status !== 0) {
-      errors.push(`rizz brain exited ${result.status}: ${result.stderr || result.stdout}`);
+    if (firstResult.error !== undefined) errors.push(String(firstResult.error));
+    if (firstResult.status !== 0) {
+      errors.push(
+        `rizz brain exited ${firstResult.status}: ${firstResult.stderr || firstResult.stdout}`,
+      );
     }
+
+    let result = firstResult;
+    let incrementalScore;
+    if (task.incremental !== undefined && errors.length === 0) {
+      applyIncrementalDiff(task, repoDir);
+      result = runCliInCwdSync(repoDir, ['brain'], '');
+      if (result.error !== undefined) errors.push(String(result.error));
+      if (result.status !== 0) {
+        errors.push(
+          `incremental rizz brain exited ${result.status}: ${result.stderr || result.stdout}`,
+        );
+      }
+    }
+
     errors.push(...assertExpectedArtifacts(task, repoDir));
     errors.push(...assertArtifactContracts(task, repoDir));
     errors.push(...assertExplainContract(task, repoDir));
+
+    if (task.incremental !== undefined) {
+      try {
+        const incremental = readJsonArtifact(repoDir, '.rizz/research/incremental_update.json');
+        incrementalScore = assertIncrementalContract(
+          task,
+          repoDir,
+          incremental,
+          `${firstResult.stdout}\n${firstResult.stderr}\n${result.stdout}\n${result.stderr}`,
+        );
+        errors.push(...incrementalScore.errors);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`could not read incremental_update.json: ${message}`);
+      }
+    }
 
     let score;
     try {
@@ -945,6 +1206,7 @@ function runPiBenchTask(task) {
         kind: 'research',
         readinessScore: score.readinessScore,
         coverage: score.coverage,
+        incremental: incrementalScore?.summary,
       },
     };
   });
@@ -967,8 +1229,12 @@ function runPiBenchTasks(loadedTasks) {
         scoreTotal += result.summary.readinessScore;
         scoredTasks += 1;
         const coverage = result.summary.coverage;
+        const incremental =
+          result.summary.incremental === undefined
+            ? ''
+            : ` | incremental changed ${result.summary.incremental.changedFiles}, stable entities ${result.summary.incremental.stableEntities}, reused ${result.summary.incremental.reusedUnderstanding}, recomputed ${result.summary.incremental.recomputedUnderstanding}, efficiency ${result.summary.incremental.scanEfficiency}`;
         console.log(
-          `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}`,
+          `  ✓ ${task.id} [${task.category}] score ${result.summary.readinessScore} | component ${formatCoverage('component', coverage.component)}, flow ${formatCoverage('flow', coverage.flow)}, evidence ${formatCoverage('evidence', coverage.evidence)}, unknown ${formatCoverage('unknown', coverage.unknown)}${incremental}`,
         );
       }
     } else {
