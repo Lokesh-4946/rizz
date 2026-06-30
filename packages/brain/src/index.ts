@@ -107,6 +107,64 @@ interface ReasoningTrace {
   readonly redacted_evidence_count: number;
 }
 
+type ArchitecturePressureType = 'boundary' | 'coupling' | 'config' | 'dependency' | 'flow';
+
+type ArchitecturePressureStrength = 'low' | 'medium' | 'high';
+
+interface ArchitectureAssumption {
+  readonly assumption_id: string;
+  readonly entity_id: string;
+  readonly assumption: string;
+  readonly inferred_from: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly evidence_gap_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}
+
+interface ArchitectureDesignPressure {
+  readonly pressure_id: string;
+  readonly entity_id: string;
+  readonly pressure_type: ArchitecturePressureType;
+  readonly pressure: string;
+  readonly strength: ArchitecturePressureStrength;
+  readonly evidence_ids: readonly string[];
+  readonly rules: readonly string[];
+}
+
+interface ArchitectureBoundaryRationale {
+  readonly component_id: string;
+  readonly boundary_type: string;
+  readonly rationale: string;
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}
+
+interface ArchitectureCouplingRationale {
+  readonly component_id: string;
+  readonly coupling_level: ComponentIntelligence['coupling']['level'];
+  readonly coupling_score: number;
+  readonly rationale: string;
+  readonly intentional_coupling: boolean;
+  readonly risky_coupling: boolean;
+  readonly evidence_ids: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+}
+
+interface ArchitectureEvidenceGap {
+  readonly gap_id: string;
+  readonly entity_id: string;
+  readonly gap: string;
+  readonly severity: ArchitecturePressureStrength;
+  readonly evidence_ids: readonly string[];
+  readonly rules: readonly string[];
+}
+
 interface FileFact {
   readonly relativePath: string;
   readonly size: number;
@@ -4071,6 +4129,448 @@ function componentCouplingRecord(component: BrainEntity): ComponentIntelligence[
   };
 }
 
+function architectureEvidenceIdsForComponent(params: {
+  readonly component: BrainEntity;
+  readonly componentFlows: readonly BrainEntity[];
+  readonly relationships: readonly BrainRelationship[];
+}): string[] {
+  return unique([
+    ...evidenceIdsForComponent(params.component),
+    ...params.componentFlows.flatMap(evidenceIdsForFlow),
+    ...params.relationships
+      .filter(
+        (relationship) =>
+          relationship.from === params.component.id || relationship.to === params.component.id,
+      )
+      .flatMap((relationship) => relationship.evidence_ids),
+  ]).slice(0, 12);
+}
+
+function architectureAssumptionConfidence(params: {
+  readonly component: BrainEntity;
+  readonly componentFlows: readonly BrainEntity[];
+}): Confidence {
+  return weakestConfidence([
+    params.component.confidence,
+    ...params.componentFlows.map((flow) => flow.confidence),
+  ]);
+}
+
+function architectureAssumptionScore(params: {
+  readonly component: BrainEntity;
+  readonly componentFlows: readonly BrainEntity[];
+}): number {
+  return averageConfidenceScore([
+    componentConfidenceScore(params.component),
+    ...params.componentFlows.map(asFlowConfidenceScore),
+  ]);
+}
+
+function architectureAssumptionGapIds(params: {
+  readonly entityId: string;
+  readonly evidenceIds: readonly string[];
+  readonly componentFlows: readonly BrainEntity[];
+}): string[] {
+  return unique([
+    ...(params.evidenceIds.length === 0 ? [`gap:${safeText(params.entityId)}:evidence`] : []),
+    ...(params.componentFlows.length === 0 ? [`gap:${safeText(params.entityId)}:flow`] : []),
+  ]);
+}
+
+function pressureStrengthFromCount(count: number): ArchitecturePressureStrength {
+  if (count >= 3) return 'high';
+  if (count >= 1) return 'medium';
+  return 'low';
+}
+
+function pressureStrengthFromCoupling(
+  coupling: ComponentIntelligence['coupling'],
+): ArchitecturePressureStrength {
+  if (coupling.level === 'high') return 'high';
+  if (coupling.level === 'medium') return 'medium';
+  return coupling.score > 0 ? 'medium' : 'low';
+}
+
+function architectureAssumptionRecords(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
+  readonly relationships: readonly BrainRelationship[];
+}): ArchitectureAssumption[] {
+  const assumptions: ArchitectureAssumption[] = [];
+  for (const component of params.components) {
+    const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
+    const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+    const coupling = componentCouplingRecord(component);
+    const configs = stringArrayData(component, 'configs');
+    const dependencies = stringArrayData(component, 'dependencies');
+    const evidenceIds = architectureEvidenceIdsForComponent({
+      component,
+      componentFlows,
+      relationships: params.relationships,
+    });
+    const evidenceGapIds = architectureAssumptionGapIds({
+      entityId: component.id,
+      evidenceIds,
+      componentFlows,
+    });
+    const confidence = architectureAssumptionConfidence({ component, componentFlows });
+    const confidenceScore = architectureAssumptionScore({ component, componentFlows });
+    const fieldEvidence = recordStringArrayData(component, 'field_evidence');
+    assumptions.push({
+      assumption_id: `assumption:${safeText(component.id)}:boundary`,
+      entity_id: safeText(component.id),
+      assumption: safeText(
+        `${component.id} is treated as a ${boundaryType} boundary because local structure, interfaces, and flow links point at that role.`,
+      ),
+      inferred_from: unique([
+        ...stringArrayData(component, 'signals'),
+        ...(componentFlows.length > 0 ? [`${componentFlows.length} linked flow(s)`] : []),
+        ...(configs.length > 0 ? [`${configs.length} config signal(s)`] : []),
+        ...(dependencies.length > 0 ? [`${dependencies.length} dependency signal(s)`] : []),
+      ]).map(safeText),
+      evidence_ids: unique([
+        ...evidenceIds,
+        ...(fieldEvidence.boundary_type ?? []),
+        ...(fieldEvidence.purpose ?? []),
+      ]).slice(0, 12),
+      evidence_gap_ids: evidenceGapIds,
+      confidence,
+      confidence_score: confidenceScore,
+      rules: [
+        `boundary_type:${boundaryType}`,
+        `flow_links:${componentFlows.length}`,
+        `configs:${configs.length}`,
+        `dependencies:${dependencies.length}`,
+      ],
+      unknowns: unique([
+        ...stringArrayData(component, 'unknowns'),
+        ...(componentFlows.length === 0
+          ? ['No reconstructed flow currently crosses or reaches this boundary.']
+          : []),
+      ]).map(safeText),
+    });
+    if (
+      coupling.score > 0 ||
+      coupling.internal_imports.length > 0 ||
+      coupling.external_imports.length > 0
+    ) {
+      assumptions.push({
+        assumption_id: `assumption:${safeText(component.id)}:coupling`,
+        entity_id: safeText(component.id),
+        assumption: safeText(
+          `${component.id} has ${coupling.level} coupling because static imports and package signals connect it to other code.`,
+        ),
+        inferred_from: unique([
+          ...coupling.reasons,
+          ...(coupling.internal_imports.length > 0
+            ? [`${coupling.internal_imports.length} internal import target(s)`]
+            : []),
+          ...(coupling.external_imports.length > 0
+            ? [`${coupling.external_imports.length} external import root(s)`]
+            : []),
+        ]).map(safeText),
+        evidence_ids: evidenceIds,
+        evidence_gap_ids: evidenceGapIds,
+        confidence,
+        confidence_score: confidenceScore,
+        rules: [
+          `coupling:${coupling.level}`,
+          `coupling_score:${coupling.score}`,
+          `static_imports:${coupling.static_import_count}`,
+          `internal_imports:${coupling.internal_imports.length}`,
+        ],
+        unknowns:
+          coupling.internal_imports.length === 0
+            ? ['No internal import target was found; external/runtime coupling may still exist.']
+            : [],
+      });
+    }
+  }
+  return sorted(assumptions, (assumption) => assumption.assumption_id);
+}
+
+function architectureDesignPressures(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
+}): ArchitectureDesignPressure[] {
+  const pressures: ArchitectureDesignPressure[] = [];
+  for (const component of params.components) {
+    const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+    const coupling = componentCouplingRecord(component);
+    const configs = stringArrayData(component, 'configs');
+    const dependencies = stringArrayData(component, 'dependencies');
+    const tests = stringArrayData(component, 'tests');
+    const evidenceIds = evidenceIdsForComponent(component).slice(0, 12);
+    if (componentFlows.length > 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(component.id)}:flow`,
+        entity_id: safeText(component.id),
+        pressure_type: 'flow',
+        pressure: safeText(
+          `${component.id} participates in ${componentFlows.length} reconstructed flow(s), so boundary changes can affect navigation through the system.`,
+        ),
+        strength: pressureStrengthFromCount(componentFlows.length),
+        evidence_ids: unique([
+          ...evidenceIds,
+          ...componentFlows.flatMap((flow) => flow.evidence_ids),
+        ]).slice(0, 12),
+        rules: [`flow_links:${componentFlows.length}`],
+      });
+    }
+    if (coupling.score > 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(component.id)}:coupling`,
+        entity_id: safeText(component.id),
+        pressure_type: 'coupling',
+        pressure: safeText(
+          `${component.id} has ${coupling.level} static coupling, which widens review scope when imports or exports change.`,
+        ),
+        strength: pressureStrengthFromCoupling(coupling),
+        evidence_ids: evidenceIds,
+        rules: [
+          `coupling:${coupling.level}`,
+          `coupling_score:${coupling.score}`,
+          `static_imports:${coupling.static_import_count}`,
+        ],
+      });
+    }
+    if (configs.length > 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(component.id)}:config`,
+        entity_id: safeText(component.id),
+        pressure_type: 'config',
+        pressure: safeText(
+          `${component.id} behavior is influenced by ${configs.length} config/manifest file(s).`,
+        ),
+        strength: pressureStrengthFromCount(configs.length),
+        evidence_ids: unique([
+          ...evidenceIds,
+          ...(recordStringArrayData(component, 'field_evidence').configs ?? []),
+        ]).slice(0, 12),
+        rules: [`configs:${configs.length}`],
+      });
+    }
+    if (dependencies.length > 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(component.id)}:dependency`,
+        entity_id: safeText(component.id),
+        pressure_type: 'dependency',
+        pressure: safeText(
+          `${component.id} relies on ${dependencies.length} package dependency signal(s).`,
+        ),
+        strength: pressureStrengthFromCount(dependencies.length),
+        evidence_ids: unique([
+          ...evidenceIds,
+          ...(recordStringArrayData(component, 'field_evidence').dependencies ?? []),
+        ]).slice(0, 12),
+        rules: [`dependencies:${dependencies.length}`],
+      });
+    }
+    if (tests.length === 0 && stringData(component, 'criticality') !== 'low') {
+      pressures.push({
+        pressure_id: `pressure:${safeText(component.id)}:boundary`,
+        entity_id: safeText(component.id),
+        pressure_type: 'boundary',
+        pressure: safeText(
+          `${component.id} is medium/high criticality without component-local test evidence.`,
+        ),
+        strength: 'high',
+        evidence_ids: evidenceIds,
+        rules: [`criticality:${stringData(component, 'criticality') ?? 'unknown'}`, 'tests:0'],
+      });
+    }
+  }
+  return sorted(pressures, (pressure) => pressure.pressure_id);
+}
+
+function architectureBoundaryRationale(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
+  readonly relationships: readonly BrainRelationship[];
+}): ArchitectureBoundaryRationale[] {
+  return sorted(
+    params.components.map((component) => {
+      const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
+      const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+      const signals = stringArrayData(component, 'signals');
+      const configs = stringArrayData(component, 'configs');
+      const dependencies = stringArrayData(component, 'dependencies');
+      return {
+        component_id: safeText(component.id),
+        boundary_type: boundaryType,
+        rationale: safeText(
+          `${component.id} is a ${boundaryType} boundary from ${signals.length} structural signal(s), ${componentFlows.length} linked flow(s), ${configs.length} config signal(s), and ${dependencies.length} dependency signal(s).`,
+        ),
+        evidence_ids: architectureEvidenceIdsForComponent({
+          component,
+          componentFlows,
+          relationships: params.relationships,
+        }),
+        confidence: architectureAssumptionConfidence({ component, componentFlows }),
+        rules: [
+          `boundary_type:${boundaryType}`,
+          `signals:${signals.length}`,
+          `flow_links:${componentFlows.length}`,
+          `configs:${configs.length}`,
+          `dependencies:${dependencies.length}`,
+        ],
+        unknowns: stringArrayData(component, 'unknowns').map(safeText),
+      };
+    }),
+    (rationale) => rationale.component_id,
+  );
+}
+
+function architectureCouplingRationale(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
+  readonly relationships: readonly BrainRelationship[];
+}): ArchitectureCouplingRationale[] {
+  return sorted(
+    params.components
+      .map((component) => {
+        const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+        const coupling = componentCouplingRecord(component);
+        const tests = stringArrayData(component, 'tests');
+        const intentionalCoupling =
+          coupling.internal_imports.length > 0 &&
+          componentFlows.some((flow) => flowStringArray(flow, 'components').length > 1);
+        const riskyCoupling =
+          coupling.level !== 'low' ||
+          (coupling.internal_imports.length > 0 && tests.length === 0) ||
+          stringData(component, 'blast_radius') === 'broad';
+        return {
+          component_id: safeText(component.id),
+          coupling_level: coupling.level,
+          coupling_score: coupling.score,
+          rationale: safeText(
+            `${component.id} coupling is ${coupling.level} from ${coupling.static_import_count} static import(s), ${coupling.internal_imports.length} internal target(s), and ${coupling.external_imports.length} external root(s).`,
+          ),
+          intentional_coupling: intentionalCoupling,
+          risky_coupling: riskyCoupling,
+          evidence_ids: architectureEvidenceIdsForComponent({
+            component,
+            componentFlows,
+            relationships: params.relationships,
+          }),
+          rules: [
+            `coupling:${coupling.level}`,
+            `coupling_score:${coupling.score}`,
+            `static_imports:${coupling.static_import_count}`,
+            `internal_imports:${coupling.internal_imports.length}`,
+            `tests:${tests.length}`,
+          ],
+          unknowns:
+            coupling.score === 0
+              ? ['No static coupling found; runtime coupling is outside this local scan.']
+              : [],
+        };
+      })
+      .filter(
+        (rationale) =>
+          rationale.coupling_score > 0 ||
+          rationale.intentional_coupling ||
+          rationale.risky_coupling,
+      ),
+    (rationale) => rationale.component_id,
+  );
+}
+
+function architectureEvidenceGaps(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
+  readonly relationships: readonly BrainRelationship[];
+}): ArchitectureEvidenceGap[] {
+  const gaps: ArchitectureEvidenceGap[] = [];
+  for (const component of params.components) {
+    const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+    const tests = stringArrayData(component, 'tests');
+    const componentEvidenceIds = evidenceIdsForComponent(component).slice(0, 12);
+    if (componentEvidenceIds.length === 0) {
+      gaps.push({
+        gap_id: `gap:${safeText(component.id)}:evidence`,
+        entity_id: safeText(component.id),
+        gap: safeText(`${component.id} has no direct architecture evidence IDs.`),
+        severity: 'high',
+        evidence_ids: [],
+        rules: ['evidence_ids:0'],
+      });
+    }
+    if (componentFlows.length === 0) {
+      gaps.push({
+        gap_id: `gap:${safeText(component.id)}:flow`,
+        entity_id: safeText(component.id),
+        gap: safeText(`${component.id} has no reconstructed flow coverage.`),
+        severity: 'medium',
+        evidence_ids: componentEvidenceIds,
+        rules: ['flow_links:0'],
+      });
+    }
+    if (tests.length === 0 && stringData(component, 'criticality') !== 'low') {
+      gaps.push({
+        gap_id: `gap:${safeText(component.id)}:tests`,
+        entity_id: safeText(component.id),
+        gap: safeText(`${component.id} is medium/high criticality without local test evidence.`),
+        severity: 'high',
+        evidence_ids: componentEvidenceIds,
+        rules: [`criticality:${stringData(component, 'criticality') ?? 'unknown'}`, 'tests:0'],
+      });
+    }
+  }
+  for (const flow of params.flows.filter((item) => item.confidence !== 'verified')) {
+    gaps.push({
+      gap_id: `gap:${safeText(flow.id)}:runtime-verification`,
+      entity_id: safeText(flow.id),
+      gap: safeText(`${flow.id} is reconstructed from static evidence but not runtime verified.`),
+      severity: flowStringArray(flow, 'components').length > 1 ? 'high' : 'medium',
+      evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+      rules: [
+        `confidence:${flow.confidence}`,
+        `components:${flowStringArray(flow, 'components').length}`,
+      ],
+    });
+  }
+  const relationshipsWithoutEvidence = params.relationships.filter(
+    (relationship) => relationship.evidence_ids.length === 0,
+  );
+  for (const relationship of relationshipsWithoutEvidence.slice(0, 20)) {
+    gaps.push({
+      gap_id: `gap:${stableSlug(`${relationship.from}-${relationship.relation}-${relationship.to}`)}:relationship-evidence`,
+      entity_id: safeText(relationship.from),
+      gap: safeText(
+        `${relationship.from} ${relationship.relation} ${relationship.to} has no direct evidence ID.`,
+      ),
+      severity: 'medium',
+      evidence_ids: [],
+      rules: ['relationship_evidence:0'],
+    });
+  }
+  return sorted(gaps, (gap) => gap.gap_id);
+}
+
+function architectureAssumptionConfidenceSummary(
+  assumptions: readonly ArchitectureAssumption[],
+): Record<string, unknown> {
+  const counts = countByConfidence(assumptions.map((assumption) => assumption.confidence));
+  const averageScore = averageConfidenceScore(
+    assumptions.map((assumption) => assumption.confidence_score),
+  );
+  return {
+    assumption_count: assumptions.length,
+    average_score: averageScore,
+    confidence_counts: counts,
+    low_confidence_assumptions: assumptions
+      .filter(
+        (assumption) => assumption.confidence !== 'verified' || assumption.unknowns.length > 0,
+      )
+      .map((assumption) => assumption.assumption_id)
+      .slice(0, 20),
+    calibration_rule:
+      'Assumption confidence combines component confidence, linked flow confidence, direct evidence IDs, and explicit unknowns.',
+  };
+}
+
 function buildArchitectureReasoningArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -4317,6 +4817,33 @@ function buildArchitectureReasoningArtifact(params: {
   const relationshipsWithoutEvidence = params.relationships.filter(
     (relationship) => relationship.evidence_ids.length === 0,
   );
+  const architectureAssumptions = architectureAssumptionRecords({
+    components,
+    flowsByComponent,
+    relationships: params.relationships,
+  });
+  const designPressures = architectureDesignPressures({ components, flowsByComponent });
+  const boundaryRationale = architectureBoundaryRationale({
+    components,
+    flowsByComponent,
+    relationships: params.relationships,
+  });
+  const couplingRationale = architectureCouplingRationale({
+    components,
+    flowsByComponent,
+    relationships: params.relationships,
+  });
+  const evidenceGaps = architectureEvidenceGaps({
+    components,
+    flows,
+    flowsByComponent,
+    relationships: params.relationships,
+  });
+  const highPressures = designPressures.filter((pressure) => pressure.strength === 'high');
+  const riskyCouplings = couplingRationale.filter((rationale) => rationale.risky_coupling);
+  const intentionalCouplings = couplingRationale.filter(
+    (rationale) => rationale.intentional_coupling,
+  );
   return {
     generated_at: params.now,
     project_id: projectId,
@@ -4329,6 +4856,23 @@ function buildArchitectureReasoningArtifact(params: {
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
     review_hints: reviewHints,
+    architecture_assumptions: architectureAssumptions,
+    design_pressures: designPressures,
+    boundary_rationale: boundaryRationale,
+    coupling_rationale: couplingRationale,
+    risk_tradeoff_summary: {
+      assumption_count: architectureAssumptions.length,
+      high_pressure_count: highPressures.length,
+      intentional_coupling_count: intentionalCouplings.length,
+      risky_coupling_count: riskyCouplings.length,
+      evidence_gap_count: evidenceGaps.length,
+      top_design_pressures: highPressures.slice(0, 10).map((pressure) => pressure.pressure_id),
+      top_risky_couplings: riskyCouplings.slice(0, 10).map((rationale) => rationale.component_id),
+      summary:
+        'Architecture reasoning is deterministic static inference; risky/intentional coupling reflects import, flow, config, dependency, and test evidence.',
+    },
+    assumption_confidence: architectureAssumptionConfidenceSummary(architectureAssumptions),
+    evidence_gaps: evidenceGaps,
     unknowns: unique([
       ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
       ...(componentsWithoutFlows.length > 0
@@ -4581,6 +5125,24 @@ function buildReasoningTracesArtifact(params: {
       });
     });
 
+  const architectureAssumptionTraces = architectureAssumptionRecords({
+    components,
+    flowsByComponent,
+    relationships: params.relationships,
+  }).map((assumption) =>
+    reasoningTrace({
+      entityId: assumption.entity_id,
+      reasoningType: 'architecture',
+      suffix: assumption.assumption_id,
+      claim: `Architecture assumption ${assumption.assumption_id}: ${assumption.assumption}`,
+      evidenceIds: assumption.evidence_ids,
+      confidence: assumption.confidence,
+      confidenceScore: assumption.confidence_score,
+      rules: ['architecture_assumption', ...assumption.rules],
+      unknowns: assumption.unknowns,
+    }),
+  );
+
   const projectArchitectureTrace = reasoningTrace({
     entityId: projectId,
     reasoningType: 'architecture',
@@ -4660,6 +5222,7 @@ function buildReasoningTracesArtifact(params: {
       ...componentTraces,
       ...flowTraces,
       ...architectureTraces,
+      ...architectureAssumptionTraces,
       projectArchitectureTrace,
       ...reviewTraces,
     ],
@@ -6454,7 +7017,52 @@ function renderArchitectureReasoning(value: unknown): string {
     ? value.risk_concentrations.filter(isRecord)
     : [];
   const reviewHints = Array.isArray(value.review_hints) ? value.review_hints.filter(isRecord) : [];
+  const architectureAssumptions = Array.isArray(value.architecture_assumptions)
+    ? value.architecture_assumptions.filter(isRecord)
+    : [];
+  const designPressures = Array.isArray(value.design_pressures)
+    ? value.design_pressures.filter(isRecord)
+    : [];
+  const couplingRationale = Array.isArray(value.coupling_rationale)
+    ? value.coupling_rationale.filter(isRecord)
+    : [];
+  const evidenceGaps = Array.isArray(value.evidence_gaps)
+    ? value.evidence_gaps.filter(isRecord)
+    : [];
   const unknowns = asStringArray(value.unknowns);
+  const assumptionLabels = architectureAssumptions.slice(0, 5).map((assumption) => {
+    const assumptionId =
+      typeof assumption.assumption_id === 'string' ? assumption.assumption_id : 'unknown';
+    const claim =
+      typeof assumption.assumption === 'string' ? assumption.assumption : 'Assumption recorded.';
+    const confidence =
+      typeof assumption.confidence === 'string' ? assumption.confidence : 'unknown confidence';
+    return `${assumptionId}: ${claim} (${confidence})`;
+  });
+  const pressureLabels = designPressures.slice(0, 5).map((pressure) => {
+    const pressureId = typeof pressure.pressure_id === 'string' ? pressure.pressure_id : 'unknown';
+    const label =
+      typeof pressure.pressure === 'string' ? pressure.pressure : 'Design pressure recorded.';
+    const strength = typeof pressure.strength === 'string' ? pressure.strength : 'unknown';
+    return `${pressureId}: ${strength} - ${label}`;
+  });
+  const couplingRationaleLabels = couplingRationale.slice(0, 5).map((rationale) => {
+    const componentId =
+      typeof rationale.component_id === 'string' ? rationale.component_id : 'unknown component';
+    const label =
+      typeof rationale.rationale === 'string'
+        ? rationale.rationale
+        : 'Coupling rationale recorded.';
+    const intentional = rationale.intentional_coupling === true ? 'intentional' : 'inferred';
+    const risky = rationale.risky_coupling === true ? 'risky' : 'not marked risky';
+    return `${componentId}: ${intentional}, ${risky}. ${label}`;
+  });
+  const gapLabels = evidenceGaps.slice(0, 5).map((gap) => {
+    const gapId = typeof gap.gap_id === 'string' ? gap.gap_id : 'unknown gap';
+    const label = typeof gap.gap === 'string' ? gap.gap : 'Evidence gap recorded.';
+    const severity = typeof gap.severity === 'string' ? gap.severity : 'unknown';
+    return `${gapId}: ${severity} - ${label}`;
+  });
   const boundaryLabels = boundaryCandidates.slice(0, 5).map((candidate) => {
     const componentId =
       typeof candidate.component_id === 'string' ? candidate.component_id : 'unknown component';
@@ -6537,6 +7145,10 @@ function renderArchitectureReasoning(value: unknown): string {
     return `${reason} (${affectedFlows} affected flow(s))`;
   });
   return `<div class="grid">
+    <article class="card"><h3>Architecture Assumptions</h3>${renderList(assumptionLabels)}</article>
+    <article class="card"><h3>Design Pressures</h3>${renderList(pressureLabels)}</article>
+    <article class="card"><h3>Coupling Rationale</h3>${renderList(couplingRationaleLabels)}</article>
+    <article class="card"><h3>Evidence Gaps</h3>${renderList(gapLabels)}</article>
     <article class="card"><h3>Boundary Candidates</h3>${renderList(boundaryLabels)}</article>
     <article class="card"><h3>Coupling Hotspots</h3>${renderList(couplingLabels)}</article>
     <article class="card"><h3>Critical Paths</h3>${renderList(criticalPathLabels)}</article>

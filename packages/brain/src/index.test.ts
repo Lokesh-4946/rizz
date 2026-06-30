@@ -1057,6 +1057,195 @@ describe('project brain generation', () => {
       expect(flowCoverage.test_file_coverage_ratio).toBe(1);
       expect(flowCoverage.config_file_coverage_ratio).toBe(1);
 
+      const architectureReasoning = await readJson<{
+        architecture_assumptions: Array<{
+          assumption_id: string;
+          entity_id: string;
+          assumption: string;
+          inferred_from: string[];
+          evidence_ids: string[];
+          evidence_gap_ids: string[];
+          confidence: string;
+          confidence_score: number;
+          rules: string[];
+          unknowns: string[];
+        }>;
+        design_pressures: Array<{
+          pressure_id: string;
+          entity_id: string;
+          pressure_type: string;
+          pressure: string;
+          strength: string;
+          evidence_ids: string[];
+          rules: string[];
+        }>;
+        boundary_rationale: Array<{
+          component_id: string;
+          boundary_type: string;
+          rationale: string;
+          evidence_ids: string[];
+          confidence: string;
+          rules: string[];
+          unknowns: string[];
+        }>;
+        coupling_rationale: Array<{
+          component_id: string;
+          coupling_level: string;
+          coupling_score: number;
+          rationale: string;
+          intentional_coupling: boolean;
+          risky_coupling: boolean;
+          evidence_ids: string[];
+          rules: string[];
+          unknowns: string[];
+        }>;
+        risk_tradeoff_summary: {
+          assumption_count: number;
+          high_pressure_count: number;
+          intentional_coupling_count: number;
+          risky_coupling_count: number;
+          evidence_gap_count: number;
+          summary: string;
+        };
+        assumption_confidence: {
+          assumption_count: number;
+          average_score: number;
+          confidence_counts: Record<string, number>;
+          low_confidence_assumptions: string[];
+          calibration_rule: string;
+        };
+        evidence_gaps: Array<{
+          gap_id: string;
+          entity_id: string;
+          gap: string;
+          severity: string;
+          evidence_ids: string[];
+          rules: string[];
+        }>;
+        cross_component_flows: Array<{ flow_id: string; components: string[] }>;
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.cross_component_flows).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:packages--cli--start',
+          components: expect.arrayContaining([
+            'component:packages--cli',
+            'component:packages--core',
+          ]),
+        }),
+      );
+      expect(
+        architectureReasoning.architecture_assumptions.every(
+          (assumption) =>
+            assumption.evidence_ids.length > 0 || assumption.evidence_gap_ids.length > 0,
+        ),
+      ).toBe(true);
+      expect(architectureReasoning.architecture_assumptions).toContainEqual(
+        expect.objectContaining({
+          assumption_id: 'assumption:component:packages--cli:boundary',
+          entity_id: 'component:packages--cli',
+          evidence_ids: expect.arrayContaining([
+            'evidence:file-packages--cli--package.json',
+            'evidence:file-packages--cli--src--index.ts',
+          ]),
+          evidence_gap_ids: [],
+          rules: expect.arrayContaining([
+            'boundary_type:entrypoint',
+            'flow_links:2',
+            'configs:1',
+            'dependencies:2',
+          ]),
+        }),
+      );
+      expect(architectureReasoning.architecture_assumptions).toContainEqual(
+        expect.objectContaining({
+          assumption_id: 'assumption:component:packages--cli:coupling',
+          entity_id: 'component:packages--cli',
+          assumption: expect.stringContaining('medium coupling'),
+          confidence_score: expect.any(Number),
+          rules: expect.arrayContaining(['coupling:medium', 'static_imports:2']),
+        }),
+      );
+      expect(architectureReasoning.design_pressures).toContainEqual(
+        expect.objectContaining({
+          pressure_id: 'pressure:component:packages--cli:dependency',
+          pressure_type: 'dependency',
+          pressure: expect.stringContaining('package dependency signal'),
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+        }),
+      );
+      expect(architectureReasoning.design_pressures).toContainEqual(
+        expect.objectContaining({
+          pressure_id: 'pressure:component:packages--cli:config',
+          pressure_type: 'config',
+          rules: ['configs:1'],
+        }),
+      );
+      expect(architectureReasoning.boundary_rationale).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          boundary_type: 'entrypoint',
+          rationale: expect.stringContaining('linked flow'),
+          confidence: 'inferred',
+        }),
+      );
+      expect(architectureReasoning.coupling_rationale).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:packages--cli',
+          coupling_level: 'medium',
+          intentional_coupling: true,
+          risky_coupling: true,
+          rules: expect.arrayContaining(['internal_imports:1']),
+        }),
+      );
+      expect(architectureReasoning.risk_tradeoff_summary).toMatchObject({
+        assumption_count: expect.any(Number),
+        intentional_coupling_count: expect.any(Number),
+        risky_coupling_count: expect.any(Number),
+        evidence_gap_count: expect.any(Number),
+      });
+      expect(architectureReasoning.risk_tradeoff_summary.assumption_count).toBe(
+        architectureReasoning.architecture_assumptions.length,
+      );
+      expect(architectureReasoning.assumption_confidence).toMatchObject({
+        assumption_count: architectureReasoning.architecture_assumptions.length,
+        average_score: expect.any(Number),
+        calibration_rule: expect.stringContaining('component confidence'),
+      });
+      expect(architectureReasoning.evidence_gaps).toContainEqual(
+        expect.objectContaining({
+          entity_id: 'flow:packages--cli--start',
+          gap: expect.stringContaining('not runtime verified'),
+          severity: 'high',
+          rules: expect.arrayContaining(['confidence:inferred', 'components:2']),
+        }),
+      );
+
+      const assumptionTraces = await readJson<{
+        traces: Array<{
+          entity_id: string;
+          reasoning_type: string;
+          claim: string;
+          evidence_ids: string[];
+          rules: string[];
+          unknowns: string[];
+        }>;
+      }>(join(result.value.researchDir, 'reasoning_traces.json'));
+      expect(assumptionTraces.traces).toContainEqual(
+        expect.objectContaining({
+          entity_id: 'component:packages--cli',
+          reasoning_type: 'architecture',
+          claim: expect.stringContaining('Architecture assumption'),
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--cli--package.json']),
+          rules: expect.arrayContaining(['architecture_assumption', 'boundary_type:entrypoint']),
+        }),
+      );
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('Architecture Assumptions');
+      expect(report).toContain('Design Pressures');
+      expect(report).toContain('Coupling Rationale');
+      expect(report).toContain('Evidence Gaps');
+
       const explained = await explainProjectTarget({
         rootDir: dir,
         target: 'flow:packages--cli--start',
@@ -1337,6 +1526,62 @@ describe('project brain generation', () => {
       expect(componentIntelligence.evidence_backed_field_score).toBeLessThan(
         componentIntelligence.field_coverage_score,
       );
+
+      const architectureReasoning = await readJson<{
+        architecture_assumptions: Array<{
+          assumption_id: string;
+          entity_id: string;
+          evidence_ids: string[];
+          evidence_gap_ids: string[];
+          unknowns: string[];
+        }>;
+        evidence_gaps: Array<{
+          gap_id: string;
+          entity_id: string;
+          gap: string;
+          rules: string[];
+        }>;
+        assumption_confidence: {
+          assumption_count: number;
+          low_confidence_assumptions: string[];
+        };
+        unknowns: string[];
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.unknowns).toEqual(
+        expect.arrayContaining([
+          'No reconstructed flows are available yet.',
+          '1 component(s) are not covered by reconstructed flows yet.',
+        ]),
+      );
+      expect(architectureReasoning.architecture_assumptions).toContainEqual(
+        expect.objectContaining({
+          assumption_id: 'assumption:component:lib:boundary',
+          entity_id: 'component:lib',
+          evidence_ids: expect.arrayContaining(['evidence:file-lib--helper.ts']),
+          evidence_gap_ids: ['gap:component:lib:flow'],
+          unknowns: expect.arrayContaining([
+            'No reconstructed flow currently crosses or reaches this boundary.',
+          ]),
+        }),
+      );
+      expect(
+        architectureReasoning.architecture_assumptions.every(
+          (assumption) =>
+            assumption.evidence_ids.length > 0 || assumption.evidence_gap_ids.length > 0,
+        ),
+      ).toBe(true);
+      expect(architectureReasoning.evidence_gaps).toContainEqual(
+        expect.objectContaining({
+          gap_id: 'gap:component:lib:flow',
+          entity_id: 'component:lib',
+          gap: expect.stringContaining('no reconstructed flow coverage'),
+          rules: ['flow_links:0'],
+        }),
+      );
+      expect(architectureReasoning.assumption_confidence).toMatchObject({
+        assumption_count: architectureReasoning.architecture_assumptions.length,
+        low_confidence_assumptions: expect.arrayContaining(['assumption:component:lib:boundary']),
+      });
 
       const benchmarkReady = await readJson<{
         coverage: {
