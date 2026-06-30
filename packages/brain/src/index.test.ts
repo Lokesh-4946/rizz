@@ -468,6 +468,8 @@ describe('project brain generation', () => {
         unsupported_claims: number;
         weak_evidence_claims: number;
         evidence_gap_count: number;
+        evidence_coverage_score: number;
+        redaction_safety_score: number;
         field_coverage_by_entity_type: {
           component: { unsupported_fields: number; weak_evidence_fields: number };
           flow: { unsupported_fields: number; weak_evidence_fields: number };
@@ -477,6 +479,33 @@ describe('project brain generation', () => {
           weak_relationship_claims: number;
           weak_field_claims: number;
           unsupported_field_claims: number;
+        };
+        evidence_calibration: {
+          scoring_inputs: {
+            evidence_coverage_score: number;
+            redaction_safety_score: number;
+            reference_integrity_score: number;
+            field_evidence_score: number;
+          };
+          claim_categories: Array<{
+            surface: string;
+            total_claims: number;
+            evidence_coverage_score: number;
+            confidence_mix: { verified: number; inferred: number; uncertain: number };
+          }>;
+          surface_confidence_mix: Array<{
+            surface: string;
+            evidence_coverage_score: number;
+            confidence_mix: { verified: number; inferred: number; uncertain: number };
+          }>;
+          weak_evidence_areas: Array<{ surface: string; reason: string }>;
+          redaction_impact: {
+            impact: string;
+            redaction_safety_score: number;
+            confidence_downgrades: number;
+          };
+          inspect_first: Array<{ priority: number; id: string; inspect_hint: string }>;
+          summary: string;
         };
         top_evidence_gaps: Array<{ kind: string; id: string; field?: string; reason: string }>;
         entity_evidence_coverage_ratio: number;
@@ -509,6 +538,47 @@ describe('project brain generation', () => {
         weak_field_claims: expect.any(Number),
         unsupported_field_claims: expect.any(Number),
       });
+      expect(evidenceQuality.evidence_calibration.scoring_inputs).toMatchObject({
+        evidence_coverage_score: evidenceQuality.evidence_coverage_score,
+        redaction_safety_score: evidenceQuality.redaction_safety_score,
+        reference_integrity_score: expect.any(Number),
+        field_evidence_score: expect.any(Number),
+      });
+      expect(evidenceQuality.evidence_calibration.claim_categories).toContainEqual(
+        expect.objectContaining({
+          surface: 'architecture_surface',
+          total_claims: expect.any(Number),
+          evidence_coverage_score: expect.any(Number),
+          confidence_mix: expect.objectContaining({
+            verified: expect.any(Number),
+            inferred: expect.any(Number),
+            uncertain: expect.any(Number),
+          }),
+        }),
+      );
+      expect(evidenceQuality.evidence_calibration.surface_confidence_mix).toContainEqual(
+        expect.objectContaining({
+          surface: 'flow_fields',
+          evidence_coverage_score: expect.any(Number),
+          confidence_mix: expect.objectContaining({
+            verified: expect.any(Number),
+            inferred: expect.any(Number),
+            uncertain: expect.any(Number),
+          }),
+        }),
+      );
+      expect(evidenceQuality.evidence_calibration.weak_evidence_areas.length).toBeGreaterThan(0);
+      expect(evidenceQuality.evidence_calibration.redaction_impact).toMatchObject({
+        impact: expect.any(String),
+        redaction_safety_score: evidenceQuality.redaction_safety_score,
+        confidence_downgrades: expect.any(Number),
+      });
+      expect(evidenceQuality.evidence_calibration.inspect_first.length).toBeGreaterThan(0);
+      expect(evidenceQuality.evidence_calibration.inspect_first[0]).toMatchObject({
+        priority: 1,
+        id: expect.any(String),
+        inspect_hint: expect.any(String),
+      });
       expect(evidenceQuality.top_evidence_gaps.length).toBeGreaterThan(0);
       expect(evidenceQuality.entity_evidence_coverage_ratio).toBeGreaterThan(0);
       expect(evidenceQuality.relationship_evidence_coverage_ratio).toBeGreaterThan(0);
@@ -525,6 +595,12 @@ describe('project brain generation', () => {
           fields: expect.objectContaining({ steps: expect.any(Number), tests: 1 }),
         }),
       );
+      const missionControlReport = await readFile(
+        join(dir, '.rizz', 'reports', 'index.html'),
+        'utf8',
+      );
+      expect(missionControlReport).toContain('Evidence Calibration');
+      expect(missionControlReport).toContain('Inspect First');
 
       const flowUnderstanding = await readJson<{
         total_flows: number;
@@ -3305,6 +3381,36 @@ describe('project brain generation', () => {
       expect(evidenceQuality.redacted_evidence_count).toBeGreaterThan(0);
       expect(JSON.stringify(evidenceQuality)).not.toContain('client_secret_handler.ts');
       expect(JSON.stringify(evidenceQuality)).not.toContain('OPENAI_API_KEY');
+      const evidenceCalibration = evidenceQuality.evidence_calibration as {
+        readonly redaction_impact?: {
+          readonly impact?: string;
+          readonly redaction_safety_score?: number;
+          readonly redacted_evidence_count?: number;
+          readonly redacted_reference_count?: number;
+          readonly confidence_downgrades?: number;
+        };
+        readonly inspect_first?: readonly {
+          readonly id?: string;
+          readonly inspect_hint?: string;
+        }[];
+        readonly weak_evidence_areas?: readonly {
+          readonly surface?: string;
+          readonly reason?: string;
+        }[];
+      };
+      expect(evidenceCalibration.redaction_impact).toMatchObject({
+        impact: 'contained',
+        redaction_safety_score: 100,
+        redacted_evidence_count: expect.any(Number),
+        redacted_reference_count: expect.any(Number),
+        confidence_downgrades: expect.any(Number),
+      });
+      expect(evidenceCalibration.redaction_impact?.redacted_evidence_count).toBeGreaterThan(0);
+      expect(evidenceCalibration.redaction_impact?.confidence_downgrades).toBeGreaterThan(0);
+      expect(evidenceCalibration.inspect_first?.length).toBeGreaterThan(0);
+      expect(evidenceCalibration.weak_evidence_areas?.length).toBeGreaterThan(0);
+      expect(JSON.stringify(evidenceCalibration)).not.toContain('client_secret_handler.ts');
+      expect(JSON.stringify(evidenceCalibration)).not.toContain('OPENAI_API_KEY');
       const understandingScore = await readJson<Record<string, unknown>>(
         join(dir, '.rizz', 'research', 'understanding_score.json'),
       );
