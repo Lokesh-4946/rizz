@@ -165,6 +165,48 @@ interface ArchitectureEvidenceGap {
   readonly rules: readonly string[];
 }
 
+interface ArchitectureUnsupportedAssumption {
+  readonly assumption_id: string;
+  readonly entity_id: string;
+  readonly reason: string;
+  readonly evidence_gap_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+}
+
+interface ArchitectureInferredTradeoff {
+  readonly entity_id: string;
+  readonly source: 'component' | 'route';
+  readonly tradeoff: string;
+  readonly reason: string;
+  readonly confidence: Confidence;
+}
+
+interface ArchitectureLowConfidenceArea {
+  readonly area_id: string;
+  readonly entity_id: string;
+  readonly area_type: 'assumption' | 'boundary' | 'evidence_gap' | 'route';
+  readonly reason: string;
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly evidence_gap_ids: readonly string[];
+}
+
+interface ArchitectureConfidenceDebt {
+  readonly debt_level: ArchitecturePressureStrength;
+  readonly debt_count: number;
+  readonly unsupported_assumption_count: number;
+  readonly inferred_tradeoff_count: number;
+  readonly low_confidence_area_count: number;
+  readonly blocking_unknown_count: number;
+  readonly unsupported_assumptions: readonly ArchitectureUnsupportedAssumption[];
+  readonly inferred_tradeoffs: readonly ArchitectureInferredTradeoff[];
+  readonly low_confidence_areas: readonly ArchitectureLowConfidenceArea[];
+  readonly blocking_unknowns: readonly string[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
 interface FileFact {
   readonly relativePath: string;
   readonly size: number;
@@ -5519,6 +5561,258 @@ function architectureAssumptionConfidenceSummary(
   };
 }
 
+function architectureSeverityRank(severity: string): number {
+  if (severity === 'high') return 3;
+  if (severity === 'medium') return 2;
+  return 1;
+}
+
+function architectureConfidenceDebtLevel(params: {
+  readonly unsupportedAssumptions: number;
+  readonly lowConfidenceAreas: number;
+  readonly blockingUnknowns: number;
+}): ArchitecturePressureStrength {
+  if (
+    params.blockingUnknowns >= 5 ||
+    params.unsupportedAssumptions >= 5 ||
+    params.lowConfidenceAreas >= 8
+  ) {
+    return 'high';
+  }
+  if (
+    params.blockingUnknowns > 0 ||
+    params.unsupportedAssumptions > 0 ||
+    params.lowConfidenceAreas > 0
+  ) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function architectureUnsupportedAssumptions(params: {
+  readonly assumptions: readonly ArchitectureAssumption[];
+  readonly evidenceGaps: readonly ArchitectureEvidenceGap[];
+}): ArchitectureUnsupportedAssumption[] {
+  const gapSeverityById = new Map(
+    params.evidenceGaps.map((gap) => [gap.gap_id, gap.severity] as const),
+  );
+  return [...params.assumptions]
+    .filter(
+      (assumption) =>
+        assumption.evidence_ids.length === 0 || assumption.evidence_gap_ids.length > 0,
+    )
+    .map((assumption) => {
+      const gapSeverities = assumption.evidence_gap_ids.map(
+        (gapId) => gapSeverityById.get(gapId) ?? 'medium',
+      );
+      const strongestSeverity = gapSeverities.sort(
+        (a, b) => architectureSeverityRank(b) - architectureSeverityRank(a),
+      )[0];
+      const reason =
+        assumption.evidence_ids.length === 0
+          ? 'No direct evidence IDs support this architecture assumption.'
+          : `Evidence gap(s) keep this architecture assumption at ${strongestSeverity ?? 'medium'} confidence debt.`;
+      return {
+        assumption_id: safeText(assumption.assumption_id),
+        entity_id: safeText(assumption.entity_id),
+        reason: safeText(reason),
+        evidence_gap_ids: assumption.evidence_gap_ids.map(safeText),
+        confidence: assumption.confidence,
+        confidence_score: assumption.confidence_score,
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.confidence_score - b.confidence_score ||
+        b.evidence_gap_ids.length - a.evidence_gap_ids.length ||
+        a.assumption_id.localeCompare(b.assumption_id),
+    )
+    .slice(0, 20);
+}
+
+function architectureInferredTradeoffs(params: {
+  readonly tradeoffMatrix: readonly Record<string, unknown>[];
+  readonly routeArchitecture: readonly Record<string, unknown>[];
+}): ArchitectureInferredTradeoff[] {
+  const componentTradeoffs = params.tradeoffMatrix.flatMap((item) => {
+    const entityId = typeof item.component_id === 'string' ? item.component_id : 'unknown';
+    const tradeoffs = asStringArray(item.tradeoffs);
+    return tradeoffs.map((tradeoff) => ({
+      entity_id: safeText(entityId),
+      source: 'component' as const,
+      tradeoff: safeText(tradeoff),
+      reason: 'Component tradeoff is inferred from static local component intelligence.',
+      confidence: 'inferred' as const,
+    }));
+  });
+  const routeTradeoffs = params.routeArchitecture.flatMap((item) => {
+    const entityId = typeof item.flow_id === 'string' ? item.flow_id : 'unknown';
+    const tradeoffs = asStringArray(item.tradeoffs);
+    return tradeoffs.map((tradeoff) => ({
+      entity_id: safeText(entityId),
+      source: 'route' as const,
+      tradeoff: safeText(tradeoff),
+      reason:
+        'Route tradeoff is inferred from app-router entrypoint, config, import, and test signals.',
+      confidence: 'inferred' as const,
+    }));
+  });
+  return [...componentTradeoffs, ...routeTradeoffs]
+    .sort(
+      (a, b) =>
+        a.entity_id.localeCompare(b.entity_id) ||
+        a.source.localeCompare(b.source) ||
+        a.tradeoff.localeCompare(b.tradeoff),
+    )
+    .slice(0, 20);
+}
+
+function architectureLowConfidenceAreas(params: {
+  readonly assumptions: readonly ArchitectureAssumption[];
+  readonly boundaryRationale: readonly ArchitectureBoundaryRationale[];
+  readonly evidenceGaps: readonly ArchitectureEvidenceGap[];
+  readonly routeArchitecture: readonly Record<string, unknown>[];
+}): ArchitectureLowConfidenceArea[] {
+  const areas: ArchitectureLowConfidenceArea[] = [];
+  for (const assumption of params.assumptions) {
+    if (assumption.confidence === 'verified' && assumption.unknowns.length === 0) continue;
+    areas.push({
+      area_id: `area:${safeText(assumption.assumption_id)}`,
+      entity_id: safeText(assumption.entity_id),
+      area_type: 'assumption',
+      reason: safeText(`Architecture assumption remains ${assumption.confidence}.`),
+      confidence: assumption.confidence,
+      confidence_score: assumption.confidence_score,
+      evidence_gap_ids: assumption.evidence_gap_ids.map(safeText),
+    });
+  }
+  for (const rationale of params.boundaryRationale) {
+    if (rationale.confidence === 'verified' && rationale.unknowns.length === 0) continue;
+    areas.push({
+      area_id: `area:${safeText(rationale.component_id)}:boundary`,
+      entity_id: safeText(rationale.component_id),
+      area_type: 'boundary',
+      reason: safeText(`Boundary rationale remains ${rationale.confidence}.`),
+      confidence: rationale.confidence,
+      confidence_score: confidenceScoreForValue(rationale.confidence),
+      evidence_gap_ids: [],
+    });
+  }
+  for (const gap of params.evidenceGaps.filter((item) => item.severity === 'high')) {
+    areas.push({
+      area_id: `area:${safeText(gap.gap_id)}`,
+      entity_id: safeText(gap.entity_id),
+      area_type: 'evidence_gap',
+      reason: safeText(gap.gap),
+      confidence: 'uncertain',
+      confidence_score: confidenceScoreForValue('uncertain'),
+      evidence_gap_ids: [safeText(gap.gap_id)],
+    });
+  }
+  for (const route of params.routeArchitecture) {
+    const confidence = route.confidence === 'verified' ? 'verified' : 'inferred';
+    if (confidence === 'verified') continue;
+    const flowId = typeof route.flow_id === 'string' ? route.flow_id : 'unknown';
+    const routePath = typeof route.route_path === 'string' ? route.route_path : 'unknown route';
+    areas.push({
+      area_id: `area:${safeText(flowId)}:route`,
+      entity_id: safeText(flowId),
+      area_type: 'route',
+      reason: safeText(`Route ${routePath} is statically reconstructed, not runtime verified.`),
+      confidence,
+      confidence_score: typeof route.confidence_score === 'number' ? route.confidence_score : 0.65,
+      evidence_gap_ids: asStringArray(route.evidence_gap_ids).map(safeText),
+    });
+  }
+  const byAreaId = new Map<string, ArchitectureLowConfidenceArea>();
+  for (const area of areas) {
+    const existing = byAreaId.get(area.area_id);
+    if (existing === undefined || area.confidence_score < existing.confidence_score) {
+      byAreaId.set(area.area_id, area);
+    }
+  }
+  return [...byAreaId.values()]
+    .sort(
+      (a, b) =>
+        a.confidence_score - b.confidence_score ||
+        b.evidence_gap_ids.length - a.evidence_gap_ids.length ||
+        a.area_id.localeCompare(b.area_id),
+    )
+    .slice(0, 25);
+}
+
+function architectureBlockingUnknowns(params: {
+  readonly artifactUnknowns: readonly string[];
+  readonly assumptions: readonly ArchitectureAssumption[];
+  readonly evidenceGaps: readonly ArchitectureEvidenceGap[];
+}): string[] {
+  return unique([
+    ...params.artifactUnknowns,
+    ...params.assumptions.flatMap((assumption) => assumption.unknowns),
+    ...params.evidenceGaps
+      .filter((gap) => gap.severity === 'high')
+      .map((gap) => `High-severity evidence gap: ${gap.gap}`),
+  ])
+    .map(safeText)
+    .slice(0, 25);
+}
+
+function buildArchitectureConfidenceDebt(params: {
+  readonly assumptions: readonly ArchitectureAssumption[];
+  readonly tradeoffMatrix: readonly Record<string, unknown>[];
+  readonly routeArchitecture: readonly Record<string, unknown>[];
+  readonly boundaryRationale: readonly ArchitectureBoundaryRationale[];
+  readonly evidenceGaps: readonly ArchitectureEvidenceGap[];
+  readonly unknowns: readonly string[];
+}): ArchitectureConfidenceDebt {
+  const unsupportedAssumptions = architectureUnsupportedAssumptions({
+    assumptions: params.assumptions,
+    evidenceGaps: params.evidenceGaps,
+  });
+  const inferredTradeoffs = architectureInferredTradeoffs({
+    tradeoffMatrix: params.tradeoffMatrix,
+    routeArchitecture: params.routeArchitecture,
+  });
+  const lowConfidenceAreas = architectureLowConfidenceAreas({
+    assumptions: params.assumptions,
+    boundaryRationale: params.boundaryRationale,
+    evidenceGaps: params.evidenceGaps,
+    routeArchitecture: params.routeArchitecture,
+  });
+  const blockingUnknowns = architectureBlockingUnknowns({
+    artifactUnknowns: params.unknowns,
+    assumptions: params.assumptions,
+    evidenceGaps: params.evidenceGaps,
+  });
+  const debtCount =
+    unsupportedAssumptions.length +
+    inferredTradeoffs.length +
+    lowConfidenceAreas.length +
+    blockingUnknowns.length;
+  const debtLevel = architectureConfidenceDebtLevel({
+    unsupportedAssumptions: unsupportedAssumptions.length,
+    lowConfidenceAreas: lowConfidenceAreas.length,
+    blockingUnknowns: blockingUnknowns.length,
+  });
+  return {
+    debt_level: debtLevel,
+    debt_count: debtCount,
+    unsupported_assumption_count: unsupportedAssumptions.length,
+    inferred_tradeoff_count: inferredTradeoffs.length,
+    low_confidence_area_count: lowConfidenceAreas.length,
+    blocking_unknown_count: blockingUnknowns.length,
+    unsupported_assumptions: unsupportedAssumptions,
+    inferred_tradeoffs: inferredTradeoffs,
+    low_confidence_areas: lowConfidenceAreas,
+    blocking_unknowns: blockingUnknowns,
+    summary: safeText(
+      `${unsupportedAssumptions.length} unsupported assumption(s), ${inferredTradeoffs.length} inferred tradeoff(s), ${lowConfidenceAreas.length} low-confidence area(s), and ${blockingUnknowns.length} blocking unknown(s).`,
+    ),
+    calibration_rule:
+      'Confidence debt is derived only from local architecture assumptions, tradeoffs, evidence gaps, confidence scores, and unknowns.',
+  };
+}
+
 function buildArchitectureReasoningArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -5812,6 +6106,33 @@ function buildArchitectureReasoningArtifact(params: {
   const intentionalCouplings = couplingRationale.filter(
     (rationale) => rationale.intentional_coupling,
   );
+  const architectureUnknowns = unique([
+    ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
+    ...(componentsWithoutFlows.length > 0
+      ? [
+          `${componentsWithoutFlows.length} component(s) are not covered by reconstructed flows yet.`,
+        ]
+      : []),
+    ...(relationshipsWithoutEvidence.length > 0
+      ? [
+          `${relationshipsWithoutEvidence.length} relationship(s) do not have direct evidence IDs yet.`,
+        ]
+      : []),
+    ...(lowConfidenceFlows.length > 0
+      ? [`${lowConfidenceFlows.length} reconstructed flow(s) are not verified yet.`]
+      : []),
+    ...(crossComponentFlows.length === 0 && flows.length > 0
+      ? ['No cross-component flows were reconstructed from static evidence yet.']
+      : []),
+  ]).map(safeText);
+  const confidenceDebt = buildArchitectureConfidenceDebt({
+    assumptions: architectureAssumptions,
+    tradeoffMatrix,
+    routeArchitecture,
+    boundaryRationale,
+    evidenceGaps,
+    unknowns: architectureUnknowns,
+  });
   return {
     generated_at: params.now,
     project_id: projectId,
@@ -5842,26 +6163,9 @@ function buildArchitectureReasoningArtifact(params: {
         'Architecture reasoning is deterministic static inference; risky/intentional coupling reflects import, flow, config, dependency, and test evidence.',
     },
     assumption_confidence: architectureAssumptionConfidenceSummary(architectureAssumptions),
+    confidence_debt: confidenceDebt,
     evidence_gaps: evidenceGaps,
-    unknowns: unique([
-      ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
-      ...(componentsWithoutFlows.length > 0
-        ? [
-            `${componentsWithoutFlows.length} component(s) are not covered by reconstructed flows yet.`,
-          ]
-        : []),
-      ...(relationshipsWithoutEvidence.length > 0
-        ? [
-            `${relationshipsWithoutEvidence.length} relationship(s) do not have direct evidence IDs yet.`,
-          ]
-        : []),
-      ...(lowConfidenceFlows.length > 0
-        ? [`${lowConfidenceFlows.length} reconstructed flow(s) are not verified yet.`]
-        : []),
-      ...(crossComponentFlows.length === 0 && flows.length > 0
-        ? ['No cross-component flows were reconstructed from static evidence yet.']
-        : []),
-    ]),
+    unknowns: architectureUnknowns,
   };
 }
 
@@ -8043,6 +8347,51 @@ function renderLatestReviewRouteFlows(
     .join('')}</div>`;
 }
 
+function renderArchitectureConfidenceDebt(value: unknown): string {
+  if (!isRecord(value)) {
+    return renderList(['No confidence debt summary is available yet.']);
+  }
+  const summary =
+    typeof value.summary === 'string' ? value.summary : 'No confidence debt summary recorded.';
+  const debtLevel = typeof value.debt_level === 'string' ? value.debt_level : 'unknown';
+  const unsupportedCount = recordNumber(value, 'unsupported_assumption_count');
+  const inferredTradeoffCount = recordNumber(value, 'inferred_tradeoff_count');
+  const lowConfidenceCount = recordNumber(value, 'low_confidence_area_count');
+  const blockingUnknownCount = recordNumber(value, 'blocking_unknown_count');
+  const unsupportedAssumptions = recordArray(value, 'unsupported_assumptions')
+    .filter(isRecord)
+    .slice(0, 3)
+    .map((assumption) => {
+      const assumptionId =
+        typeof assumption.assumption_id === 'string' ? assumption.assumption_id : 'unknown';
+      const reason =
+        typeof assumption.reason === 'string'
+          ? assumption.reason
+          : 'Unsupported architecture assumption recorded.';
+      return `${assumptionId}: ${reason}`;
+    });
+  const lowConfidenceAreas = recordArray(value, 'low_confidence_areas')
+    .filter(isRecord)
+    .slice(0, 3)
+    .map((area) => {
+      const areaId = typeof area.area_id === 'string' ? area.area_id : 'unknown area';
+      const reason =
+        typeof area.reason === 'string' ? area.reason : 'Low-confidence area recorded.';
+      return `${areaId}: ${reason}`;
+    });
+  const blockingUnknowns = asStringArray(value.blocking_unknowns).slice(0, 4);
+  return renderList([
+    `${debtLevel} confidence debt: ${summary}`,
+    `${unsupportedCount} unsupported assumption(s)`,
+    `${inferredTradeoffCount} inferred tradeoff(s)`,
+    `${lowConfidenceCount} low-confidence area(s)`,
+    `${blockingUnknownCount} blocking unknown(s)`,
+    ...unsupportedAssumptions,
+    ...lowConfidenceAreas,
+    ...blockingUnknowns,
+  ]);
+}
+
 function renderArchitectureReasoning(value: unknown): string {
   if (!isRecord(value)) {
     return '<p class="muted">No architecture reasoning artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
@@ -8080,6 +8429,7 @@ function renderArchitectureReasoning(value: unknown): string {
   const evidenceGaps = Array.isArray(value.evidence_gaps)
     ? value.evidence_gaps.filter(isRecord)
     : [];
+  const confidenceDebt = isRecord(value.confidence_debt) ? value.confidence_debt : {};
   const unknowns = asStringArray(value.unknowns);
   const assumptionLabels = architectureAssumptions.slice(0, 5).map((assumption) => {
     const assumptionId =
@@ -8196,6 +8546,7 @@ function renderArchitectureReasoning(value: unknown): string {
     return `${reason} (${affectedFlows} affected flow(s))`;
   });
   return `<div class="grid">
+    <article class="card"><h3>Confidence Debt</h3>${renderArchitectureConfidenceDebt(confidenceDebt)}</article>
     <article class="card"><h3>Architecture Assumptions</h3>${renderList(assumptionLabels)}</article>
     <article class="card"><h3>Design Pressures</h3>${renderList(pressureLabels)}</article>
     <article class="card"><h3>Coupling Rationale</h3>${renderList(couplingRationaleLabels)}</article>
