@@ -285,6 +285,22 @@ interface FlowEvidence {
   readonly reason: string;
 }
 
+interface PathAliasPattern {
+  readonly pattern: string;
+  readonly prefix: string;
+  readonly suffix: string;
+  readonly targets: readonly {
+    readonly pattern: string;
+    readonly prefix: string;
+    readonly suffix: string;
+  }[];
+}
+
+interface ImportAliasContext {
+  readonly baseUrls: readonly string[];
+  readonly pathAliases: readonly PathAliasPattern[];
+}
+
 interface FlowContractSummary {
   readonly entry_contract: readonly string[];
   readonly exit_contract: readonly string[];
@@ -2172,6 +2188,141 @@ function resolveRelativeImportFiles(
   return filesForPathHint(files, base);
 }
 
+function splitAliasPattern(pattern: string): {
+  readonly prefix: string;
+  readonly suffix: string;
+} {
+  const starIndex = pattern.indexOf('*');
+  if (starIndex < 0) return { prefix: pattern, suffix: '' };
+  return {
+    prefix: pattern.slice(0, starIndex),
+    suffix: pattern.slice(starIndex + 1),
+  };
+}
+
+function stripJsonComments(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/,\s*([}\]])/g, '$1');
+}
+
+function joinConfigPath(configDir: string, path: string): string {
+  const normalized = normalizedPathHint(path);
+  if (normalized === '') return normalizedPathHint(configDir);
+  if (normalized.startsWith('/')) return normalized.replace(/^\/+/, '');
+  if (configDir === '.' || configDir === '') return normalized;
+  return join(configDir, normalized).split(sep).join('/');
+}
+
+function stringArrayFromRecord(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+}
+
+function importAliasContextForConfigs(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+}): ImportAliasContext {
+  const baseUrls = new Set<string>();
+  const pathAliases: PathAliasPattern[] = [];
+  const configFiles = params.files.filter((file) => {
+    const name = basename(file.relativePath).toLowerCase();
+    return name === 'tsconfig.json' || name === 'jsconfig.json';
+  });
+
+  for (const file of configFiles) {
+    const text = readTextIfAvailable(params.rootDir, file.relativePath);
+    if (text === undefined) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stripJsonComments(text));
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || !isRecord(parsed.compilerOptions)) continue;
+    const configDir = dirname(file.relativePath).split(sep).join('/');
+    const rawBaseUrl = parsed.compilerOptions.baseUrl;
+    const baseDir =
+      typeof rawBaseUrl === 'string'
+        ? joinConfigPath(configDir, rawBaseUrl)
+        : normalizedPathHint(configDir);
+    if (baseDir !== '') baseUrls.add(baseDir);
+
+    const rawPaths = parsed.compilerOptions.paths;
+    if (!isRecord(rawPaths)) continue;
+    for (const [pattern, targets] of Object.entries(rawPaths)) {
+      const normalizedPattern = normalizedPathHint(pattern);
+      if (normalizedPattern === '') continue;
+      const normalizedTargets = stringArrayFromRecord(targets).map((target) =>
+        joinConfigPath(baseDir, target),
+      );
+      if (normalizedTargets.length === 0) continue;
+      const alias = splitAliasPattern(normalizedPattern);
+      pathAliases.push({
+        pattern: normalizedPattern,
+        prefix: alias.prefix,
+        suffix: alias.suffix,
+        targets: normalizedTargets.map((target) => ({
+          pattern: target,
+          ...splitAliasPattern(target),
+        })),
+      });
+    }
+  }
+
+  return {
+    baseUrls: [...baseUrls].sort((a, b) => a.localeCompare(b)),
+    pathAliases: pathAliases.sort(
+      (a, b) =>
+        b.prefix.length - a.prefix.length ||
+        b.suffix.length - a.suffix.length ||
+        a.pattern.localeCompare(b.pattern),
+    ),
+  };
+}
+
+function resolveAliasImportFiles(
+  files: readonly FileFact[],
+  specifier: string,
+  aliasContext: ImportAliasContext,
+): FileFact[] {
+  if (specifier.startsWith('.') || specifier.startsWith('/')) return [];
+  const aliases = [
+    ...aliasContext.pathAliases,
+    {
+      pattern: '@/*',
+      prefix: '@/',
+      suffix: '',
+      targets: [{ pattern: 'src/*', prefix: 'src/', suffix: '' }],
+    },
+    {
+      pattern: '~/*',
+      prefix: '~/',
+      suffix: '',
+      targets: [{ pattern: 'src/*', prefix: 'src/', suffix: '' }],
+    },
+  ];
+  for (const alias of aliases) {
+    if (!specifier.startsWith(alias.prefix) || !specifier.endsWith(alias.suffix)) continue;
+    const middle = specifier.slice(alias.prefix.length, specifier.length - alias.suffix.length);
+    const matches = alias.targets.flatMap((target) => {
+      const candidate =
+        target.prefix === '' && target.suffix === ''
+          ? target.pattern
+          : `${target.prefix}${middle}${target.suffix}`;
+      return filesForPathHint(files, candidate);
+    });
+    if (matches.length > 0) return matches;
+  }
+  const baseUrlMatches = aliasContext.baseUrls.flatMap((baseUrl) =>
+    filesForPathHint(files, `${baseUrl}/${specifier}`),
+  );
+  if (baseUrlMatches.length > 0) return baseUrlMatches;
+  if (!specifier.startsWith('@/') && !specifier.startsWith('~/')) return [];
+  return filesForPathHint(files, `src/${specifier.slice(2)}`);
+}
+
 function importContextForFiles(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -2184,6 +2335,7 @@ function importContextForFiles(params: {
   const importedSpecifiers = new Set<string>();
   const importedFiles: FileFact[] = [];
   const importEvidence: FlowEvidence[] = [];
+  const aliases = importAliasContextForConfigs(params);
   for (const file of params.entryFiles) {
     const text = readTextIfAvailable(params.rootDir, file.relativePath);
     if (text === undefined) continue;
@@ -2198,6 +2350,7 @@ function importContextForFiles(params: {
         }),
       );
       importedFiles.push(...resolveRelativeImportFiles(params.files, file.relativePath, specifier));
+      importedFiles.push(...resolveAliasImportFiles(params.files, specifier, aliases));
     }
   }
   return {
