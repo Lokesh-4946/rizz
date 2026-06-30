@@ -13,6 +13,8 @@ network access.
   `.rizz/research/benchmark_ready.json`, and prints a concise benchmark summary.
 - `tasks/*.task.json` describes one local deterministic PI-Bench seed task:
   `{ schema_version, id, suite, mode, category, title, prompt, fixture, expected_artifacts, coverage_targets, artifact_assertions, rubric }`.
+  Research tasks may also include an `explain` block to run `rizz explain <target>` after brain
+  generation and assert the deterministic output plus any generated explain report artifact.
 
 Coverage targets are explicit for component, flow, evidence, and unknown surfaces:
 `{ minimum_total, minimum_covered, minimum_ratio }`. Evidence `minimum_total` is checked against
@@ -39,3 +41,8 @@ configs, blast-radius reasons, required tests, findings, and forbidden secret-li
 JSON/report output. Review tasks intentionally validate review JSON directly rather than writing a
 separate `.rizz/research/review_eval.json`; the measured product surface is the user-facing
 `rizz review --json` contract plus the existing local review report artifact.
+Route-aware review tasks can additionally assert affected flow metadata with
+`route_flows_include`: flow id, framework, route path, route type, entrypoints, changed files,
+linked tests, and linked configs. The Next.js route review seed uses this to prove alias-resolved
+component, content, and config imports support review blast-radius reasoning without exposing
+secret-like fixture paths.

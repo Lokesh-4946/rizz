@@ -1,0 +1,183 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-nextjs-route-review",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Next.js route review benchmark seed",
+  "prompt": "Review deterministic changes to a Next.js app-router route dependency and verify route-aware affected flow metadata, blast-radius reasons, linked tests, linked configs, and secret-safe output.",
+  "fixture": {
+    "root": "pi-bench-nextjs-route-review",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-nextjs-route-review\",\"scripts\":{\"dev\":\"next dev\",\"build\":\"next build\",\"test\":\"vitest run\",\"typecheck\":\"tsc --noEmit\"},\"dependencies\":{\"next\":\"15.0.0\",\"react\":\"19.0.0\",\"react-dom\":\"19.0.0\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "next.config.ts",
+        "contents": "export default { typedRoutes: true };\n"
+      },
+      {
+        "path": "tsconfig.json",
+        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true,\"baseUrl\":\".\",\"paths\":{\"@/*\":[\"./src/*\"],\"~/*\":[\"./src/*\"]}},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
+      },
+      {
+        "path": "src/app/layout.tsx",
+        "contents": "export default function RootLayout({ children }: { readonly children: React.ReactNode }) {\n  return <html lang=\"en\"><body>{children}</body></html>;\n}\n"
+      },
+      {
+        "path": "src/app/docs/[slug]/page.tsx",
+        "contents": "import { DocArticle } from \"@/components/doc-article\";\nimport { docs } from \"~/content/docs\";\nimport { siteConfig } from \"~/config/site\";\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = docs.get(params.slug) ?? { title: \"Missing\" };\n  return <DocArticle title={`${doc.title} · ${siteConfig.name}`} />;\n}\n"
+      },
+      {
+        "path": "src/app/docs/[slug]/page.test.tsx",
+        "contents": "import { expect, it } from \"vitest\";\n\nit(\"covers docs route rendering\", () => {\n  expect(\"docs\").toBe(\"docs\");\n});\n"
+      },
+      {
+        "path": "src/components/doc-article.tsx",
+        "contents": "export function DocArticle({ title }: { readonly title: string }) {\n  return <article>{title}</article>;\n}\n"
+      },
+      {
+        "path": "src/content/docs.ts",
+        "contents": "export const docs = new Map<string, { title: string }>([\n  [\"intro\", { title: \"Intro\" }]\n]);\n"
+      },
+      {
+        "path": "src/config/site.ts",
+        "contents": "export const siteConfig = {\n  name: \"Docs Portal\",\n  baseUrl: \"https://example.test\"\n};\n"
+      },
+      {
+        "path": "secrets/sk-or-v1-next-route.env",
+        "contents": "OPENROUTER_API_KEY=sk-or-v1-next-route-review-secret\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/components/doc-article.tsx",
+          "contents": "export function DocArticle({ title }: { readonly title: string }) {\n  return <article data-doc-route>{title}</article>;\n}\n"
+        },
+        {
+          "path": "src/content/docs.ts",
+          "contents": "export const docs = new Map<string, { title: string }>([\n  [\"intro\", { title: \"Intro\" }],\n  [\"routing\", { title: \"Routing\" }]\n]);\n"
+        },
+        {
+          "path": "src/config/site.ts",
+          "contents": "export const siteConfig = {\n  name: \"Docs Portal\",\n  baseUrl: \"https://example.test\",\n  docsPrefix: \"/docs\"\n};\n"
+        },
+        {
+          "path": "secrets/sk-or-v1-next-route.env",
+          "contents": "OPENROUTER_API_KEY=sk-or-v1-next-route-review-secret-rotated\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": [
+        "src/components/doc-article.tsx",
+        "src/content/docs.ts",
+        "src/config/site.ts"
+      ],
+      "changed_files_exclude": ["secrets/sk-or-v1-next-route.env"],
+      "direct_components_include": ["component:src"],
+      "affected_flows_include": [
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx"
+      ],
+      "affected_tests_include": ["src/app/docs/[slug]/page.test.tsx"],
+      "affected_configs_include": ["next.config.ts", "package.json", "tsconfig.json"],
+      "required_tests_include": ["vitest run"],
+      "blast_radius": "moderate",
+      "minimum_direct_components": 1,
+      "minimum_affected_flows": 1,
+      "minimum_affected_relationships": 5,
+      "blast_radius_reasons_include": [
+        "/docs/[slug] route flow (page) is affected",
+        "Entrypoints: src/app/docs/[slug]/page.tsx#/docs/[slug]",
+        "Linked tests: src/app/docs/[slug]/page.test.tsx",
+        "Linked configs: next.config.ts"
+      ],
+      "route_flows_include": [
+        {
+          "id": "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+          "framework": "nextjs-app-router",
+          "route_path": "/docs/[slug]",
+          "route_type": "page",
+          "entrypoints_include": ["src/app/docs/[slug]/page.tsx#/docs/[slug]"],
+          "changed_files_include": [
+            "src/components/doc-article.tsx",
+            "src/content/docs.ts",
+            "src/config/site.ts"
+          ],
+          "tests_include": ["src/app/docs/[slug]/page.test.tsx"],
+          "configs_include": ["next.config.ts", "package.json", "tsconfig.json"]
+        }
+      ],
+      "findings_include": [
+        { "category": "Missing tests", "title_includes": "Runtime files changed" },
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" }
+      ],
+      "forbidden_output_substrings": [
+        "sk-or-v1-next-route-review-secret",
+        "sk-or-v1-next-route.env",
+        "OPENROUTER_API_KEY",
+        "ACTUAL_FLOW_ID_HERE"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/brain/entities/reviews.json",
+    ".rizz/brain/entities/findings.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/brain/entities/reviews.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": [
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+        "/docs/[slug]",
+        "nextjs-app-router"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-next-route-review-secret",
+        "sk-or-v1-next-route.env",
+        "OPENROUTER_API_KEY",
+        "ACTUAL_FLOW_ID_HERE"
+      ]
+    },
+    {
+      "path": ".rizz/brain/entities/findings.json",
+      "type": "json",
+      "required_fields": ["entities"]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "/docs/[slug]",
+        "src/app/docs/[slug]/page.tsx#/docs/[slug]",
+        "src/app/docs/[slug]/page.test.tsx",
+        "src/config/site.ts"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-next-route-review-secret",
+        "sk-or-v1-next-route.env",
+        "OPENROUTER_API_KEY",
+        "ACTUAL_FLOW_ID_HERE"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The review JSON reports route path, route type, framework, entrypoint, linked test, and linked config metadata for the affected app-router route.",
+      "Alias-resolved component, content, and config imports drive affected route flow evidence rather than becoming fake external dependencies.",
+      "Secret-like fixture path and content are omitted or redacted from review JSON and report output."
+    ],
+    "fail": [
+      "The task depends on installing Next.js, contacting a provider, or using network access.",
+      "Affected route flow metadata loses route path, route type, entrypoint, linked tests, or config context.",
+      "Secret-like path, placeholder flow ID, or token content appears in review JSON or HTML reports."
+    ]
+  }
+}

@@ -19,7 +19,7 @@
       },
       {
         "path": "tsconfig.json",
-        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
+        "contents": "{\"compilerOptions\":{\"jsx\":\"preserve\",\"module\":\"esnext\",\"target\":\"ES2022\",\"strict\":true,\"baseUrl\":\".\",\"paths\":{\"@/*\":[\"./src/*\"],\"~/*\":[\"./src/*\"]}},\"include\":[\"src/**/*.ts\",\"src/**/*.tsx\"]}\n"
       },
       {
         "path": "src/app/layout.tsx",
@@ -27,11 +27,11 @@
       },
       {
         "path": "src/app/page.tsx",
-        "contents": "import { DashboardSummary } from \"../components/dashboard-summary\";\nimport { getFeaturedDocs } from \"../lib/content\";\n\nexport default function HomePage() {\n  return (\n    <main>\n      <DashboardSummary docs={getFeaturedDocs()} />\n    </main>\n  );\n}\n"
+        "contents": "import { DashboardSummary } from \"@/components/dashboard-summary\";\nimport { getFeaturedDocs } from \"~/content/docs\";\nimport { siteConfig } from \"~/config/site\";\n\nexport default function HomePage() {\n  return (\n    <main aria-label={siteConfig.name}>\n      <DashboardSummary docs={getFeaturedDocs()} />\n    </main>\n  );\n}\n"
       },
       {
         "path": "src/app/docs/[slug]/page.tsx",
-        "contents": "import { getDocBySlug, getDocSlugs } from \"../../../lib/content\";\n\nexport function generateStaticParams() {\n  return getDocSlugs().map((slug) => ({ slug }));\n}\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = getDocBySlug(params.slug);\n  return <article>{doc.title}</article>;\n}\n"
+        "contents": "import { DocArticle } from \"@/components/doc-article\";\nimport { getDocBySlug, getDocSlugs } from \"~/content/docs\";\nimport { siteConfig } from \"~/config/site\";\n\nexport function generateStaticParams() {\n  return getDocSlugs().map((slug) => ({ slug }));\n}\n\nexport default function DocPage({ params }: { readonly params: { readonly slug: string } }) {\n  const doc = getDocBySlug(params.slug);\n  return <DocArticle title={`${doc.title} · ${siteConfig.name}`} />;\n}\n"
       },
       {
         "path": "src/app/api/health/route.ts",
@@ -54,8 +54,16 @@
         "contents": "export function DashboardSummary({ docs }: { readonly docs: Array<{ readonly title: string }> }) {\n  return (\n    <section>\n      {docs.map((doc) => (\n        <h2 key={doc.title}>{doc.title}</h2>\n      ))}\n    </section>\n  );\n}\n"
       },
       {
-        "path": "src/lib/content.ts",
+        "path": "src/components/doc-article.tsx",
+        "contents": "export function DocArticle({ title }: { readonly title: string }) {\n  return <article>{title}</article>;\n}\n"
+      },
+      {
+        "path": "src/content/docs.ts",
         "contents": "const docs = [{ slug: \"intro\", title: \"Intro\" }];\n\nexport function getFeaturedDocs() {\n  return docs;\n}\n\nexport function getDocSlugs() {\n  return docs.map((doc) => doc.slug);\n}\n\nexport function getDocBySlug(slug: string) {\n  return docs.find((doc) => doc.slug === slug) ?? docs[0];\n}\n"
+      },
+      {
+        "path": "src/config/site.ts",
+        "contents": "export const siteConfig = {\n  name: \"Docs Portal\",\n  baseUrl: \"https://example.test\"\n};\n"
       },
       {
         "path": "src/lib/health.ts",
@@ -70,6 +78,8 @@
     ".rizz/research/evidence_quality.json",
     ".rizz/research/architecture_reasoning.json",
     ".rizz/research/benchmark_ready.json",
+    ".rizz/brain/entities/flows.json",
+    ".rizz/brain/flows/flow-nextjs--page--docs---slug---src--app--docs---slug---page.tsx.json",
     ".rizz/reports/index.html"
   ],
   "coverage_targets": {
@@ -95,7 +105,9 @@
       ],
       "required_substrings": [
         "flow:nextjs--api--api--health--src--app--api--health--route.ts",
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
         "Next.js /api/health API route",
+        "Next.js /docs/[slug] page render",
         "nextjs-app-router",
         "flow:scripts--dev",
         "dev UI flow",
@@ -117,7 +129,7 @@
         "src/app/sitemap.ts",
         "src/app/robots.ts",
         "src/components/dashboard-summary.tsx",
-        "src/lib/content.ts"
+        "src/components/doc-article.tsx"
       ]
     },
     {
@@ -132,6 +144,10 @@
       "required_substrings": [
         "component:src",
         "package.json",
+        "src/app/docs/[slug]/page.tsx",
+        "src/components/doc-article.tsx",
+        "src/content/docs.ts",
+        "src/config/site.ts",
         "src/app/api/health/route.ts",
         "src/lib/health.ts"
       ]
@@ -165,6 +181,39 @@
       ]
     },
     {
+      "path": ".rizz/brain/entities/flows.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": [
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+        "nextjs-app-router",
+        "/docs/[slug]",
+        "page",
+        "src/app/docs/[slug]/page.tsx",
+        "src/components/doc-article.tsx",
+        "src/content/docs.ts",
+        "src/config/site.ts"
+      ],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    {
+      "path": ".rizz/brain/flows/flow-nextjs--page--docs---slug---src--app--docs---slug---page.tsx.json",
+      "type": "json",
+      "required_fields": ["id", "data.route_path", "data.route_type", "data.files", "data.configs"],
+      "required_substrings": [
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+        "nextjs-app-router",
+        "/docs/[slug]",
+        "src/app/docs/[slug]/page.tsx",
+        "src/components/doc-article.tsx",
+        "src/content/docs.ts",
+        "src/config/site.ts",
+        "src/app/api/health/route.test.ts",
+        "Next.js app-router file maps to route path /docs/[slug]."
+      ],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    {
       "path": ".rizz/reports/index.html",
       "type": "file",
       "required_substrings": [
@@ -175,11 +224,50 @@
         "data-kind=\"flow\"",
         "src/app/page.tsx",
         "src/app/docs/[slug]/page.tsx",
+        "src/components/doc-article.tsx",
+        "src/content/docs.ts",
+        "src/config/site.ts",
         "src/app/api/health/route.ts"
       ],
-      "forbidden_substrings": ["<script src=", "<link rel=\"stylesheet\"", "fetch("]
+      "forbidden_substrings": [
+        "<script src=",
+        "<link rel=\"stylesheet\"",
+        "fetch(",
+        "ACTUAL_FLOW_ID_HERE",
+        "sk-or-v1",
+        "OPENROUTER_API_KEY"
+      ]
     }
   ],
+  "explain": {
+    "target": "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+    "assertions": {
+      "required_output_substrings": [
+        "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
+        "/docs/[slug]",
+        "src/app/docs/[slug]/page.tsx",
+        "src/components/doc-article.tsx",
+        "src/content/docs.ts",
+        "src/config/site.ts",
+        "Rendered React route output."
+      ],
+      "forbidden_output_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    "artifact_assertions": [
+      {
+        "path": ".rizz/reports/explain.html",
+        "type": "file",
+        "required_substrings": [
+          "Next.js app-router file maps to route path /docs/[slug].",
+          "src/components/doc-article.tsx",
+          "src/content/docs.ts",
+          "src/config/site.ts",
+          "Rendered React route output."
+        ],
+        "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
+      }
+    ]
+  },
   "rubric": {
     "pass": [
       "The fixture produces deterministic Next.js app-router page, dynamic docs, layout, API, sitemap, robots, content-loader, component, and package-script evidence.",
