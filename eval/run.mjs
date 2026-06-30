@@ -243,12 +243,66 @@ function validateReviewAssertions(assertions) {
       }
     }
   }
+  if (assertions.route_flows_include !== undefined) {
+    if (
+      !Array.isArray(assertions.route_flows_include) ||
+      assertions.route_flows_include.length === 0
+    ) {
+      errors.push('review.assertions.route_flows_include must include objects');
+    } else {
+      for (const [index, flow] of assertions.route_flows_include.entries()) {
+        if (!isRecord(flow)) {
+          errors.push(`review.assertions.route_flows_include[${index}] must be an object`);
+          continue;
+        }
+        for (const field of ['id', 'framework', 'route_path', 'route_type']) {
+          if (flow[field] !== undefined && !isNonEmptyString(flow[field])) {
+            errors.push(
+              `review.assertions.route_flows_include[${index}].${field} must be a non-empty string`,
+            );
+          }
+        }
+        for (const field of [
+          'entrypoints_include',
+          'changed_files_include',
+          'tests_include',
+          'configs_include',
+        ]) {
+          if (
+            flow[field] !== undefined &&
+            (!isStringArray(flow[field]) || flow[field].length === 0)
+          ) {
+            errors.push(
+              `review.assertions.route_flows_include[${index}].${field} must include strings`,
+            );
+          }
+        }
+      }
+    }
+  }
   return errors;
 }
 
 function validateReviewSpec(review) {
   if (!isRecord(review)) return ['review must be an object for review-blast-radius tasks'];
   return [...validateReviewDiff(review.diff), ...validateReviewAssertions(review.assertions)];
+}
+
+function validateExplainSpec(explain) {
+  const errors = [];
+  if (!isRecord(explain)) return ['explain must be an object'];
+  if (!isNonEmptyString(explain.target)) errors.push('explain.target must be a non-empty string');
+  const assertions = explain.assertions;
+  if (!isRecord(assertions)) {
+    errors.push('explain.assertions must be an object');
+  } else {
+    validateOptionalStringArray(assertions, 'required_output_substrings', errors);
+    validateOptionalStringArray(assertions, 'forbidden_output_substrings', errors);
+  }
+  if (explain.artifact_assertions !== undefined) {
+    errors.push(...validateArtifactAssertions(explain.artifact_assertions));
+  }
+  return errors;
 }
 
 function validateRubric(rubric) {
@@ -290,6 +344,7 @@ function validatePiBenchTask(task) {
     errors.push(...validateReviewSpec(task.review));
   } else {
     errors.push(...validateCoverageTargets(task.coverage_targets));
+    if (task.explain !== undefined) errors.push(...validateExplainSpec(task.explain));
   }
   errors.push(...validateArtifactAssertions(task.artifact_assertions));
   errors.push(...validateRubric(task.rubric));
@@ -610,6 +665,51 @@ function assertReviewFindings(review, expected) {
   return errors;
 }
 
+function assertReviewRouteFlows(review, expected) {
+  const flows = reviewArray(review, 'affected_flows');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matchedFlow = flows.find((flow) => {
+      if (!isRecord(flow)) return false;
+      const idMatches = item.id === undefined || String(flow.id ?? '') === item.id;
+      const frameworkMatches =
+        item.framework === undefined || String(flow.framework ?? '') === item.framework;
+      const routePathMatches =
+        item.route_path === undefined || String(flow.route_path ?? '') === item.route_path;
+      const routeTypeMatches =
+        item.route_type === undefined || String(flow.route_type ?? '') === item.route_type;
+      return idMatches && frameworkMatches && routePathMatches && routeTypeMatches;
+    });
+    if (matchedFlow === undefined) {
+      errors.push(`affected_flows missing route metadata for ${item.route_path ?? item.id}`);
+      continue;
+    }
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(matchedFlow, 'entrypoints'),
+        item.entrypoints_include,
+        'affected_flows.entrypoints',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedFlow, 'changed_files'),
+        item.changed_files_include,
+        'affected_flows.changed_files',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedFlow, 'tests'),
+        item.tests_include,
+        'affected_flows.tests',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedFlow, 'configs'),
+        item.configs_include,
+        'affected_flows.configs',
+      ),
+    );
+  }
+  return errors;
+}
+
 function assertNoForbiddenReviewOutput(output, forbidden) {
   const errors = [];
   for (const item of forbidden ?? []) {
@@ -670,6 +770,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
       'blast_radius_reasons',
     ),
     ...assertReviewFindings(review, assertions.findings_include),
+    ...assertReviewRouteFlows(review, assertions.route_flows_include),
   );
 
   if (
@@ -726,6 +827,40 @@ function assertReviewContract(task, repoDir, review, stdout) {
       blastRadius: review.blast_radius,
     },
   };
+}
+
+function assertExplainContract(task, repoDir) {
+  if (task.explain === undefined) return [];
+  const result = runCliInCwdSync(repoDir, ['explain', task.explain.target], '');
+  const errors = [];
+  if (result.error !== undefined) errors.push(String(result.error));
+  if (result.status !== 0) {
+    errors.push(`rizz explain exited ${result.status}: ${result.stderr || result.stdout}`);
+  }
+
+  const assertions = task.explain.assertions;
+  if (isRecord(assertions)) {
+    for (const substring of assertions.required_output_substrings ?? []) {
+      if (!result.stdout.includes(substring)) {
+        errors.push(`explain output missing substring ${substring}`);
+      }
+    }
+    for (const substring of assertions.forbidden_output_substrings ?? []) {
+      if (result.stdout.includes(substring)) {
+        errors.push(`explain output included forbidden substring ${substring}`);
+      }
+    }
+  }
+
+  if (Array.isArray(task.explain.artifact_assertions)) {
+    errors.push(
+      ...assertArtifactContracts(
+        { artifact_assertions: task.explain.artifact_assertions },
+        repoDir,
+      ),
+    );
+  }
+  return errors;
 }
 
 function runReviewPiBenchTask(task) {
@@ -788,6 +923,7 @@ function runPiBenchTask(task) {
     }
     errors.push(...assertExpectedArtifacts(task, repoDir));
     errors.push(...assertArtifactContracts(task, repoDir));
+    errors.push(...assertExplainContract(task, repoDir));
 
     let score;
     try {
