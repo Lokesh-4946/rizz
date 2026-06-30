@@ -1,0 +1,148 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-blast-radius",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Review blast radius benchmark seed",
+  "prompt": "Review a deterministic diff to a shared internal component and verify that rizz review --json reports dependent components, affected relationships, flows, tests, configs, blast-radius reasons, and secret-safe output.",
+  "fixture": {
+    "root": "pi-bench-review-blast-radius",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-blast-radius\",\"workspaces\":[\"packages/*\"],\"scripts\":{\"test\":\"vitest run\",\"typecheck\":\"tsc -b\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "packages/shared/package.json",
+        "contents": "{\"name\":\"@fixture/shared\",\"scripts\":{\"test\":\"vitest run packages/shared\"},\"dependencies\":{}}\n"
+      },
+      {
+        "path": "packages/shared/src/internal.ts",
+        "contents": "export interface AccessDecision {\n  readonly allowed: boolean;\n  readonly tier: \"free\" | \"pro\";\n}\n\nexport function evaluateAccess(tier: \"free\" | \"pro\"): AccessDecision {\n  return { allowed: tier === \"pro\", tier };\n}\n"
+      },
+      {
+        "path": "packages/shared/src/internal.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { evaluateAccess } from \"./internal.js\";\n\nit(\"allows pro accounts\", () => {\n  expect(evaluateAccess(\"pro\")).toEqual({ allowed: true, tier: \"pro\" });\n});\n"
+      },
+      {
+        "path": "packages/app/package.json",
+        "contents": "{\"name\":\"@fixture/app\",\"scripts\":{\"start\":\"node dist/server.js\",\"test\":\"vitest run packages/app\"},\"dependencies\":{\"@fixture/shared\":\"workspace:*\"}}\n"
+      },
+      {
+        "path": "packages/app/src/server.ts",
+        "contents": "import { evaluateAccess } from \"@fixture/shared\";\n\nexport function renderGate(tier: \"free\" | \"pro\"): string {\n  return evaluateAccess(tier).allowed ? \"show\" : \"hide\";\n}\n"
+      },
+      {
+        "path": "packages/app/src/server.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { renderGate } from \"./server.js\";\n\nit(\"renders pro gate\", () => {\n  expect(renderGate(\"pro\")).toBe(\"show\");\n});\n"
+      },
+      {
+        "path": "packages/worker/package.json",
+        "contents": "{\"name\":\"@fixture/worker\",\"scripts\":{\"start\":\"node dist/job.js\",\"test\":\"vitest run packages/worker\"},\"dependencies\":{\"@fixture/shared\":\"workspace:*\"}}\n"
+      },
+      {
+        "path": "packages/worker/src/job.ts",
+        "contents": "import { evaluateAccess } from \"@fixture/shared\";\n\nexport function syncEntitlement(tier: \"free\" | \"pro\"): boolean {\n  return evaluateAccess(tier).allowed;\n}\n"
+      },
+      {
+        "path": "packages/worker/src/job.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { syncEntitlement } from \"./job.js\";\n\nit(\"syncs pro entitlement\", () => {\n  expect(syncEntitlement(\"pro\")).toBe(true);\n});\n"
+      },
+      {
+        "path": "secrets/sk-or-v1-eval-review-secret.env",
+        "contents": "OPENROUTER_API_KEY=sk-or-v1-review-eval-secret\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "packages/shared/src/internal.ts",
+          "contents": "export interface AccessDecision {\n  readonly allowed: boolean;\n  readonly tier: \"free\" | \"pro\";\n  readonly reason: string;\n}\n\nexport function evaluateAccess(tier: \"free\" | \"pro\"): AccessDecision {\n  return { allowed: tier === \"pro\", tier, reason: `tier:${tier}` };\n}\n"
+        },
+        {
+          "path": "secrets/sk-or-v1-eval-review-secret.env",
+          "contents": "OPENROUTER_API_KEY=sk-or-v1-review-eval-secret-rotated\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["packages/shared/src/internal.ts"],
+      "changed_files_exclude": ["secrets/sk-or-v1-eval-review-secret.env"],
+      "direct_components_include": ["component:packages--shared"],
+      "dependent_components_include": ["component:packages--app", "component:packages--worker"],
+      "affected_flows_include": [
+        "flow:packages--app--start",
+        "flow:packages--app--test",
+        "flow:packages--worker--start",
+        "flow:packages--worker--test"
+      ],
+      "affected_tests_include": [
+        "packages/app/src/server.test.ts",
+        "packages/shared/src/internal.test.ts",
+        "packages/worker/src/job.test.ts"
+      ],
+      "affected_configs_include": [
+        "packages/app/package.json",
+        "packages/shared/package.json",
+        "packages/worker/package.json"
+      ],
+      "required_tests_include": ["vitest run"],
+      "blast_radius": "moderate",
+      "minimum_direct_components": 1,
+      "minimum_dependent_components": 2,
+      "minimum_affected_flows": 4,
+      "minimum_affected_relationships": 8,
+      "blast_radius_reasons_include": [
+        "dependent consumer component(s) require review",
+        "affected flow(s) link the change",
+        "graph relationship(s) touch the review blast radius"
+      ],
+      "findings_include": [
+        { "category": "Hidden coupling", "title_includes": "Consumer components depend" },
+        { "category": "Missing tests", "title_includes": "Runtime files changed" },
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" }
+      ],
+      "forbidden_output_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/brain/entities/reviews.json",
+    ".rizz/brain/entities/findings.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/brain/entities/reviews.json",
+      "type": "json",
+      "required_fields": ["entities"]
+    },
+    {
+      "path": ".rizz/brain/entities/findings.json",
+      "type": "json",
+      "required_fields": ["entities"]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file"
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The review JSON reports direct and dependent component blast radius from local graph facts.",
+      "Affected relationships, flows, tests, configs, and blast-radius reasons are validated semantically.",
+      "Secret-like fixture path and content are omitted or redacted from review JSON and report output."
+    ],
+    "fail": [
+      "The task depends on provider calls, network access, or package installation inside the fixture.",
+      "Dependent consumer components are treated as isolated from a shared internal change.",
+      "Secret-like path or token content appears in review JSON or HTML reports."
+    ]
+  }
+}
