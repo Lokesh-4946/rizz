@@ -15,6 +15,11 @@ network access.
   `{ schema_version, id, suite, mode, category, title, prompt, fixture, expected_artifacts, coverage_targets, artifact_assertions, rubric }`.
   Research tasks may also include an `explain` block to run `rizz explain <target>` after brain
   generation and assert the deterministic output plus any generated explain report artifact.
+  Incremental-understanding tasks may include an `incremental` block with deterministic file
+  changes; the runner scans once, applies the changes, scans again, and validates
+  `.rizz/research/incremental_update.json` changed/stable entity counts, reused/recomputed
+  understanding counts, file reuse, scan efficiency, fingerprint continuity, and secret-safe
+  changed-path output.
 
 Coverage targets are explicit for component, flow, evidence, and unknown surfaces:
 `{ minimum_total, minimum_covered, minimum_ratio }`. Evidence `minimum_total` is checked against
@@ -32,6 +37,10 @@ component import, and package-script evidence. It intentionally does not install
 dependencies or contact a provider; it asserts that local research artifacts and Mission Control
 preserve route/API/render flows, mapped files/components/configs, contracts, confidence gaps, known
 unknowns, object labels, and expandable report details.
+
+The incremental-understanding seed applies a public source change and a sensitive-path change after
+the first scan. It asserts that users can trust what changed between scans without leaking the
+sensitive path or secret-like changed contents into research artifacts or reports.
 
 Review benchmark tasks use category `review-blast-radius` and add a `review` block instead of
 `coverage_targets`. The runner initializes a git fixture, runs `rizz brain`, commits the baseline,
