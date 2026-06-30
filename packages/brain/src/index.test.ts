@@ -1621,6 +1621,7 @@ describe('project brain generation', () => {
             route_type?: string;
             kind?: string;
             components?: string[];
+            dependencies?: string[];
             files?: string[];
             configs?: string[];
             tests?: string[];
@@ -1658,6 +1659,7 @@ describe('project brain generation', () => {
       expect(homePage?.data).toMatchObject({
         kind: 'ui',
         components: expect.arrayContaining(['component:src']),
+        dependencies: [],
         files: expect.arrayContaining(['src/app/page.tsx', 'src/components/Hero.tsx']),
         configs: expect.arrayContaining(['next.config.ts', 'package.json', 'tsconfig.json']),
         entry_contract: expect.arrayContaining([
@@ -1668,6 +1670,7 @@ describe('project brain generation', () => {
       expect(docsPage?.data).toMatchObject({
         kind: 'ui',
         components: expect.arrayContaining(['component:src']),
+        dependencies: [],
         files: expect.arrayContaining([
           'src/app/docs/[slug]/page.tsx',
           'src/components/DocPage.tsx',
@@ -1708,6 +1711,7 @@ describe('project brain generation', () => {
       expect(metadataRoute?.data).toMatchObject({
         kind: 'ui',
         route_type: 'metadata',
+        dependencies: expect.arrayContaining(['dependency:next--og']),
         entry_contract: expect.arrayContaining([
           'Next.js metadata route /opengraph-image from src/app/opengraph-image.tsx serves a generated metadata asset.',
         ]),

@@ -2333,10 +2333,12 @@ function importContextForFiles(params: {
   readonly entryFiles: readonly FileFact[];
 }): {
   readonly importedSpecifiers: readonly string[];
+  readonly resolvedImportSpecifiers: readonly string[];
   readonly importedFiles: readonly FileFact[];
   readonly importEvidence: readonly FlowEvidence[];
 } {
   const importedSpecifiers = new Set<string>();
+  const resolvedImportSpecifiers = new Set<string>();
   const importedFiles: FileFact[] = [];
   const importEvidence: FlowEvidence[] = [];
   const aliases = importAliasContextForConfigs(params);
@@ -2353,15 +2355,34 @@ function importContextForFiles(params: {
           reason: `Static import evidence for ${specifier}.`,
         }),
       );
-      importedFiles.push(...resolveRelativeImportFiles(params.files, file.relativePath, specifier));
-      importedFiles.push(...resolveAliasImportFiles(params.files, specifier, aliases));
+      const relativeImports = resolveRelativeImportFiles(
+        params.files,
+        file.relativePath,
+        specifier,
+      );
+      const aliasImports = resolveAliasImportFiles(params.files, specifier, aliases);
+      if (relativeImports.length > 0 || aliasImports.length > 0) {
+        resolvedImportSpecifiers.add(specifier);
+      }
+      importedFiles.push(...relativeImports, ...aliasImports);
     }
   }
   return {
     importedSpecifiers: [...importedSpecifiers].sort((a, b) => a.localeCompare(b)),
+    resolvedImportSpecifiers: [...resolvedImportSpecifiers].sort((a, b) => a.localeCompare(b)),
     importedFiles: uniqueFileFacts(importedFiles),
     importEvidence: uniqueFlowEvidence(importEvidence),
   };
+}
+
+function externalImportSpecifiers(importContext: {
+  readonly importedSpecifiers: readonly string[];
+  readonly resolvedImportSpecifiers: readonly string[];
+}): string[] {
+  const resolved = new Set(importContext.resolvedImportSpecifiers);
+  return importContext.importedSpecifiers.filter(
+    (specifier) => !specifier.startsWith('.') && !resolved.has(specifier),
+  );
 }
 
 function readTextIfAvailable(rootDir: string, relativePath: string): string | undefined {
@@ -2926,7 +2947,10 @@ function inferScriptFlow(params: {
   const dependencies = unique([
     ...Object.keys(params.packageFact.dependencies),
     ...Object.keys(params.packageFact.devDependencies),
-    ...[...importedSpecifiers].filter((specifier) => !specifier.startsWith('.')),
+    ...[...importedSpecifiers].filter(
+      (specifier) =>
+        !specifier.startsWith('.') && !importContext.resolvedImportSpecifiers.includes(specifier),
+    ),
   ]).map((dependency) => entityId('dependency', dependency));
   const kind = flowKindForScript(params.packageFact, params.scriptName, params.command);
   const flowBase =
@@ -3358,9 +3382,7 @@ function inferNextAppRouteFlow(params: {
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
   ]);
   const dependencies = unique(
-    importContext.importedSpecifiers
-      .filter((specifier) => !specifier.startsWith('.'))
-      .map((dependency) => entityId('dependency', dependency)),
+    externalImportSpecifiers(importContext).map((dependency) => entityId('dependency', dependency)),
   );
   const flowId = entityId(
     'flow',
@@ -3600,9 +3622,7 @@ function inferRouteFlow(params: {
       .flatMap((component) => stringArrayData(component, 'configs')),
   );
   const dependencies = unique(
-    importContext.importedSpecifiers
-      .filter((specifier) => !specifier.startsWith('.'))
-      .map((dependency) => entityId('dependency', dependency)),
+    externalImportSpecifiers(importContext).map((dependency) => entityId('dependency', dependency)),
   );
   const steps: FlowStep[] = [
     {
