@@ -1907,6 +1907,23 @@ describe('project brain generation', () => {
       expect(explainReport).toContain('Next.js app-router file maps to route path /docs/[slug].');
       expect(explainReport).toContain('Rendered React route output.');
       expect(explainReport).not.toContain(dir);
+
+      const missionControlReport = await readFile(
+        join(dir, '.rizz', 'reports', 'index.html'),
+        'utf8',
+      );
+      expect(missionControlReport).toContain('<h4>Route Context</h4>');
+      expect(missionControlReport).toContain('Framework: nextjs-app-router');
+      expect(missionControlReport).toContain('Route path: /docs/[slug]');
+      expect(missionControlReport).toContain('Route type: page');
+      expect(missionControlReport).toContain(
+        'route: src/app/docs/[slug]/page.tsx#/docs/[slug] -&gt; component:src',
+      );
+      expect(missionControlReport).not.toContain(dir);
+      expect(missionControlReport).not.toContain('<script src=');
+      expect(missionControlReport).not.toContain('<script>');
+      expect(missionControlReport).not.toContain('https://');
+      expect(missionControlReport).not.toContain('http://');
     });
   });
 
@@ -2057,6 +2074,25 @@ describe('project brain generation', () => {
       expect(reviewReport).toContain('src/app/docs/[slug]/page.tsx#/docs/[slug]');
       expect(reviewReport).toContain('/docs/[slug] page');
       expect(reviewReport).not.toContain(dir);
+
+      const missionControlReport = await readFile(
+        join(dir, '.rizz', 'reports', 'index.html'),
+        'utf8',
+      );
+      expect(missionControlReport).toContain('<h3>Affected Route Flows</h3>');
+      expect(missionControlReport).toContain('/docs/[slug]');
+      expect(missionControlReport).toContain('Route type: page');
+      expect(missionControlReport).toContain(
+        'route: src/app/docs/[slug]/page.tsx#/docs/[slug] -&gt; component:src',
+      );
+      expect(missionControlReport).toContain(
+        'flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx',
+      );
+      expect(missionControlReport).not.toContain(dir);
+      expect(missionControlReport).not.toContain('<script src=');
+      expect(missionControlReport).not.toContain('<script>');
+      expect(missionControlReport).not.toContain('https://');
+      expect(missionControlReport).not.toContain('http://');
     });
   });
 
