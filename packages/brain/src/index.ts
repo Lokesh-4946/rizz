@@ -7471,6 +7471,7 @@ function renderFlowCards(
       const steps = flowSteps(flow);
       const risks = flowRisks(flow);
       const fieldEvidence = recordStringArrayData(flow, 'field_evidence');
+      const routeContext = flowRouteContextLabels(flow);
       const entrypoints = Array.isArray(flow.data?.entrypoints)
         ? flow.data.entrypoints.filter(isRecord).map((entrypoint) => {
             const type = typeof entrypoint.type === 'string' ? entrypoint.type : 'entrypoint';
@@ -7483,7 +7484,7 @@ function renderFlowCards(
         : [];
       const stepLabels = steps.map((step) => `${step.order}. ${step.type}: ${step.path}`);
       return `<article class="card" data-search="${htmlEscape(
-        `${flow.id} ${flow.name} ${kind} ${flow.confidence} ${flow.source_files.join(' ')}`,
+        `${flow.id} ${flow.name} ${kind} ${routeContext.join(' ')} ${entrypoints.join(' ')} ${flow.confidence} ${flow.source_files.join(' ')}`,
       )}" data-kind="flow" data-confidence="${htmlEscape(flow.confidence)}">
         <div class="badge">${htmlEscape(flow.confidence)} · ${htmlEscape(kind)} · ${htmlEscape(
           String(asFlowConfidenceScore(flow)),
@@ -7491,6 +7492,7 @@ function renderFlowCards(
         <h3>${htmlEscape(flow.name)}</h3>
         <p class="muted">${htmlEscape(flow.id)}</p>
         <p>${htmlEscape(flow.description)}</p>
+        ${renderFlowRouteContext(routeContext, flow.evidence_ids, evidenceById)}
         <h4>Entrypoints</h4>
         ${renderListWithEvidence(entrypoints, flow.evidence_ids, evidenceById)}
         <h4>Steps</h4>
@@ -7559,6 +7561,31 @@ function renderFlowCards(
       </article>`;
     })
     .join('');
+}
+
+function flowRouteContextLabels(flow: BrainEntity): string[] {
+  const labels = [
+    stringData(flow, 'framework') === undefined
+      ? undefined
+      : `Framework: ${stringData(flow, 'framework')}`,
+    stringData(flow, 'route_path') === undefined
+      ? undefined
+      : `Route path: ${stringData(flow, 'route_path')}`,
+    stringData(flow, 'route_type') === undefined
+      ? undefined
+      : `Route type: ${stringData(flow, 'route_type')}`,
+  ].filter((label): label is string => label !== undefined);
+  return labels.map(safeText);
+}
+
+function renderFlowRouteContext(
+  labels: readonly string[],
+  evidenceIds: readonly string[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  if (labels.length === 0) return '';
+  return `<h4>Route Context</h4>
+        ${renderListWithEvidence(labels, evidenceIds, evidenceById)}`;
 }
 
 function renderStartHere(
@@ -7656,6 +7683,45 @@ function renderReviewStatusValue(value: unknown): string {
     return renderList(labels);
   }
   return htmlEscape(String(value));
+}
+
+function renderLatestReviewRouteFlows(
+  latest: Record<string, unknown>,
+  flows: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+  }
+  const affectedFlowIds = new Set(asStringArray(status.affected_flows));
+  if (affectedFlowIds.size === 0) {
+    return '<p class="muted">No affected flows recorded by the latest review.</p>';
+  }
+  const affectedRouteFlows = flows.filter(
+    (flow) => affectedFlowIds.has(flow.id) && flowRouteContextLabels(flow).length > 0,
+  );
+  if (affectedRouteFlows.length === 0) {
+    return '<p class="muted">No affected route flows recorded by the latest review.</p>';
+  }
+  return `<div class="grid">${affectedRouteFlows
+    .map((flow) => {
+      const routePath = stringData(flow, 'route_path') ?? flow.name;
+      const routeType = stringData(flow, 'route_type') ?? flowKind(flow);
+      const entrypoints = flowEntrypoints(flow).map(formatFlowEntrypoint);
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${flow.id} ${routePath} ${routeType} ${entrypoints.join(' ')}`,
+      )}" data-kind="flow" data-confidence="${htmlEscape(flow.confidence)}">
+        <div class="badge">${htmlEscape(flow.confidence)} · ${htmlEscape(routeType)}</div>
+        <h3>${htmlEscape(routePath)}</h3>
+        <p class="muted">${htmlEscape(flow.id)}</p>
+        <h4>Route Context</h4>
+        ${renderListWithEvidence(flowRouteContextLabels(flow), flow.evidence_ids, evidenceById)}
+        <h4>Entrypoints</h4>
+        ${renderListWithEvidence(entrypoints, flow.evidence_ids, evidenceById)}
+      </article>`;
+    })
+    .join('')}</div>`;
 }
 
 function renderArchitectureReasoning(value: unknown): string {
@@ -8236,6 +8302,8 @@ function renderReport(params: {
     summary: 'Latest review posture from the current git diff and project brain.',
     posture: reviewReadiness.posture,
     body: `${renderLatestReview(params.latest)}
+      <h3>Affected Route Flows</h3>
+      ${renderLatestReviewRouteFlows(params.latest, params.buckets.flows, evidenceById)}
       <h3>Risk Areas</h3>
       <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>`,
   });
@@ -9143,6 +9211,23 @@ export async function reviewProjectChanges(
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
     await writeVerifiedFile(reportPath, reviewReport);
+    const reportBuckets = await readBrainBuckets(entitiesDir);
+    const projectStateValue: unknown = updatedLatest.project_state;
+    const projectState: Record<string, unknown> = isRecord(projectStateValue)
+      ? projectStateValue
+      : {};
+    const reportPackageManager =
+      typeof projectState.package_manager === 'string' ? projectState.package_manager : 'unknown';
+    const reportStack = asStringArray(projectState.tech_stack);
+    const missionControlReport = renderReport({
+      projectName: basename(rootDir),
+      latest: updatedLatest,
+      buckets: reportBuckets,
+      relationships: graph.relationships ?? [],
+      packageManager: reportPackageManager,
+      stack: reportStack,
+    });
+    await writeVerifiedFile(join(reportsDir, 'index.html'), missionControlReport);
 
     return {
       ok: true,
@@ -9918,6 +10003,43 @@ function readEntityFile(entitiesDir: string, fileName: string): Promise<readonly
   return readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
     join(entitiesDir, fileName),
   ).then((file) => file?.entities ?? []);
+}
+
+async function readBrainBuckets(entitiesDir: string): Promise<BrainBuckets> {
+  const entries: Array<readonly [keyof BrainBuckets, BrainEntity[]]> = await Promise.all(
+    ENTITY_FILES.map(async ([bucket, fileName]) => {
+      const entities = [...(await readEntityFile(entitiesDir, fileName))] as BrainEntity[];
+      return [bucket, entities] as readonly [keyof BrainBuckets, BrainEntity[]];
+    }),
+  );
+  const byBucket: Partial<Record<keyof BrainBuckets, BrainEntity[]>> = {};
+  for (const [bucket, entities] of entries) {
+    byBucket[bucket] = entities;
+  }
+  return {
+    projects: byBucket.projects ?? [],
+    files: byBucket.files ?? [],
+    folders: byBucket.folders ?? [],
+    components: byBucket.components ?? [],
+    services: byBucket.services ?? [],
+    apis: byBucket.apis ?? [],
+    databaseTables: byBucket.databaseTables ?? [],
+    configs: byBucket.configs ?? [],
+    dependencies: byBucket.dependencies ?? [],
+    commands: byBucket.commands ?? [],
+    tests: byBucket.tests ?? [],
+    flows: byBucket.flows ?? [],
+    decisions: byBucket.decisions ?? [],
+    risks: byBucket.risks ?? [],
+    agents: byBucket.agents ?? [],
+    tasks: byBucket.tasks ?? [],
+    sessions: byBucket.sessions ?? [],
+    handoffs: byBucket.handoffs ?? [],
+    reviews: byBucket.reviews ?? [],
+    findings: byBucket.findings ?? [],
+    evidence: byBucket.evidence ?? [],
+    status: byBucket.status ?? [],
+  };
 }
 
 async function readReviewEntitySets(entitiesDir: string): Promise<{
