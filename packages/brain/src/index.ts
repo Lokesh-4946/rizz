@@ -493,8 +493,12 @@ interface AffectedFlowData {
   readonly id: string;
   readonly name: string;
   readonly kind: string;
+  readonly framework?: string;
+  readonly route_path?: string;
+  readonly route_type?: string;
   readonly confidence: Confidence;
   readonly score: number;
+  readonly entrypoints: readonly string[];
   readonly changed_files: readonly string[];
   readonly components: readonly string[];
   readonly tests: readonly string[];
@@ -10153,7 +10157,7 @@ function buildReview(params: {
       title: 'Known flows overlap the diff',
       description: safeText(
         `The diff touches ${affectedFlows.length} reconstructed flow(s): ${affectedFlows
-          .map((flow) => flow.name)
+          .map(reviewFlowDescriptionLabel)
           .slice(0, 5)
           .join(', ')}. Linked tests/configs: ${
           unique([
@@ -10459,8 +10463,10 @@ function affectedFlowEntities(
         id: safeText(flow.id),
         name: safeText(flow.name),
         kind: flowKind(flow),
+        ...reviewRouteFlowFields(flow),
         confidence: flow.confidence,
         score: asFlowConfidenceScore(flow),
+        entrypoints: reviewFlowEntrypointLabels(flow),
         changed_files: matchedChangedFiles.map(safeText),
         components: flowComponents.map(safeText),
         tests: flowStringArray(flow, 'tests').map(safeText),
@@ -10471,6 +10477,28 @@ function affectedFlowEntities(
     ];
   });
   return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function reviewRouteFlowFields(
+  flow: BrainEntity,
+): Pick<AffectedFlowData, 'framework' | 'route_path' | 'route_type'> {
+  const framework = stringData(flow, 'framework');
+  const routePath = stringData(flow, 'route_path');
+  const routeType = stringData(flow, 'route_type');
+  if (framework === undefined && routePath === undefined && routeType === undefined) return {};
+  return {
+    ...(framework !== undefined ? { framework: safeText(framework) } : {}),
+    ...(routePath !== undefined ? { route_path: safeText(routePath) } : {}),
+    ...(routeType !== undefined ? { route_type: safeText(routeType) } : {}),
+  };
+}
+
+function reviewFlowEntrypointLabels(flow: BrainEntity): string[] {
+  return flowEntrypoints(flow)
+    .map((entrypoint) =>
+      entrypoint.symbol === null ? entrypoint.path : `${entrypoint.path}#${entrypoint.symbol}`,
+    )
+    .map(safeText);
 }
 
 function containsSecretLikeValue(value: string): boolean {
@@ -10541,14 +10569,52 @@ function blastRadiusReasonLines(params: {
 }): string[] {
   const directNames = params.directComponents.map((component) => component.name);
   const dependentNames = params.dependentComponents.map((component) => component.name);
+  const routeFlowReasons = affectedRouteFlowReasons(params.affectedFlows);
   return [
     `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
     params.dependentComponents.length === 0
       ? 'No dependent consumer components were found from import/call/dependency graph edges.'
       : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
     `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
+    ...routeFlowReasons,
     `${params.affectedRelationships.length} graph relationship(s) touch the review blast radius.`,
   ].map(safeText);
+}
+
+function affectedRouteFlowReasons(flows: readonly AffectedFlowData[]): string[] {
+  return flows
+    .filter((flow) => flow.route_path !== undefined || flow.framework === 'nextjs-app-router')
+    .slice(0, 5)
+    .map((flow) => {
+      const routePath = flow.route_path ?? flow.name;
+      const routeType = flow.route_type ?? flow.kind;
+      const linkedTests = flow.tests.slice(0, 3);
+      const linkedConfigs = flow.configs.slice(0, 3);
+      const artifactSummary = reviewRouteArtifactSummary(linkedTests, linkedConfigs);
+      const entrypointSummary = reviewRouteListSummary('Entrypoints', flow.entrypoints);
+      const componentSummary = reviewRouteListSummary('Components', flow.components);
+      return `${routePath} route flow (${routeType}) is affected through ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
+    });
+}
+
+function reviewRouteListSummary(label: string, values: readonly string[]): string {
+  const visibleValues = values.slice(0, 3);
+  if (visibleValues.length === 0) return `${label}: none recorded.`;
+  return `${label}: ${visibleValues.join(', ')}.`;
+}
+
+function reviewRouteArtifactSummary(
+  linkedTests: readonly string[],
+  linkedConfigs: readonly string[],
+): string {
+  if (linkedTests.length === 0 && linkedConfigs.length === 0) {
+    return 'No linked test or config artifact was recorded.';
+  }
+  const summaries = [
+    linkedTests.length > 0 ? `Linked tests: ${linkedTests.join(', ')}` : undefined,
+    linkedConfigs.length > 0 ? `Linked configs: ${linkedConfigs.join(', ')}` : undefined,
+  ].filter((summary): summary is string => summary !== undefined);
+  return `${summaries.join('. ')}.`;
 }
 
 function scoreSurgicality(
@@ -10605,11 +10671,24 @@ function suggestedFocusAreas(
     ...categories,
     ...componentNames.map((name) => `component: ${name}`),
     ...dependentNames.map((name) => `dependent component: ${name}`),
-    ...affectedFlows.map((flow) => `flow: ${flow.name}`),
+    ...affectedFlows.map(reviewFlowFocusLabel),
     ...blastRadiusReasons.slice(0, 2),
     ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
     ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
   ]).slice(0, 8);
+}
+
+function reviewFlowFocusLabel(flow: AffectedFlowData): string {
+  if (flow.route_path !== undefined) return `route flow: ${flow.route_path}`;
+  return `flow: ${flow.name}`;
+}
+
+function reviewFlowDescriptionLabel(flow: AffectedFlowData): string {
+  if (flow.route_path !== undefined) {
+    const routeType = flow.route_type ?? flow.kind;
+    return `${flow.route_path} route flow (${routeType})`;
+  }
+  return flow.name;
 }
 
 function mergeStrings(value: unknown, additions: readonly string[]): string[] {
@@ -10639,10 +10718,11 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Flow</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
-        <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(flow.id)} · ${htmlEscape(flow.kind)}</span></td>
+        <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
+        <td>${renderList(flow.entrypoints)}</td>
         <td>${renderList(flow.changed_files)}</td>
         <td>${renderList(flow.components)}</td>
         <td>${renderList(flow.tests)}</td>
@@ -10651,6 +10731,12 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
       </tr>`,
     )
     .join('')}</tbody></table>`;
+}
+
+function reviewFlowTableMeta(flow: AffectedFlowData): string {
+  const route =
+    flow.route_path !== undefined ? ` · ${flow.route_path} ${flow.route_type ?? 'route'}` : '';
+  return `${flow.id} · ${flow.kind}${route}`;
 }
 
 function renderAffectedComponentRows(

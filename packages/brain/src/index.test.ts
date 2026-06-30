@@ -1778,6 +1778,156 @@ describe('project brain generation', () => {
     });
   });
 
+  it('reports route-level blast radius for Next.js route flows in review JSON', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'app', 'docs', '[slug]'), { recursive: true });
+      await mkdir(join(dir, 'src', 'components'), { recursive: true });
+      await mkdir(join(dir, 'src', 'content'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'next-review-app',
+          scripts: { test: 'vitest run', typecheck: 'tsc -b' },
+          dependencies: { next: '^15.0.0', react: '^19.0.0' },
+          devDependencies: { typescript: '^5.0.0', vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'next.config.ts'), 'export default { typedRoutes: true };\n');
+      await writeFile(join(dir, 'tsconfig.json'), '{}\n');
+      await writeFile(
+        join(dir, 'src', 'components', 'DocPage.tsx'),
+        [
+          'export function DocPage(props: { title: string }): JSX.Element {',
+          '  return <article>{props.title}</article>;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'content', 'docs.ts'),
+        [
+          'export const docs = new Map<string, { title: string }>([',
+          '  ["intro", { title: "Intro" }],',
+          ']);',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'docs', '[slug]', 'page.tsx'),
+        [
+          'import { DocPage } from "../../../components/DocPage.js";',
+          'import { docs } from "../../../content/docs.js";',
+          'export default function Page(props: { params: { slug: string } }): JSX.Element {',
+          '  const doc = docs.get(props.params.slug);',
+          '  if (!doc) throw new Error("not found");',
+          '  return <DocPage title={doc.title} />;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'docs', '[slug]', 'page.test.tsx'),
+        'import { it } from "vitest";\nit("renders the docs slug page", () => {});\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:50:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'next.config.ts'),
+        'export default { typedRoutes: true, reactStrictMode: true };\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'components', 'DocPage.tsx'),
+        [
+          'export function DocPage(props: { title: string }): JSX.Element {',
+          '  return <article data-doc>{props.title}</article>;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'docs', '[slug]', 'page.tsx'),
+        [
+          'import { DocPage } from "../../../components/DocPage.js";',
+          'import { docs } from "../../../content/docs.js";',
+          'export default function Page(props: { params: { slug: string } }): JSX.Element {',
+          '  const doc = docs.get(props.params.slug);',
+          '  if (!doc) throw new Error("not found");',
+          '  return <DocPage title={`${doc.title} docs`} />;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'app', 'docs', '[slug]', 'page.test.tsx'),
+        'import { it } from "vitest";\nit("renders the docs slug page contract", () => {});\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:51:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const docsFlow = result.value.review.affected_flows.find(
+        (flow) => flow.route_path === '/docs/[slug]' && flow.route_type === 'page',
+      );
+      expect(docsFlow).toMatchObject({
+        framework: 'nextjs-app-router',
+        route_path: '/docs/[slug]',
+        route_type: 'page',
+        entrypoints: expect.arrayContaining(['src/app/docs/[slug]/page.tsx#/docs/[slug]']),
+        changed_files: expect.arrayContaining([
+          'next.config.ts',
+          'src/app/docs/[slug]/page.tsx',
+          'src/app/docs/[slug]/page.test.tsx',
+          'src/components/DocPage.tsx',
+        ]),
+        tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+        configs: expect.arrayContaining(['next.config.ts', 'package.json', 'tsconfig.json']),
+      });
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('/docs/[slug] route flow (page) is affected'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('Linked tests: src/app/docs/[slug]/page.test.tsx'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('Entrypoints: src/app/docs/[slug]/page.tsx#/docs/[slug]'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('Components: component:src'),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Known flows overlap the diff',
+          description: expect.stringContaining('/docs/[slug] route flow (page)'),
+        }),
+      );
+      expect(result.value.review.suggested_reviewer_focus_areas).toContain(
+        'route flow: /docs/[slug]',
+      );
+
+      const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(reviewReport).toContain('/docs/[slug] route flow (page) is affected');
+      expect(reviewReport).toContain(
+        'flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx',
+      );
+      expect(reviewReport).toContain('src/app/docs/[slug]/page.tsx#/docs/[slug]');
+      expect(reviewReport).toContain('/docs/[slug] page');
+      expect(reviewReport).not.toContain(dir);
+    });
+  });
+
   it('does not count absence-only component heuristics as evidence-backed fields', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'lib'), { recursive: true });
