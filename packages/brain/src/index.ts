@@ -4863,12 +4863,288 @@ function pressureStrengthFromCoupling(
   return coupling.score > 0 ? 'medium' : 'low';
 }
 
+function isNextAppRouterFlow(flow: BrainEntity): boolean {
+  return stringData(flow, 'framework') === 'nextjs-app-router';
+}
+
+function routePathForFlow(flow: BrainEntity): string {
+  return stringData(flow, 'route_path') ?? 'unknown route';
+}
+
+function routeTypeForFlow(flow: BrainEntity): string {
+  return stringData(flow, 'route_type') ?? 'unknown';
+}
+
+function routeFlowEntryLabels(flow: BrainEntity): string[] {
+  return safeFlowEntrypoints(flow).map((entrypoint) => safeText(formatFlowEntrypoint(entrypoint)));
+}
+
+function routeArchitectureConfidence(flow: BrainEntity): Confidence {
+  return weakestConfidence([
+    flow.confidence,
+    flowStringArray(flow, 'tests').length > 0 ? 'verified' : 'inferred',
+    flowStringArray(flow, 'configs').length > 0 ? 'verified' : 'inferred',
+  ]);
+}
+
+function routeArchitectureScore(flow: BrainEntity): number {
+  const testAdjustment = flowStringArray(flow, 'tests').length > 0 ? 0 : 0.12;
+  const configAdjustment = flowStringArray(flow, 'configs').length > 0 ? 0 : 0.08;
+  return Math.max(
+    0.1,
+    Number((asFlowConfidenceScore(flow) - testAdjustment - configAdjustment).toFixed(2)),
+  );
+}
+
+function routeArchitectureGapIds(flow: BrainEntity): string[] {
+  const gapIds: string[] = [];
+  if (flowStringArray(flow, 'tests').length === 0) {
+    gapIds.push(`gap:${safeText(flow.id)}:route-tests`);
+  }
+  if (flowStringArray(flow, 'configs').length === 0) {
+    gapIds.push(`gap:${safeText(flow.id)}:route-config`);
+  }
+  if (flow.confidence !== 'verified') {
+    gapIds.push(`gap:${safeText(flow.id)}:runtime-verification`);
+  }
+  return gapIds;
+}
+
+function routeArchitectureAssumptions(flows: readonly BrainEntity[]): ArchitectureAssumption[] {
+  return sorted(
+    flows.filter(isNextAppRouterFlow).map((flow) => {
+      const routePath = routePathForFlow(flow);
+      const routeType = routeTypeForFlow(flow);
+      const components = flowStringArray(flow, 'components');
+      const configs = flowStringArray(flow, 'configs');
+      const tests = flowStringArray(flow, 'tests');
+      const files = flowStringArray(flow, 'files');
+      const confidence = routeArchitectureConfidence(flow);
+      return {
+        assumption_id: `assumption:${safeText(flow.id)}:route-architecture`,
+        entity_id: safeText(flow.id),
+        assumption: safeText(
+          `${routePath} is treated as a Next.js ${routeType} architecture surface because the app-router entrypoint, imports, configs, tests, and confidence evidence reconstruct a route flow.`,
+        ),
+        inferred_from: unique([
+          'nextjs app router',
+          `route_path:${routePath}`,
+          `route_type:${routeType}`,
+          `entrypoints:${safeFlowEntrypoints(flow).length}`,
+          `components:${components.length}`,
+          `configs:${configs.length}`,
+          `tests:${tests.length}`,
+        ]).map(safeText),
+        evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+        evidence_gap_ids: routeArchitectureGapIds(flow),
+        confidence,
+        confidence_score: routeArchitectureScore(flow),
+        rules: [
+          'framework:nextjs-app-router',
+          `route_type:${safeText(routeType)}`,
+          `components:${components.length}`,
+          `files:${files.length}`,
+          `configs:${configs.length}`,
+          `tests:${tests.length}`,
+        ],
+        unknowns: unique([
+          ...(tests.length === 0
+            ? [`No directly linked test artifact was detected for route ${routePath}.`]
+            : []),
+          ...(configs.length === 0
+            ? [`No config or manifest artifact was linked to route ${routePath}.`]
+            : []),
+          ...(flow.confidence === 'verified'
+            ? []
+            : [`Route ${routePath} is statically reconstructed and not runtime verified.`]),
+        ]).map(safeText),
+      };
+    }),
+    (assumption) => assumption.assumption_id,
+  );
+}
+
+function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<string, unknown>> {
+  return sorted(
+    flows.filter(isNextAppRouterFlow).map((flow) => {
+      const routePath = routePathForFlow(flow);
+      const routeType = routeTypeForFlow(flow);
+      const components = flowStringArray(flow, 'components');
+      const files = flowStringArray(flow, 'files');
+      const configs = flowStringArray(flow, 'configs');
+      const tests = flowStringArray(flow, 'tests');
+      const risks = flowRisks(flow);
+      const sharedFiles = files.filter(
+        (file) =>
+          !file.includes('/app/') &&
+          (file.includes('/components/') ||
+            file.includes('/content/') ||
+            file.includes('/lib/') ||
+            file.includes('/config/')),
+      );
+      return {
+        flow_id: safeText(flow.id),
+        route_path: safeText(routePath),
+        route_type: safeText(routeType),
+        framework: 'nextjs-app-router',
+        entrypoints: routeFlowEntryLabels(flow),
+        components: components.map(safeText),
+        files: files.map(safeText),
+        configs: configs.map(safeText),
+        tests: tests.map(safeText),
+        confidence: routeArchitectureConfidence(flow),
+        confidence_score: routeArchitectureScore(flow),
+        assumptions: [
+          `Route ${routePath} is an architecture surface because ${routeType} entrypoint evidence is present.`,
+          `Route ${routePath} behavior depends on ${components.length} component(s), ${configs.length} config artifact(s), and ${tests.length} test artifact(s).`,
+        ].map(safeText),
+        tradeoffs: unique([
+          'Framework-native routes make ownership easier to find, but route behavior can be split across layouts, components, content modules, and config.',
+          ...(configs.length > 0
+            ? ['Route behavior can change when shared Next.js or TypeScript configuration changes.']
+            : []),
+          ...(sharedFiles.length > 0
+            ? [
+                'Shared component/content imports improve reuse but widen review scope beyond the route file.',
+              ]
+            : []),
+        ]).map(safeText),
+        what_breaks: unique([
+          `Changing the route entrypoint can alter ${routePath} rendering, request handling, metadata, or navigation behavior.`,
+          ...(configs.length > 0
+            ? [
+                `Changing linked config can affect route ${routePath} build, routing, or typing behavior.`,
+              ]
+            : []),
+          ...(sharedFiles.length > 0
+            ? [
+                `Changing shared files used by ${routePath} can affect the route without touching its app-router entrypoint.`,
+              ]
+            : []),
+          ...(tests.length === 0
+            ? [`Route ${routePath} has no directly linked test, so regressions are easier to miss.`]
+            : []),
+        ]).map(safeText),
+        shared_files: sharedFiles.map(safeText),
+        risks: risks.map(formatFlowRisk).map(safeText),
+        evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+        evidence_gap_ids: routeArchitectureGapIds(flow),
+        rules: [
+          'framework:nextjs-app-router',
+          `route_type:${safeText(routeType)}`,
+          `components:${components.length}`,
+          `configs:${configs.length}`,
+          `tests:${tests.length}`,
+          `shared_files:${sharedFiles.length}`,
+        ],
+      };
+    }),
+    (record) => String(record.flow_id ?? ''),
+  );
+}
+
+function routeArchitectureDesignPressures(
+  flows: readonly BrainEntity[],
+): ArchitectureDesignPressure[] {
+  const pressures: ArchitectureDesignPressure[] = [];
+  for (const flow of flows.filter(isNextAppRouterFlow)) {
+    const routePath = routePathForFlow(flow);
+    const routeType = routeTypeForFlow(flow);
+    const configs = flowStringArray(flow, 'configs');
+    const tests = flowStringArray(flow, 'tests');
+    const files = flowStringArray(flow, 'files');
+    const sharedFiles = files.filter((file) => !file.includes('/app/'));
+    pressures.push({
+      pressure_id: `pressure:${safeText(flow.id)}:route-entrypoint`,
+      entity_id: safeText(flow.id),
+      pressure_type: 'flow',
+      pressure: safeText(
+        `${routePath} is a Next.js ${routeType} entrypoint, so route-file changes can affect user-visible navigation, rendering, metadata, or API behavior.`,
+      ),
+      strength: routeType === 'api' || routeType === 'page' ? 'high' : 'medium',
+      evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+      rules: ['framework:nextjs-app-router', `route_type:${safeText(routeType)}`],
+    });
+    if (configs.length > 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(flow.id)}:route-config`,
+        entity_id: safeText(flow.id),
+        pressure_type: 'config',
+        pressure: safeText(
+          `${routePath} is coupled to ${configs.length} config/manifest artifact(s), so config changes should be reviewed against this route.`,
+        ),
+        strength: pressureStrengthFromCount(configs.length),
+        evidence_ids: configs.map(evidenceId).slice(0, 12),
+        rules: [`configs:${configs.length}`],
+      });
+    }
+    if (sharedFiles.length > 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(flow.id)}:route-shared-files`,
+        entity_id: safeText(flow.id),
+        pressure_type: 'coupling',
+        pressure: safeText(
+          `${routePath} reaches ${sharedFiles.length} shared file(s), so component/content changes can move through this route.`,
+        ),
+        strength: pressureStrengthFromCount(sharedFiles.length),
+        evidence_ids: sharedFiles.map(evidenceId).slice(0, 12),
+        rules: [`shared_files:${sharedFiles.length}`],
+      });
+    }
+    if (tests.length === 0) {
+      pressures.push({
+        pressure_id: `pressure:${safeText(flow.id)}:route-test-gap`,
+        entity_id: safeText(flow.id),
+        pressure_type: 'flow',
+        pressure: safeText(`${routePath} has no directly linked test artifact.`),
+        strength: 'high',
+        evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+        rules: ['tests:0'],
+      });
+    }
+  }
+  return sorted(pressures, (pressure) => pressure.pressure_id);
+}
+
+function routeArchitectureWhatBreaks(
+  flows: readonly BrainEntity[],
+): Array<Record<string, unknown>> {
+  return sorted(
+    flows.filter(isNextAppRouterFlow).map((flow) => {
+      const routePath = routePathForFlow(flow);
+      const routeType = routeTypeForFlow(flow);
+      const tests = flowStringArray(flow, 'tests');
+      return {
+        flow_id: safeText(flow.id),
+        route_path: safeText(routePath),
+        route_type: safeText(routeType),
+        impacts: unique([
+          `The ${routePath} ${routeType} route can stop rendering, handling requests, producing metadata, or matching expected navigation.`,
+          ...flowStringArray(flow, 'configs').map(
+            (config) => `${config} changes can alter build, route typing, or runtime behavior.`,
+          ),
+          ...flowStringArray(flow, 'components').map(
+            (component) => `${component} changes can propagate into route ${routePath}.`,
+          ),
+          ...(tests.length === 0
+            ? ['No directly linked route test was found to catch this failure mode.']
+            : []),
+        ]).map(safeText),
+        tests: tests.map(safeText),
+        evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+      };
+    }),
+    (record) => String(record.flow_id ?? ''),
+  );
+}
+
 function architectureAssumptionRecords(params: {
   readonly components: readonly BrainEntity[];
   readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
   readonly relationships: readonly BrainRelationship[];
+  readonly flows: readonly BrainEntity[];
 }): ArchitectureAssumption[] {
-  const assumptions: ArchitectureAssumption[] = [];
+  const assumptions: ArchitectureAssumption[] = [...routeArchitectureAssumptions(params.flows)];
   for (const component of params.components) {
     const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
     const componentFlows = params.flowsByComponent.get(component.id) ?? [];
@@ -5483,6 +5759,19 @@ function buildArchitectureReasoningArtifact(params: {
       confidence: 'inferred',
     });
   }
+  const routeArchitecture = routeArchitectureRecords(flows);
+  const routeWhatBreaks = routeArchitectureWhatBreaks(flows);
+  if (routeArchitecture.length > 0) {
+    reviewHints.push({
+      reason: 'Next.js app-router surfaces should be reviewed as route-level architecture.',
+      affected_flows: routeArchitecture.map((route) => String(route.flow_id ?? '')),
+      affected_routes: routeArchitecture.map((route) => String(route.route_path ?? '')),
+      suggested_tests: unique(
+        flows.filter(isNextAppRouterFlow).flatMap((flow) => flowStringArray(flow, 'tests')),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
   const componentsWithoutFlows = components.filter(
     (component) => (flowsByComponent.get(component.id) ?? []).length === 0,
   );
@@ -5493,8 +5782,15 @@ function buildArchitectureReasoningArtifact(params: {
     components,
     flowsByComponent,
     relationships: params.relationships,
+    flows,
   });
-  const designPressures = architectureDesignPressures({ components, flowsByComponent });
+  const designPressures = sorted(
+    [
+      ...architectureDesignPressures({ components, flowsByComponent }),
+      ...routeArchitectureDesignPressures(flows),
+    ],
+    (pressure) => pressure.pressure_id,
+  );
   const boundaryRationale = architectureBoundaryRationale({
     components,
     flowsByComponent,
@@ -5525,6 +5821,8 @@ function buildArchitectureReasoningArtifact(params: {
     risky_seams: riskySeams,
     tradeoff_matrix: tradeoffMatrix,
     what_breaks: whatBreaks,
+    route_architecture: routeArchitecture,
+    route_what_breaks: routeWhatBreaks,
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
     review_hints: reviewHints,
@@ -5801,6 +6099,7 @@ function buildReasoningTracesArtifact(params: {
     components,
     flowsByComponent,
     relationships: params.relationships,
+    flows,
   }).map((assumption) =>
     reasoningTrace({
       entityId: assumption.entity_id,

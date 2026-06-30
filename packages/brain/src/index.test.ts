@@ -1504,6 +1504,7 @@ describe('project brain generation', () => {
         }),
       );
       await writeFile(join(dir, 'next.config.ts'), 'export default { typedRoutes: true };\n');
+      await writeFile(join(dir, '.env.local'), 'RIZZ_TEST_TOKEN=secret\n');
       await writeFile(
         join(dir, 'tsconfig.json'),
         JSON.stringify({
@@ -1763,6 +1764,122 @@ describe('project brain generation', () => {
 
       expect(docsPage).toBeDefined();
       if (docsPage === undefined) return;
+
+      const architectureReasoning = await readJson<{
+        route_architecture: Array<{
+          flow_id: string;
+          route_path: string;
+          route_type: string;
+          entrypoints: string[];
+          components: string[];
+          configs: string[];
+          tests: string[];
+          assumptions: string[];
+          tradeoffs: string[];
+          what_breaks: string[];
+          evidence_gap_ids: string[];
+          confidence: string;
+          confidence_score: number;
+        }>;
+        route_what_breaks: Array<{
+          flow_id: string;
+          route_path: string;
+          impacts: string[];
+          tests: string[];
+        }>;
+        architecture_assumptions: Array<{
+          assumption_id: string;
+          entity_id: string;
+          assumption: string;
+          rules: string[];
+          unknowns: string[];
+          evidence_ids: string[];
+        }>;
+        design_pressures: Array<{
+          pressure_id: string;
+          entity_id: string;
+          pressure_type: string;
+          pressure: string;
+          rules: string[];
+        }>;
+        review_hints: Array<{
+          reason: string;
+          affected_routes?: string[];
+          affected_flows?: string[];
+        }>;
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.route_architecture).toContainEqual(
+        expect.objectContaining({
+          flow_id: docsPage.id,
+          route_path: '/docs/[slug]',
+          route_type: 'page',
+          entrypoints: expect.arrayContaining([
+            'route: src/app/docs/[slug]/page.tsx#/docs/[slug] -> component:src',
+          ]),
+          components: expect.arrayContaining(['component:src']),
+          configs: expect.arrayContaining(['next.config.ts', 'package.json', 'tsconfig.json']),
+          tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+          assumptions: expect.arrayContaining([
+            expect.stringContaining('/docs/[slug] is an architecture surface'),
+          ]),
+          tradeoffs: expect.arrayContaining([
+            expect.stringContaining('Framework-native routes make ownership easier'),
+          ]),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('Changing the route entrypoint can alter /docs/[slug]'),
+          ]),
+          evidence_gap_ids: expect.arrayContaining([`gap:${docsPage.id}:runtime-verification`]),
+          confidence: 'inferred',
+          confidence_score: expect.any(Number),
+        }),
+      );
+      expect(architectureReasoning.route_what_breaks).toContainEqual(
+        expect.objectContaining({
+          flow_id: docsPage.id,
+          route_path: '/docs/[slug]',
+          impacts: expect.arrayContaining([
+            expect.stringContaining('/docs/[slug] page route can stop rendering'),
+          ]),
+          tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+        }),
+      );
+      expect(architectureReasoning.architecture_assumptions).toContainEqual(
+        expect.objectContaining({
+          assumption_id: `assumption:${docsPage.id}:route-architecture`,
+          entity_id: docsPage.id,
+          assumption: expect.stringContaining('Next.js page architecture surface'),
+          rules: expect.arrayContaining([
+            'framework:nextjs-app-router',
+            'route_type:page',
+            'tests:2',
+          ]),
+          evidence_ids: expect.arrayContaining([expect.stringContaining('evidence:file-')]),
+          unknowns: expect.arrayContaining([expect.stringContaining('not runtime verified')]),
+        }),
+      );
+      expect(architectureReasoning.design_pressures).toContainEqual(
+        expect.objectContaining({
+          pressure_id: `pressure:${docsPage.id}:route-entrypoint`,
+          entity_id: docsPage.id,
+          pressure_type: 'flow',
+          pressure: expect.stringContaining('/docs/[slug] is a Next.js page entrypoint'),
+          rules: expect.arrayContaining(['framework:nextjs-app-router', 'route_type:page']),
+        }),
+      );
+      expect(architectureReasoning.review_hints).toContainEqual(
+        expect.objectContaining({
+          reason: 'Next.js app-router surfaces should be reviewed as route-level architecture.',
+          affected_routes: expect.arrayContaining(['/docs/[slug]']),
+          affected_flows: expect.arrayContaining([docsPage.id]),
+        }),
+      );
+      const architectureText = await readFile(
+        join(result.value.researchDir, 'architecture_reasoning.json'),
+        'utf8',
+      );
+      expect(architectureText).not.toContain('.env.local');
+      expect(architectureText).not.toContain(dir);
+
       const explained = await explainProjectTarget({
         rootDir: dir,
         target: docsPage.id,
