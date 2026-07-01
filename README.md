@@ -3,30 +3,33 @@
 > The fastest way to understand a software system. Local-first by default; model-backed chat and
 > bigger workspace power stay opt-in.
 
-rizz is a tiny repo-understanding CLI for one project: run it in a repository, generate a
-project-scoped relational brain, open a local HTML intelligence portal, and keep evidence close to
-the source files.
+rizz is a local Project Intelligence Engine for one repository: run it in a repo, generate a
+project-scoped relational brain, open Mission Control as a local HTML intelligence portal, and keep
+evidence close to the source files.
 
 ## Public Preview Status
 
-Agent Light is the current public preview surface:
+The current public preview surface is:
 
 - local CLI and TUI
 - `rizz` / `rizz understand` project scan
+- `rizz brain` project brain refresh
+- `rizz explain` evidence-backed component, file, and flow explanations
 - `rizz review` git-diff review using the local project brain
 - `.rizz/brain/latest.json` structured current-state summary
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
 - `.rizz/brain/flows/*.json` deterministic flow mirrors for entrypoints, steps, evidence, tests, and risks
 - `.rizz/brain/graph.json` relationships with evidence and confidence
 - `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, Flow Understanding, Architecture Reasoning, and incremental understanding
-- `.rizz/reports/index.html` local architecture intelligence portal
+- `.rizz/reports/index.html` Mission Control local architecture intelligence portal
 - `.rizz/reports/review.html` local risk/blast-radius review report
 - `rizz setup` dependency doctor and provider route picker
 - OpenRouter BYOK as the primary fast route
 - Codex subscription route as a secondary local Codex CLI route
 - OpenAI/Anthropic route placeholders for later setup wiring
 - visible `/status`, `/model`, `/theme`, `/workspace`, and `/help`
-- no workspace agents, cloud sync, custom skills, or enterprise providers in the default install
+- no workspace agents, cloud sync, browser extension, mobile app, IDE integration, custom skills, or
+  enterprise providers in the default install
 
 The current release baseline is `0.1.0`.
 
@@ -84,9 +87,9 @@ rizz brain
 rizz report
 ```
 
-Open `.rizz/reports/index.html` in your browser for the local intelligence portal. Agents and tools
-should read `.rizz/brain/latest.json` first, then relevant entity files, graph relationships, and
-evidence before rereading source files.
+Open `.rizz/reports/index.html` in your browser for Mission Control, the local intelligence portal.
+Agents and tools should read `.rizz/brain/latest.json` first, then relevant entity files, graph
+relationships, and evidence before rereading source files.
 
 The brain is meant to be a local interoperability contract: other agents can read stable entity IDs,
 relationships, evidence, sessions, handoffs, findings, and status without scraping a chat log.
@@ -185,8 +188,8 @@ Useful commands inside the TUI:
 /help
 ```
 
-`/workspace` is visible but not connected in Agent Light. Workspace Mode is an opt-in future track,
-not part of the default path.
+`/workspace` is visible but not connected in the public preview. Workspace Mode is an opt-in future
+track, not part of the default path.
 
 ## Codex Route
 
@@ -211,7 +214,8 @@ pnpm check
 ```
 
 This runs lint, type-check, tests, eval smoke, install smoke, and the footprint budget. Release
-checks also run `pnpm pack:check` to verify public package contents.
+checks also run `pnpm pack:check` to verify public package contents. Publishing to npm is a deliberate
+release step after CI and package checks pass; pushes to GitHub do not publish packages.
 
 Current merged-develop verification:
 
@@ -236,6 +240,7 @@ Current merged-develop verification:
 
 ```text
 packages/
+  brain/       local Project Intelligence Engine and Mission Control artifacts
   core/        loop, budget, compression, fallback
   providers/   provider adapters, model registry, secrets, tool runtime
   tui/         terminal UI

@@ -82,6 +82,9 @@ Do not paste provider keys into chat, GitHub, screenshots, shell history, or log
 rizz
 ```
 
+`rizz` scans the current repository and writes local Project Intelligence Engine artifacts under
+`.rizz/brain`, `.rizz/research`, and Mission Control at `.rizz/reports/index.html`.
+
 Useful TUI commands:
 
 ```text
@@ -92,7 +95,7 @@ Useful TUI commands:
 /help
 ```
 
-`/workspace` is visible but not connected in Agent Light.
+`/workspace` is visible but not connected in the public preview.
 
 ## Codex Route
 
@@ -150,7 +153,8 @@ Latest merged-develop public preview gate:
 - OpenAI direct and Anthropic direct setup entries are not full first-run credential flows yet
 - OpenRouter setup validates key shape; first real model turn proves live provider access
 - Codex route depends on local Codex auth and is not the fast persistent Codex bridge
-- no Workspace Mode, Repo Brain, OS/Jarvis connectors, custom skills, or enterprise providers in Agent Light
+- no Workspace Mode, OS/Jarvis connectors, cloud sync, browser/mobile/IDE integrations, custom
+  skills, or enterprise providers in the default install
 - TUI branch display currently uses a simple `dev` label
 
 ## Remove The Local Shim
