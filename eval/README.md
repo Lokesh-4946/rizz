@@ -54,9 +54,9 @@ Review benchmark tasks use category `review-blast-radius` and add a `review` blo
 applies `review.diff.files`, runs `rizz review --json`, and validates semantic review output:
 changed files, direct/dependent components, affected relationships, affected flows, linked tests and
 configs, blast-radius reasons, required tests, findings, and forbidden secret-like substrings in the
-JSON/report output. Review tasks intentionally validate review JSON directly rather than writing a
-separate `.rizz/research/review_eval.json`; the measured product surface is the user-facing
-`rizz review --json` contract plus the existing local review report artifact.
+JSON/report output. Review tasks also require `.rizz/research/review_eval.json`, which makes review
+quality measurable through deterministic finding counts, affected surface counts, evidence/test
+counts, risk, surgicality, review-readiness, and secret-safety/redaction indicators.
 Route-aware review tasks can additionally assert affected flow metadata with
 `route_flows_include`: flow id, framework, route path, route type, entrypoints, changed files,
 linked tests, and linked configs. The Next.js route review seed uses this to prove alias-resolved

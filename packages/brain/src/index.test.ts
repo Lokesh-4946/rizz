@@ -3833,6 +3833,31 @@ describe('project brain generation', () => {
           affected_entities: expect.arrayContaining(['flow:packages--cli--check']),
         }),
       );
+      expect(result.value.reviewEvalPath).toBe(join(dir, '.rizz', 'research', 'review_eval.json'));
+      expect(result.value.reviewEval).toMatchObject({
+        schema_version: 1,
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+        review_id: 'review:2026-06-28t10-39-00.000z-git-diff',
+        total_findings: result.value.review.findings.length,
+        affected_component_count: 1,
+        affected_flow_count: 1,
+        affected_relationship_count: result.value.review.affected_relationships.length,
+        required_test_count: result.value.review.required_tests.length,
+        evidence_id_count: result.value.review.review_evidence_summary.evidence_ids.length,
+        blast_radius: 'narrow',
+        overall_risk: 'medium',
+        surgicality_score: result.value.review.surgicality_score,
+        secret_safety: {
+          unsafe_sensitive_reference_count: 0,
+          output_secret_safe: true,
+        },
+      });
+      expect(result.value.reviewEval.findings_by_severity.medium).toBeGreaterThan(0);
+      expect(result.value.reviewEval.findings_by_category['Missing tests']).toBeGreaterThan(0);
+      expect(result.value.reviewEval.review_readiness_score).toBeGreaterThanOrEqual(0);
+      expect(result.value.reviewEval.review_readiness_score).toBeLessThanOrEqual(100);
 
       const reviews = await readJson<{
         entities: Array<{ id: string; data?: { overall_risk?: string } }>;
@@ -3851,18 +3876,73 @@ describe('project brain generation', () => {
           readonly dependent_components?: string[];
           readonly affected_flows?: string[];
           readonly blast_radius_reasons?: string[];
+          readonly research_artifacts?: { readonly review_eval?: string };
         };
+        latest_research_artifacts?: { readonly review_eval?: string };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
       expect(latest.latest_review_status).toMatchObject({
         status: 'investigate',
         direct_affected_components: ['component:packages--cli'],
         dependent_components: [],
         affected_flows: ['flow:packages--cli--check'],
+        research_artifacts: {
+          review_eval: '.rizz/research/review_eval.json',
+        },
+      });
+      expect(latest.latest_research_artifacts).toMatchObject({
+        review_eval: '.rizz/research/review_eval.json',
       });
       expect(latest.latest_review_status.blast_radius_reasons).toContainEqual(
         expect.stringContaining('affected flow(s) link the change'),
       );
       expect(Number(latest.latest_review_status.findings)).toBeGreaterThanOrEqual(1);
+      const reviewEval = await readJson<{
+        total_findings: number;
+        findings_by_severity: { medium: number };
+        findings_by_category: { 'Missing tests': number; 'Hidden coupling': number };
+        affected_component_count: number;
+        affected_flow_count: number;
+        affected_relationship_count: number;
+        required_test_count: number;
+        evidence_id_count: number;
+        blast_radius: string;
+        overall_risk: string;
+        surgicality_score: number;
+        review_readiness_score: number;
+        secret_safety: {
+          redaction_applied: boolean;
+          redacted_reference_count: number;
+          unsafe_sensitive_reference_count: number;
+          output_secret_safe: boolean;
+        };
+      }>(join(dir, '.rizz', 'research', 'review_eval.json'));
+      expect(reviewEval).toMatchObject({
+        total_findings: result.value.review.findings.length,
+        affected_component_count: 1,
+        affected_flow_count: 1,
+        affected_relationship_count: result.value.review.affected_relationships.length,
+        required_test_count: result.value.review.required_tests.length,
+        evidence_id_count: result.value.review.review_evidence_summary.evidence_ids.length,
+        blast_radius: 'narrow',
+        overall_risk: 'medium',
+        surgicality_score: result.value.review.surgicality_score,
+        secret_safety: {
+          unsafe_sensitive_reference_count: 0,
+          output_secret_safe: true,
+        },
+      });
+      expect(reviewEval.findings_by_severity.medium).toBeGreaterThan(0);
+      expect(reviewEval.findings_by_category['Missing tests']).toBeGreaterThan(0);
+      expect(reviewEval.findings_by_category['Hidden coupling']).toBeGreaterThan(0);
+      expect(reviewEval.review_readiness_score).toBe(
+        result.value.reviewEval.review_readiness_score,
+      );
+      const index = await readJson<{ research_paths?: { review_eval?: string } }>(
+        join(dir, '.rizz', 'brain', 'index.json'),
+      );
+      expect(index.research_paths).toMatchObject({
+        review_eval: '.rizz/research/review_eval.json',
+      });
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('rizz review');
       expect(report).toContain('Blast Radius Evidence');
