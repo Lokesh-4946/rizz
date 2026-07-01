@@ -804,7 +804,41 @@ describe('project brain generation', () => {
           };
           unknown: { total: number; covered: number; coverage_ratio: number };
         };
-        readiness: { is_ready: boolean; score: number; blocking_gaps: string[] };
+        readiness: {
+          is_ready: boolean;
+          score: number;
+          calibration_score: number;
+          blocking_gaps: string[];
+        };
+        readiness_calibration: {
+          overall_score: number;
+          redaction_safe: boolean;
+          dimensions: {
+            component_coverage: { score: number; coverage_ratio: number };
+            flow_coverage: { score: number; coverage_ratio: number };
+            evidence_coverage: { score: number; coverage_ratio: number };
+            unknown_coverage: { score: number; coverage_ratio: number };
+            confidence_calibration: {
+              score: number;
+              confidence_distribution: Record<string, number>;
+              low_confidence_entity_count: number;
+            };
+            benchmark_task_category_coverage: {
+              score: number;
+              required_categories: string[];
+              covered_categories: string[];
+              missing_categories: string[];
+              task_categories: Record<string, number>;
+            };
+            local_scan_readiness_summary: {
+              score: number;
+              active_file_entities: number;
+              changed_file_count: number;
+              scan_efficiency_score: number;
+              ready: boolean;
+            };
+          };
+        };
       }>(join(researchDir, 'benchmark_ready.json'));
       expect(benchmarkReady).toMatchObject({
         schema_version: 1,
@@ -825,6 +859,52 @@ describe('project brain generation', () => {
       expect(benchmarkReady.coverage.evidence.missing_references).toEqual([]);
       expect(benchmarkReady.coverage.unknown.coverage_ratio).toBeGreaterThanOrEqual(0);
       expect(benchmarkReady.readiness.score).toBeGreaterThan(0);
+      expect(benchmarkReady.readiness_calibration).toMatchObject({
+        overall_score: expect.any(Number),
+        redaction_safe: true,
+        dimensions: {
+          component_coverage: expect.objectContaining({
+            score: 100,
+            coverage_ratio: benchmarkReady.coverage.component.coverage_ratio,
+          }),
+          flow_coverage: expect.objectContaining({
+            score: expect.any(Number),
+            coverage_ratio: benchmarkReady.coverage.flow.coverage_ratio,
+          }),
+          evidence_coverage: expect.objectContaining({
+            score: expect.any(Number),
+            coverage_ratio: benchmarkReady.coverage.evidence.coverage_ratio,
+          }),
+          unknown_coverage: expect.objectContaining({
+            score: expect.any(Number),
+            coverage_ratio: benchmarkReady.coverage.unknown.coverage_ratio,
+          }),
+          confidence_calibration: expect.objectContaining({
+            score: expect.any(Number),
+            confidence_distribution: expect.any(Object),
+            low_confidence_entity_count: expect.any(Number),
+          }),
+          benchmark_task_category_coverage: expect.objectContaining({
+            score: 100,
+            required_categories: [
+              'component-explanation',
+              'flow-explanation',
+              'architecture-impact',
+              'review-blast-radius',
+              'evidence-unknown-coverage',
+            ],
+            missing_categories: [],
+          }),
+          local_scan_readiness_summary: expect.objectContaining({
+            active_file_entities: 3,
+            changed_file_count: 1,
+            ready: true,
+          }),
+        },
+      });
+      expect(benchmarkReady.readiness.calibration_score).toBe(
+        benchmarkReady.readiness_calibration.overall_score,
+      );
 
       const benchmarkTasks = await readJson<{
         schema_version: number;
@@ -1369,6 +1449,41 @@ describe('project brain generation', () => {
         understanding_score: '.rizz/research/understanding_score.json',
       });
     });
+  });
+
+  it('emits stable readiness calibration for equivalent fresh scans', async () => {
+    async function generateCalibration(dir: string): Promise<unknown> {
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'stable-calibration',
+          scripts: { test: 'vitest run', build: 'tsc -b' },
+          devDependencies: { typescript: '^5.0.0', vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'src.ts'), 'export const stableCalibration = true;');
+      await writeFile(join(dir, 'src.test.ts'), 'import { it } from "vitest";');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:00:00.000Z'),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return undefined;
+
+      const benchmarkReady = await readJson<{
+        readiness_calibration: {
+          overall_score: number;
+          dimensions: Record<string, unknown>;
+        };
+      }>(join(result.value.researchDir, 'benchmark_ready.json'));
+      return benchmarkReady.readiness_calibration;
+    }
+
+    const first = await withTempProject(generateCalibration);
+    const second = await withTempProject(generateCalibration);
+
+    expect(first).toEqual(second);
   });
 
   it('maps flow entrypoints through command paths, imports, components, files, tests, and configs', async () => {

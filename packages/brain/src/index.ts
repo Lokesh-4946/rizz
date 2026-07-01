@@ -7741,8 +7741,15 @@ function buildBenchmarkReadyArtifact(params: {
   readonly now: string;
   readonly buckets: BrainBuckets;
   readonly relationships: readonly BrainRelationship[];
+  readonly changedFiles: readonly string[];
+  readonly staleFiles: readonly string[];
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+  readonly architectureReasoning: unknown;
+  readonly evidenceQuality: unknown;
 }): Record<string, unknown> {
   const entities = allBucketEntities(params.buckets);
+  const activeEntities = entities.filter((entity) => entity.latest_status !== 'stale');
+  const activeFileEntities = params.buckets.files.filter((file) => file.latest_status !== 'stale');
   const components = params.buckets.components.filter(
     (component) => component.latest_status !== 'stale',
   );
@@ -7848,7 +7855,60 @@ function buildBenchmarkReadyArtifact(params: {
       ? [`${missingEvidenceReferences.length} evidence reference(s) are missing.`]
       : []),
   ];
-
+  const benchmarkTaskCandidates = sorted(
+    [
+      ...benchmarkTasksFromComponents(params.buckets.components),
+      ...benchmarkTasksFromFlows(params.buckets.flows),
+      ...benchmarkTasksFromArchitectureImpact(params.architectureReasoning),
+      ...benchmarkTasksFromReviewHints({
+        architectureReasoning: params.architectureReasoning,
+        buckets: params.buckets,
+      }),
+      ...benchmarkTasksFromEvidenceUnknowns({
+        evidenceQuality: params.evidenceQuality,
+        architectureReasoning: params.architectureReasoning,
+        buckets: params.buckets,
+      }),
+    ],
+    (task) => task.id,
+  );
+  const rawBenchmarkTaskCounts = countByValue(benchmarkTaskCandidates.map((task) => task.category));
+  const benchmarkTaskCounts = Object.fromEntries(
+    BENCHMARK_TASK_CATEGORIES.map((category) => [category, rawBenchmarkTaskCounts[category] ?? 0]),
+  );
+  const coveredBenchmarkTaskCategories = BENCHMARK_TASK_CATEGORIES.filter(
+    (category) => (rawBenchmarkTaskCounts[category] ?? 0) > 0,
+  );
+  const missingBenchmarkTaskCategories = BENCHMARK_TASK_CATEGORIES.filter(
+    (category) => (rawBenchmarkTaskCounts[category] ?? 0) === 0,
+  );
+  const benchmarkTaskCategoryRatio = ratio(
+    coveredBenchmarkTaskCategories.length,
+    BENCHMARK_TASK_CATEGORIES.length,
+  );
+  const confidenceScores = activeEntities.map((entity) =>
+    confidenceScoreForValue(entity.confidence),
+  );
+  const confidenceCalibrationScore = boundedScore(averageConfidenceScore(confidenceScores) * 100);
+  const activeFileRatio = completeRatio(activeFileEntities.length, params.buckets.files.length);
+  const evidenceReferenceRatio = missingEvidenceReferences.length === 0 ? 1 : 0;
+  const scanPresenceRatio = activeFileEntities.length > 0 ? 1 : 0;
+  const localScanScore = boundedScore(
+    ((scanPresenceRatio + activeFileRatio + evidenceReferenceRatio) / 3) * 100,
+  );
+  const readinessDimensionScores = [
+    boundedScore(componentCoverageRatio * 100),
+    boundedScore(flowCoverageRatio * 100),
+    boundedScore(evidenceCoverageRatio * 100),
+    boundedScore(unknownCoverageRatio * 100),
+    confidenceCalibrationScore,
+    boundedScore(benchmarkTaskCategoryRatio * 100),
+    localScanScore,
+  ];
+  const calibrationScore = boundedScore(
+    readinessDimensionScores.reduce((total, score) => total + score, 0) /
+      readinessDimensionScores.length,
+  );
   return {
     schema_version: 1,
     generated_at: params.now,
@@ -7904,9 +7964,91 @@ function buildBenchmarkReadyArtifact(params: {
         items: unknownItems.slice(0, 25),
       },
     },
+    readiness_calibration: {
+      schema_version: 1,
+      deterministic: true,
+      provider_calls_required: false,
+      network_required: false,
+      redaction_safe: true,
+      overall_score: calibrationScore,
+      calibration_rule:
+        'Readiness calibration averages deterministic local component, flow, evidence, unknown, confidence, benchmark-task, and scan-readiness scores.',
+      dimensions: {
+        component_coverage: {
+          score: boundedScore(componentCoverageRatio * 100),
+          total: components.length,
+          covered: componentsWithCoverage.length,
+          coverage_ratio: componentCoverageRatio,
+          required_signals: ['boundary_type', 'flow_coverage', 'evidence_ids'],
+          uncovered_component_ids: components
+            .filter((component) => !componentsWithCoverage.includes(component))
+            .map((component) => component.id),
+        },
+        flow_coverage: {
+          score: boundedScore(flowCoverageRatio * 100),
+          total: flows.length,
+          covered: flowsWithCoverage.length,
+          coverage_ratio: flowCoverageRatio,
+          required_signals: ['entrypoints', 'steps', 'evidence_ids'],
+          uncovered_flow_ids: flows
+            .filter((flow) => !flowsWithCoverage.includes(flow))
+            .map((flow) => flow.id),
+        },
+        evidence_coverage: {
+          score: boundedScore(evidenceCoverageRatio * 100),
+          records: params.buckets.evidence.length,
+          claims: evidenceClaimCount,
+          claims_with_evidence: evidenceBackedClaimCount,
+          coverage_ratio: evidenceCoverageRatio,
+          missing_references: missingEvidenceReferences,
+        },
+        unknown_coverage: {
+          score: boundedScore(unknownCoverageRatio * 100),
+          total: unknownItems.length,
+          covered: unknownsWithEvidence.length,
+          coverage_ratio: unknownCoverageRatio,
+          uncovered_count: unknownItems.length - unknownsWithEvidence.length,
+        },
+        confidence_calibration: {
+          score: confidenceCalibrationScore,
+          entity_count: activeEntities.length,
+          confidence_distribution: countByConfidence(
+            activeEntities.map((entity) => entity.confidence),
+          ),
+          low_confidence_entity_count: activeEntities.filter(
+            (entity) => entity.confidence !== 'verified',
+          ).length,
+          calibration_rule:
+            'Confidence calibration is the average deterministic confidence score for active local brain entities.',
+        },
+        benchmark_task_category_coverage: {
+          score: boundedScore(benchmarkTaskCategoryRatio * 100),
+          task_count: benchmarkTaskCandidates.length,
+          required_categories: BENCHMARK_TASK_CATEGORIES,
+          covered_categories: coveredBenchmarkTaskCategories,
+          missing_categories: missingBenchmarkTaskCategories,
+          coverage_ratio: benchmarkTaskCategoryRatio,
+          task_categories: benchmarkTaskCounts,
+          calibration_rule:
+            'Benchmark task category coverage reuses the deterministic benchmark task candidate builders.',
+        },
+        local_scan_readiness_summary: {
+          score: localScanScore,
+          active_file_entities: activeFileEntities.length,
+          stale_file_entities: params.staleFiles.length,
+          changed_file_count: params.changedFiles.length,
+          scan_efficiency_score: params.incrementalMetrics.scan_efficiency_score,
+          missing_evidence_reference_count: missingEvidenceReferences.length,
+          ready: activeFileEntities.length > 0 && missingEvidenceReferences.length === 0,
+          calibration_rule:
+            'Local scan readiness requires at least one active file entity and no dangling evidence references; incremental scan efficiency is reported separately.',
+        },
+      },
+    },
     readiness: {
       is_ready: blockingGaps.length === 0,
       score: readinessScore,
+      calibration_score: calibrationScore,
       blocking_gaps: blockingGaps,
       notes: [
         'Benchmark readiness is computed from deterministic local brain facts only.',
@@ -9131,6 +9273,11 @@ function buildResearchArtifacts(params: {
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
+    changedFiles: params.changedFiles,
+    staleFiles: params.staleFiles,
+    incrementalMetrics: params.incrementalMetrics,
+    architectureReasoning,
+    evidenceQuality,
   });
   const understandingScore = buildUnderstandingScoreArtifact({
     projectName: params.projectName,
@@ -9651,6 +9798,11 @@ function buildLatest(params: {
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
+    changedFiles: params.changedFiles,
+    staleFiles: params.staleFiles,
+    incrementalMetrics: params.incrementalMetrics,
+    architectureReasoning,
+    evidenceQuality,
   });
   const understandingScore = buildUnderstandingScoreArtifact({
     projectName: params.projectName,
