@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { explainProjectTarget, generateProjectBrain, reviewProjectChanges } from './index.js';
+import {
+  askProjectQuestion,
+  explainProjectTarget,
+  generateProjectBrain,
+  reviewProjectChanges,
+} from './index.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -70,6 +75,29 @@ async function initGitProject(dir: string): Promise<void> {
   await git(dir, ['init', '-b', 'develop']);
   await git(dir, ['config', 'user.email', 'rizz@example.com']);
   await git(dir, ['config', 'user.name', 'rizz test']);
+}
+
+async function setAskReadiness(
+  dir: string,
+  status: 'ready' | 'limited' | 'blocked',
+  reasons: readonly string[] = [],
+): Promise<void> {
+  const path = join(dir, '.rizz', 'research', 'benchmark_ready.json');
+  const benchmarkReady = await readJson<Record<string, unknown>>(path);
+  benchmarkReady.ask_readiness = {
+    ...(typeof benchmarkReady.ask_readiness === 'object' && benchmarkReady.ask_readiness !== null
+      ? benchmarkReady.ask_readiness
+      : {}),
+    status,
+    score: status === 'ready' ? 92 : status === 'limited' ? 61 : 18,
+    summary: `${status} ask readiness for test`,
+    reasons,
+    next_required_improvements: ['Improve component, flow, evidence, and unknown coverage.'],
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+  };
+  await writeFile(path, JSON.stringify(benchmarkReady, null, 2));
 }
 
 describe('project brain generation', () => {
@@ -4371,6 +4399,231 @@ describe('project brain generation', () => {
           message: 'Project brain not found. Run rizz brain, then rerun rizz explain.',
         },
       });
+    });
+  });
+
+  it('answers the supported ask intents from local brain and research artifacts', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'brain', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'brain', 'package.json'),
+        JSON.stringify({
+          name: '@sample/brain',
+          scripts: { build: 'tsc -b', test: 'vitest run packages/brain' },
+          dependencies: { zod: '^3.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'brain', 'src', 'index.ts'),
+        'export function askProjectQuestion(): string { return "local brain"; }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'brain', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("answers locally", () => {});\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          dependencies: { '@sample/brain': 'workspace:*' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { askProjectQuestion } from "@sample/brain"; export const run = askProjectQuestion;\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:00:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      await setAskReadiness(dir, 'ready');
+
+      const readFirst = await askProjectQuestion({
+        rootDir: dir,
+        question: 'what should I read first?',
+        now: new Date('2026-06-28T13:01:00.000Z'),
+      });
+      expect(readFirst.ok).toBe(true);
+      if (!readFirst.ok) return;
+      expect(readFirst.value.answer).toMatchObject({
+        intent: 'read_first',
+        status: 'answered',
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+      });
+      expect(readFirst.value.answer.answer_items.length).toBeGreaterThan(0);
+      expect(readFirst.value.answer.research_artifacts).toContain(
+        '.rizz/research/benchmark_ready.json',
+      );
+
+      const breaks = await askProjectQuestion({
+        rootDir: dir,
+        question: 'what breaks if packages/brain changes?',
+        now: new Date('2026-06-28T13:02:00.000Z'),
+      });
+      expect(breaks.ok).toBe(true);
+      if (!breaks.ok) return;
+      expect(breaks.value.answer.intent).toBe('breaks_if_changed');
+      expect(breaks.value.answer.answer_items.length).toBeGreaterThan(0);
+      expect(breaks.value.answer.related_entities).toContain('component:packages--brain');
+      expect(breaks.value.answer.evidence_ids).toContain(
+        'evidence:file-packages--brain--package.json',
+      );
+
+      const dependents = await askProjectQuestion({
+        rootDir: dir,
+        question: 'who depends on packages/brain?',
+        now: new Date('2026-06-28T13:03:00.000Z'),
+      });
+      expect(dependents.ok).toBe(true);
+      if (!dependents.ok) return;
+      expect(dependents.value.answer.intent).toBe('dependents');
+      expect(JSON.stringify(dependents.value.answer)).toContain('component:packages--cli');
+
+      const why = await askProjectQuestion({
+        rootDir: dir,
+        question: 'why does packages/brain exist?',
+        now: new Date('2026-06-28T13:04:00.000Z'),
+      });
+      expect(why.ok).toBe(true);
+      if (!why.ok) return;
+      expect(why.value.answer.intent).toBe('why_exists');
+      expect(why.value.answer.answer_items).toContainEqual(
+        expect.stringContaining('Project understanding layer'),
+      );
+
+      const evidence = await askProjectQuestion({
+        rootDir: dir,
+        question: 'what evidence backs packages/brain?',
+        now: new Date('2026-06-28T13:05:00.000Z'),
+      });
+      expect(evidence.ok).toBe(true);
+      if (!evidence.ok) return;
+      expect(evidence.value.answer.intent).toBe('evidence');
+      expect(evidence.value.answer.evidence_summary.records).toContainEqual(
+        expect.objectContaining({ id: 'evidence:file-packages--brain--package.json' }),
+      );
+
+      const jsonRoundTrip = JSON.parse(JSON.stringify(evidence.value.answer)) as {
+        intent: string;
+        confidence: string;
+        research_artifacts: string[];
+      };
+      expect(jsonRoundTrip).toMatchObject({
+        intent: 'evidence',
+        confidence: expect.stringMatching(/verified|inferred|uncertain/),
+      });
+      expect(jsonRoundTrip.research_artifacts).toContain('.rizz/research/evidence_quality.json');
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'ask.html'), 'utf8');
+      expect(report).toContain('rizz ask');
+      expect(report).toContain('local Project Intelligence');
+      expect(report).not.toContain('v1');
+      expect(report).not.toContain('v2');
+    });
+  });
+
+  it('honors blocked and limited ask readiness without hallucinating a broad answer', async () => {
+    await withTempProject(async (dir) => {
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'index.test.ts'), 'import { it } from "vitest";\n');
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:10:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+
+      await setAskReadiness(dir, 'blocked', ['No usable flow coverage is available.']);
+      const blocked = await askProjectQuestion({
+        rootDir: dir,
+        question: 'what should I read first?',
+        now: new Date('2026-06-28T13:11:00.000Z'),
+      });
+      expect(blocked.ok).toBe(true);
+      if (!blocked.ok) return;
+      expect(blocked.value.answer).toMatchObject({
+        status: 'blocked',
+        confidence: 'uncertain',
+        evidence_ids: [],
+      });
+      expect(blocked.value.answer.answer).toContain('blocked by readiness gates');
+      expect(blocked.value.answer.unknowns).toContain('No usable flow coverage is available.');
+
+      await setAskReadiness(dir, 'limited', ['Some known unknowns lack evidence pointers.']);
+      const limited = await askProjectQuestion({
+        rootDir: dir,
+        question: 'what should I read first?',
+        now: new Date('2026-06-28T13:12:00.000Z'),
+      });
+      expect(limited.ok).toBe(true);
+      if (!limited.ok) return;
+      expect(limited.value.answer.status).toBe('limited');
+      expect(limited.value.answer.readiness.status).toBe('limited');
+      expect(limited.value.answer.unknowns).toContain(
+        'Some known unknowns lack evidence pointers.',
+      );
+    });
+  });
+
+  it('rejects unsupported broad ask questions before writing a report', async () => {
+    await withTempProject(async (dir) => {
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'sample-app' }));
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:20:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+
+      const result = await askProjectQuestion({
+        rootDir: dir,
+        question: 'write a generic chatbot answer about this repository',
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'ASK_UNSUPPORTED_QUESTION' },
+      });
+      expect(await fileExists(join(dir, '.rizz', 'reports', 'ask.html'))).toBe(false);
+    });
+  });
+
+  it('redacts secret-like ask targets from JSON output and report', async () => {
+    await withTempProject(async (dir) => {
+      await writeFile(
+        join(dir, 'sk-or-brainsecret0000000000000000.ts'),
+        'export const ok = true;\n',
+      );
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:30:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      await setAskReadiness(dir, 'ready');
+
+      const result = await askProjectQuestion({
+        rootDir: dir,
+        question: 'what evidence backs sk-or-brainsecret0000000000000000.ts?',
+        now: new Date('2026-06-28T13:31:00.000Z'),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const output = JSON.stringify(result.value.answer);
+      expect(output).not.toContain('sk-or-brainsecret');
+      expect(output).toContain('redacted:sensitive-file:');
+      const report = await readFile(join(dir, '.rizz', 'reports', 'ask.html'), 'utf8');
+      expect(report).not.toContain('sk-or-brainsecret');
+      expect(report).toContain('redacted:sensitive-file:');
     });
   });
 

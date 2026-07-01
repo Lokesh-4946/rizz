@@ -26,6 +26,7 @@ const USAGE = `rizz - understand a software system
 Usage:
   rizz               generate .rizz/brain and .rizz/reports
   rizz brain         refresh project brain
+  rizz ask <q>       answer a gated Project Intelligence question from the local brain
   rizz explain <x>   explain a component or file from the project brain
   rizz explain flow <id>
                      explain a reconstructed flow from the project brain
@@ -157,6 +158,48 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     for (const finding of summary.review.findings.slice(0, 5)) {
       process.stdout.write(`    - [${finding.severity}] ${finding.category}: ${finding.title}\n`);
     }
+  }
+  return 0;
+}
+
+async function runAskCommand(options: {
+  readonly question: string;
+  readonly json: boolean;
+}): Promise<number> {
+  const { askProjectQuestion } = await import('@valoir/rizz-brain');
+  const result = await askProjectQuestion({ rootDir: process.cwd(), question: options.question });
+  if (!result.ok) {
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    }
+    return result.error.code === 'ASK_UNSUPPORTED_QUESTION' ||
+      result.error.code === 'ASK_QUESTION_REQUIRED' ||
+      result.error.code === 'ASK_TARGET_REQUIRED'
+      ? 2
+      : 1;
+  }
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result.value.answer)}\n`);
+    return 0;
+  }
+
+  const answer = result.value.answer;
+  process.stdout.write('rizz answered from local Project Intelligence\n');
+  process.stdout.write(`  intent: ${answer.intent}\n`);
+  process.stdout.write(`  status: ${answer.status}\n`);
+  process.stdout.write(`  confidence: ${answer.confidence}\n`);
+  process.stdout.write(`  readiness: ${answer.readiness.status} (${answer.readiness.score}/100)\n`);
+  process.stdout.write(`  report: ${displayLocalPath(result.value.reportPath)}\n`);
+  process.stdout.write(`\n${answer.answer}\n`);
+  writeSection('Answer', answer.answer_items);
+  writeSection('Evidence', answer.evidence_ids.slice(0, 12));
+  writeSection('Unknowns', answer.unknowns);
+  writeSection('Related entities', answer.related_entities);
+  writeSection('Research artifacts', answer.research_artifacts);
+  if (answer.status === 'blocked') {
+    writeSection('Improve readiness', answer.readiness.next_required_improvements);
   }
   return 0;
 }
@@ -497,6 +540,47 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     }
     return runReviewCommand({ json: reviewArgs.includes('--json') });
+  }
+  if (c.rest[0] === 'ask') {
+    const askArgs = c.rest.slice(1);
+    const wantsJson = askArgs.includes('--json');
+    const allowed = new Set(['--json']);
+    const unknownFlag = askArgs.find((arg) => arg.startsWith('-') && !allowed.has(arg));
+    if (unknownFlag !== undefined) {
+      const error = {
+        ok: false,
+        error: {
+          code: 'UNKNOWN_ASK_OPTION',
+          message: `Unknown ask option '${unknownFlag}'.`,
+        },
+      };
+      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      else
+        process.stderr.write(
+          `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
+        );
+      return 2;
+    }
+    const question = askArgs
+      .filter((arg) => !allowed.has(arg))
+      .join(' ')
+      .trim();
+    if (question === '') {
+      const error = {
+        ok: false,
+        error: {
+          code: 'ASK_QUESTION_REQUIRED',
+          message: 'Ask needs a Project Intelligence question.',
+        },
+      };
+      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      else
+        process.stderr.write(
+          `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
+        );
+      return 2;
+    }
+    return runAskCommand({ question, json: wantsJson });
   }
   if (c.rest[0] === 'explain') {
     const explainArgs = c.rest.slice(1);
