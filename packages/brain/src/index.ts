@@ -489,12 +489,69 @@ interface IncrementalUnderstandingMetrics {
   readonly stale_fact_count: number;
   readonly stale_fact_candidates: readonly string[];
   readonly scan_efficiency_score: number;
+  readonly understanding_deltas: IncrementalUnderstandingDeltas;
 }
 
 interface IncrementalEntityDelta {
   readonly id: string;
   readonly type: EntityType;
   readonly name: string;
+}
+
+type IncrementalUnderstandingSurfaceType =
+  | 'architecture'
+  | 'component'
+  | 'evidence'
+  | 'flow'
+  | 'unknown';
+
+type IncrementalUnderstandingSurfaceStatus = 'changed' | 'new' | 'stable' | 'stale';
+
+interface IncrementalUnderstandingSurface {
+  readonly surface_id: string;
+  readonly surface_type: IncrementalUnderstandingSurfaceType;
+  readonly name: string;
+  readonly status: IncrementalUnderstandingSurfaceStatus;
+  readonly previous_score: number | null;
+  readonly current_score: number | null;
+  readonly score_delta: number | null;
+  readonly evidence_ids: readonly string[];
+  readonly reasons: readonly string[];
+}
+
+interface IncrementalUnderstandingSurfaceCounts {
+  readonly changed: number;
+  readonly new: number;
+  readonly stable: number;
+  readonly stale: number;
+}
+
+interface IncrementalUnderstandingScoreDelta {
+  readonly surface_id: string;
+  readonly surface_type: IncrementalUnderstandingSurfaceType;
+  readonly name: string;
+  readonly previous_score: number;
+  readonly current_score: number;
+  readonly delta: number;
+}
+
+interface IncrementalUnderstandingDeltas {
+  readonly schema_version: number;
+  readonly previous_scan_available: boolean;
+  readonly changed_surface_count: number;
+  readonly new_surface_count: number;
+  readonly stable_surface_count: number;
+  readonly stale_surface_count: number;
+  readonly changed_surfaces: readonly IncrementalUnderstandingSurface[];
+  readonly new_surfaces: readonly IncrementalUnderstandingSurface[];
+  readonly stable_surfaces: readonly IncrementalUnderstandingSurface[];
+  readonly stale_surfaces: readonly IncrementalUnderstandingSurface[];
+  readonly by_surface_type: Readonly<
+    Record<IncrementalUnderstandingSurfaceType, IncrementalUnderstandingSurfaceCounts>
+  >;
+  readonly score_deltas: readonly IncrementalUnderstandingScoreDelta[];
+  readonly summary: string;
+  readonly calibration_rule: string;
 }
 
 interface IncrementalRelationshipDelta {
@@ -8105,6 +8162,14 @@ function buildIncrementalUnderstandingMetrics(params: {
     addedEntities.length + changedEntities.length + relationshipDelta.added_count;
   const efficiencyDenominator =
     stableEntityCount + recomputedUnderstandingCount + staleFactCandidates.length;
+  const understandingDeltas = buildUnderstandingDeltas({
+    previousFingerprint: params.previous.fingerprint,
+    previousEntities,
+    currentEntities,
+    previousRelationships: params.previous.relationships,
+    currentRelationships: params.relationships,
+    relationshipDelta,
+  });
 
   return {
     generated_at: params.now,
@@ -8138,6 +8203,7 @@ function buildIncrementalUnderstandingMetrics(params: {
     stale_fact_count: staleFactCandidates.length,
     stale_fact_candidates: staleFactCandidates,
     scan_efficiency_score: scorePercent(stableEntityCount, efficiencyDenominator),
+    understanding_deltas: understandingDeltas,
   };
 }
 
@@ -8200,6 +8266,320 @@ function buildEvidenceDelta(
     removed: removed.map((entity) => entity.id).sort((a, b) => a.localeCompare(b)),
     changed: changed.map((entity) => entity.id).sort((a, b) => a.localeCompare(b)),
   };
+}
+
+function buildUnderstandingDeltas(params: {
+  readonly previousFingerprint: string | null;
+  readonly previousEntities: readonly BrainEntity[];
+  readonly currentEntities: readonly BrainEntity[];
+  readonly previousRelationships: readonly BrainRelationship[];
+  readonly currentRelationships: readonly BrainRelationship[];
+  readonly relationshipDelta: IncrementalRelationshipDelta;
+}): IncrementalUnderstandingDeltas {
+  const entitySurfaces = buildEntityUnderstandingSurfaces(
+    params.previousEntities,
+    params.currentEntities,
+  );
+  const unknownSurfaces = buildUnknownUnderstandingSurfaces(
+    params.previousEntities,
+    params.currentEntities,
+  );
+  const architectureSurface = buildArchitectureUnderstandingSurface({
+    previousRelationships: params.previousRelationships,
+    currentRelationships: params.currentRelationships,
+    relationshipDelta: params.relationshipDelta,
+  });
+  const surfaces = sorted(
+    [...entitySurfaces, ...unknownSurfaces, architectureSurface],
+    understandingSurfaceKey,
+  );
+  const changedSurfaces = surfaces.filter((surface) => surface.status === 'changed');
+  const newSurfaces = surfaces.filter((surface) => surface.status === 'new');
+  const stableSurfaces = surfaces.filter((surface) => surface.status === 'stable');
+  const staleSurfaces = surfaces.filter((surface) => surface.status === 'stale');
+  const scoreDeltas = surfaces
+    .filter(
+      (surface) =>
+        surface.previous_score !== null &&
+        surface.current_score !== null &&
+        surface.previous_score !== surface.current_score,
+    )
+    .map((surface) => {
+      if (surface.previous_score === null || surface.current_score === null) {
+        throw new Error('score delta requires previous and current scores');
+      }
+      return {
+        surface_id: surface.surface_id,
+        surface_type: surface.surface_type,
+        name: surface.name,
+        previous_score: surface.previous_score,
+        current_score: surface.current_score,
+        delta: surface.current_score - surface.previous_score,
+      };
+    });
+
+  return {
+    schema_version: 1,
+    previous_scan_available: params.previousFingerprint !== null,
+    changed_surface_count: changedSurfaces.length,
+    new_surface_count: newSurfaces.length,
+    stable_surface_count: stableSurfaces.length,
+    stale_surface_count: staleSurfaces.length,
+    changed_surfaces: changedSurfaces,
+    new_surfaces: newSurfaces,
+    stable_surfaces: stableSurfaces,
+    stale_surfaces: staleSurfaces,
+    by_surface_type: understandingSurfaceCounts(surfaces),
+    score_deltas: sorted(scoreDeltas, (delta) => delta.surface_id),
+    summary: safeText(
+      `${changedSurfaces.length} changed, ${newSurfaces.length} new, ${stableSurfaces.length} stable, and ${staleSurfaces.length} stale understanding surface(s).`,
+    ),
+    calibration_rule:
+      'Understanding deltas are deterministic local comparisons of component, flow, architecture, evidence, unknown, and confidence-score surfaces across scans.',
+  };
+}
+
+function buildEntityUnderstandingSurfaces(
+  previousEntities: readonly BrainEntity[],
+  currentEntities: readonly BrainEntity[],
+): IncrementalUnderstandingSurface[] {
+  const previousById = new Map(
+    previousEntities.filter(isDeltaEntitySurface).map((entity) => [entity.id, entity]),
+  );
+  const currentById = new Map(
+    currentEntities.filter(isDeltaEntitySurface).map((entity) => [entity.id, entity]),
+  );
+  const surfaces: IncrementalUnderstandingSurface[] = [];
+  for (const current of currentById.values()) {
+    const previous = previousById.get(current.id);
+    const status = entitySurfaceStatus(previous, current);
+    surfaces.push(entityUnderstandingSurface({ previous, current, status }));
+  }
+  for (const previous of previousById.values()) {
+    if (currentById.has(previous.id)) continue;
+    surfaces.push(entityUnderstandingSurface({ previous, current: undefined, status: 'stale' }));
+  }
+  return surfaces;
+}
+
+function buildUnknownUnderstandingSurfaces(
+  previousEntities: readonly BrainEntity[],
+  currentEntities: readonly BrainEntity[],
+): IncrementalUnderstandingSurface[] {
+  const previousById = unknownSurfaceEntityMap(previousEntities);
+  const currentById = unknownSurfaceEntityMap(currentEntities);
+  const surfaces: IncrementalUnderstandingSurface[] = [];
+  for (const [surfaceId, current] of currentById.entries()) {
+    const previous = previousById.get(surfaceId);
+    surfaces.push(unknownUnderstandingSurface({ previous, current }));
+  }
+  for (const [surfaceId, previous] of previousById.entries()) {
+    if (currentById.has(surfaceId)) continue;
+    surfaces.push(unknownUnderstandingSurface({ previous, current: undefined }));
+  }
+  return surfaces;
+}
+
+function buildArchitectureUnderstandingSurface(params: {
+  readonly previousRelationships: readonly BrainRelationship[];
+  readonly currentRelationships: readonly BrainRelationship[];
+  readonly relationshipDelta: IncrementalRelationshipDelta;
+}): IncrementalUnderstandingSurface {
+  const previousScore =
+    params.previousRelationships.length === 0
+      ? null
+      : boundedScore(
+          averageConfidenceScore(
+            params.previousRelationships.map((relationship) =>
+              confidenceScoreForValue(relationship.confidence),
+            ),
+          ) * 100,
+        );
+  const currentScore =
+    params.currentRelationships.length === 0
+      ? null
+      : boundedScore(
+          averageConfidenceScore(
+            params.currentRelationships.map((relationship) =>
+              confidenceScoreForValue(relationship.confidence),
+            ),
+          ) * 100,
+        );
+  const hasChangedRelationships =
+    params.relationshipDelta.added_count > 0 ||
+    params.relationshipDelta.removed_count > 0 ||
+    params.relationshipDelta.changed_count > 0;
+  let status: IncrementalUnderstandingSurfaceStatus = 'stable';
+  if (params.previousRelationships.length === 0 && params.currentRelationships.length > 0) {
+    status = 'new';
+  } else if (params.currentRelationships.length === 0 && params.previousRelationships.length > 0) {
+    status = 'stale';
+  } else if (hasChangedRelationships) {
+    status = 'changed';
+  }
+
+  return {
+    surface_id: 'architecture:relationship-map',
+    surface_type: 'architecture',
+    name: 'Architecture relationship map',
+    status,
+    previous_score: previousScore,
+    current_score: currentScore,
+    score_delta: scoreDelta(previousScore, currentScore),
+    evidence_ids: unique(
+      params.currentRelationships.flatMap((relationship) => relationship.evidence_ids),
+    ),
+    reasons: [
+      `${params.currentRelationships.length} current relationship claim(s)`,
+      `${params.relationshipDelta.added_count} added relationship(s)`,
+      `${params.relationshipDelta.removed_count} removed relationship(s)`,
+      `${params.relationshipDelta.changed_count} changed relationship(s)`,
+    ].map(safeText),
+  };
+}
+
+function isDeltaEntitySurface(entity: BrainEntity): boolean {
+  return entity.type === 'component' || entity.type === 'flow' || entity.type === 'evidence';
+}
+
+function entitySurfaceType(entity: BrainEntity): IncrementalUnderstandingSurfaceType {
+  if (entity.type === 'component') return 'component';
+  if (entity.type === 'flow') return 'flow';
+  return 'evidence';
+}
+
+function entitySurfaceStatus(
+  previous: BrainEntity | undefined,
+  current: BrainEntity,
+): IncrementalUnderstandingSurfaceStatus {
+  if (previous === undefined) return 'new';
+  if (entitySemanticHash(previous) !== entitySemanticHash(current)) return 'changed';
+  return 'stable';
+}
+
+function entityUnderstandingSurface(params: {
+  readonly previous: BrainEntity | undefined;
+  readonly current: BrainEntity | undefined;
+  readonly status: IncrementalUnderstandingSurfaceStatus;
+}): IncrementalUnderstandingSurface {
+  const entity = params.current ?? params.previous;
+  if (entity === undefined) {
+    throw new Error('understanding surface requires a previous or current entity');
+  }
+  const previousScore =
+    params.previous === undefined ? null : understandingEntityScore(params.previous);
+  const currentScore =
+    params.current === undefined ? null : understandingEntityScore(params.current);
+  return {
+    surface_id: entity.id,
+    surface_type: entitySurfaceType(entity),
+    name: safeText(entity.name),
+    status: params.status,
+    previous_score: previousScore,
+    current_score: currentScore,
+    score_delta: scoreDelta(previousScore, currentScore),
+    evidence_ids: unique([...(params.current ?? entity).evidence_ids]).map(safeText),
+    reasons: entitySurfaceReasons(params.previous, params.current).map(safeText),
+  };
+}
+
+function unknownSurfaceEntityMap(
+  entities: readonly BrainEntity[],
+): Map<string, { readonly entity: BrainEntity; readonly unknown: string }> {
+  const out = new Map<string, { readonly entity: BrainEntity; readonly unknown: string }>();
+  for (const entity of entities.filter(
+    (item) => item.type === 'component' || item.type === 'flow',
+  )) {
+    for (const unknown of stringArrayData(entity, 'unknowns')) {
+      const surfaceId = `unknown:${entity.id}:${stableSlug(safeText(unknown))}`;
+      out.set(surfaceId, { entity, unknown });
+    }
+  }
+  return out;
+}
+
+function unknownUnderstandingSurface(params: {
+  readonly previous: { readonly entity: BrainEntity; readonly unknown: string } | undefined;
+  readonly current: { readonly entity: BrainEntity; readonly unknown: string } | undefined;
+}): IncrementalUnderstandingSurface {
+  const item = params.current ?? params.previous;
+  if (item === undefined) throw new Error('unknown surface requires previous or current data');
+  const previousScore =
+    params.previous === undefined ? null : understandingEntityScore(params.previous.entity);
+  const currentScore =
+    params.current === undefined ? null : understandingEntityScore(params.current.entity);
+  let status: IncrementalUnderstandingSurfaceStatus = 'stable';
+  if (params.previous === undefined) {
+    status = 'new';
+  } else if (params.current === undefined) {
+    status = 'stale';
+  }
+  return {
+    surface_id: `unknown:${item.entity.id}:${stableSlug(safeText(item.unknown))}`,
+    surface_type: 'unknown',
+    name: safeText(item.unknown),
+    status,
+    previous_score: previousScore,
+    current_score: currentScore,
+    score_delta: scoreDelta(previousScore, currentScore),
+    evidence_ids: unique([...(params.current?.entity ?? item.entity).evidence_ids]).map(safeText),
+    reasons: [`Known unknown attached to ${safeText(item.entity.id)}.`],
+  };
+}
+
+function understandingEntityScore(entity: BrainEntity): number {
+  if (entity.type === 'component') return boundedScore(componentConfidenceScore(entity) * 100);
+  if (entity.type === 'flow') return boundedScore(asFlowConfidenceScore(entity) * 100);
+  return boundedScore(confidenceScoreForValue(entity.confidence) * 100);
+}
+
+function entitySurfaceReasons(
+  previous: BrainEntity | undefined,
+  current: BrainEntity | undefined,
+): string[] {
+  const entity = current ?? previous;
+  if (entity === undefined) return [];
+  const reasons: string[] = [
+    `${entity.evidence_ids.length} evidence record(s)`,
+    `${entity.source_files.length} source file(s)`,
+    `confidence:${entity.confidence}`,
+  ];
+  if (previous !== undefined && current !== undefined) {
+    const previousHash = entitySemanticHash(previous);
+    const currentHash = entitySemanticHash(current);
+    if (previousHash !== currentHash) reasons.push('semantic fingerprint changed');
+  }
+  return reasons;
+}
+
+function scoreDelta(previousScore: number | null, currentScore: number | null): number | null {
+  if (previousScore === null || currentScore === null) return null;
+  return currentScore - previousScore;
+}
+
+function understandingSurfaceCounts(
+  surfaces: readonly IncrementalUnderstandingSurface[],
+): Record<IncrementalUnderstandingSurfaceType, IncrementalUnderstandingSurfaceCounts> {
+  const counts: Record<IncrementalUnderstandingSurfaceType, IncrementalUnderstandingSurfaceCounts> =
+    {
+      architecture: { changed: 0, new: 0, stable: 0, stale: 0 },
+      component: { changed: 0, new: 0, stable: 0, stale: 0 },
+      evidence: { changed: 0, new: 0, stable: 0, stale: 0 },
+      flow: { changed: 0, new: 0, stable: 0, stale: 0 },
+      unknown: { changed: 0, new: 0, stable: 0, stale: 0 },
+    };
+  for (const surface of surfaces) {
+    const current = counts[surface.surface_type];
+    counts[surface.surface_type] = {
+      ...current,
+      [surface.status]: current[surface.status] + 1,
+    };
+  }
+  return counts;
+}
+
+function understandingSurfaceKey(surface: IncrementalUnderstandingSurface): string {
+  return `${surface.surface_type}:${surface.surface_id}`;
 }
 
 function buildResearchArtifacts(params: {
@@ -8849,6 +9229,29 @@ function buildLatest(params: {
         added_count: params.incrementalMetrics.evidence_delta.added_count,
         removed_count: params.incrementalMetrics.evidence_delta.removed_count,
         changed_count: params.incrementalMetrics.evidence_delta.changed_count,
+      },
+      understanding_deltas: {
+        schema_version: params.incrementalMetrics.understanding_deltas.schema_version,
+        previous_scan_available:
+          params.incrementalMetrics.understanding_deltas.previous_scan_available,
+        changed_surface_count: params.incrementalMetrics.understanding_deltas.changed_surface_count,
+        new_surface_count: params.incrementalMetrics.understanding_deltas.new_surface_count,
+        stable_surface_count: params.incrementalMetrics.understanding_deltas.stable_surface_count,
+        stale_surface_count: params.incrementalMetrics.understanding_deltas.stale_surface_count,
+        changed_surfaces: params.incrementalMetrics.understanding_deltas.changed_surfaces.slice(
+          0,
+          12,
+        ),
+        new_surfaces: params.incrementalMetrics.understanding_deltas.new_surfaces.slice(0, 12),
+        stable_surfaces: params.incrementalMetrics.understanding_deltas.stable_surfaces.slice(
+          0,
+          12,
+        ),
+        stale_surfaces: params.incrementalMetrics.understanding_deltas.stale_surfaces.slice(0, 12),
+        by_surface_type: params.incrementalMetrics.understanding_deltas.by_surface_type,
+        score_deltas: params.incrementalMetrics.understanding_deltas.score_deltas.slice(0, 12),
+        summary: params.incrementalMetrics.understanding_deltas.summary,
+        calibration_rule: params.incrementalMetrics.understanding_deltas.calibration_rule,
       },
     },
     latest_risks: risks,
@@ -9758,8 +10161,6 @@ function renderIncrementalUnderstanding(value: unknown): string {
   const changedEntities =
     typeof value.changed_entity_count === 'number' ? value.changed_entity_count : 0;
   const addedEntities = typeof value.added_entity_count === 'number' ? value.added_entity_count : 0;
-  const removedEntities =
-    typeof value.removed_entity_count === 'number' ? value.removed_entity_count : 0;
   const stableEntities =
     typeof value.stable_entity_count === 'number' ? value.stable_entity_count : 0;
   const reusedUnderstanding =
@@ -9786,26 +10187,79 @@ function renderIncrementalUnderstanding(value: unknown): string {
     `removed: ${String(evidenceDelta.removed_count ?? 0)}`,
     `changed: ${String(evidenceDelta.changed_count ?? 0)}`,
   ];
+  const understandingDeltas = isRecord(value.understanding_deltas)
+    ? value.understanding_deltas
+    : {};
+  const changedSurfaceCount =
+    typeof understandingDeltas.changed_surface_count === 'number'
+      ? understandingDeltas.changed_surface_count
+      : changedEntities;
+  const newSurfaceCount =
+    typeof understandingDeltas.new_surface_count === 'number'
+      ? understandingDeltas.new_surface_count
+      : addedEntities;
+  const stableSurfaceCount =
+    typeof understandingDeltas.stable_surface_count === 'number'
+      ? understandingDeltas.stable_surface_count
+      : stableEntities;
+  const staleSurfaceCount =
+    typeof understandingDeltas.stale_surface_count === 'number'
+      ? understandingDeltas.stale_surface_count
+      : staleFacts;
+  const changedSurfaceLabels = renderUnderstandingSurfaceLabels(
+    Array.isArray(understandingDeltas.changed_surfaces) ? understandingDeltas.changed_surfaces : [],
+  );
+  const newSurfaceLabels = renderUnderstandingSurfaceLabels(
+    Array.isArray(understandingDeltas.new_surfaces) ? understandingDeltas.new_surfaces : [],
+  );
+  const stableSurfaceLabels = renderUnderstandingSurfaceLabels(
+    Array.isArray(understandingDeltas.stable_surfaces) ? understandingDeltas.stable_surfaces : [],
+  );
+  const staleSurfaceLabels = renderUnderstandingSurfaceLabels(
+    Array.isArray(understandingDeltas.stale_surfaces) ? understandingDeltas.stale_surfaces : [],
+  );
   return `<div class="grid">
-    <article class="card"><h3>Changed Understanding</h3>${renderList([
-      `${changedFiles} changed file(s)`,
-      `${changedEntities} changed entity/entities`,
-      `${addedEntities} added entity/entities`,
-      `${removedEntities} removed entity/entities`,
+    <article class="card"><h3>Changed Understanding Surfaces</h3>${renderList([
+      `${changedSurfaceCount} changed surface(s)`,
+      `${newSurfaceCount} new surface(s)`,
+      ...changedSurfaceLabels,
+      ...newSurfaceLabels,
     ])}</article>
-    <article class="card"><h3>Reuse</h3>${renderList([
-      `${reusedUnderstanding} reused understanding item(s)`,
-      `${recomputedUnderstanding} recomputed understanding item(s)`,
-      `${stableEntities} stable entity/entities`,
+    <article class="card"><h3>Stable Understanding Surfaces</h3>${renderList([
+      `${stableSurfaceCount} stable surface(s)`,
+      ...stableSurfaceLabels,
     ])}</article>
-    <article class="card"><h3>Stale Candidates</h3>${renderList([
+    <article class="card"><h3>Stale Understanding Surfaces</h3>${renderList([
+      `${staleSurfaceCount} stale surface(s)`,
       `${staleFacts} stale fact candidate(s)`,
+      ...staleSurfaceLabels,
       ...staleCandidates,
     ])}</article>
-    <article class="card"><h3>Scan Efficiency</h3><p>${scanEfficiency}/100</p></article>
+    <article class="card"><h3>Scan Efficiency</h3>${renderList([
+      `${scanEfficiency}/100`,
+      `${changedFiles} changed file(s)`,
+      `${reusedUnderstanding} reused understanding item(s)`,
+      `${recomputedUnderstanding} recomputed understanding item(s)`,
+    ])}</article>
     <article class="card"><h3>Relationship Delta</h3>${renderList(relationshipLabels)}</article>
     <article class="card"><h3>Evidence Delta</h3>${renderList(evidenceLabels)}</article>
   </div>`;
+}
+
+function renderUnderstandingSurfaceLabels(surfaces: readonly unknown[]): string[] {
+  return surfaces
+    .filter(isRecord)
+    .slice(0, 6)
+    .map((surface) => {
+      const name = typeof surface.name === 'string' ? surface.name : 'unknown surface';
+      const type = typeof surface.surface_type === 'string' ? surface.surface_type : 'unknown';
+      let delta = '';
+      if (typeof surface.score_delta === 'number' && surface.score_delta !== 0) {
+        const sign = surface.score_delta > 0 ? '+' : '';
+        delta = ` (${sign}${surface.score_delta})`;
+      }
+      return `${type}: ${name}${delta}`;
+    });
 }
 
 function qualityBandFromScore(score: number): 'weak' | 'usable' | 'strong' {
