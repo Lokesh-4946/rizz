@@ -303,6 +303,7 @@ describe('project brain generation', () => {
         'benchmark_ready.json',
         'benchmark_tasks.json',
         'understanding_score.json',
+        'pie_acceptance.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
         artifactNames,
@@ -1159,6 +1160,98 @@ describe('project brain generation', () => {
       );
       expect(JSON.stringify(benchmarkTasks)).not.toContain('sk-');
 
+      const pieAcceptance = await readJson<{
+        schema_version: number;
+        deterministic: boolean;
+        provider_calls_required: boolean;
+        network_required: boolean;
+        goal: string;
+        overall_status: string;
+        overall_score: number;
+        dimensions: Array<{
+          key: string;
+          label: string;
+          status: 'pass' | 'limited' | 'blocking';
+          score: number;
+          evidence_basis: string[];
+          artifact_pointers: string[];
+          blocking_gaps: string[];
+          next_required_improvements: string[];
+        }>;
+        artifact_pointers: {
+          pie_acceptance: string;
+          benchmark_ready: string;
+          benchmark_tasks: string;
+          mission_control: string;
+        };
+        confidence: {
+          status: 'pass' | 'limited' | 'blocking';
+          score: number;
+          evidence_basis: string[];
+          redaction_safety: {
+            score: number;
+            redacted_evidence_count: number;
+            redacted_reference_count: number;
+            unsafe_sensitive_reference_count: number;
+            output_share_safe: boolean;
+          };
+        };
+      }>(join(researchDir, 'pie_acceptance.json'));
+      expect(pieAcceptance).toMatchObject({
+        schema_version: 1,
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+        goal: 'Understand any repo in 10 minutes instead of 2 days.',
+        artifact_pointers: {
+          pie_acceptance: '.rizz/research/pie_acceptance.json',
+          benchmark_ready: '.rizz/research/benchmark_ready.json',
+          benchmark_tasks: '.rizz/research/benchmark_tasks.json',
+          mission_control: '.rizz/reports/index.html',
+        },
+      });
+      expect(pieAcceptance.overall_status).toMatch(/pass|limited|blocking/);
+      expect(pieAcceptance.overall_score).toBeGreaterThan(0);
+      expect(pieAcceptance.dimensions.map((dimension) => dimension.key)).toEqual([
+        'component_understanding',
+        'flow_understanding',
+        'architecture_reasoning',
+        'evidence_quality_actionability',
+        'incremental_understanding',
+        'review_intelligence_blast_radius',
+        'benchmark_task_coverage',
+        'explain_quality',
+        'ask_readiness',
+        'secret_safe_reliability',
+        'mission_control_coverage',
+      ]);
+      expect(pieAcceptance.dimensions).toContainEqual(
+        expect.objectContaining({
+          key: 'benchmark_task_coverage',
+          status: 'pass',
+          score: 100,
+          artifact_pointers: expect.arrayContaining(['.rizz/research/benchmark_tasks.json']),
+        }),
+      );
+      expect(pieAcceptance.dimensions).toContainEqual(
+        expect.objectContaining({
+          key: 'secret_safe_reliability',
+          status: 'pass',
+          score: 100,
+        }),
+      );
+      expect(pieAcceptance.confidence).toMatchObject({
+        evidence_basis: expect.arrayContaining([
+          expect.stringContaining('Deterministic local brain entities'),
+        ]),
+        redaction_safety: {
+          score: 100,
+          unsafe_sensitive_reference_count: 0,
+          output_share_safe: true,
+        },
+      });
+      expect(JSON.stringify(pieAcceptance)).not.toContain('sk-');
+
       const understandingScore = await readJson<{
         schema_version: number;
         overall_score: number;
@@ -1362,8 +1455,20 @@ describe('project brain generation', () => {
         };
         latest_benchmark_tasks: {
           path: string;
+          pie_acceptance: {
+            path: string;
+            overall_status: string;
+            overall_score: number;
+          };
           task_count: number;
           task_categories: Record<string, number>;
+          mission_control: string;
+          summary: string;
+        };
+        latest_pie_acceptance: {
+          path: string;
+          overall_status: string;
+          overall_score: number;
           mission_control: string;
           summary: string;
         };
@@ -1413,9 +1518,20 @@ describe('project brain generation', () => {
       });
       expect(latest.latest_benchmark_tasks).toMatchObject({
         path: '.rizz/research/benchmark_tasks.json',
+        pie_acceptance: {
+          path: '.rizz/research/pie_acceptance.json',
+          overall_score: pieAcceptance.overall_score,
+        },
         task_count: benchmarkTasks.task_count,
         mission_control: '.rizz/reports/index.html',
       });
+      expect(latest.latest_pie_acceptance).toMatchObject({
+        path: '.rizz/research/pie_acceptance.json',
+        overall_status: pieAcceptance.overall_status,
+        overall_score: pieAcceptance.overall_score,
+        mission_control: '.rizz/reports/index.html',
+      });
+      expect(latest.latest_pie_acceptance.summary).toContain('PIE acceptance readiness');
       expect(latest.latest_benchmark_tasks.task_categories).toMatchObject(
         benchmarkTasks.task_categories,
       );
@@ -1449,12 +1565,17 @@ describe('project brain generation', () => {
       expect(report).toContain('Incremental Changed / Stable');
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Research Artifacts');
+      expect(report).toContain('PIE Acceptance');
+      expect(report).toContain('.rizz/research/pie_acceptance.json');
       expect(report).toContain('.rizz/research/benchmark_tasks.json');
       expect(report).toContain(
         '<a href="../brain/latest.json"><code>.rizz/brain/latest.json</code></a>',
       );
       expect(report).toContain(
         '<a href="../research/benchmark_tasks.json"><code>.rizz/research/benchmark_tasks.json</code></a>',
+      );
+      expect(report).toContain(
+        '<a href="../research/pie_acceptance.json"><code>.rizz/research/pie_acceptance.json</code></a>',
       );
       expect(report).toContain('Incremental Understanding');
       expect(report).toContain('Changed Understanding Surfaces');
@@ -1622,6 +1743,7 @@ describe('project brain generation', () => {
           architecture_reasoning: string;
           benchmark_ready: string;
           benchmark_tasks: string;
+          pie_acceptance: string;
         };
       }>(join(dir, '.rizz', 'brain', 'index.json'));
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
@@ -1634,6 +1756,7 @@ describe('project brain generation', () => {
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
+        pie_acceptance: '.rizz/research/pie_acceptance.json',
         understanding_score: '.rizz/research/understanding_score.json',
       });
     });
@@ -1665,7 +1788,46 @@ describe('project brain generation', () => {
           dimensions: Record<string, unknown>;
         };
       }>(join(result.value.researchDir, 'benchmark_ready.json'));
-      return benchmarkReady.readiness_calibration;
+      const pieAcceptance = await readJson<Record<string, unknown>>(
+        join(result.value.researchDir, 'pie_acceptance.json'),
+      );
+      const pieDimensions = Array.isArray(pieAcceptance.dimensions)
+        ? pieAcceptance.dimensions
+            .filter((dimension): dimension is Record<string, unknown> => {
+              return (
+                dimension !== null && typeof dimension === 'object' && !Array.isArray(dimension)
+              );
+            })
+            .map((dimension) => ({
+              key: dimension.key,
+              status: dimension.status,
+              score: dimension.score,
+              artifact_pointers: dimension.artifact_pointers,
+            }))
+        : [];
+      const pieConfidence: Record<string, unknown> =
+        pieAcceptance.confidence !== null &&
+        typeof pieAcceptance.confidence === 'object' &&
+        !Array.isArray(pieAcceptance.confidence)
+          ? (pieAcceptance.confidence as Record<string, unknown>)
+          : {};
+      return {
+        readiness_calibration: benchmarkReady.readiness_calibration,
+        pie_acceptance: {
+          deterministic: pieAcceptance.deterministic,
+          provider_calls_required: pieAcceptance.provider_calls_required,
+          network_required: pieAcceptance.network_required,
+          overall_status: pieAcceptance.overall_status,
+          overall_score: pieAcceptance.overall_score,
+          dimensions: pieDimensions,
+          artifact_pointers: pieAcceptance.artifact_pointers,
+          confidence: {
+            status: pieConfidence.status,
+            score: pieConfidence.score,
+            redaction_safety: pieConfidence.redaction_safety,
+          },
+        },
+      };
     }
 
     const first = await withTempProject(generateCalibration);
@@ -4816,6 +4978,39 @@ describe('project brain generation', () => {
         expect.objectContaining({
           key: 'redaction_safety',
           status: 'ready',
+          score: 100,
+        }),
+      );
+
+      const pieAcceptance = await readJson<{
+        confidence: {
+          redaction_safety: {
+            score: number;
+            redacted_evidence_count: number;
+            redacted_reference_count: number;
+            unsafe_sensitive_reference_count: number;
+            output_share_safe: boolean;
+          };
+        };
+        dimensions: Array<{ key: string; status: string; score: number }>;
+      }>(join(dir, '.rizz', 'research', 'pie_acceptance.json'));
+      const pieAcceptanceText = JSON.stringify(pieAcceptance);
+      expect(pieAcceptanceText).not.toContain('client_secret_handler.ts');
+      expect(pieAcceptanceText).not.toContain('secret-token-flow.test.ts');
+      expect(pieAcceptanceText).not.toContain('OPENAI_API_KEY');
+      expect(pieAcceptance.confidence.redaction_safety).toMatchObject({
+        score: 100,
+        unsafe_sensitive_reference_count: 0,
+        output_share_safe: true,
+      });
+      expect(
+        pieAcceptance.confidence.redaction_safety.redacted_evidence_count +
+          pieAcceptance.confidence.redaction_safety.redacted_reference_count,
+      ).toBeGreaterThan(0);
+      expect(pieAcceptance.dimensions).toContainEqual(
+        expect.objectContaining({
+          key: 'secret_safe_reliability',
+          status: 'pass',
           score: 100,
         }),
       );

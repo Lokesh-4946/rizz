@@ -30,6 +30,12 @@ const PRIVATE_FILE_NAMES = new Set([
 
 const PRIVATE_EXTENSIONS = new Set(['.pem', '.key', '.cert', '.crt', '.cer', '.p12', '.pfx']);
 
+const PUBLIC_SECURITY_TERMS = new Set([
+  'secret-safe',
+  'secret-safe reliability',
+  'secret_safe_reliability',
+]);
+
 const SENSITIVE_SEGMENT_PATTERN =
   /(^|[-_.])(secret|secrets|credential|credentials|token|tokens|password|passwords|passwd|client_secret|service-account|private-key)([-_.]|$)/i;
 
@@ -93,6 +99,7 @@ function splitCandidate(value: string): {
 function isLikelyPathOrFileName(value: string): boolean {
   const normalized = normalizeSensitivePath(value);
   if (normalized === '' || normalized.includes(REDACTED_PREFIX)) return false;
+  if (isPublicSecurityTerm(normalized)) return false;
   if (PRIVATE_ABSOLUTE_PATH_PATTERN.test(normalized)) return true;
   if (normalized.includes('/')) return true;
   const leaf =
@@ -110,11 +117,16 @@ function isLikelyPathOrFileName(value: string): boolean {
   return SENSITIVE_SEGMENT_PATTERN.test(lowerLeaf) && /[-_.]/.test(lowerLeaf);
 }
 
+function isPublicSecurityTerm(value: string): boolean {
+  return PUBLIC_SECURITY_TERMS.has(normalizeSensitivePath(value).toLowerCase());
+}
+
 export function classifySensitivePath(value: string): SensitivePathClassification {
   const normalized = normalizeSensitivePath(value);
   if (normalized === '' || normalized.includes(REDACTED_PREFIX)) {
     return emptyClassification(normalized);
   }
+  if (isPublicSecurityTerm(normalized)) return emptyClassification(normalized);
   const segments = normalized.split('/').filter((segment) => segment !== '');
   const leaf = segments[segments.length - 1] ?? normalized;
   const lowerLeaf = leaf.toLowerCase();
@@ -173,6 +185,7 @@ export function redactSensitiveText(value: string): string {
   if (value.startsWith(REDACTED_PREFIX)) return value;
   const normalized = normalizeSensitivePath(value);
   if (!/\s/.test(normalized)) {
+    if (isPublicSecurityTerm(normalized)) return value;
     const classification = classifySensitivePath(normalized);
     if (classification.isSensitive) return classification.redactedId;
   }
