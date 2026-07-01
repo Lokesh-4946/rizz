@@ -79,6 +79,8 @@
         "risk_tradeoff_summary",
         "assumption_confidence",
         "evidence_gaps",
+        "impact_map.summary.total_surfaces",
+        "impact_map.entries",
         "review_hints",
         "unknowns"
       ]

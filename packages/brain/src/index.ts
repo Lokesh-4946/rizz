@@ -207,6 +207,45 @@ interface ArchitectureConfidenceDebt {
   readonly calibration_rule: string;
 }
 
+type ArchitectureImpactSurfaceType = 'component' | 'route';
+
+interface ArchitectureImpactEntry {
+  readonly impact_id: string;
+  readonly surface_type: ArchitectureImpactSurfaceType;
+  readonly entity_id: string;
+  readonly name: string;
+  readonly route_path?: string;
+  readonly route_type?: string;
+  readonly affected_flows: readonly string[];
+  readonly affected_components: readonly string[];
+  readonly affected_files: readonly string[];
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
+  readonly dependent_components: readonly string[];
+  readonly coupling_level: ComponentIntelligence['coupling']['level'];
+  readonly coupling_score: number;
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly evidence_ids: readonly string[];
+  readonly evidence_gap_ids: readonly string[];
+  readonly what_breaks: readonly string[];
+  readonly reasons: readonly string[];
+}
+
+interface ArchitectureImpactMap {
+  readonly summary: {
+    readonly total_surfaces: number;
+    readonly component_surfaces: number;
+    readonly route_surfaces: number;
+    readonly high_coupling_surfaces: number;
+    readonly test_backed_surfaces: number;
+    readonly config_backed_surfaces: number;
+    readonly top_impacted_surfaces: readonly string[];
+  };
+  readonly entries: readonly ArchitectureImpactEntry[];
+  readonly calibration_rule: string;
+}
+
 interface FileFact {
   readonly relativePath: string;
   readonly size: number;
@@ -5631,6 +5670,10 @@ function isNextAppRouterFlow(flow: BrainEntity): boolean {
   return stringData(flow, 'framework') === 'nextjs-app-router';
 }
 
+function isArchitectureRouteFlow(flow: BrainEntity): boolean {
+  return stringData(flow, 'route_path') !== undefined;
+}
+
 function routePathForFlow(flow: BrainEntity): string {
   return stringData(flow, 'route_path') ?? 'unknown route';
 }
@@ -6535,6 +6578,226 @@ function buildArchitectureConfidenceDebt(params: {
   };
 }
 
+function directDependentComponents(params: {
+  readonly componentId: string;
+  readonly components: readonly BrainEntity[];
+  readonly relationships: readonly BrainRelationship[];
+}): string[] {
+  const componentIds = new Set(params.components.map((component) => component.id));
+  return unique(
+    params.relationships
+      .filter(
+        (relationship) =>
+          relationship.to === params.componentId &&
+          relationship.from !== params.componentId &&
+          componentIds.has(relationship.from),
+      )
+      .map((relationship) => relationship.from),
+  ).map(safeText);
+}
+
+function componentImpactEntry(params: {
+  readonly component: BrainEntity;
+  readonly components: readonly BrainEntity[];
+  readonly componentFlows: readonly BrainEntity[];
+  readonly relationships: readonly BrainRelationship[];
+}): ArchitectureImpactEntry {
+  const coupling = componentCouplingRecord(params.component);
+  const affectedFlows = params.componentFlows.map((flow) => safeText(flow.id));
+  const affectedFiles = unique([
+    ...params.component.source_files,
+    ...stringArrayData(params.component, 'important_files'),
+    ...params.componentFlows.flatMap((flow) => flowStringArray(flow, 'files')),
+  ]).map(safeText);
+  const affectedTests = unique([
+    ...stringArrayData(params.component, 'tests'),
+    ...params.componentFlows.flatMap((flow) => flowStringArray(flow, 'tests')),
+  ]).map(safeText);
+  const affectedConfigs = unique([
+    ...stringArrayData(params.component, 'configs'),
+    ...params.componentFlows.flatMap((flow) => flowStringArray(flow, 'configs')),
+  ]).map(safeText);
+  const evidenceIds = architectureEvidenceIdsForComponent({
+    component: params.component,
+    componentFlows: params.componentFlows,
+    relationships: params.relationships,
+  });
+  const evidenceGapIds = architectureAssumptionGapIds({
+    entityId: params.component.id,
+    evidenceIds,
+    componentFlows: params.componentFlows,
+  });
+  const dependentComponents = directDependentComponents({
+    componentId: params.component.id,
+    components: params.components,
+    relationships: params.relationships,
+  });
+  const confidence = architectureAssumptionConfidence({
+    component: params.component,
+    componentFlows: params.componentFlows,
+  });
+  const confidenceScore = architectureAssumptionScore({
+    component: params.component,
+    componentFlows: params.componentFlows,
+  });
+  const whatBreaks = unique([
+    ...stringArrayData(params.component, 'what_breaks_if_removed'),
+    ...stringArrayData(params.component, 'failure_modes'),
+    ...(affectedFlows.length > 0
+      ? [`${params.component.id} changes can affect ${affectedFlows.length} reconstructed flow(s).`]
+      : []),
+    ...(affectedTests.length === 0
+      ? [`${params.component.id} has no directly linked test artifact in the impact map.`]
+      : []),
+    ...(dependentComponents.length > 0
+      ? [
+          `${dependentComponents.length} dependent component(s) can break when ${params.component.id} changes.`,
+        ]
+      : []),
+  ]).map(safeText);
+  return {
+    impact_id: `impact:${safeText(params.component.id)}`,
+    surface_type: 'component',
+    entity_id: safeText(params.component.id),
+    name: safeText(params.component.name),
+    affected_flows: affectedFlows,
+    affected_components: [safeText(params.component.id)],
+    affected_files: affectedFiles,
+    affected_tests: affectedTests,
+    affected_configs: affectedConfigs,
+    dependent_components: dependentComponents,
+    coupling_level: coupling.level,
+    coupling_score: coupling.score,
+    confidence,
+    confidence_score: confidenceScore,
+    evidence_ids: evidenceIds,
+    evidence_gap_ids: evidenceGapIds,
+    what_breaks: whatBreaks,
+    reasons: unique([
+      `boundary_type:${stringData(params.component, 'boundary_type') ?? 'unknown'}`,
+      `flow_links:${affectedFlows.length}`,
+      `tests:${affectedTests.length}`,
+      `configs:${affectedConfigs.length}`,
+      `dependent_components:${dependentComponents.length}`,
+      `coupling:${coupling.level}`,
+    ]).map(safeText),
+  };
+}
+
+function routeCouplingLevel(flow: BrainEntity): ComponentIntelligence['coupling']['level'] {
+  const componentCount = flowStringArray(flow, 'components').length;
+  const fileCount = flowStringArray(flow, 'files').length;
+  const configCount = flowStringArray(flow, 'configs').length;
+  const score = Math.min(10, componentCount * 2 + fileCount + configCount);
+  if (score >= 8) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function routeCouplingScore(flow: BrainEntity): number {
+  const componentCount = flowStringArray(flow, 'components').length;
+  const fileCount = flowStringArray(flow, 'files').length;
+  const configCount = flowStringArray(flow, 'configs').length;
+  return Math.min(10, componentCount * 2 + fileCount + configCount);
+}
+
+function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
+  const routePath = routePathForFlow(flow);
+  const routeType = routeTypeForFlow(flow);
+  const framework = stringData(flow, 'framework') ?? 'route-flow';
+  const isNextRoute = isNextAppRouterFlow(flow);
+  const routeBreaks = isNextRoute
+    ? `Changing route ${routePath} can alter ${routeType} rendering, request handling, metadata, or navigation behavior.`
+    : `Changing route ${routePath} can alter ${routeType} request handling, handler inputs, outputs, or API response behavior.`;
+  const files = flowStringArray(flow, 'files').map(safeText);
+  const components = flowStringArray(flow, 'components').map(safeText);
+  const tests = flowStringArray(flow, 'tests').map(safeText);
+  const configs = flowStringArray(flow, 'configs').map(safeText);
+  const couplingLevel = routeCouplingLevel(flow);
+  const couplingScore = routeCouplingScore(flow);
+  return {
+    impact_id: `impact:${safeText(flow.id)}`,
+    surface_type: 'route',
+    entity_id: safeText(flow.id),
+    name: safeText(flow.name),
+    route_path: safeText(routePath),
+    route_type: safeText(routeType),
+    affected_flows: [safeText(flow.id)],
+    affected_components: components,
+    affected_files: files,
+    affected_tests: tests,
+    affected_configs: configs,
+    dependent_components: [],
+    coupling_level: couplingLevel,
+    coupling_score: couplingScore,
+    confidence: routeArchitectureConfidence(flow),
+    confidence_score: routeArchitectureScore(flow),
+    evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
+    evidence_gap_ids: routeArchitectureGapIds(flow),
+    what_breaks: unique([
+      routeBreaks,
+      ...configs.map(
+        (config) => `${config} can affect route ${routePath} build or runtime behavior.`,
+      ),
+      ...components.map(
+        (component) => `${component} changes can propagate into route ${routePath}.`,
+      ),
+      ...(tests.length === 0
+        ? [`Route ${routePath} has no directly linked test artifact in the impact map.`]
+        : []),
+    ]).map(safeText),
+    reasons: [
+      `framework:${safeText(framework)}`,
+      `route_type:${safeText(routeType)}`,
+      `components:${components.length}`,
+      `files:${files.length}`,
+      `tests:${tests.length}`,
+      `configs:${configs.length}`,
+      `coupling:${couplingLevel}`,
+    ],
+  };
+}
+
+function buildArchitectureImpactMap(params: {
+  readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
+  readonly relationships: readonly BrainRelationship[];
+}): ArchitectureImpactMap {
+  const componentEntries = params.components.map((component) =>
+    componentImpactEntry({
+      component,
+      components: params.components,
+      componentFlows: params.flowsByComponent.get(component.id) ?? [],
+      relationships: params.relationships,
+    }),
+  );
+  const routeEntries = params.flows.filter(isArchitectureRouteFlow).map(routeImpactEntry);
+  const entries = [...componentEntries, ...routeEntries]
+    .sort(
+      (a, b) =>
+        b.affected_flows.length - a.affected_flows.length ||
+        b.dependent_components.length - a.dependent_components.length ||
+        b.coupling_score - a.coupling_score ||
+        a.impact_id.localeCompare(b.impact_id),
+    )
+    .slice(0, 50);
+  return {
+    summary: {
+      total_surfaces: entries.length,
+      component_surfaces: entries.filter((entry) => entry.surface_type === 'component').length,
+      route_surfaces: entries.filter((entry) => entry.surface_type === 'route').length,
+      high_coupling_surfaces: entries.filter((entry) => entry.coupling_level === 'high').length,
+      test_backed_surfaces: entries.filter((entry) => entry.affected_tests.length > 0).length,
+      config_backed_surfaces: entries.filter((entry) => entry.affected_configs.length > 0).length,
+      top_impacted_surfaces: entries.slice(0, 5).map((entry) => entry.impact_id),
+    },
+    entries,
+    calibration_rule:
+      'Impact map is deterministic static inference from component boundaries, route metadata, flows, graph relationships, tests, configs, coupling, and evidence IDs.',
+  };
+}
+
 function buildArchitectureReasoningArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -6828,6 +7091,12 @@ function buildArchitectureReasoningArtifact(params: {
   const intentionalCouplings = couplingRationale.filter(
     (rationale) => rationale.intentional_coupling,
   );
+  const impactMap = buildArchitectureImpactMap({
+    components,
+    flows,
+    flowsByComponent,
+    relationships: params.relationships,
+  });
   const architectureUnknowns = unique([
     ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
     ...(componentsWithoutFlows.length > 0
@@ -6866,6 +7135,7 @@ function buildArchitectureReasoningArtifact(params: {
     what_breaks: whatBreaks,
     route_architecture: routeArchitecture,
     route_what_breaks: routeWhatBreaks,
+    impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
     review_hints: reviewHints,
@@ -7441,6 +7711,18 @@ function recordArray(value: unknown, key: string): readonly unknown[] {
   if (!isRecord(value)) return [];
   const item = value[key];
   return Array.isArray(item) ? item : [];
+}
+
+function architectureImpactSummary(value: unknown): string {
+  if (!isRecord(value)) return 'No deterministic architecture impact map is available yet.';
+  const impactMap = isRecord(value.impact_map) ? value.impact_map : undefined;
+  const summary = impactMap !== undefined && isRecord(impactMap.summary) ? impactMap.summary : {};
+  const totalSurfaces = recordNumber(summary, 'total_surfaces');
+  const componentSurfaces = recordNumber(summary, 'component_surfaces');
+  const routeSurfaces = recordNumber(summary, 'route_surfaces');
+  const highCouplingSurfaces = recordNumber(summary, 'high_coupling_surfaces');
+  if (totalSurfaces === 0) return 'No deterministic architecture impact surfaces were mapped yet.';
+  return `${totalSurfaces} impact surface(s): ${componentSurfaces} component(s), ${routeSurfaces} route(s), ${highCouplingSurfaces} high-coupling surface(s).`;
 }
 
 function readinessScore(value: unknown): number {
@@ -8487,6 +8769,7 @@ function buildLatest(params: {
       params.buckets.components.length === 0
         ? 'No durable component map has been inferred yet.'
         : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.flows.length} reconstructed flow(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
+    latest_architecture_impact_summary: architectureImpactSummary(architectureReasoning),
     latest_component_map: componentMap,
     latest_flow_map: flowMap,
     latest_architecture_reasoning: architectureReasoning,
@@ -9139,6 +9422,8 @@ function renderArchitectureReasoning(value: unknown): string {
     ? value.risk_concentrations.filter(isRecord)
     : [];
   const reviewHints = Array.isArray(value.review_hints) ? value.review_hints.filter(isRecord) : [];
+  const impactMap = isRecord(value.impact_map) ? value.impact_map : {};
+  const impactEntries = Array.isArray(impactMap.entries) ? impactMap.entries.filter(isRecord) : [];
   const architectureAssumptions = Array.isArray(value.architecture_assumptions)
     ? value.architecture_assumptions.filter(isRecord)
     : [];
@@ -9267,8 +9552,29 @@ function renderArchitectureReasoning(value: unknown): string {
       : 0;
     return `${reason} (${affectedFlows} affected flow(s))`;
   });
+  const impactLabels = impactEntries.slice(0, 5).map((impact) => {
+    const impactId = typeof impact.impact_id === 'string' ? impact.impact_id : 'unknown impact';
+    const surfaceType =
+      typeof impact.surface_type === 'string' ? impact.surface_type : 'unknown surface';
+    const affectedFlows = Array.isArray(impact.affected_flows)
+      ? impact.affected_flows.filter((item): item is string => typeof item === 'string').length
+      : 0;
+    const affectedTests = Array.isArray(impact.affected_tests)
+      ? impact.affected_tests.filter((item): item is string => typeof item === 'string').length
+      : 0;
+    const affectedConfigs = Array.isArray(impact.affected_configs)
+      ? impact.affected_configs.filter((item): item is string => typeof item === 'string').length
+      : 0;
+    const coupling =
+      typeof impact.coupling_level === 'string' ? impact.coupling_level : 'unknown coupling';
+    return `${impactId}: ${surfaceType}, ${affectedFlows} flow(s), ${affectedTests} test(s), ${affectedConfigs} config(s), ${coupling} coupling`;
+  });
   return `<div class="grid">
     <article class="card"><h3>Confidence Debt</h3>${renderArchitectureConfidenceDebt(confidenceDebt)}</article>
+    <article class="card"><h3>Impact Map</h3>${renderList([
+      architectureImpactSummary(value),
+      ...impactLabels,
+    ])}</article>
     <article class="card"><h3>Architecture Assumptions</h3>${renderList(assumptionLabels)}</article>
     <article class="card"><h3>Design Pressures</h3>${renderList(pressureLabels)}</article>
     <article class="card"><h3>Coupling Rationale</h3>${renderList(couplingRationaleLabels)}</article>
