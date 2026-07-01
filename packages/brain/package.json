@@ -1,6 +1,7 @@
 {
   "name": "@valoir/rizz-brain",
   "version": "0.2.0",
+  "description": "Project Intelligence Engine and local knowledge-store artifact generator for Rizz.",
   "type": "module",
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",

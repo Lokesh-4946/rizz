@@ -1,6 +1,7 @@
 {
   "name": "@valoir/rizz",
   "version": "0.2.0",
+  "description": "Local Project Intelligence Engineering CLI for understanding repositories before changing them.",
   "type": "module",
   "bin": { "rizz": "./dist/index.js" },
   "exports": { ".": "./dist/index.js" },

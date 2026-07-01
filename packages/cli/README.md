@@ -32,7 +32,7 @@ rizz setup
 rizz chat
 ```
 
-Use OpenRouter BYOK for the public preview model route. Paste provider keys only into the hidden
+Use OpenRouter BYOK for the recommended model route. Paste provider keys only into the hidden
 `rizz setup` prompt; never paste keys into chat, issues, screenshots, or logs.
 
 ## Scope

@@ -70,7 +70,7 @@ Expected flow:
 1. Dependency doctor checks Node, npm, git, `~/.rizz`, terminal, and keychain helper.
 2. rizz asks what it should call you.
 3. rizz shows model routes.
-4. Choose `OpenRouter direct` for the public preview route.
+4. Choose `OpenRouter direct` for the recommended model route.
 5. Paste the OpenRouter API key only into the hidden prompt.
 6. rizz starts the TUI with OpenRouter North Mini Code (free).
 
@@ -95,7 +95,7 @@ Useful TUI commands:
 /help
 ```
 
-`/workspace` is visible but not connected in the public preview.
+`/workspace` is visible but not connected in this release.
 
 ## Codex Route
 
@@ -139,7 +139,7 @@ Release-facing changes should also run:
 pnpm pack:check
 ```
 
-Latest merged-develop public preview gate:
+Latest `0.2.0` release gate:
 
 - `pnpm check` passed
 - Vitest: 31 files / 320 tests
