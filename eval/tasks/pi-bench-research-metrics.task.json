@@ -29,7 +29,8 @@
     ".rizz/research/component_intelligence.json",
     ".rizz/research/flow_coverage.json",
     ".rizz/research/evidence_quality.json",
-    ".rizz/research/benchmark_ready.json"
+    ".rizz/research/benchmark_ready.json",
+    ".rizz/research/benchmark_tasks.json"
   ],
   "coverage_targets": {
     "component": { "minimum_total": 1, "minimum_covered": 0, "minimum_ratio": 0 },
@@ -68,11 +69,33 @@
         "coverage.unknown.coverage_ratio",
         "readiness.score"
       ]
+    },
+    {
+      "path": ".rizz/research/benchmark_tasks.json",
+      "type": "json",
+      "required_fields": [
+        "task_count",
+        "task_categories.component-explanation",
+        "task_categories.flow-explanation",
+        "task_categories.architecture-impact",
+        "task_categories.review-blast-radius",
+        "task_categories.evidence-unknown-coverage",
+        "research_pointer.latest",
+        "research_pointer.index",
+        "research_pointer.mission_control",
+        "tasks"
+      ],
+      "required_substrings": [
+        "Understand any repo in 10 minutes instead of 2 days",
+        "\"expected_artifact\"",
+        "\"expected_check_fields\""
+      ]
     }
   ],
   "rubric": {
     "pass": [
       "The benchmark-ready JSON reports component, flow, evidence, and unknown coverage.",
+      "The benchmark task artifact emits deterministic component, flow, architecture, review, and evidence task categories.",
       "The output is deterministic for repeated runs with the same fixture and timestamp.",
       "The task stays local and does not require credentials."
     ],

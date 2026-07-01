@@ -301,6 +301,7 @@ describe('project brain generation', () => {
         'flow_understanding.json',
         'incremental_update.json',
         'benchmark_ready.json',
+        'benchmark_tasks.json',
         'understanding_score.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
@@ -825,6 +826,99 @@ describe('project brain generation', () => {
       expect(benchmarkReady.coverage.unknown.coverage_ratio).toBeGreaterThanOrEqual(0);
       expect(benchmarkReady.readiness.score).toBeGreaterThan(0);
 
+      const benchmarkTasks = await readJson<{
+        schema_version: number;
+        deterministic: boolean;
+        provider_calls_required: boolean;
+        network_required: boolean;
+        task_count: number;
+        task_categories: Record<string, number>;
+        research_pointer: {
+          latest: string;
+          index: string;
+          mission_control: string;
+          summary: string;
+        };
+        understanding_goal: string;
+        tasks: Array<{
+          id: string;
+          category: string;
+          prompt: string;
+          target: { entity_id: string; entity_type: string; name: string; surface: string };
+          evidence_ids: string[];
+          redacted_evidence_markers: string[];
+          redacted_evidence_count: number;
+          confidence: string;
+          confidence_score: number;
+          expected_artifact: string;
+          expected_check_fields: string[];
+          why_it_matters: string;
+        }>;
+      }>(join(researchDir, 'benchmark_tasks.json'));
+      expect(benchmarkTasks).toMatchObject({
+        schema_version: 1,
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+        research_pointer: {
+          latest: '.rizz/brain/latest.json',
+          index: '.rizz/brain/index.json',
+          mission_control: '.rizz/reports/index.html',
+        },
+      });
+      expect(benchmarkTasks.understanding_goal).toContain(
+        'Understand any repo in 10 minutes instead of 2 days',
+      );
+      expect(benchmarkTasks.task_count).toBe(benchmarkTasks.tasks.length);
+      expect(benchmarkTasks.task_categories).toMatchObject({
+        'component-explanation': expect.any(Number),
+        'flow-explanation': expect.any(Number),
+        'architecture-impact': expect.any(Number),
+        'review-blast-radius': expect.any(Number),
+        'evidence-unknown-coverage': expect.any(Number),
+      });
+      expect(benchmarkTasks.tasks.map((task) => task.id)).toEqual(
+        benchmarkTasks.tasks.map((task) => task.id).sort((a, b) => a.localeCompare(b)),
+      );
+      expect(benchmarkTasks.tasks).toContainEqual(
+        expect.objectContaining({
+          category: 'component-explanation',
+          target: expect.objectContaining({ entity_id: 'component:packages--brain' }),
+          expected_artifact: '.rizz/research/component_intelligence.json',
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--brain--package.json']),
+          why_it_matters: expect.stringContaining('10 minutes instead of 2 days'),
+        }),
+      );
+      expect(benchmarkTasks.tasks).toContainEqual(
+        expect.objectContaining({
+          category: 'flow-explanation',
+          target: expect.objectContaining({ entity_id: 'flow:packages--brain--test' }),
+          expected_artifact: '.rizz/research/flow_understanding.json',
+        }),
+      );
+      expect(benchmarkTasks.tasks).toContainEqual(
+        expect.objectContaining({
+          category: 'architecture-impact',
+          expected_artifact: '.rizz/research/architecture_reasoning.json',
+          expected_check_fields: expect.arrayContaining(['impact_map.entries[].what_breaks']),
+        }),
+      );
+      expect(benchmarkTasks.tasks).toContainEqual(
+        expect.objectContaining({
+          category: 'review-blast-radius',
+          expected_check_fields: expect.arrayContaining(['review_hints[].suggested_tests']),
+        }),
+      );
+      expect(benchmarkTasks.tasks).toContainEqual(
+        expect.objectContaining({
+          category: 'evidence-unknown-coverage',
+          expected_artifact: expect.stringMatching(
+            /^\.rizz\/research\/(evidence_quality|architecture_reasoning)\.json$/,
+          ),
+        }),
+      );
+      expect(JSON.stringify(benchmarkTasks)).not.toContain('sk-');
+
       const understandingScore = await readJson<{
         schema_version: number;
         overall_score: number;
@@ -1026,6 +1120,13 @@ describe('project brain generation', () => {
           };
           read_first: Array<{ path: string }>;
         };
+        latest_benchmark_tasks: {
+          path: string;
+          task_count: number;
+          task_categories: Record<string, number>;
+          mission_control: string;
+          summary: string;
+        };
         latest_incremental_update: {
           changed_file_count: number;
           changed_entity_count: number;
@@ -1070,6 +1171,14 @@ describe('project brain generation', () => {
           expect.objectContaining({ path: 'packages/brain/package.json' }),
         ]),
       });
+      expect(latest.latest_benchmark_tasks).toMatchObject({
+        path: '.rizz/research/benchmark_tasks.json',
+        task_count: benchmarkTasks.task_count,
+        mission_control: '.rizz/reports/index.html',
+      });
+      expect(latest.latest_benchmark_tasks.task_categories).toMatchObject(
+        benchmarkTasks.task_categories,
+      );
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(report).toContain('Project Intelligence');
       expect(report).toContain('Understanding Score');
@@ -1092,6 +1201,7 @@ describe('project brain generation', () => {
       expect(report).toContain('Incremental Changed / Stable');
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Research Artifacts');
+      expect(report).toContain('.rizz/research/benchmark_tasks.json');
       expect(report).toContain('Incremental Understanding');
       expect(report).toContain('Changed Understanding Surfaces');
       expect(report).toContain('Stable Understanding Surfaces');
@@ -1243,6 +1353,7 @@ describe('project brain generation', () => {
           flow_understanding: string;
           architecture_reasoning: string;
           benchmark_ready: string;
+          benchmark_tasks: string;
         };
       }>(join(dir, '.rizz', 'brain', 'index.json'));
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
@@ -1254,6 +1365,7 @@ describe('project brain generation', () => {
         flow_understanding: '.rizz/research/flow_understanding.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
+        benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
       });
     });
@@ -3985,6 +4097,26 @@ describe('project brain generation', () => {
           ]),
         }),
       );
+
+      const benchmarkTasks = await readJson<{
+        tasks: Array<{
+          evidence_ids: string[];
+          redacted_evidence_markers: string[];
+          redacted_evidence_count: number;
+        }>;
+      }>(join(dir, '.rizz', 'research', 'benchmark_tasks.json'));
+      const benchmarkTaskText = JSON.stringify(benchmarkTasks);
+      expect(benchmarkTaskText).not.toContain('client_secret_handler.ts');
+      expect(benchmarkTaskText).not.toContain('secret-token-flow.test.ts');
+      expect(benchmarkTaskText).not.toContain('OPENAI_API_KEY');
+      expect(benchmarkTasks.tasks).toContainEqual(
+        expect.objectContaining({
+          redacted_evidence_markers: expect.arrayContaining([
+            expect.stringMatching(/^evidence:redacted:sensitive-file:/),
+          ]),
+        }),
+      );
+      expect(benchmarkTasks.tasks.some((task) => task.redacted_evidence_count > 0)).toBe(true);
 
       expect(JSON.stringify(review.value.review)).not.toContain('client_secret_handler.ts');
       expect(review.value.review.changed_files).toContainEqual(

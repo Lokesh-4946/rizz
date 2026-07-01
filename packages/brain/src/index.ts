@@ -17,6 +17,21 @@ type Confidence = 'verified' | 'inferred' | 'uncertain';
 
 type ReasoningType = 'component' | 'flow' | 'architecture' | 'review';
 
+type BenchmarkTaskCategory =
+  | 'component-explanation'
+  | 'flow-explanation'
+  | 'architecture-impact'
+  | 'review-blast-radius'
+  | 'evidence-unknown-coverage';
+
+const BENCHMARK_TASK_CATEGORIES: readonly BenchmarkTaskCategory[] = [
+  'component-explanation',
+  'flow-explanation',
+  'architecture-impact',
+  'review-blast-radius',
+  'evidence-unknown-coverage',
+];
+
 type ComponentBoundaryType =
   | 'entrypoint'
   | 'orchestration'
@@ -105,6 +120,32 @@ interface ReasoningTrace {
   readonly rules: readonly string[];
   readonly unknowns: readonly string[];
   readonly redacted_evidence_count: number;
+}
+
+interface BenchmarkTaskEvidence {
+  readonly evidence_ids: readonly string[];
+  readonly redacted_evidence_markers: readonly string[];
+  readonly redacted_evidence_count: number;
+}
+
+interface BenchmarkTaskCandidate {
+  readonly id: string;
+  readonly category: BenchmarkTaskCategory;
+  readonly prompt: string;
+  readonly target: {
+    readonly entity_id: string;
+    readonly entity_type: EntityType | 'architecture_surface' | 'coverage_surface';
+    readonly name: string;
+    readonly surface: string;
+  };
+  readonly evidence_ids: readonly string[];
+  readonly redacted_evidence_markers: readonly string[];
+  readonly redacted_evidence_count: number;
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly expected_artifact: string;
+  readonly expected_check_fields: readonly string[];
+  readonly why_it_matters: string;
 }
 
 type ArchitecturePressureType = 'boundary' | 'coupling' | 'config' | 'dependency' | 'flow';
@@ -947,6 +988,7 @@ const RESEARCH_ARTIFACT_FILES = {
   flowConfidence: 'flow_confidence.json',
   architectureReasoning: 'architecture_reasoning.json',
   benchmarkReady: 'benchmark_ready.json',
+  benchmarkTasks: 'benchmark_tasks.json',
   understandingScore: 'understanding_score.json',
 } as const;
 
@@ -7799,6 +7841,352 @@ function buildBenchmarkReadyArtifact(params: {
   };
 }
 
+function benchmarkTaskEvidence(evidenceIds: readonly string[]): BenchmarkTaskEvidence {
+  const safeIds = unique(evidenceIds.map(safeText));
+  const redacted_evidence_markers = safeIds.filter((id) => containsSensitiveReference(id));
+  return {
+    evidence_ids: safeIds.filter((id) => !containsSensitiveReference(id)),
+    redacted_evidence_markers,
+    redacted_evidence_count: redactedReferenceCount(redacted_evidence_markers),
+  };
+}
+
+function benchmarkTaskCandidate(params: {
+  readonly id: string;
+  readonly category: BenchmarkTaskCategory;
+  readonly prompt: string;
+  readonly target: BenchmarkTaskCandidate['target'];
+  readonly evidenceIds: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidenceScore: number;
+  readonly expectedArtifact: string;
+  readonly expectedCheckFields: readonly string[];
+  readonly whyItMatters: string;
+}): BenchmarkTaskCandidate {
+  const evidence = benchmarkTaskEvidence(params.evidenceIds);
+  return {
+    id: params.id,
+    category: params.category,
+    prompt: safeText(params.prompt),
+    target: {
+      entity_id: safeText(params.target.entity_id),
+      entity_type: params.target.entity_type,
+      name: safeText(params.target.name),
+      surface: safeText(params.target.surface),
+    },
+    evidence_ids: evidence.evidence_ids,
+    redacted_evidence_markers: evidence.redacted_evidence_markers,
+    redacted_evidence_count: evidence.redacted_evidence_count,
+    confidence: params.confidence,
+    confidence_score: Number(params.confidenceScore.toFixed(4)),
+    expected_artifact: params.expectedArtifact,
+    expected_check_fields: params.expectedCheckFields.map(safeText),
+    why_it_matters: safeText(params.whyItMatters),
+  };
+}
+
+function confidenceFromValue(value: unknown): Confidence {
+  if (value === 'verified' || value === 'inferred' || value === 'uncertain') return value;
+  return 'inferred';
+}
+
+function benchmarkTasksFromComponents(
+  components: readonly BrainEntity[],
+): BenchmarkTaskCandidate[] {
+  return sorted(
+    components.filter((component) => component.latest_status !== 'stale'),
+    (component) => component.id,
+  )
+    .slice(0, 5)
+    .map((component) =>
+      benchmarkTaskCandidate({
+        id: `task:component-explanation:${stableSlug(component.id)}`,
+        category: 'component-explanation',
+        prompt: `Explain what ${component.name} owns, where to read first, what depends on it, and what can break if it changes.`,
+        target: {
+          entity_id: component.id,
+          entity_type: 'component',
+          name: component.name,
+          surface: stringData(component, 'boundary_type') ?? 'component',
+        },
+        evidenceIds: evidenceIdsForComponent(component),
+        confidence: component.confidence,
+        confidenceScore: componentConfidenceScore(component),
+        expectedArtifact: '.rizz/research/component_intelligence.json',
+        expectedCheckFields: [
+          'components[].purpose',
+          'components[].field_evidence',
+          'components[].flow_count',
+          'components[].coupling',
+          'components[].failure_modes',
+        ],
+        whyItMatters:
+          'Component explanation tasks turn the project map into a benchmarkable first-read path for understanding any repo in 10 minutes instead of 2 days.',
+      }),
+    );
+}
+
+function benchmarkTasksFromFlows(flows: readonly BrainEntity[]): BenchmarkTaskCandidate[] {
+  return sorted(
+    flows.filter((flow) => flow.latest_status !== 'stale'),
+    (flow) => flow.id,
+  )
+    .slice(0, 5)
+    .map((flow) =>
+      benchmarkTaskCandidate({
+        id: `task:flow-explanation:${stableSlug(flow.id)}`,
+        category: 'flow-explanation',
+        prompt: `Explain the ${flow.name} flow from entrypoint through steps, touched components, tests, risks, and confidence gaps.`,
+        target: {
+          entity_id: flow.id,
+          entity_type: 'flow',
+          name: flow.name,
+          surface: flowKind(flow),
+        },
+        evidenceIds: evidenceIdsForFlow(flow),
+        confidence: flow.confidence,
+        confidenceScore: asFlowConfidenceScore(flow),
+        expectedArtifact: '.rizz/research/flow_understanding.json',
+        expectedCheckFields: [
+          'contracts[].entry_contract',
+          'contracts[].exit_contract',
+          'contracts[].failure_modes',
+          'low_confidence_flows',
+          'flow_coverage.flows[]',
+        ],
+        whyItMatters:
+          'Flow explanation tasks prove Rizz can reconstruct how work moves through the repo without making a user manually inspect fixtures for two days.',
+      }),
+    );
+}
+
+function benchmarkTasksFromArchitectureImpact(
+  architectureReasoning: unknown,
+): BenchmarkTaskCandidate[] {
+  const impactMap = isRecord(architectureReasoning) ? architectureReasoning.impact_map : undefined;
+  const impactEntries = isRecord(impactMap) ? recordArray(impactMap, 'entries') : [];
+  return impactEntries
+    .filter(isRecord)
+    .slice(0, 5)
+    .map((entry) => {
+      const entityId = typeof entry.entity_id === 'string' ? entry.entity_id : 'project';
+      const name = typeof entry.name === 'string' ? entry.name : entityId;
+      const surfaceType =
+        typeof entry.surface_type === 'string' ? entry.surface_type : 'architecture_surface';
+      const confidence = confidenceFromValue(entry.confidence);
+      const confidenceScore =
+        typeof entry.confidence_score === 'number' ? entry.confidence_score : 0.65;
+      return benchmarkTaskCandidate({
+        id: `task:architecture-impact:${stableSlug(entityId)}`,
+        category: 'architecture-impact',
+        prompt: `Assess the architecture impact of changing ${name}: affected flows, components, files, tests, configs, and what breaks.`,
+        target: {
+          entity_id: entityId,
+          entity_type: 'architecture_surface',
+          name,
+          surface: surfaceType,
+        },
+        evidenceIds: asStringArray(entry.evidence_ids),
+        confidence,
+        confidenceScore,
+        expectedArtifact: '.rizz/research/architecture_reasoning.json',
+        expectedCheckFields: [
+          'impact_map.entries[].affected_flows',
+          'impact_map.entries[].affected_components',
+          'impact_map.entries[].affected_tests',
+          'impact_map.entries[].what_breaks',
+          'confidence_debt.low_confidence_areas',
+        ],
+        whyItMatters:
+          'Architecture impact tasks benchmark whether local scans can explain blast radius before a user spends days tracing dependencies by hand.',
+      });
+    });
+}
+
+function entityById(entities: readonly BrainEntity[]): ReadonlyMap<string, BrainEntity> {
+  return new Map(entities.map((entity) => [entity.id, entity]));
+}
+
+function benchmarkTasksFromReviewHints(params: {
+  readonly architectureReasoning: unknown;
+  readonly buckets: BrainBuckets;
+}): BenchmarkTaskCandidate[] {
+  const entities = entityById(allBucketEntities(params.buckets));
+  const hints = isRecord(params.architectureReasoning)
+    ? recordArray(params.architectureReasoning, 'review_hints')
+    : [];
+  return hints
+    .filter(isRecord)
+    .slice(0, 5)
+    .map((hint, index) => {
+      const affectedIds = unique([
+        ...asStringArray(hint.affected_components),
+        ...asStringArray(hint.affected_flows),
+      ]);
+      const targetId = affectedIds[0] ?? entityId('review', `hint-${index + 1}`);
+      const target = entities.get(targetId);
+      const reason =
+        typeof hint.reason === 'string' ? hint.reason : 'Review local blast-radius evidence.';
+      const confidence = confidenceFromValue(hint.confidence);
+      return benchmarkTaskCandidate({
+        id: `task:review-blast-radius:${stableSlug(targetId)}:${index + 1}`,
+        category: 'review-blast-radius',
+        prompt: `${reason} Identify affected surfaces, suggested tests, and evidence that should constrain review scope.`,
+        target: {
+          entity_id: targetId,
+          entity_type: target?.type ?? 'review',
+          name: target?.name ?? `review hint ${index + 1}`,
+          surface: 'review-blast-radius',
+        },
+        evidenceIds: affectedIds.flatMap((id) => entities.get(id)?.evidence_ids ?? []),
+        confidence,
+        confidenceScore: confidenceScoreForValue(confidence),
+        expectedArtifact: '.rizz/research/architecture_reasoning.json',
+        expectedCheckFields: [
+          'review_hints[].affected_components',
+          'review_hints[].affected_flows',
+          'review_hints[].suggested_tests',
+          'risk_concentrations',
+          'impact_map.entries[]',
+        ],
+        whyItMatters:
+          'Review blast-radius tasks make local scans benchmark-ready for the moment a user asks what changed and what must be checked.',
+      });
+    });
+}
+
+function benchmarkTasksFromEvidenceUnknowns(params: {
+  readonly evidenceQuality: unknown;
+  readonly architectureReasoning: unknown;
+  readonly buckets: BrainBuckets;
+}): BenchmarkTaskCandidate[] {
+  const topGaps = isRecord(params.evidenceQuality)
+    ? recordArray(params.evidenceQuality, 'top_evidence_gaps')
+    : [];
+  const gapTasks = topGaps
+    .filter(isRecord)
+    .slice(0, 5)
+    .map((gap, index) => {
+      const id = typeof gap.id === 'string' ? gap.id : `evidence-gap-${index + 1}`;
+      const reason = typeof gap.reason === 'string' ? gap.reason : 'Evidence gap recorded.';
+      const field = typeof gap.field === 'string' ? gap.field : 'evidence';
+      return benchmarkTaskCandidate({
+        id: `task:evidence-unknown-coverage:${stableSlug(id)}:${stableSlug(field)}`,
+        category: 'evidence-unknown-coverage',
+        prompt: `Identify the evidence or unknown coverage gap for ${id}: ${reason}`,
+        target: {
+          entity_id: id,
+          entity_type: 'coverage_surface',
+          name: field,
+          surface: 'evidence-unknown-coverage',
+        },
+        evidenceIds: [],
+        confidence: 'uncertain',
+        confidenceScore: 0.35,
+        expectedArtifact: '.rizz/research/evidence_quality.json',
+        expectedCheckFields: [
+          'top_evidence_gaps[].reason',
+          'evidence_calibration.inspect_first',
+          'redaction_safety_score',
+          'missing_evidence_references',
+          'unknowns_from_redaction',
+        ],
+        whyItMatters:
+          'Evidence and unknown coverage tasks prevent benchmark answers from sounding certain when local evidence is weak or redacted.',
+      });
+    });
+  if (gapTasks.length > 0) return gapTasks;
+
+  return topUnknowns({
+    buckets: params.buckets,
+    architectureReasoning: params.architectureReasoning,
+    evidenceQuality: params.evidenceQuality,
+  })
+    .slice(0, 5)
+    .map((unknown, index) =>
+      benchmarkTaskCandidate({
+        id: `task:evidence-unknown-coverage:unknown-${index + 1}`,
+        category: 'evidence-unknown-coverage',
+        prompt: `Explain what remains unknown and which local artifact should limit confidence: ${unknown}`,
+        target: {
+          entity_id: `unknown:${index + 1}`,
+          entity_type: 'coverage_surface',
+          name: `unknown ${index + 1}`,
+          surface: 'known-unknown',
+        },
+        evidenceIds: [],
+        confidence: 'uncertain',
+        confidenceScore: 0.35,
+        expectedArtifact: '.rizz/research/architecture_reasoning.json',
+        expectedCheckFields: ['unknowns', 'confidence_debt.blocking_unknowns', 'evidence_gaps'],
+        whyItMatters:
+          'Known-unknown tasks keep the 10-minute repo understanding claim honest by showing where confidence must stop.',
+      }),
+    );
+}
+
+function buildBenchmarkTasksArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly architectureReasoning: unknown;
+  readonly evidenceQuality: unknown;
+  readonly benchmarkReady: unknown;
+  readonly understandingScore: unknown;
+}): Record<string, unknown> {
+  const tasks = sorted(
+    [
+      ...benchmarkTasksFromComponents(params.buckets.components),
+      ...benchmarkTasksFromFlows(params.buckets.flows),
+      ...benchmarkTasksFromArchitectureImpact(params.architectureReasoning),
+      ...benchmarkTasksFromReviewHints({
+        architectureReasoning: params.architectureReasoning,
+        buckets: params.buckets,
+      }),
+      ...benchmarkTasksFromEvidenceUnknowns({
+        evidenceQuality: params.evidenceQuality,
+        architectureReasoning: params.architectureReasoning,
+        buckets: params.buckets,
+      }),
+    ],
+    (task) => task.id,
+  );
+  const rawCategoryCounts = countByValue(tasks.map((task) => task.category));
+  const categoryCounts = Object.fromEntries(
+    BENCHMARK_TASK_CATEGORIES.map((category) => [category, rawCategoryCounts[category] ?? 0]),
+  );
+  const readiness = isRecord(params.benchmarkReady) ? params.benchmarkReady.readiness : undefined;
+  const score = isRecord(readiness) && typeof readiness.score === 'number' ? readiness.score : 0;
+  const understandingLevel = isRecord(params.understandingScore)
+    ? params.understandingScore.score_band
+    : undefined;
+
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    project_id: entityId('project', params.projectName),
+    project_name: safeText(params.projectName),
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    task_count: tasks.length,
+    task_categories: categoryCounts,
+    research_pointer: {
+      latest: '.rizz/brain/latest.json',
+      index: '.rizz/brain/index.json',
+      mission_control: '.rizz/reports/index.html',
+      summary: `Mission Control links ${tasks.length} benchmark task candidate(s) to local research artifacts with readiness ${score}/100.`,
+    },
+    understanding_goal:
+      'Understand any repo in 10 minutes instead of 2 days by turning local brain facts into deterministic benchmark prompts.',
+    understanding_level:
+      typeof understandingLevel === 'string'
+        ? understandingLevel
+        : scoreBand(readinessScore(params.benchmarkReady)),
+    tasks,
+  };
+}
+
 function boundedScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
@@ -8680,6 +9068,15 @@ function buildResearchArtifacts(params: {
     architectureReasoning,
     benchmarkReady,
   });
+  const benchmarkTasks = buildBenchmarkTasksArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    architectureReasoning,
+    evidenceQuality,
+    benchmarkReady,
+    understandingScore,
+  });
   const referencedEvidenceIds = unique([
     ...entities.flatMap((entity) => entity.evidence_ids),
     ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
@@ -9021,6 +9418,7 @@ function buildResearchArtifacts(params: {
     },
     architectureReasoning,
     benchmarkReady,
+    benchmarkTasks,
     understandingScore,
   };
 }
@@ -9190,6 +9588,15 @@ function buildLatest(params: {
     architectureReasoning,
     benchmarkReady,
   });
+  const benchmarkTasks = buildBenchmarkTasksArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    architectureReasoning,
+    evidenceQuality,
+    benchmarkReady,
+    understandingScore,
+  });
   const confidenceGaps = params.buckets.risks
     .filter((risk) => risk.confidence !== 'verified')
     .map((risk) => risk.description);
@@ -9207,6 +9614,17 @@ function buildLatest(params: {
     latest_architecture_reasoning: architectureReasoning,
     latest_evidence_quality: evidenceQuality,
     latest_understanding_score: understandingScore,
+    latest_benchmark_tasks: {
+      path: '.rizz/research/benchmark_tasks.json',
+      task_count: recordNumber(benchmarkTasks, 'task_count'),
+      task_categories: isRecord(benchmarkTasks.task_categories)
+        ? benchmarkTasks.task_categories
+        : {},
+      mission_control: '.rizz/reports/index.html',
+      summary: isRecord(benchmarkTasks.research_pointer)
+        ? benchmarkTasks.research_pointer.summary
+        : 'Benchmark task candidates are emitted from local research artifacts.',
+    },
     latest_incremental_update: {
       previous_brain_fingerprint: params.incrementalMetrics.previous_brain_fingerprint,
       current_brain_fingerprint: params.incrementalMetrics.current_brain_fingerprint,
@@ -10546,6 +10964,7 @@ function renderFlagshipSummary(params: {
           '.rizz/research/evidence_quality.json',
           '.rizz/research/flow_coverage.json',
           '.rizz/research/architecture_reasoning.json',
+          '.rizz/research/benchmark_tasks.json',
           '.rizz/research/incremental_update.json',
         ])}
         <p class="muted">${params.evidenceCount} local evidence record(s).</p>
@@ -11405,6 +11824,7 @@ export async function generateProjectBrain(
         flow_confidence: '.rizz/research/flow_confidence.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
+        benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
       },
     };
