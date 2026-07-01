@@ -1,8 +1,10 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { explainProjectTarget, generateProjectBrain, reviewProjectChanges } from './index.js';
+
+vi.setConfig({ testTimeout: 30_000 });
 
 async function withTempProject<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'rizz-brain-test-'));
@@ -646,6 +648,28 @@ describe('project brain generation', () => {
         risky_seams: Array<{ component_id: string; seam: string }>;
         tradeoff_matrix: Array<{ component_id: string; coupling_level: string }>;
         what_breaks: Array<{ component_id: string; impacts: string[] }>;
+        impact_map: {
+          summary: {
+            total_surfaces: number;
+            component_surfaces: number;
+            route_surfaces: number;
+            test_backed_surfaces: number;
+            config_backed_surfaces: number;
+          };
+          entries: Array<{
+            impact_id: string;
+            surface_type: string;
+            entity_id: string;
+            affected_flows: string[];
+            affected_tests: string[];
+            affected_configs: string[];
+            coupling_level: string;
+            confidence: string;
+            evidence_ids: string[];
+            what_breaks: string[];
+          }>;
+          calibration_rule: string;
+        };
         risk_concentrations: Array<{ entity_id: string; kind: string }>;
         review_hints: Array<{ reason: string; affected_flows: string[] }>;
         confidence_debt: {
@@ -687,6 +711,40 @@ describe('project brain generation', () => {
           component_id: 'component:packages--brain',
           impacts: expect.arrayContaining([expect.stringContaining('Validation tied')]),
         }),
+      );
+      expect(architectureReasoning.impact_map.summary).toMatchObject({
+        total_surfaces: 1,
+        component_surfaces: 1,
+        route_surfaces: 0,
+        test_backed_surfaces: 1,
+        config_backed_surfaces: 1,
+      });
+      expect(architectureReasoning.impact_map.entries).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:component:packages--brain',
+          surface_type: 'component',
+          entity_id: 'component:packages--brain',
+          affected_flows: expect.arrayContaining([
+            'flow:packages--brain--build',
+            'flow:packages--brain--test',
+          ]),
+          affected_tests: ['packages/brain/src/index.test.ts'],
+          affected_configs: ['packages/brain/package.json'],
+          coupling_level: 'low',
+          confidence: 'inferred',
+          evidence_ids: expect.arrayContaining([
+            'evidence:file-packages--brain--package.json',
+            'evidence:file-packages--brain--src--index.ts',
+          ]),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining(
+              'component:packages--brain changes can affect 2 reconstructed flow',
+            ),
+          ]),
+        }),
+      );
+      expect(architectureReasoning.impact_map.calibration_rule).toContain(
+        'deterministic static inference',
       );
       expect(architectureReasoning.unknowns).toContain(
         '2 reconstructed flow(s) are not verified yet.',
@@ -1262,6 +1320,25 @@ describe('project brain generation', () => {
           evidence_ids: string[];
           rules: string[];
         }>;
+        impact_map: {
+          summary: {
+            total_surfaces: number;
+            component_surfaces: number;
+            test_backed_surfaces: number;
+            config_backed_surfaces: number;
+            top_impacted_surfaces: string[];
+          };
+          entries: Array<{
+            impact_id: string;
+            surface_type: string;
+            entity_id: string;
+            affected_flows: string[];
+            affected_tests: string[];
+            affected_configs: string[];
+            dependent_components: string[];
+            reasons: string[];
+          }>;
+        };
         cross_component_flows: Array<{ flow_id: string; components: string[] }>;
       }>(join(result.value.researchDir, 'architecture_reasoning.json'));
       expect(architectureReasoning.cross_component_flows).toContainEqual(
@@ -1375,6 +1452,34 @@ describe('project brain generation', () => {
           rules: expect.arrayContaining(['confidence:inferred', 'components:2']),
         }),
       );
+      expect(architectureReasoning.impact_map.summary).toMatchObject({
+        total_surfaces: 2,
+        component_surfaces: 2,
+        test_backed_surfaces: 2,
+        config_backed_surfaces: 2,
+      });
+      expect(architectureReasoning.impact_map.summary.top_impacted_surfaces).toContain(
+        'impact:component:packages--cli',
+      );
+      expect(architectureReasoning.impact_map.entries).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:component:packages--cli',
+          surface_type: 'component',
+          entity_id: 'component:packages--cli',
+          affected_flows: expect.arrayContaining([
+            'flow:packages--cli--start',
+            'flow:packages--cli--test',
+          ]),
+          affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+          dependent_components: [],
+          reasons: expect.arrayContaining([
+            'boundary_type:entrypoint',
+            'flow_links:2',
+            'configs:2',
+          ]),
+        }),
+      );
 
       const assumptionTraces = await readJson<{
         traces: Array<{
@@ -1398,6 +1503,8 @@ describe('project brain generation', () => {
 
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(report).toContain('Architecture Assumptions');
+      expect(report).toContain('Impact Map');
+      expect(report).toContain('2 impact surface(s)');
       expect(report).toContain('Confidence Debt');
       expect(report).toContain('Design Pressures');
       expect(report).toContain('Coupling Rationale');
@@ -1797,6 +1904,56 @@ describe('project brain generation', () => {
         }),
       );
 
+      const architectureReasoning = await readJson<{
+        impact_map: {
+          summary: { route_surfaces: number };
+          entries: Array<{
+            impact_id: string;
+            surface_type: string;
+            entity_id: string;
+            route_path?: string;
+            route_type?: string;
+            affected_flows: string[];
+            affected_files: string[];
+            affected_tests: string[];
+            affected_configs: string[];
+            coupling_level: string;
+            confidence: string;
+            evidence_ids: string[];
+            what_breaks: string[];
+            reasons: string[];
+          }>;
+        };
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.impact_map.summary.route_surfaces).toBe(2);
+      expect(architectureReasoning.impact_map.entries).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:flow:http--post--orders--src--server.ts',
+          surface_type: 'route',
+          entity_id: 'flow:http--post--orders--src--server.ts',
+          route_path: '/orders',
+          route_type: 'POST',
+          affected_flows: ['flow:http--post--orders--src--server.ts'],
+          affected_files: expect.arrayContaining(['src/server.ts', 'src/orders/service.ts']),
+          affected_tests: expect.arrayContaining(['src/orders/orders.test.ts']),
+          affected_configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
+          coupling_level: 'medium',
+          confidence: 'inferred',
+          evidence_ids: expect.arrayContaining([
+            'evidence:file-src--server.ts',
+            'evidence:file-src--orders--service.ts',
+          ]),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('Changing route /orders can alter POST request handling'),
+          ]),
+          reasons: expect.arrayContaining([
+            'framework:express-fastify-http',
+            'route_type:POST',
+            'tests:1',
+          ]),
+        }),
+      );
+
       const explained = await explainProjectTarget({
         rootDir: dir,
         target: 'flow:http--post--orders--src--server.ts',
@@ -2119,6 +2276,27 @@ describe('project brain generation', () => {
           impacts: string[];
           tests: string[];
         }>;
+        impact_map: {
+          summary: {
+            route_surfaces: number;
+            test_backed_surfaces: number;
+            config_backed_surfaces: number;
+          };
+          entries: Array<{
+            impact_id: string;
+            surface_type: string;
+            entity_id: string;
+            route_path?: string;
+            route_type?: string;
+            affected_flows: string[];
+            affected_components: string[];
+            affected_tests: string[];
+            affected_configs: string[];
+            evidence_gap_ids: string[];
+            what_breaks: string[];
+            reasons: string[];
+          }>;
+        };
         architecture_assumptions: Array<{
           assumption_id: string;
           entity_id: string;
@@ -2173,6 +2351,33 @@ describe('project brain generation', () => {
             expect.stringContaining('/docs/[slug] page route can stop rendering'),
           ]),
           tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+        }),
+      );
+      expect(architectureReasoning.impact_map.summary).toMatchObject({
+        route_surfaces: expect.any(Number),
+        test_backed_surfaces: expect.any(Number),
+        config_backed_surfaces: expect.any(Number),
+      });
+      expect(architectureReasoning.impact_map.entries).toContainEqual(
+        expect.objectContaining({
+          impact_id: `impact:${docsPage.id}`,
+          surface_type: 'route',
+          entity_id: docsPage.id,
+          route_path: '/docs/[slug]',
+          route_type: 'page',
+          affected_flows: [docsPage.id],
+          affected_components: expect.arrayContaining(['component:src']),
+          affected_tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+          affected_configs: expect.arrayContaining(['next.config.ts', 'package.json']),
+          evidence_gap_ids: expect.arrayContaining([`gap:${docsPage.id}:runtime-verification`]),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('Changing route /docs/[slug] can alter page rendering'),
+          ]),
+          reasons: expect.arrayContaining([
+            'framework:nextjs-app-router',
+            'route_type:page',
+            'tests:2',
+          ]),
         }),
       );
       expect(architectureReasoning.architecture_assumptions).toContainEqual(
