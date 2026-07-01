@@ -930,6 +930,14 @@ describe('project brain generation', () => {
       expect(report).toContain('Review Readiness');
       expect(report).toContain('Unknowns');
       expect(report).toContain('Read First');
+      expect(report).toContain('Flagship Summary');
+      expect(report).toContain('Understanding Level');
+      expect(report).toContain('Evidence Quality Calibration');
+      expect(report).toContain('Flow Coverage');
+      expect(report).toContain('Architecture Confidence Debt');
+      expect(report).toContain('Incremental Changed / Stable');
+      expect(report).toContain('Read First Pointers');
+      expect(report).toContain('Research Artifacts');
       expect(report).toContain('Incremental Understanding');
       expect(report).toContain('changed understanding');
       expect(report).toContain('scan efficiency');
@@ -2889,6 +2897,15 @@ describe('project brain generation', () => {
       expect(report).toContain('local project intelligence');
       expect(report).toContain('Static local view generated from <code>.rizz/brain</code>');
       expect(report).toContain('No server. No network. No model call.');
+      expect(report).toContain('Flagship Summary');
+      expect(report).toContain('Fast local answer to what Rizz understands');
+      expect(report).toContain('Understanding Level');
+      expect(report).toContain('Evidence Quality Calibration');
+      expect(report).toContain('Flow Coverage');
+      expect(report).toContain('Architecture Confidence Debt');
+      expect(report).toContain('Review Readiness');
+      expect(report).toContain('Incremental Changed / Stable');
+      expect(report).toContain('Read First Pointers');
       expect(report).toContain('Review Blast Radius');
       expect(report).toContain('Unknown Risk');
       expect(report).toContain('Raw Artifacts');
@@ -3520,6 +3537,8 @@ describe('project brain generation', () => {
 
       const generated = [...files.values()].join('\n');
       expectNoLeaks('.rizz tree', generated);
+      expect(files.get('reports/index.html')).toContain('Flagship Summary');
+      expect(files.get('reports/index.html')).toContain('Evidence Quality Calibration');
       expect(generated).toContain('redacted:sensitive-file:');
       expect(generated).toContain('[redacted secret]');
       expect(generated).toContain('.env.example');
