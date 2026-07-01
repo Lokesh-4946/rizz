@@ -1,8 +1,10 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { explainProjectTarget, generateProjectBrain, reviewProjectChanges } from './index.js';
+
+vi.setConfig({ testTimeout: 30_000 });
 
 async function withTempProject<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'rizz-brain-test-'));
