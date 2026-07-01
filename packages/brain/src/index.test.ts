@@ -722,6 +722,8 @@ describe('project brain generation', () => {
       expect(missionControlReport).toContain('Low-Confidence Claim Areas');
       expect(missionControlReport).toContain('Redaction-Hidden Evidence');
       expect(missionControlReport).toContain('Inspect First');
+      expect(missionControlReport).toContain('Ask readiness');
+      expect(missionControlReport).toContain('future broader repo questions');
 
       const flowUnderstanding = await readJson<{
         total_flows: number;
@@ -906,6 +908,34 @@ describe('project brain generation', () => {
           calibration_score: number;
           blocking_gaps: string[];
         };
+        ask_readiness: {
+          status: 'ready' | 'limited' | 'blocked';
+          score: number;
+          summary: string;
+          deterministic: boolean;
+          provider_calls_required: boolean;
+          network_required: boolean;
+          scope: string;
+          gates: Array<{
+            key: string;
+            label: string;
+            status: 'ready' | 'limited' | 'blocked';
+            score: number;
+            reasons: string[];
+            next_required_improvements: string[];
+          }>;
+          reasons: string[];
+          next_required_improvements: string[];
+          redaction_safety: {
+            status: string;
+            redaction_applied: boolean;
+            redaction_safety_score: number;
+            redacted_evidence_count: number;
+            redacted_reference_count: number;
+            unsafe_sensitive_reference_count: number;
+            output_share_safe: boolean;
+          };
+        };
         readiness_calibration: {
           overall_score: number;
           redaction_safe: boolean;
@@ -1000,6 +1030,40 @@ describe('project brain generation', () => {
       });
       expect(benchmarkReady.readiness.calibration_score).toBe(
         benchmarkReady.readiness_calibration.overall_score,
+      );
+      expect(benchmarkReady.ask_readiness).toMatchObject({
+        status: expect.stringMatching(/ready|limited|blocked/),
+        score: expect.any(Number),
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+        scope: expect.stringContaining('future broader repo questions'),
+        redaction_safety: expect.objectContaining({
+          status: 'ready',
+          redaction_safety_score: 100,
+          unsafe_sensitive_reference_count: 0,
+          output_share_safe: true,
+        }),
+      });
+      expect(benchmarkReady.ask_readiness.summary).toContain('future broader repo questions');
+      expect(benchmarkReady.ask_readiness.scope).not.toContain('command');
+      expect(benchmarkReady.ask_readiness.gates.map((gate) => gate.key)).toEqual([
+        'component_coverage',
+        'flow_coverage',
+        'architecture_impact_coverage',
+        'evidence_quality',
+        'unknown_coverage',
+        'review_readiness',
+        'benchmark_task_coverage',
+        'incremental_freshness',
+        'redaction_safety',
+      ]);
+      expect(benchmarkReady.ask_readiness.gates).toContainEqual(
+        expect.objectContaining({
+          key: 'benchmark_task_coverage',
+          status: 'ready',
+          score: 100,
+        }),
       );
 
       const benchmarkTasks = await readJson<{
@@ -3525,6 +3589,12 @@ describe('project brain generation', () => {
           unknown: { total: number; covered: number; coverage_ratio: number };
         };
         readiness: { is_ready: boolean; blocking_gaps: string[] };
+        ask_readiness: {
+          status: string;
+          gates: Array<{ key: string; status: string; score: number; reasons: string[] }>;
+          reasons: string[];
+          next_required_improvements: string[];
+        };
       }>(join(result.value.researchDir, 'benchmark_ready.json'));
       expect(benchmarkReady.coverage.component.total).toBe(1);
       expect(benchmarkReady.coverage.component.covered).toBe(0);
@@ -3537,6 +3607,28 @@ describe('project brain generation', () => {
       expect(benchmarkReady.readiness.blocking_gaps).toContain(
         'No component has benchmark coverage across boundary, flow, and evidence signals.',
       );
+      expect(benchmarkReady.ask_readiness.status).toBe('blocked');
+      expect(benchmarkReady.ask_readiness.gates).toContainEqual(
+        expect.objectContaining({
+          key: 'flow_coverage',
+          status: 'blocked',
+          score: 0,
+        }),
+      );
+      expect(benchmarkReady.ask_readiness.gates).toContainEqual(
+        expect.objectContaining({
+          key: 'unknown_coverage',
+          status: expect.stringMatching(/limited|blocked/),
+        }),
+      );
+      expect(benchmarkReady.ask_readiness.gates).toContainEqual(
+        expect.objectContaining({
+          key: 'evidence_quality',
+          status: expect.stringMatching(/limited|blocked/),
+        }),
+      );
+      expect(benchmarkReady.ask_readiness.reasons.length).toBeGreaterThan(0);
+      expect(benchmarkReady.ask_readiness.next_required_improvements.length).toBeGreaterThan(0);
     });
   });
 
@@ -4689,6 +4781,42 @@ describe('project brain generation', () => {
           evidence_ids: expect.arrayContaining([
             expect.stringMatching(/^evidence:redacted:sensitive-file:/),
           ]),
+        }),
+      );
+
+      const benchmarkReady = await readJson<{
+        ask_readiness: {
+          redaction_safety: {
+            status: string;
+            redaction_applied: boolean;
+            redaction_safety_score: number;
+            redacted_evidence_count: number;
+            redacted_reference_count: number;
+            unsafe_sensitive_reference_count: number;
+            output_share_safe: boolean;
+          };
+          gates: Array<{ key: string; status: string; score: number; reasons: string[] }>;
+        };
+      }>(join(dir, '.rizz', 'research', 'benchmark_ready.json'));
+      expect(JSON.stringify(benchmarkReady)).not.toContain('client_secret_handler.ts');
+      expect(JSON.stringify(benchmarkReady)).not.toContain('secret-token-flow.test.ts');
+      expect(JSON.stringify(benchmarkReady)).not.toContain('OPENAI_API_KEY');
+      expect(benchmarkReady.ask_readiness.redaction_safety).toMatchObject({
+        status: 'ready',
+        redaction_applied: true,
+        redaction_safety_score: 100,
+        unsafe_sensitive_reference_count: 0,
+        output_share_safe: true,
+      });
+      expect(
+        benchmarkReady.ask_readiness.redaction_safety.redacted_evidence_count +
+          benchmarkReady.ask_readiness.redaction_safety.redacted_reference_count,
+      ).toBeGreaterThan(0);
+      expect(benchmarkReady.ask_readiness.gates).toContainEqual(
+        expect.objectContaining({
+          key: 'redaction_safety',
+          status: 'ready',
+          score: 100,
         }),
       );
 

@@ -1590,7 +1590,25 @@ function withTempDirSync(prefix, run) {
 }
 
 function removeTempDirSync(dir) {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  const maxAttempts = process.platform === 'win32' ? 8 : 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      return;
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined;
+      const isWindowsTempRace =
+        process.platform === 'win32' && (code === 'EPERM' || code === 'EBUSY');
+      if (!isWindowsTempRace || attempt === maxAttempts) {
+        if (isWindowsTempRace) {
+          console.warn(`warning: could not remove temporary eval directory ${dir}: ${code}`);
+          return;
+        }
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 100);
+    }
+  }
 }
 
 function parseJsonLines(stdout) {

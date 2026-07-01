@@ -87,6 +87,10 @@
         "readiness_calibration.dimensions.confidence_calibration.score",
         "readiness_calibration.dimensions.benchmark_task_category_coverage.required_categories",
         "readiness_calibration.dimensions.local_scan_readiness_summary.active_file_entities",
+        "ask_readiness.status",
+        "ask_readiness.score",
+        "ask_readiness.gates",
+        "ask_readiness.redaction_safety.output_share_safe",
         "readiness.score"
       ]
     },
