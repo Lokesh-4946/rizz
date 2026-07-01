@@ -79,6 +79,7 @@
         "flow:packages--worker--start",
         "flow:packages--worker--test"
       ],
+      "architecture_impact_surfaces_include": ["impact:component:packages--shared"],
       "affected_tests_include": [
         "packages/app/src/server.test.ts",
         "packages/shared/src/internal.test.ts",
@@ -95,7 +96,13 @@
       "minimum_dependent_components": 2,
       "minimum_affected_flows": 4,
       "minimum_affected_relationships": 8,
+      "minimum_architecture_impact_surfaces": 1,
+      "architecture_what_breaks_include": [
+        "dependent component(s) can break",
+        "component:packages--shared changes can affect"
+      ],
       "blast_radius_reasons_include": [
+        "architecture impact-map surface(s) overlap the diff",
         "dependent consumer component(s) require review",
         "affected flow(s) link the change",
         "graph relationship(s) touch the review blast radius"
@@ -144,6 +151,14 @@
         "affected_component_count",
         "affected_flow_count",
         "affected_relationship_count",
+        "architecture_impact_surface_count",
+        "architecture_impact_component_surface_count",
+        "architecture_impact_route_surface_count",
+        "architecture_what_breaks_note_count",
+        "architecture_evidence_gap_count",
+        "architecture_confidence_gap_count",
+        "architecture_affected_test_count",
+        "architecture_affected_config_count",
         "required_test_count",
         "evidence_id_count",
         "blast_radius",
@@ -159,6 +174,7 @@
         "\"provider_calls_required\": false",
         "\"network_required\": false",
         "\"blast_radius\": \"moderate\"",
+        "\"architecture_impact_route_surface_count\": 0",
         "\"output_secret_safe\": true"
       ],
       "forbidden_substrings": [
@@ -175,6 +191,7 @@
   "rubric": {
     "pass": [
       "The review JSON reports direct and dependent component blast radius from local graph facts.",
+      "Architecture impact-map surfaces connect changed files to what-breaks notes, tests, configs, confidence, and evidence-gap counters.",
       "Affected relationships, flows, tests, configs, and blast-radius reasons are validated semantically.",
       "Secret-like fixture path and content are omitted or redacted from review JSON and report output."
     ],

@@ -83,6 +83,9 @@
       "affected_flows_include": [
         "flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx"
       ],
+      "architecture_impact_surfaces_include": [
+        "impact:flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx"
+      ],
       "affected_tests_include": ["src/app/docs/[slug]/page.test.tsx"],
       "affected_configs_include": ["next.config.ts", "package.json", "tsconfig.json"],
       "required_tests_include": ["vitest run"],
@@ -90,7 +93,11 @@
       "minimum_direct_components": 1,
       "minimum_affected_flows": 1,
       "minimum_affected_relationships": 5,
+      "minimum_architecture_impact_surfaces": 1,
+      "architecture_what_breaks_include": ["Changing route /docs/[slug] can alter page rendering"],
       "blast_radius_reasons_include": [
+        "architecture impact-map surface(s) overlap the diff",
+        "impact:flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx",
         "/docs/[slug] route flow (page) is affected",
         "changed component evidence: src/components/doc-article.tsx",
         "changed content evidence: src/content/docs.ts",
@@ -170,6 +177,14 @@
         "affected_component_count",
         "affected_flow_count",
         "affected_relationship_count",
+        "architecture_impact_surface_count",
+        "architecture_impact_component_surface_count",
+        "architecture_impact_route_surface_count",
+        "architecture_what_breaks_note_count",
+        "architecture_evidence_gap_count",
+        "architecture_confidence_gap_count",
+        "architecture_affected_test_count",
+        "architecture_affected_config_count",
         "required_test_count",
         "evidence_id_count",
         "blast_radius",
@@ -214,6 +229,7 @@
   "rubric": {
     "pass": [
       "The review JSON reports route path, route type, framework, entrypoint, linked test, and linked config metadata for the affected app-router route.",
+      "Architecture impact-map route surfaces add what-breaks notes and eval counters to the review artifact.",
       "Alias-resolved component, content, and config imports drive affected route flow evidence rather than becoming fake external dependencies.",
       "Secret-like fixture path and content are omitted or redacted from review JSON and report output."
     ],

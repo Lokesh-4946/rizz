@@ -2866,6 +2866,56 @@ describe('project brain generation', () => {
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('Components: component:src'),
       );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('architecture impact-map surface(s) overlap the diff'),
+      );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining(
+          'impact:flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx',
+        ),
+      );
+      expect(result.value.review.architecture_impact_map).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx',
+          surface_type: 'route',
+          route_path: '/docs/[slug]',
+          route_type: 'page',
+          matched_changed_files: expect.arrayContaining([
+            'next.config.ts',
+            'src/app/docs/[slug]/page.tsx',
+            'src/app/docs/[slug]/page.test.tsx',
+            'src/components/DocPage.tsx',
+            'src/content/docs.ts',
+          ]),
+          affected_tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+          affected_configs: expect.arrayContaining(['next.config.ts', 'package.json']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('Changing route /docs/[slug] can alter page rendering'),
+          ]),
+          reasons: expect.arrayContaining(['changed_files:5', 'matched_flows:1']),
+        }),
+      );
+      expect(result.value.review.review_evidence_summary).toMatchObject({
+        architecture_impact_surfaces: expect.any(Number),
+        architecture_what_breaks: expect.arrayContaining([
+          expect.stringContaining('Changing route /docs/[slug] can alter page rendering'),
+        ]),
+        affected_tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
+        affected_configs: expect.arrayContaining(['next.config.ts', 'package.json']),
+      });
+      expect(result.value.reviewEval).toMatchObject({
+        architecture_impact_route_surface_count: expect.any(Number),
+        architecture_what_breaks_note_count:
+          result.value.review.review_evidence_summary.architecture_what_breaks.length,
+        architecture_evidence_gap_count:
+          result.value.review.review_evidence_summary.architecture_evidence_gap_ids.length,
+        architecture_confidence_gap_count:
+          result.value.review.review_evidence_summary.architecture_confidence_gaps.length,
+      });
+      expect(result.value.reviewEval.architecture_impact_surface_count).toBeGreaterThan(0);
+      expect(result.value.reviewEval.architecture_impact_route_surface_count).toBeGreaterThan(0);
+      expect(result.value.reviewEval.architecture_affected_test_count).toBeGreaterThan(0);
+      expect(result.value.reviewEval.architecture_affected_config_count).toBeGreaterThan(0);
       expect(result.value.review.findings).toContainEqual(
         expect.objectContaining({
           title: 'Known flows overlap the diff',
@@ -4268,7 +4318,7 @@ describe('project brain generation', () => {
         value: {
           changedFiles: 1,
           affectedComponents: 1,
-          blastRadius: 'narrow',
+          blastRadius: 'moderate',
           recommendedAction: 'investigate',
         },
       });
@@ -4295,11 +4345,33 @@ describe('project brain generation', () => {
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('1 changed file(s) map to 1 direct component(s)'),
       );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('architecture impact-map surface(s) overlap the diff'),
+      );
+      expect(result.value.review.architecture_impact_map).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:component:packages--cli',
+          surface_type: 'component',
+          entity_id: 'component:packages--cli',
+          matched_changed_files: ['packages/cli/src/index.ts'],
+          affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+          matched_flows: expect.arrayContaining(['flow:packages--cli--check']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('component:packages--cli changes can affect'),
+          ]),
+          reasons: expect.arrayContaining(['changed_files:1', 'matched_flows:1']),
+        }),
+      );
       expect(result.value.review.review_evidence_summary).toMatchObject({
         changed_files: 1,
         direct_components: 1,
         dependent_components: 0,
         affected_flows: 1,
+        architecture_impact_surfaces: 1,
+        architecture_what_breaks: expect.arrayContaining([
+          expect.stringContaining('component:packages--cli changes can affect'),
+        ]),
         affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
         affected_configs: expect.arrayContaining(['packages/cli/package.json']),
       });
@@ -4323,9 +4395,20 @@ describe('project brain generation', () => {
         affected_component_count: 1,
         affected_flow_count: 1,
         affected_relationship_count: result.value.review.affected_relationships.length,
+        architecture_impact_surface_count: 1,
+        architecture_impact_component_surface_count: 1,
+        architecture_impact_route_surface_count: 0,
+        architecture_what_breaks_note_count:
+          result.value.review.review_evidence_summary.architecture_what_breaks.length,
+        architecture_evidence_gap_count:
+          result.value.review.review_evidence_summary.architecture_evidence_gap_ids.length,
+        architecture_confidence_gap_count:
+          result.value.review.review_evidence_summary.architecture_confidence_gaps.length,
+        architecture_affected_test_count: 1,
+        architecture_affected_config_count: 1,
         required_test_count: result.value.review.required_tests.length,
         evidence_id_count: result.value.review.review_evidence_summary.evidence_ids.length,
-        blast_radius: 'narrow',
+        blast_radius: 'moderate',
         overall_risk: 'medium',
         surgicality_score: result.value.review.surgicality_score,
         secret_safety: {
@@ -4354,6 +4437,7 @@ describe('project brain generation', () => {
           readonly direct_affected_components?: string[];
           readonly dependent_components?: string[];
           readonly affected_flows?: string[];
+          readonly architecture_impact_surfaces?: string[];
           readonly blast_radius_reasons?: string[];
           readonly research_artifacts?: { readonly review_eval?: string };
         };
@@ -4364,6 +4448,7 @@ describe('project brain generation', () => {
         direct_affected_components: ['component:packages--cli'],
         dependent_components: [],
         affected_flows: ['flow:packages--cli--check'],
+        architecture_impact_surfaces: ['impact:component:packages--cli'],
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
         },
@@ -4382,6 +4467,14 @@ describe('project brain generation', () => {
         affected_component_count: number;
         affected_flow_count: number;
         affected_relationship_count: number;
+        architecture_impact_surface_count: number;
+        architecture_impact_component_surface_count: number;
+        architecture_impact_route_surface_count: number;
+        architecture_what_breaks_note_count: number;
+        architecture_evidence_gap_count: number;
+        architecture_confidence_gap_count: number;
+        architecture_affected_test_count: number;
+        architecture_affected_config_count: number;
         required_test_count: number;
         evidence_id_count: number;
         blast_radius: string;
@@ -4400,9 +4493,20 @@ describe('project brain generation', () => {
         affected_component_count: 1,
         affected_flow_count: 1,
         affected_relationship_count: result.value.review.affected_relationships.length,
+        architecture_impact_surface_count: 1,
+        architecture_impact_component_surface_count: 1,
+        architecture_impact_route_surface_count: 0,
+        architecture_what_breaks_note_count:
+          result.value.review.review_evidence_summary.architecture_what_breaks.length,
+        architecture_evidence_gap_count:
+          result.value.review.review_evidence_summary.architecture_evidence_gap_ids.length,
+        architecture_confidence_gap_count:
+          result.value.review.review_evidence_summary.architecture_confidence_gaps.length,
+        architecture_affected_test_count: 1,
+        architecture_affected_config_count: 1,
         required_test_count: result.value.review.required_tests.length,
         evidence_id_count: result.value.review.review_evidence_summary.evidence_ids.length,
-        blast_radius: 'narrow',
+        blast_radius: 'moderate',
         overall_risk: 'medium',
         surgicality_score: result.value.review.surgicality_score,
         secret_safety: {
@@ -4525,9 +4629,29 @@ describe('project brain generation', () => {
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('dependent consumer component(s) require review'),
       );
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('architecture impact-map surface(s) overlap the diff'),
+      );
+      expect(result.value.review.architecture_impact_map).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:component:packages--core',
+          entity_id: 'component:packages--core',
+          matched_changed_files: ['packages/core/src/index.ts'],
+          dependent_components: expect.arrayContaining(['component:packages--cli']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('dependent component(s) can break'),
+          ]),
+          affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+        }),
+      );
       expect(result.value.review.review_evidence_summary).toMatchObject({
         direct_components: 1,
         dependent_components: 1,
+        architecture_impact_surfaces: 2,
+        architecture_what_breaks: expect.arrayContaining([
+          expect.stringContaining('dependent component(s) can break'),
+        ]),
         affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
         affected_configs: expect.arrayContaining(['packages/cli/package.json']),
       });
