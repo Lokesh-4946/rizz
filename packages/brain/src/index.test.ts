@@ -2363,6 +2363,216 @@ describe('project brain generation', () => {
     });
   });
 
+  it('understands Hono route app declarations with local contracts and explain data', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src', 'sessions'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'hono-route-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { hono: '^4.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'NodeNext', strict: true } }),
+      );
+      await writeFile(
+        join(dir, 'src', 'api.ts'),
+        [
+          'import { Hono } from "hono";',
+          'import { createSession } from "./sessions/service.js";',
+          '',
+          'const api = new Hono();',
+          '',
+          'api.get("/health", (context) => context.json({ ok: true }));',
+          'api.post("/sessions", async (context) => {',
+          '  const body = await context.req.json();',
+          '  const session = createSession(body);',
+          '  return context.json(session, 201);',
+          '});',
+          '',
+          'export default api;',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'sessions', 'service.ts'),
+        [
+          'export function createSession(input: unknown): { id: string; input: unknown } {',
+          '  if (input === undefined) throw new Error("invalid session");',
+          '  return { id: "session-1", input };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'sessions', 'session.test.ts'),
+        'import { it } from "vitest";\nit("covers the post sessions route", () => {});\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:45:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          name: string;
+          data?: {
+            framework?: string;
+            route_path?: string;
+            route_type?: string;
+            files?: string[];
+            dependencies?: string[];
+            configs?: string[];
+            tests?: string[];
+            entrypoints?: Array<{ type: string; path: string; symbol: string | null }>;
+            steps?: Array<{ type: string; path: string; symbol: string | null }>;
+            inputs?: string[];
+            outputs?: string[];
+            confidence_reasons?: string[];
+            field_evidence?: Record<string, string[]>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const honoFlows = flows.entities.filter((flow) => flow.data?.framework === 'hono');
+      expect(honoFlows).toHaveLength(2);
+
+      const sessionFlow = honoFlows.find((flow) => flow.data?.route_path === '/sessions');
+      expect(sessionFlow?.id).toBe('flow:hono--post--sessions--src--api.ts');
+      expect(sessionFlow?.name).toBe('POST /sessions Hono route');
+      expect(sessionFlow?.data).toMatchObject({
+        route_type: 'POST',
+        files: expect.arrayContaining(['src/api.ts', 'src/sessions/service.ts']),
+        dependencies: expect.arrayContaining(['dependency:hono']),
+        configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
+        tests: expect.arrayContaining(['src/sessions/session.test.ts']),
+        entrypoints: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'route',
+            path: 'src/api.ts',
+            symbol: 'POST /sessions',
+          }),
+        ]),
+        steps: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'route',
+            path: 'src/api.ts',
+            symbol: 'POST /sessions',
+          }),
+          expect.objectContaining({
+            type: 'service',
+            path: 'src/sessions/service.ts',
+          }),
+        ]),
+        inputs: expect.arrayContaining(['HTTP request route input.']),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+        confidence_reasons: expect.arrayContaining([
+          'Signal: hono route app.',
+          'Signal: http route declaration.',
+          'Linked test artifact is recorded.',
+        ]),
+      });
+      expect(sessionFlow?.data?.field_evidence).toMatchObject({
+        entrypoints: expect.arrayContaining(['evidence:file-src--api.ts']),
+        files: expect.arrayContaining([
+          'evidence:file-src--api.ts',
+          'evidence:file-src--sessions--service.ts',
+        ]),
+        tests: expect.arrayContaining(['evidence:file-src--sessions--session.test.ts']),
+      });
+
+      const flowUnderstanding = await readJson<{
+        contracts: Array<{
+          id: string;
+          framework?: string;
+          route_path?: string;
+          route_type?: string;
+          outputs: string[];
+          confidence_reasons: string[];
+        }>;
+      }>(join(result.value.researchDir, 'flow_understanding.json'));
+      expect(flowUnderstanding.contracts).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:hono--post--sessions--src--api.ts',
+          framework: 'hono',
+          route_path: '/sessions',
+          route_type: 'POST',
+          outputs: expect.arrayContaining(['HTTP/API response.']),
+          confidence_reasons: expect.arrayContaining(['Signal: hono route app.']),
+        }),
+      );
+
+      const architectureReasoning = await readJson<{
+        impact_map: {
+          summary: { route_surfaces: number };
+          entries: Array<{
+            impact_id: string;
+            surface_type: string;
+            entity_id: string;
+            route_path?: string;
+            route_type?: string;
+            affected_flows: string[];
+            affected_files: string[];
+            affected_tests: string[];
+            affected_configs: string[];
+            confidence: string;
+            what_breaks: string[];
+            reasons: string[];
+          }>;
+        };
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.impact_map.summary.route_surfaces).toBe(2);
+      expect(architectureReasoning.impact_map.entries).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:flow:hono--post--sessions--src--api.ts',
+          surface_type: 'route',
+          entity_id: 'flow:hono--post--sessions--src--api.ts',
+          route_path: '/sessions',
+          route_type: 'POST',
+          affected_flows: ['flow:hono--post--sessions--src--api.ts'],
+          affected_files: expect.arrayContaining(['src/api.ts', 'src/sessions/service.ts']),
+          affected_tests: expect.arrayContaining(['src/sessions/session.test.ts']),
+          affected_configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
+          confidence: 'inferred',
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('Changing route /sessions can alter POST request handling'),
+          ]),
+          reasons: expect.arrayContaining(['framework:hono', 'route_type:POST', 'tests:1']),
+        }),
+      );
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'flow:hono--post--sessions--src--api.ts',
+        now: new Date('2026-06-28T12:46:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.flow).toMatchObject({
+        framework: 'hono',
+        route_path: '/sessions',
+        route_type: 'POST',
+        entrypoints: expect.arrayContaining([
+          expect.objectContaining({ path: 'src/api.ts', symbol: 'POST /sessions' }),
+        ]),
+        outputs: expect.arrayContaining(['HTTP/API response.']),
+        confidence_reasons: expect.arrayContaining(['Signal: hono route app.']),
+      });
+      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(explainReport).toContain('POST /sessions');
+      expect(explainReport).toContain('Hono POST /sessions route enters src/api.ts');
+      expect(explainReport).not.toContain(dir);
+    });
+  });
+
   it('understands Next.js app router route, render, and metadata flows', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'src', 'app', 'docs', '[slug]'), { recursive: true });

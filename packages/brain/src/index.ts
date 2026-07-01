@@ -355,6 +355,8 @@ type NextAppRouteType = 'api' | 'layout' | 'metadata' | 'page';
 
 type HttpRouteMethod = 'ALL' | 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT';
 
+type HttpRouteFramework = 'express-fastify-http' | 'hono';
+
 type FlowStepType =
   | 'route'
   | 'handler'
@@ -446,6 +448,7 @@ interface RouteContractContext {
 }
 
 interface HttpRouteDeclaration {
+  readonly framework: HttpRouteFramework;
   readonly receiver: string;
   readonly method: HttpRouteMethod;
   readonly routePath: string;
@@ -3892,6 +3895,8 @@ function inferNextAppRouteFlow(params: {
 const HTTP_ROUTE_DECLARATION_PATTERN =
   /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|del|head|options|all)\s*\(\s*(['"`])([^'"`${}]+)\3/g;
 
+const HONO_APP_DECLARATION_PATTERN = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+Hono\b/g;
+
 function maskCommentsForStaticScan(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, ' '))
@@ -3913,6 +3918,20 @@ function isHttpRouteReceiver(receiver: string): boolean {
     lower.endsWith('router') ||
     lower.endsWith('server')
   );
+}
+
+function honoRouteReceivers(text: string): ReadonlySet<string> {
+  const receivers = new Set<string>();
+  for (const match of text.matchAll(HONO_APP_DECLARATION_PATTERN)) {
+    const receiver = match[1];
+    if (receiver !== undefined) receivers.add(receiver);
+  }
+  return receivers;
+}
+
+function httpRouteFrameworkLabel(framework: HttpRouteFramework): string {
+  if (framework === 'hono') return 'Hono';
+  return 'HTTP';
 }
 
 function httpRouteMethod(method: string): HttpRouteMethod {
@@ -3939,19 +3958,22 @@ function httpRouteDeclarationsForFile(params: {
   const text = readTextIfAvailable(params.rootDir, params.file.relativePath);
   if (text === undefined) return [];
   const masked = maskCommentsForStaticScan(text);
+  const honoReceivers = honoRouteReceivers(masked);
   const declarations = new Map<string, HttpRouteDeclaration>();
   for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
     const receiver = match[1];
     const rawMethod = match[2];
     const rawRoutePath = match[4];
     if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) continue;
-    if (!isHttpRouteReceiver(receiver)) continue;
+    const framework = honoReceivers.has(receiver) ? 'hono' : 'express-fastify-http';
+    if (framework !== 'hono' && !isHttpRouteReceiver(receiver)) continue;
     const routePath = normalizeHttpRoutePath(rawRoutePath);
     if (routePath === undefined) continue;
     const method = httpRouteMethod(rawMethod);
     const line = lineNumberAtOffset(masked, match.index ?? 0);
     const source = `${receiver}.${rawMethod}`;
-    declarations.set(`${method}:${routePath}:${line}:${source}`, {
+    declarations.set(`${framework}:${method}:${routePath}:${line}:${source}`, {
+      framework,
       receiver,
       method,
       routePath,
@@ -4055,7 +4077,7 @@ function httpRouteDeclarationEvidence(params: {
     line_start: params.declaration.line,
     line_end: params.declaration.line,
     reason: safeText(
-      `HTTP ${params.declaration.method} ${params.declaration.routePath} route declaration is the flow entrypoint evidence.`,
+      `${httpRouteFrameworkLabel(params.declaration.framework)} ${params.declaration.method} ${params.declaration.routePath} route declaration is the flow entrypoint evidence.`,
     ),
   };
 }
@@ -4100,15 +4122,16 @@ function inferHttpRouteDeclarationFlow(params: {
   );
   const flowId = entityId(
     'flow',
-    `http/${params.declaration.method}/${params.declaration.routePath}/${params.file.relativePath}`,
+    `${params.declaration.framework === 'hono' ? 'hono' : 'http'}/${params.declaration.method}/${params.declaration.routePath}/${params.file.relativePath}`,
   );
   const evId = evidenceId(params.file.relativePath);
+  const frameworkLabel = httpRouteFrameworkLabel(params.declaration.framework);
   const risks: FlowRisk[] = [];
   if (relatedTests.length === 0) {
     risks.push({
       risk_id: `${flowId}:missing-test`,
       kind: 'missing_test',
-      description: `No directly linked test artifact was detected for HTTP ${params.declaration.method} ${params.declaration.routePath}.`,
+      description: `No directly linked test artifact was detected for ${frameworkLabel} ${params.declaration.method} ${params.declaration.routePath}.`,
       evidence: [evId],
     });
   }
@@ -4116,7 +4139,7 @@ function inferHttpRouteDeclarationFlow(params: {
     risks.push({
       risk_id: `${flowId}:missing-config`,
       kind: 'missing_config',
-      description: 'No package or config artifact was detected for this HTTP route flow.',
+      description: `No package or config artifact was detected for this ${frameworkLabel} route flow.`,
       evidence: [evId],
     });
   }
@@ -4124,7 +4147,7 @@ function inferHttpRouteDeclarationFlow(params: {
     risks.push({
       risk_id: `${flowId}:changed-hotspot`,
       kind: 'changed_hotspot',
-      description: 'The HTTP route declaration file changed in the latest scan.',
+      description: `The ${frameworkLabel} route declaration file changed in the latest scan.`,
       evidence: [evId],
     });
   }
@@ -4135,7 +4158,7 @@ function inferHttpRouteDeclarationFlow(params: {
       type: 'route',
       path: safeText(params.file.relativePath),
       symbol: safeText(`${params.declaration.method} ${params.declaration.routePath}`),
-      description: `HTTP ${params.declaration.method} ${safeText(
+      description: `${frameworkLabel} ${params.declaration.method} ${safeText(
         params.declaration.routePath,
       )} route enters ${safeText(params.file.relativePath)} via ${safeText(
         params.declaration.source,
@@ -4148,7 +4171,7 @@ function inferHttpRouteDeclarationFlow(params: {
       type: 'service' as const,
       path: safeText(file.relativePath),
       symbol: null,
-      description: `HTTP route statically imports ${safeText(file.relativePath)}.`,
+      description: `${frameworkLabel} route statically imports ${safeText(file.relativePath)}.`,
       evidence: [evidenceId(file.relativePath)],
     })),
   ];
@@ -4160,7 +4183,7 @@ function inferHttpRouteDeclarationFlow(params: {
       type: 'config',
       path: safeText(config),
       symbol: null,
-      description: `HTTP route behavior can be configured by ${safeText(config)}.`,
+      description: `${frameworkLabel} route behavior can be configured by ${safeText(config)}.`,
       evidence: [evidenceId(config)],
     });
     order += 1;
@@ -4172,12 +4195,13 @@ function inferHttpRouteDeclarationFlow(params: {
       type: 'test',
       path: safeText(test),
       symbol: null,
-      description: 'Related test artifact for this HTTP route flow.',
+      description: `Related test artifact for this ${frameworkLabel} route flow.`,
       evidence: [evidenceId(test)],
     });
     order += 1;
   }
   const signals = unique([
+    ...(params.declaration.framework === 'hono' ? ['hono route app'] : []),
     'http route declaration',
     'route file',
     `${params.declaration.method.toLowerCase()} route`,
@@ -4226,9 +4250,9 @@ function inferHttpRouteDeclarationFlow(params: {
   });
   return {
     flow_id: flowId,
-    name: `${params.declaration.method} ${safeText(params.declaration.routePath)} HTTP route`,
+    name: `${params.declaration.method} ${safeText(params.declaration.routePath)} ${frameworkLabel} route`,
     kind: 'api',
-    framework: 'express-fastify-http',
+    framework: params.declaration.framework,
     route_path: safeText(params.declaration.routePath),
     route_type: params.declaration.method,
     entrypoints,
