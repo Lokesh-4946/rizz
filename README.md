@@ -7,13 +7,14 @@ rizz is a local Project Intelligence Engine for one repository: run it in a repo
 project-scoped relational brain, open Mission Control as a local HTML intelligence portal, and keep
 evidence close to the source files.
 
-## Public Preview Status
+## Current Product
 
-The current public preview surface is:
+The current `0.2.0` product surface is:
 
-- local CLI and TUI
+- local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
+- `rizz ask` gated Project Intelligence questions answered from the local brain
 - `rizz explain` evidence-backed component, file, and flow explanations
 - `rizz review` git-diff review using the local project brain
 - `.rizz/brain/latest.json` structured current-state summary
@@ -31,7 +32,7 @@ The current public preview surface is:
 - no workspace agents, cloud sync, browser extension, mobile app, IDE integration, custom skills, or
   enterprise providers in the default install
 
-The current release baseline is `0.2.0`.
+This release is `0.2.0`.
 
 ## Requirements
 
@@ -39,8 +40,6 @@ The current release baseline is `0.2.0`.
 - npm
 - git
 - macOS Keychain or Linux `secret-tool` for keychain storage when available
-
-Development from source also needs pnpm 11+. CI currently runs on Node 24.
 
 ## Install
 
@@ -63,13 +62,6 @@ rizz
 .rizz/brain/graph.json
 .rizz/research/
 .rizz/reports/index.html
-```
-
-For local development from this checkout:
-
-```sh
-pnpm install
-pnpm link:local
 ```
 
 ## Understand A Repo
@@ -161,7 +153,7 @@ Then choose a model route:
 rizz setup
 ```
 
-Recommended public preview route:
+Recommended model route:
 
 1. Choose `OpenRouter direct` or press Enter when it is the default.
 2. Paste an OpenRouter API key only into the hidden prompt.
@@ -188,8 +180,8 @@ Useful commands inside the TUI:
 /help
 ```
 
-`/workspace` is visible but not connected in the public preview. Workspace Mode is an opt-in future
-track, not part of the default path.
+`/workspace` is visible but not connected in this release. Workspace Mode is an opt-in future track,
+not part of the default path.
 
 ## Codex Route
 
@@ -217,7 +209,7 @@ This runs lint, type-check, tests, eval smoke, install smoke, and the footprint 
 checks also run `pnpm pack:check` to verify public package contents. Publishing to npm is a deliberate
 release step after CI and package checks pass; pushes to GitHub do not publish packages.
 
-Current merged-develop release verification:
+`0.2.0` release verification:
 
 - Biome: 110 files
 - Vitest: 31 files / 320 tests
@@ -257,5 +249,7 @@ scripts/       install and footprint scripts
 pnpm install
 pnpm check
 ```
+
+Development from source also needs pnpm 11+. CI currently runs on Node 24.
 
 House style and architecture rules live in `AGENTS.md`.
