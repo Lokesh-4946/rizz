@@ -67,6 +67,15 @@
         "coverage.flow.covered",
         "coverage.evidence.claims_with_evidence",
         "coverage.unknown.coverage_ratio",
+        "readiness_calibration.overall_score",
+        "readiness_calibration.redaction_safe",
+        "readiness_calibration.dimensions.component_coverage.score",
+        "readiness_calibration.dimensions.flow_coverage.score",
+        "readiness_calibration.dimensions.evidence_coverage.score",
+        "readiness_calibration.dimensions.unknown_coverage.score",
+        "readiness_calibration.dimensions.confidence_calibration.score",
+        "readiness_calibration.dimensions.benchmark_task_category_coverage.required_categories",
+        "readiness_calibration.dimensions.local_scan_readiness_summary.active_file_entities",
         "readiness.score"
       ]
     },
