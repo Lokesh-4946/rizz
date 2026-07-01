@@ -1132,6 +1132,7 @@ const RESEARCH_ARTIFACT_FILES = {
   benchmarkReady: 'benchmark_ready.json',
   benchmarkTasks: 'benchmark_tasks.json',
   understandingScore: 'understanding_score.json',
+  pieAcceptance: 'pie_acceptance.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -8132,6 +8133,8 @@ function completeRatio(numerator: number, denominator: number): number {
 
 type AskReadinessStatus = 'ready' | 'limited' | 'blocked';
 
+type PieAcceptanceStatus = 'pass' | 'limited' | 'blocking';
+
 interface AskReadinessGate {
   readonly key: string;
   readonly label: string;
@@ -9061,6 +9064,383 @@ function buildBenchmarkTasksArtifact(params: {
   };
 }
 
+function pieAcceptanceStatus(score: number, isBlocking: boolean): PieAcceptanceStatus {
+  if (isBlocking || score < 45) return 'blocking';
+  if (score < 80) return 'limited';
+  return 'pass';
+}
+
+function pieAcceptanceStatusFromAsk(status: string, score: number): PieAcceptanceStatus {
+  if (status === 'blocked') return 'blocking';
+  if (status === 'limited') return 'limited';
+  return pieAcceptanceStatus(score, false);
+}
+
+function pieAcceptanceDimension(params: {
+  readonly key: string;
+  readonly label: string;
+  readonly score: number;
+  readonly isBlocking?: boolean;
+  readonly evidenceBasis: readonly string[];
+  readonly artifactPointers: readonly string[];
+  readonly weakSpots?: readonly string[];
+  readonly nextRequiredImprovements?: readonly string[];
+}): Record<string, unknown> {
+  const score = boundedScore(params.score);
+  const status = pieAcceptanceStatus(score, params.isBlocking === true);
+  const weakSpots = unique((params.weakSpots ?? []).filter((item) => item.trim() !== '')).slice(
+    0,
+    8,
+  );
+  const nextRequiredImprovements = unique(
+    (params.nextRequiredImprovements ?? weakSpots).filter((item) => item.trim() !== ''),
+  ).slice(0, 8);
+  return {
+    key: params.key,
+    label: params.label,
+    status,
+    score,
+    evidence_basis: unique(params.evidenceBasis).slice(0, 8),
+    artifact_pointers: unique(params.artifactPointers),
+    blocking_gaps: status === 'blocking' ? weakSpots : [],
+    next_required_improvements: status === 'pass' ? [] : nextRequiredImprovements,
+  };
+}
+
+function dimensionWeakSpots(value: unknown): string[] {
+  return asStringArray(recordArray(value, 'weak_spots'));
+}
+
+function dimensionScore(value: unknown): number {
+  return recordNumber(value, 'score');
+}
+
+function dimensionStatus(value: unknown, score: number): string {
+  return recordString(value, 'status', scoreBand(score));
+}
+
+function buildPieAcceptanceArtifact(params: {
+  readonly projectName: string;
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+  readonly architectureReasoning: unknown;
+  readonly evidenceQuality: unknown;
+  readonly benchmarkReady: unknown;
+  readonly benchmarkTasks: unknown;
+  readonly understandingScore: unknown;
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+}): Record<string, unknown> {
+  const understandingDimensions = nestedRecord(params.understandingScore, 'dimensions');
+  const componentUnderstanding = nestedRecord(understandingDimensions, 'components');
+  const flowUnderstanding = nestedRecord(understandingDimensions, 'flows');
+  const architectureUnderstanding = nestedRecord(understandingDimensions, 'architecture');
+  const evidenceUnderstanding = nestedRecord(understandingDimensions, 'evidence');
+  const incrementalUnderstanding = nestedRecord(understandingDimensions, 'incremental_status');
+  const reviewUnderstanding = nestedRecord(understandingDimensions, 'review_readiness');
+  const calibration = nestedRecord(params.benchmarkReady, 'readiness_calibration');
+  const calibrationDimensions = nestedRecord(calibration, 'dimensions');
+  const benchmarkTaskCoverage = nestedRecord(
+    calibrationDimensions,
+    'benchmark_task_category_coverage',
+  );
+  const askReadiness = nestedRecord(params.benchmarkReady, 'ask_readiness');
+  const askReadinessScore = recordNumber(askReadiness, 'score');
+  const askReadinessStatus = recordString(askReadiness, 'status', scoreBand(askReadinessScore));
+  const redactionSafety = nestedRecord(askReadiness, 'redaction_safety');
+  const redactionSafetyScore = recordNumber(redactionSafety, 'redaction_safety_score');
+  const redactedEvidenceCount = recordNumber(redactionSafety, 'redacted_evidence_count');
+  const redactedReferenceCount = recordNumber(redactionSafety, 'redacted_reference_count');
+  const unsafeSensitiveReferenceCount = recordNumber(
+    redactionSafety,
+    'unsafe_sensitive_reference_count',
+  );
+  const benchmarkTaskCount = recordNumber(params.benchmarkTasks, 'task_count');
+  const taskCategoryCounts = nestedRecord(params.benchmarkTasks, 'task_categories');
+  const benchmarkCategories = Object.entries(taskCategoryCounts)
+    .map(([category, count]) => `${category}: ${String(count)}`)
+    .sort((a, b) => a.localeCompare(b));
+  const evidenceActionability = nestedRecord(params.evidenceQuality, 'actionability');
+  const actionabilitySummary = recordString(
+    evidenceActionability,
+    'summary',
+    'Evidence actionability has not been summarized yet.',
+  );
+  const architectureConfidenceDebt = nestedRecord(params.architectureReasoning, 'confidence_debt');
+  const architectureBlockingUnknowns = recordNumber(
+    architectureConfidenceDebt,
+    'blocking_unknown_count',
+  );
+  const missionControlScore = benchmarkTaskCount > 0 ? 100 : 40;
+  const explainQualityScore = boundedScore(
+    (dimensionScore(componentUnderstanding) +
+      dimensionScore(flowUnderstanding) +
+      dimensionScore(evidenceUnderstanding)) /
+      3,
+  );
+  const dimensions = [
+    pieAcceptanceDimension({
+      key: 'component_understanding',
+      label: 'Component understanding',
+      score: dimensionScore(componentUnderstanding),
+      evidenceBasis: [
+        dimensionStatus(componentUnderstanding, dimensionScore(componentUnderstanding)),
+        `${params.buckets.components.length} component(s) mapped`,
+      ],
+      artifactPointers: [
+        '.rizz/research/component_intelligence.json',
+        '.rizz/research/understanding_score.json',
+        '.rizz/brain/entities/components.json',
+      ],
+      weakSpots: dimensionWeakSpots(componentUnderstanding),
+    }),
+    pieAcceptanceDimension({
+      key: 'flow_understanding',
+      label: 'Flow understanding',
+      score: dimensionScore(flowUnderstanding),
+      evidenceBasis: [
+        dimensionStatus(flowUnderstanding, dimensionScore(flowUnderstanding)),
+        `${params.buckets.flows.length} reconstructed flow(s)`,
+      ],
+      artifactPointers: [
+        '.rizz/research/flow_understanding.json',
+        '.rizz/research/flow_coverage.json',
+        '.rizz/brain/entities/flows.json',
+      ],
+      weakSpots: dimensionWeakSpots(flowUnderstanding),
+    }),
+    pieAcceptanceDimension({
+      key: 'architecture_reasoning',
+      label: 'Architecture reasoning',
+      score: dimensionScore(architectureUnderstanding),
+      isBlocking:
+        architectureBlockingUnknowns > 0 && dimensionScore(architectureUnderstanding) < 45,
+      evidenceBasis: [
+        dimensionStatus(architectureUnderstanding, dimensionScore(architectureUnderstanding)),
+        `${recordNumber(architectureConfidenceDebt, 'debt_count')} confidence debt item(s)`,
+      ],
+      artifactPointers: [
+        '.rizz/research/architecture_reasoning.json',
+        '.rizz/research/reasoning_traces.json',
+      ],
+      weakSpots: [
+        ...dimensionWeakSpots(architectureUnderstanding),
+        ...asStringArray(architectureConfidenceDebt.blocking_unknowns),
+      ],
+    }),
+    pieAcceptanceDimension({
+      key: 'evidence_quality_actionability',
+      label: 'Evidence quality/actionability',
+      score: dimensionScore(evidenceUnderstanding),
+      evidenceBasis: [
+        dimensionStatus(evidenceUnderstanding, dimensionScore(evidenceUnderstanding)),
+        actionabilitySummary,
+      ],
+      artifactPointers: ['.rizz/research/evidence_quality.json', '.rizz/research/confidence.json'],
+      weakSpots: dimensionWeakSpots(evidenceUnderstanding),
+    }),
+    pieAcceptanceDimension({
+      key: 'incremental_understanding',
+      label: 'Incremental understanding',
+      score: dimensionScore(incrementalUnderstanding),
+      evidenceBasis: [
+        dimensionStatus(incrementalUnderstanding, dimensionScore(incrementalUnderstanding)),
+        `${params.incrementalMetrics.changed_entity_count} changed understanding item(s)`,
+        `${params.incrementalMetrics.stable_entity_count} stable understanding item(s)`,
+      ],
+      artifactPointers: [
+        '.rizz/research/incremental_update.json',
+        '.rizz/research/understanding_score.json',
+      ],
+      weakSpots: dimensionWeakSpots(incrementalUnderstanding),
+    }),
+    pieAcceptanceDimension({
+      key: 'review_intelligence_blast_radius',
+      label: 'Review intelligence/blast radius',
+      score: dimensionScore(reviewUnderstanding),
+      evidenceBasis: [
+        dimensionStatus(reviewUnderstanding, dimensionScore(reviewUnderstanding)),
+        `${params.buckets.risks.length} risk area(s) mapped`,
+      ],
+      artifactPointers: [
+        '.rizz/research/architecture_reasoning.json',
+        '.rizz/research/benchmark_ready.json',
+      ],
+      weakSpots: dimensionWeakSpots(reviewUnderstanding),
+    }),
+    pieAcceptanceDimension({
+      key: 'benchmark_task_coverage',
+      label: 'Benchmark task coverage',
+      score: recordNumber(benchmarkTaskCoverage, 'score'),
+      evidenceBasis: [`${benchmarkTaskCount} benchmark task candidate(s)`, ...benchmarkCategories],
+      artifactPointers: [
+        '.rizz/research/benchmark_tasks.json',
+        '.rizz/research/benchmark_ready.json',
+      ],
+      weakSpots: asStringArray(benchmarkTaskCoverage.missing_categories).map(
+        (category) => `Missing benchmark category: ${category}`,
+      ),
+      nextRequiredImprovements: [
+        'Emit benchmark tasks for component, flow, architecture impact, review, and evidence/unknown coverage.',
+      ],
+    }),
+    pieAcceptanceDimension({
+      key: 'explain_quality',
+      label: 'Explain quality',
+      score: explainQualityScore,
+      evidenceBasis: [
+        'Explain quality is inferred from component, flow, and evidence dimensions used by rizz explain.',
+        `${benchmarkTaskCount} benchmark task hint source(s) available`,
+      ],
+      artifactPointers: [
+        '.rizz/research/component_intelligence.json',
+        '.rizz/research/flow_understanding.json',
+        '.rizz/research/evidence_quality.json',
+        '.rizz/research/benchmark_tasks.json',
+      ],
+      weakSpots: unique([
+        ...dimensionWeakSpots(componentUnderstanding),
+        ...dimensionWeakSpots(flowUnderstanding),
+        ...dimensionWeakSpots(evidenceUnderstanding),
+      ]),
+    }),
+    pieAcceptanceDimension({
+      key: 'ask_readiness',
+      label: 'Ask readiness',
+      score: askReadinessScore,
+      isBlocking: askReadinessStatus === 'blocked',
+      evidenceBasis: [
+        recordString(
+          askReadiness,
+          'summary',
+          'Future broader repo question readiness has not been summarized yet.',
+        ),
+      ],
+      artifactPointers: ['.rizz/research/benchmark_ready.json', '.rizz/brain/latest.json'],
+      weakSpots: asStringArray(askReadiness.reasons),
+      nextRequiredImprovements: asStringArray(askReadiness.next_required_improvements),
+    }),
+    pieAcceptanceDimension({
+      key: 'secret_safe_reliability',
+      label: 'Secret-safe reliability',
+      score: redactionSafetyScore,
+      isBlocking: unsafeSensitiveReferenceCount > 0,
+      evidenceBasis: [
+        `${redactionSafetyScore}/100 redaction safety`,
+        `${unsafeSensitiveReferenceCount} unsafe sensitive reference(s)`,
+      ],
+      artifactPointers: [
+        '.rizz/research/evidence_quality.json',
+        '.rizz/research/benchmark_ready.json',
+      ],
+      weakSpots:
+        unsafeSensitiveReferenceCount > 0
+          ? ['Unsafe sensitive references remain in generated artifacts.']
+          : [],
+      nextRequiredImprovements: [
+        'Redact or omit unsafe secret, token, credential, and private path references before sharing artifacts.',
+      ],
+    }),
+    pieAcceptanceDimension({
+      key: 'mission_control_coverage',
+      label: 'Mission Control coverage',
+      score: missionControlScore,
+      evidenceBasis: [
+        'Mission Control links brain and research artifacts without requiring a server.',
+        '.rizz/reports/index.html is the compact local report surface.',
+      ],
+      artifactPointers: [
+        '.rizz/reports/index.html',
+        '.rizz/brain/latest.json',
+        '.rizz/research/pie_acceptance.json',
+      ],
+      weakSpots:
+        benchmarkTaskCount > 0
+          ? []
+          : ['Mission Control has no benchmark task inventory to link yet.'],
+      nextRequiredImprovements: [
+        'Link PIE acceptance, benchmark readiness, and task inventory from Mission Control.',
+      ],
+    }),
+  ];
+  const statuses = dimensions.map((dimension) => recordString(dimension, 'status', 'limited'));
+  let overallStatus: PieAcceptanceStatus = 'pass';
+  if (statuses.includes('blocking')) {
+    overallStatus = 'blocking';
+  } else if (statuses.includes('limited')) {
+    overallStatus = 'limited';
+  }
+  const overallScore = boundedScore(
+    dimensions.reduce((total, dimension) => total + recordNumber(dimension, 'score'), 0) /
+      dimensions.length,
+  );
+  const benchmarkReadiness = nestedRecord(params.benchmarkReady, 'readiness');
+  const blockingGaps = unique([
+    ...asStringArray(benchmarkReadiness.blocking_gaps),
+    ...dimensions.flatMap((dimension) => asStringArray(dimension.blocking_gaps)),
+  ]).slice(0, 12);
+  const nextRequiredImprovements = unique(
+    dimensions.flatMap((dimension) => asStringArray(dimension.next_required_improvements)),
+  ).slice(0, 12);
+
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    project_id: entityId('project', params.projectName),
+    project_name: safeText(params.projectName),
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    goal: 'Understand any repo in 10 minutes instead of 2 days.',
+    overall_status: overallStatus,
+    overall_score: overallScore,
+    dimensions,
+    blocking_gaps: blockingGaps,
+    next_required_improvements: nextRequiredImprovements,
+    artifact_pointers: {
+      latest: '.rizz/brain/latest.json',
+      index: '.rizz/brain/index.json',
+      mission_control: '.rizz/reports/index.html',
+      pie_acceptance: '.rizz/research/pie_acceptance.json',
+      benchmark_ready: '.rizz/research/benchmark_ready.json',
+      benchmark_tasks: '.rizz/research/benchmark_tasks.json',
+      understanding_score: '.rizz/research/understanding_score.json',
+      evidence_quality: '.rizz/research/evidence_quality.json',
+      architecture_reasoning: '.rizz/research/architecture_reasoning.json',
+      incremental_update: '.rizz/research/incremental_update.json',
+    },
+    confidence: {
+      status: pieAcceptanceStatusFromAsk(askReadinessStatus, askReadinessScore),
+      score: boundedScore(
+        (recordNumber(calibration, 'overall_score') +
+          recordNumber(params.understandingScore, 'overall_score') +
+          redactionSafetyScore) /
+          3,
+      ),
+      evidence_basis: [
+        'Deterministic local brain entities, relationships, research metrics, benchmark readiness gates, and Mission Control artifact links.',
+        `${params.buckets.evidence.length} local evidence record(s)`,
+        `${params.buckets.components.length} component(s)`,
+        `${params.buckets.flows.length} flow(s)`,
+        `${benchmarkTaskCount} benchmark task(s)`,
+      ],
+      redaction_safety: {
+        score: redactionSafetyScore,
+        redacted_evidence_count: redactedEvidenceCount,
+        redacted_reference_count: redactedReferenceCount,
+        unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+        output_share_safe: unsafeSensitiveReferenceCount === 0,
+      },
+    },
+    evidence_basis: [
+      '.rizz/research/benchmark_ready.json',
+      '.rizz/research/benchmark_tasks.json',
+      '.rizz/research/understanding_score.json',
+      '.rizz/research/evidence_quality.json',
+      '.rizz/reports/index.html',
+    ],
+  };
+}
+
 function boundedScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
@@ -9956,6 +10336,17 @@ function buildResearchArtifacts(params: {
     benchmarkReady,
     understandingScore,
   });
+  const pieAcceptance = buildPieAcceptanceArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    architectureReasoning,
+    evidenceQuality,
+    benchmarkReady,
+    benchmarkTasks,
+    understandingScore,
+    incrementalMetrics: params.incrementalMetrics,
+  });
   const referencedEvidenceIds = unique([
     ...entities.flatMap((entity) => entity.evidence_ids),
     ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
@@ -10299,6 +10690,7 @@ function buildResearchArtifacts(params: {
     benchmarkReady,
     benchmarkTasks,
     understandingScore,
+    pieAcceptance,
   };
 }
 
@@ -10481,6 +10873,17 @@ function buildLatest(params: {
     benchmarkReady,
     understandingScore,
   });
+  const pieAcceptance = buildPieAcceptanceArtifact({
+    projectName: params.projectName,
+    now: params.now,
+    buckets: params.buckets,
+    architectureReasoning,
+    evidenceQuality,
+    benchmarkReady,
+    benchmarkTasks,
+    understandingScore,
+    incrementalMetrics: params.incrementalMetrics,
+  });
   const confidenceGaps = params.buckets.risks
     .filter((risk) => risk.confidence !== 'verified')
     .map((risk) => risk.description);
@@ -10498,11 +10901,32 @@ function buildLatest(params: {
     latest_architecture_reasoning: architectureReasoning,
     latest_evidence_quality: evidenceQuality,
     latest_understanding_score: understandingScore,
+    latest_pie_acceptance: {
+      path: '.rizz/research/pie_acceptance.json',
+      overall_status: recordString(pieAcceptance, 'overall_status', 'limited'),
+      overall_score: recordNumber(pieAcceptance, 'overall_score'),
+      blocking_gaps: recordArray(pieAcceptance, 'blocking_gaps').slice(0, 8),
+      next_required_improvements: recordArray(pieAcceptance, 'next_required_improvements').slice(
+        0,
+        8,
+      ),
+      mission_control: '.rizz/reports/index.html',
+      summary: `${recordNumber(pieAcceptance, 'overall_score')}/100 PIE acceptance readiness is ${recordString(
+        pieAcceptance,
+        'overall_status',
+        'limited',
+      )}.`,
+    },
     latest_ask_readiness: isRecord(benchmarkReady.ask_readiness)
       ? benchmarkReady.ask_readiness
       : undefined,
     latest_benchmark_tasks: {
       path: '.rizz/research/benchmark_tasks.json',
+      pie_acceptance: {
+        path: '.rizz/research/pie_acceptance.json',
+        overall_status: recordString(pieAcceptance, 'overall_status', 'limited'),
+        overall_score: recordNumber(pieAcceptance, 'overall_score'),
+      },
       task_count: recordNumber(benchmarkTasks, 'task_count'),
       task_categories: isRecord(benchmarkTasks.task_categories)
         ? benchmarkTasks.task_categories
@@ -11729,6 +12153,7 @@ function renderArtifactLinks(artifactPaths?: readonly string[]): string {
     '.rizz/research/understanding_score.json',
     '.rizz/research/architecture_reasoning.json',
     '.rizz/research/benchmark_tasks.json',
+    '.rizz/research/pie_acceptance.json',
   ];
   return `<ul class="artifact-links">${artifacts
     .map(
@@ -11979,6 +12404,7 @@ function renderFlagshipSummary(params: {
           '.rizz/research/architecture_reasoning.json',
           '.rizz/research/benchmark_ready.json',
           '.rizz/research/benchmark_tasks.json',
+          '.rizz/research/pie_acceptance.json',
           '.rizz/research/incremental_update.json',
         ])}
         <p class="muted">${params.evidenceCount} local evidence record(s).</p>
@@ -12049,6 +12475,25 @@ function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
     .join('');
 }
 
+function renderPieAcceptanceCard(value: unknown): string {
+  if (!isRecord(value)) {
+    return `<article class="card compact">
+      <h3>PIE Acceptance</h3>
+      <p class="muted">No PIE acceptance artifact is available yet.</p>
+    </article>`;
+  }
+  const path = recordString(value, 'path', '.rizz/research/pie_acceptance.json');
+  const score = recordNumber(value, 'overall_score');
+  const status = recordString(value, 'overall_status', scoreBand(score));
+  return `<article class="card compact" data-search="${htmlEscape(
+    `PIE acceptance readiness ${score} ${status} ${path}`,
+  )}">
+    <h3>PIE Acceptance</h3>
+    ${renderList([`${score}/100`, `${status} status`])}
+    ${renderArtifactLinks([path])}
+  </article>`;
+}
+
 function renderBenchmarkTasks(value: unknown): string {
   if (!isRecord(value)) {
     return '<p class="muted">No benchmark task artifact is available yet.</p>';
@@ -12065,8 +12510,10 @@ function renderBenchmarkTasks(value: unknown): string {
     .sort((a, b) => a.localeCompare(b));
   const path = recordString(value, 'path', '.rizz/research/benchmark_tasks.json');
   const missionControl = recordString(value, 'mission_control', '.rizz/reports/index.html');
+  const pieAcceptance = isRecord(value.pie_acceptance) ? value.pie_acceptance : undefined;
 
   return `<div class="grid">
+    ${renderPieAcceptanceCard(pieAcceptance)}
     <article class="card compact">
       <h3>Task Inventory</h3>
       ${renderList([`${taskCount} benchmark task(s)`, summary])}
@@ -12080,6 +12527,7 @@ function renderBenchmarkTasks(value: unknown): string {
       ${renderArtifactLinks([
         path,
         '.rizz/research/benchmark_ready.json',
+        '.rizz/research/pie_acceptance.json',
         '.rizz/research/understanding_score.json',
         '.rizz/brain/latest.json',
         '.rizz/brain/index.json',
@@ -12897,6 +13345,7 @@ export async function generateProjectBrain(
         benchmark_ready: '.rizz/research/benchmark_ready.json',
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
+        pie_acceptance: '.rizz/research/pie_acceptance.json',
       },
     };
     const researchArtifacts = buildResearchArtifacts({

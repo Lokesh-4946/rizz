@@ -30,7 +30,8 @@
     ".rizz/research/flow_coverage.json",
     ".rizz/research/evidence_quality.json",
     ".rizz/research/benchmark_ready.json",
-    ".rizz/research/benchmark_tasks.json"
+    ".rizz/research/benchmark_tasks.json",
+    ".rizz/research/pie_acceptance.json"
   ],
   "coverage_targets": {
     "component": { "minimum_total": 1, "minimum_covered": 0, "minimum_ratio": 0 },
@@ -113,6 +114,35 @@
         "Understand any repo in 10 minutes instead of 2 days",
         "\"expected_artifact\"",
         "\"expected_check_fields\""
+      ]
+    },
+    {
+      "path": ".rizz/research/pie_acceptance.json",
+      "type": "json",
+      "required_fields": [
+        "overall_status",
+        "overall_score",
+        "blocking_gaps",
+        "next_required_improvements",
+        "artifact_pointers.pie_acceptance",
+        "artifact_pointers.mission_control",
+        "confidence.evidence_basis",
+        "confidence.redaction_safety.output_share_safe",
+        "dimensions"
+      ],
+      "required_substrings": [
+        "\"component_understanding\"",
+        "\"flow_understanding\"",
+        "\"architecture_reasoning\"",
+        "\"evidence_quality_actionability\"",
+        "\"incremental_understanding\"",
+        "\"review_intelligence_blast_radius\"",
+        "\"benchmark_task_coverage\"",
+        "\"explain_quality\"",
+        "\"ask_readiness\"",
+        "\"secret_safe_reliability\"",
+        "\"mission_control_coverage\"",
+        "Understand any repo in 10 minutes instead of 2 days"
       ]
     }
   ],
