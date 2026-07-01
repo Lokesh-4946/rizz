@@ -4,14 +4,14 @@
   "suite": "pi-bench-seed",
   "mode": "local",
   "category": "architecture-flow",
-  "title": "Local HTTP route intelligence benchmark seed",
-  "prompt": "Build a local project brain for a deterministic Express/Fastify-style fixture and report static HTTP route declaration flows, mapped files, tests, configs, contracts, confidence, and explain output.",
+  "title": "Local HTTP and Hono route intelligence benchmark seed",
+  "prompt": "Build a local project brain for a deterministic Express/Fastify/Hono-style fixture and report static route declaration flows, mapped files, tests, configs, contracts, confidence, and explain output.",
   "fixture": {
     "root": "pi-bench-http-route-intelligence",
     "files": [
       {
         "path": "package.json",
-        "contents": "{\"name\":\"pi-bench-http-route-intelligence\",\"scripts\":{\"dev\":\"tsx src/server.ts\",\"test\":\"vitest run\",\"typecheck\":\"tsc --noEmit\"},\"dependencies\":{\"express\":\"5.0.0\",\"fastify\":\"5.0.0\"},\"devDependencies\":{\"tsx\":\"^4.0.0\",\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+        "contents": "{\"name\":\"pi-bench-http-route-intelligence\",\"scripts\":{\"dev\":\"tsx src/server.ts\",\"test\":\"vitest run\",\"typecheck\":\"tsc --noEmit\"},\"dependencies\":{\"express\":\"5.0.0\",\"fastify\":\"5.0.0\",\"hono\":\"4.0.0\"},\"devDependencies\":{\"tsx\":\"^4.0.0\",\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
       },
       {
         "path": "tsconfig.json",
@@ -28,6 +28,18 @@
       {
         "path": "src/orders/orders.test.ts",
         "contents": "import { expect, it } from \"vitest\";\nimport { createOrder } from \"./service\";\n\nit(\"covers the post orders route\", () => {\n  expect(createOrder({ sku: \"docs\" }).id).toBe(\"order-1\");\n});\n"
+      },
+      {
+        "path": "src/api.ts",
+        "contents": "import { Hono } from \"hono\";\nimport { createSession } from \"./sessions/service.js\";\n\nconst api = new Hono();\n\napi.post(\"/sessions\", async (context) => {\n  const body = await context.req.json();\n  return context.json(createSession(body), 201);\n});\n\nexport default api;\n"
+      },
+      {
+        "path": "src/sessions/service.ts",
+        "contents": "export function createSession(input: unknown) {\n  if (input === undefined) throw new Error(\"invalid session\");\n  return { id: \"session-1\", input };\n}\n"
+      },
+      {
+        "path": "src/sessions/session.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { createSession } from \"./service\";\n\nit(\"covers the post sessions route\", () => {\n  expect(createSession({ user: \"u1\" }).id).toBe(\"session-1\");\n});\n"
       }
     ]
   },
@@ -38,11 +50,12 @@
     ".rizz/research/benchmark_ready.json",
     ".rizz/brain/entities/flows.json",
     ".rizz/brain/flows/flow-http--post--orders--src--server.ts.json",
+    ".rizz/brain/flows/flow-hono--post--sessions--src--api.ts.json",
     ".rizz/reports/index.html"
   ],
   "coverage_targets": {
     "component": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.8 },
-    "flow": { "minimum_total": 4, "minimum_covered": 3, "minimum_ratio": 0.6 },
+    "flow": { "minimum_total": 5, "minimum_covered": 4, "minimum_ratio": 0.6 },
     "evidence": { "minimum_total": 5, "minimum_covered": 5, "minimum_ratio": 0.5 },
     "unknown": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.5 }
   },
@@ -60,14 +73,19 @@
       "required_substrings": [
         "flow:http--get--health--src--server.ts",
         "flow:http--post--orders--src--server.ts",
+        "flow:hono--post--sessions--src--api.ts",
         "GET /health HTTP route",
         "POST /orders HTTP route",
+        "POST /sessions Hono route",
         "express-fastify-http",
+        "hono",
         "/orders",
+        "/sessions",
         "POST",
         "HTTP request route input.",
         "Returns an HTTP/API response from the route flow.",
-        "src/orders/orders.test.ts"
+        "src/orders/orders.test.ts",
+        "src/sessions/session.test.ts"
       ]
     },
     {
@@ -83,6 +101,8 @@
         "component:src",
         "src/server.ts",
         "src/orders/service.ts",
+        "src/api.ts",
+        "src/sessions/service.ts",
         "package.json"
       ]
     },
@@ -92,12 +112,18 @@
       "required_fields": ["entities"],
       "required_substrings": [
         "flow:http--post--orders--src--server.ts",
+        "flow:hono--post--sessions--src--api.ts",
         "express-fastify-http",
+        "hono",
         "/orders",
+        "/sessions",
         "POST",
         "src/server.ts",
         "src/orders/service.ts",
-        "src/orders/orders.test.ts"
+        "src/orders/orders.test.ts",
+        "src/api.ts",
+        "src/sessions/service.ts",
+        "src/sessions/session.test.ts"
       ],
       "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
     },
@@ -117,14 +143,33 @@
       "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
     },
     {
+      "path": ".rizz/brain/flows/flow-hono--post--sessions--src--api.ts.json",
+      "type": "json",
+      "required_fields": ["id", "data.framework", "data.route_path", "data.route_type"],
+      "required_substrings": [
+        "flow:hono--post--sessions--src--api.ts",
+        "hono",
+        "/sessions",
+        "POST /sessions",
+        "Hono POST /sessions route enters src/api.ts",
+        "src/sessions/service.ts",
+        "src/sessions/session.test.ts"
+      ],
+      "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
+    },
+    {
       "path": ".rizz/reports/index.html",
       "type": "file",
       "required_substrings": [
         "Mission Control ·",
         "POST /orders HTTP route",
+        "POST /sessions Hono route",
         "express-fastify-http",
+        "hono",
         "src/server.ts",
-        "src/orders/service.ts"
+        "src/orders/service.ts",
+        "src/api.ts",
+        "src/sessions/service.ts"
       ],
       "forbidden_substrings": [
         "<script src=",
@@ -137,13 +182,14 @@
     }
   ],
   "explain": {
-    "target": "flow:http--post--orders--src--server.ts",
+    "target": "flow:hono--post--sessions--src--api.ts",
     "assertions": {
       "required_output_substrings": [
-        "flow:http--post--orders--src--server.ts",
-        "POST /orders",
-        "src/server.ts",
-        "src/orders/service.ts",
+        "flow:hono--post--sessions--src--api.ts",
+        "POST /sessions",
+        "src/api.ts",
+        "src/sessions/service.ts",
+        "hono",
         "HTTP/API response."
       ],
       "forbidden_output_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
@@ -153,9 +199,9 @@
         "path": ".rizz/reports/explain.html",
         "type": "file",
         "required_substrings": [
-          "POST /orders",
-          "HTTP POST /orders route enters src/server.ts",
-          "src/orders/service.ts",
+          "POST /sessions",
+          "Hono POST /sessions route enters src/api.ts",
+          "src/sessions/service.ts",
           "HTTP/API response."
         ],
         "forbidden_substrings": ["ACTUAL_FLOW_ID_HERE", "sk-or-v1", "OPENROUTER_API_KEY"]
@@ -165,11 +211,13 @@
   "rubric": {
     "pass": [
       "The fixture produces deterministic HTTP route declaration flows for app.get and server.post without provider calls.",
+      "The fixture produces deterministic Hono route app flows for new Hono receivers without provider calls.",
       "flow_understanding.json preserves route path, method, mapped files, linked tests/configs, and HTTP/API contracts.",
-      "rizz explain can resolve and describe the POST /orders route flow from local artifacts only."
+      "rizz explain can resolve and describe the POST /sessions Hono route flow from local artifacts only."
     ],
     "fail": [
       "The task depends on installing Express/Fastify, contacting a provider, or using network access.",
+      "Hono app routes are omitted, merged into a generic server flow, or lose framework metadata.",
       "Static HTTP route declarations are omitted, merged into a generic server flow, or lose method/path metadata.",
       "Route flow artifacts leak forbidden placeholder or secret-like output."
     ]
