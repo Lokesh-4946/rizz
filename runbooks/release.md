@@ -1,13 +1,14 @@
 # Release runbook
 
-This runbook keeps public releases boring: `develop` integrates, `main` releases, npm publishes the
-same version.
+This runbook keeps public releases boring: `develop` integrates, `main` releases, and npm is
+published deliberately after the release gate passes. A push to GitHub does not publish packages.
 
 ## Release shape
 
 - Package scope: `@valoir`
 - Public CLI package: `@valoir/rizz`
-- Internal packages: `@valoir/rizz-core`, `@valoir/rizz-providers`, `@valoir/rizz-tui`
+- Published support packages: `@valoir/rizz-brain`, `@valoir/rizz-core`,
+  `@valoir/rizz-providers`, `@valoir/rizz-tui`
 - Current release baseline: `0.1.0`
 
 ## Pre-release checklist
@@ -28,10 +29,31 @@ Run the UAT checklist in `runbooks/uat-agent-light.md`.
 Confirm:
 
 - no provider keys in logs, docs, PRs, or shell history
-- no Workspace, Repo Brain, OS/Jarvis connectors, skills, or enterprise providers in the default
-  install path
+- default `rizz` generates only local Project Intelligence Engine artifacts under `.rizz/brain`,
+  `.rizz/research`, and `.rizz/reports`
+- no Workspace Mode, OS/Jarvis connectors, cloud sync, browser/mobile/IDE integrations, custom
+  skills, or enterprise providers in the default install path
 - version numbers are intentional
 - `README.md` and `runbooks/install.md` show the same public install commands
+
+## Public sanity checklist
+
+Use this checklist before opening the release PR and again before `npm publish`:
+
+- local install: `pnpm install --frozen-lockfile`, `pnpm link:local`, `rizz --version`,
+  `rizz --help`, and `rizz setup --dry-run`
+- local Project Intelligence Engine smoke: in a disposable git repo, run `rizz`, confirm
+  `.rizz/brain/latest.json`, `.rizz/research/`, and `.rizz/reports/index.html` are written, then run
+  `rizz explain <file>` after the brain exists
+- review smoke: in a disposable git repo with at least one commit and a working-tree diff, run
+  `rizz review --json` and confirm `.rizz/reports/review.html` plus review entities are written
+- pack contents: run `pnpm pack:check`; confirm public tarballs include only compiled `dist` files,
+  declarations, and `package.json`, with no maps, tests, source files, secrets, or local `.rizz`
+  artifacts
+- full gate: `pnpm check`, `pnpm typecheck`, `pnpm pack:check`, and `git diff --check`
+- publish preconditions: release PR merged to `main`, tag matches the package version, npm identity
+  and `@valoir` org access are correct, OTP/trusted-publishing path is ready, and the package version
+  is not already published
 
 ## Release PR
 
@@ -70,6 +92,7 @@ Manual fallback:
 ```sh
 npm whoami
 npm org ls valoir
+npm publish ./dist-pack/valoir-rizz-brain-0.1.0.tgz --access public --otp <OTP>
 npm publish ./dist-pack/valoir-rizz-providers-0.1.0.tgz --access public --otp <OTP>
 npm publish ./dist-pack/valoir-rizz-core-0.1.0.tgz --access public --otp <OTP>
 npm publish ./dist-pack/valoir-rizz-tui-0.1.0.tgz --access public --otp <OTP>
