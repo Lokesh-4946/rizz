@@ -9,7 +9,7 @@ published deliberately after the release gate passes. A push to GitHub does not 
 - Public CLI package: `@valoir/rizz`
 - Published support packages: `@valoir/rizz-brain`, `@valoir/rizz-core`,
   `@valoir/rizz-providers`, `@valoir/rizz-tui`
-- Current release baseline: `0.1.0`
+- Current release baseline: `0.2.0`
 
 ## Pre-release checklist
 
@@ -77,8 +77,8 @@ After the release PR lands on `main`:
 ```sh
 git switch main
 git pull --ff-only
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 Use the actual release version in the tag.
@@ -92,11 +92,11 @@ Manual fallback:
 ```sh
 npm whoami
 npm org ls valoir
-npm publish ./dist-pack/valoir-rizz-brain-0.1.0.tgz --access public --otp <OTP>
-npm publish ./dist-pack/valoir-rizz-providers-0.1.0.tgz --access public --otp <OTP>
-npm publish ./dist-pack/valoir-rizz-core-0.1.0.tgz --access public --otp <OTP>
-npm publish ./dist-pack/valoir-rizz-tui-0.1.0.tgz --access public --otp <OTP>
-npm publish ./dist-pack/valoir-rizz-0.1.0.tgz --access public --otp <OTP>
+npm publish ./dist-pack/valoir-rizz-brain-0.2.0.tgz --access public --otp <OTP>
+npm publish ./dist-pack/valoir-rizz-providers-0.2.0.tgz --access public --otp <OTP>
+npm publish ./dist-pack/valoir-rizz-core-0.2.0.tgz --access public --otp <OTP>
+npm publish ./dist-pack/valoir-rizz-tui-0.2.0.tgz --access public --otp <OTP>
+npm publish ./dist-pack/valoir-rizz-0.2.0.tgz --access public --otp <OTP>
 ```
 
 Never paste npm tokens or provider keys into chat, docs, handoffs, GitHub, or screenshots.

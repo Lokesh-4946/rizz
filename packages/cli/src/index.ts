@@ -19,7 +19,7 @@ import {
 } from '@valoir/rizz-core';
 import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-providers';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 const USAGE = `rizz - understand a software system
 

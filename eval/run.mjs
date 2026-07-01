@@ -2206,7 +2206,7 @@ function runInstallShimSmoke() {
             version.status === 0,
             `expected installed shim --version exit 0, got ${version.status}: ${version.stderr}`,
           );
-          assert(version.stdout.trim() === '0.1.0', 'expected shim to forward --version 0.1.0');
+          assert(version.stdout.trim() === '0.2.0', 'expected shim to forward --version 0.2.0');
         });
       },
     },
