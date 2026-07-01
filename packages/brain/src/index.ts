@@ -612,6 +612,14 @@ interface ReviewEvalArtifactData {
   readonly dependent_component_count: number;
   readonly affected_flow_count: number;
   readonly affected_relationship_count: number;
+  readonly architecture_impact_surface_count: number;
+  readonly architecture_impact_component_surface_count: number;
+  readonly architecture_impact_route_surface_count: number;
+  readonly architecture_what_breaks_note_count: number;
+  readonly architecture_evidence_gap_count: number;
+  readonly architecture_confidence_gap_count: number;
+  readonly architecture_affected_test_count: number;
+  readonly architecture_affected_config_count: number;
   readonly required_test_count: number;
   readonly evidence_id_count: number;
   readonly blast_radius: BlastRadius;
@@ -692,9 +700,38 @@ interface ReviewEvidenceSummaryData {
   readonly direct_components: number;
   readonly dependent_components: number;
   readonly affected_flows: number;
+  readonly architecture_impact_surfaces: number;
+  readonly architecture_confidence_gaps: readonly string[];
+  readonly architecture_evidence_gap_ids: readonly string[];
+  readonly architecture_what_breaks: readonly string[];
   readonly affected_tests: readonly string[];
   readonly affected_configs: readonly string[];
   readonly evidence_ids: readonly string[];
+}
+
+interface ReviewArchitectureImpactData {
+  readonly impact_id: string;
+  readonly surface_type: ArchitectureImpactSurfaceType;
+  readonly entity_id: string;
+  readonly name: string;
+  readonly route_path?: string;
+  readonly route_type?: string;
+  readonly matched_changed_files: readonly string[];
+  readonly matched_components: readonly string[];
+  readonly matched_flows: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly affected_files: readonly string[];
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
+  readonly dependent_components: readonly string[];
+  readonly coupling_level: ComponentIntelligence['coupling']['level'];
+  readonly coupling_score: number;
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly evidence_ids: readonly string[];
+  readonly evidence_gap_ids: readonly string[];
+  readonly what_breaks: readonly string[];
+  readonly reasons: readonly string[];
 }
 
 interface ReviewSummaryData {
@@ -706,6 +743,7 @@ interface ReviewSummaryData {
   readonly affected_components: readonly string[];
   readonly affected_flows: readonly AffectedFlowData[];
   readonly affected_relationships: readonly ReviewAffectedRelationshipData[];
+  readonly architecture_impact_map: readonly ReviewArchitectureImpactData[];
   readonly affected_entities: readonly string[];
   readonly blast_radius_reasons: readonly string[];
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
@@ -11143,6 +11181,9 @@ export async function reviewProjectChanges(
         ),
         dependent_components: review.dependent_components.map((component) => component.id),
         affected_flows: review.affected_flows.map((flow) => flow.id),
+        architecture_impact_surfaces: review.architecture_impact_map.map(
+          (entry) => entry.impact_id,
+        ),
         review_evidence_summary: review.review_evidence_summary,
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
@@ -12140,6 +12181,129 @@ function readUntrackedFileText(rootDir: string, stdout: string): string {
   return chunks.join('\n');
 }
 
+function parseConfidence(value: unknown): Confidence {
+  if (value === 'verified' || value === 'inferred' || value === 'uncertain') return value;
+  return 'uncertain';
+}
+
+function parseCouplingLevel(value: unknown): ComponentIntelligence['coupling']['level'] {
+  if (value === 'low' || value === 'medium' || value === 'high') return value;
+  return 'low';
+}
+
+function parseArchitectureImpactSurfaceType(value: unknown): ArchitectureImpactSurfaceType {
+  if (value === 'route') return 'route';
+  return 'component';
+}
+
+function numberRecordValue(value: Record<string, unknown>, key: string): number {
+  const item = value[key];
+  return typeof item === 'number' ? item : 0;
+}
+
+function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactData | undefined {
+  if (!isRecord(entry)) return undefined;
+  const impactId = typeof entry.impact_id === 'string' ? safeText(entry.impact_id) : undefined;
+  const entityId = typeof entry.entity_id === 'string' ? safeText(entry.entity_id) : undefined;
+  const name = typeof entry.name === 'string' ? safeText(entry.name) : undefined;
+  if (impactId === undefined || entityId === undefined || name === undefined) return undefined;
+  const routePath = typeof entry.route_path === 'string' ? safeText(entry.route_path) : undefined;
+  const routeType = typeof entry.route_type === 'string' ? safeText(entry.route_type) : undefined;
+  return {
+    impact_id: impactId,
+    surface_type: parseArchitectureImpactSurfaceType(entry.surface_type),
+    entity_id: entityId,
+    name,
+    ...(routePath !== undefined ? { route_path: routePath } : {}),
+    ...(routeType !== undefined ? { route_type: routeType } : {}),
+    matched_changed_files: [],
+    matched_components: [],
+    matched_flows: [],
+    affected_flows: asStringArray(entry.affected_flows).map(safeText),
+    affected_files: asStringArray(entry.affected_files).map(safeText),
+    affected_tests: asStringArray(entry.affected_tests).map(safeText),
+    affected_configs: asStringArray(entry.affected_configs).map(safeText),
+    dependent_components: asStringArray(entry.dependent_components).map(safeText),
+    coupling_level: parseCouplingLevel(entry.coupling_level),
+    coupling_score: numberRecordValue(entry, 'coupling_score'),
+    confidence: parseConfidence(entry.confidence),
+    confidence_score: numberRecordValue(entry, 'confidence_score'),
+    evidence_ids: asStringArray(entry.evidence_ids).map(safeText),
+    evidence_gap_ids: asStringArray(entry.evidence_gap_ids).map(safeText),
+    what_breaks: asStringArray(entry.what_breaks).map(safeText),
+    reasons: asStringArray(entry.reasons).map(safeText),
+  };
+}
+
+function reviewArchitectureImpactMap(params: {
+  readonly latest: Record<string, unknown>;
+  readonly changedFiles: readonly string[];
+  readonly componentIds: readonly string[];
+  readonly flowIds: readonly string[];
+}): ReviewArchitectureImpactData[] {
+  const architectureReasoning = isRecord(params.latest.latest_architecture_reasoning)
+    ? params.latest.latest_architecture_reasoning
+    : {};
+  const impactMap = isRecord(architectureReasoning.impact_map)
+    ? architectureReasoning.impact_map
+    : {};
+  const changedFileSet = new Set(params.changedFiles);
+  const componentIdSet = new Set(params.componentIds);
+  const flowIdSet = new Set(params.flowIds);
+  return recordArray(impactMap, 'entries')
+    .map(reviewImpactEntryFromRecord)
+    .filter((entry): entry is ReviewArchitectureImpactData => entry !== undefined)
+    .flatMap((entry): ReviewArchitectureImpactData[] => {
+      const impactFiles = unique([
+        ...entry.affected_files,
+        ...entry.affected_tests,
+        ...entry.affected_configs,
+      ]);
+      const matchedChangedFiles = impactFiles.filter((file) => changedFileSet.has(file));
+      const matchedComponents = unique(
+        [entry.entity_id, ...entry.dependent_components].filter((id) => componentIdSet.has(id)),
+      );
+      const matchedFlows = entry.affected_flows.filter((id) => flowIdSet.has(id));
+      if (
+        matchedChangedFiles.length === 0 &&
+        matchedComponents.length === 0 &&
+        matchedFlows.length === 0
+      ) {
+        return [];
+      }
+      return [
+        {
+          ...entry,
+          matched_changed_files: matchedChangedFiles.map(safeText),
+          matched_components: matchedComponents.map(safeText),
+          matched_flows: matchedFlows.map(safeText),
+          reasons: unique([
+            ...entry.reasons,
+            ...(matchedChangedFiles.length > 0
+              ? [`changed_files:${matchedChangedFiles.length}`]
+              : []),
+            ...(matchedComponents.length > 0
+              ? [`matched_components:${matchedComponents.length}`]
+              : []),
+            ...(matchedFlows.length > 0 ? [`matched_flows:${matchedFlows.length}`] : []),
+            ...(entry.confidence !== 'verified' ? [`confidence_gap:${entry.confidence}`] : []),
+            ...(entry.evidence_gap_ids.length > 0
+              ? [`evidence_gaps:${entry.evidence_gap_ids.length}`]
+              : []),
+          ]).map(safeText),
+        },
+      ];
+    })
+    .sort(
+      (a, b) =>
+        b.matched_changed_files.length - a.matched_changed_files.length ||
+        b.dependent_components.length - a.dependent_components.length ||
+        b.coupling_score - a.coupling_score ||
+        a.impact_id.localeCompare(b.impact_id),
+    )
+    .slice(0, 20);
+}
+
 function buildReview(params: {
   readonly rootDir: string;
   readonly now: string;
@@ -12171,6 +12335,22 @@ function buildReview(params: {
     params.entitySets.flows,
   );
   const affectedFlowIds = affectedFlows.map((flow) => flow.id);
+  const architectureImpactMap = reviewArchitectureImpactMap({
+    latest: params.latest,
+    changedFiles,
+    componentIds: allAffectedComponents.map((component) => component.id),
+    flowIds: affectedFlowIds,
+  });
+  const architectureImpactComponentIds = unique(
+    architectureImpactMap.flatMap((entry) => [
+      entry.entity_id,
+      ...entry.matched_components,
+      ...entry.dependent_components,
+    ]),
+  );
+  const architectureImpactFlowIds = unique(
+    architectureImpactMap.flatMap((entry) => [...entry.affected_flows, ...entry.matched_flows]),
+  );
   const directlyAffectedEntities = unique([
     ...changedFiles.map((file) => entityId('file', file)),
     ...affectedComponentIds,
@@ -12186,6 +12366,8 @@ function buildReview(params: {
     ...directlyAffectedEntities,
     ...dependentComponentIds,
     ...affectedFlowIds,
+    ...architectureImpactComponentIds,
+    ...architectureImpactFlowIds,
   ]);
   const affectedRelationships = affectedReviewRelationships(
     params.relationships,
@@ -12215,18 +12397,30 @@ function buildReview(params: {
   const affectedTests = unique([
     ...affectedFlows.flatMap((flow) => flow.tests),
     ...allAffectedComponents.flatMap((component) => stringArrayData(component, 'tests')),
+    ...architectureImpactMap.flatMap((entry) => entry.affected_tests),
     ...changedTestFiles,
   ]).map(safeText);
   const affectedConfigs = unique([
     ...affectedFlows.flatMap((flow) => flow.configs),
     ...allAffectedComponents.flatMap((component) => stringArrayData(component, 'configs')),
+    ...architectureImpactMap.flatMap((entry) => entry.affected_configs),
     ...changedConfigFiles,
     ...changedDependencyFiles,
   ]).map(safeText);
+  const architectureEvidenceGapIds = unique(
+    architectureImpactMap.flatMap((entry) => entry.evidence_gap_ids),
+  ).map(safeText);
+  const architectureConfidenceGaps = architectureImpactMap
+    .filter((entry) => entry.confidence !== 'verified')
+    .map((entry) => `${entry.impact_id}:${entry.confidence}`);
+  const architectureWhatBreaks = unique(
+    architectureImpactMap.flatMap((entry) => entry.what_breaks),
+  ).map(safeText);
   const reviewEvidenceIds = unique([
     ...allAffectedComponents.flatMap((component) => component.evidence_ids),
     ...affectedFlows.flatMap((flow) => flow.evidence_ids),
     ...affectedRelationships.flatMap((relationship) => relationship.evidence_ids),
+    ...architectureImpactMap.flatMap((entry) => entry.evidence_ids),
     ...changedFiles.map(evidenceId),
   ]).map(safeText);
   const blastRadius = classifyReviewBlastRadius({
@@ -12235,6 +12429,11 @@ function buildReview(params: {
     dependentComponentCount: dependentComponents.length,
     flowCount: affectedFlows.length,
     relationshipCount: affectedRelationships.length,
+    architectureImpactSurfaceCount: architectureImpactMap.length,
+    highCouplingImpactSurfaceCount: architectureImpactMap.filter(
+      (entry) => entry.coupling_level === 'high',
+    ).length,
+    architectureConfidenceGapCount: architectureConfidenceGaps.length,
   });
   const blastRadiusReasons = blastRadiusReasonLines({
     changedFiles,
@@ -12242,6 +12441,7 @@ function buildReview(params: {
     dependentComponents,
     affectedFlows,
     affectedRelationships,
+    architectureImpactMap,
     affectedTests,
     affectedConfigs,
   });
@@ -12419,6 +12619,30 @@ function buildReview(params: {
     });
   }
 
+  if (architectureImpactMap.length > 0) {
+    addFinding({
+      slug: 'architecture-impact-map',
+      severity:
+        architectureImpactMap.some((entry) => entry.coupling_level === 'high') ||
+        architectureImpactMap.length > 3
+          ? 'medium'
+          : 'low',
+      category: 'Architecture drift',
+      title: 'Architecture impact map overlaps the diff',
+      description: safeText(
+        `${architectureImpactMap.length} impact-map surface(s) connect the diff to likely breakage: ${
+          architectureWhatBreaks.slice(0, 3).join(' ') || 'no what-breaks note recorded'
+        }.`,
+      ),
+      affected_files: unique(architectureImpactMap.flatMap((entry) => entry.matched_changed_files)),
+      affected_entities: unique([...graphAffectedEntities, ...architectureImpactComponentIds]),
+      evidenceIds: unique(architectureImpactMap.flatMap((entry) => entry.evidence_ids)),
+      confidence: architectureConfidenceGaps.length > 0 ? 'inferred' : 'verified',
+      recommendation:
+        'Use the matched architecture impact surfaces to review dependent components, linked flows, tests, configs, and evidence gaps before merge.',
+    });
+  }
+
   const publicCliFiles = changedFiles.filter(
     (file) =>
       file === 'packages/cli/src/index.ts' || file === 'README.md' || file.startsWith('runbooks/'),
@@ -12490,6 +12714,7 @@ function buildReview(params: {
     affected_components: unique([...affectedComponentIds, ...dependentComponentIds]),
     affected_flows: affectedFlows,
     affected_relationships: affectedRelationships,
+    architecture_impact_map: architectureImpactMap,
     affected_entities: graphAffectedEntities,
     blast_radius_reasons: blastRadiusReasons,
     review_evidence_summary: {
@@ -12497,6 +12722,10 @@ function buildReview(params: {
       direct_components: affectedComponents.length,
       dependent_components: dependentComponents.length,
       affected_flows: affectedFlows.length,
+      architecture_impact_surfaces: architectureImpactMap.length,
+      architecture_confidence_gaps: architectureConfidenceGaps.map(safeText),
+      architecture_evidence_gap_ids: architectureEvidenceGapIds,
+      architecture_what_breaks: architectureWhatBreaks,
       affected_tests: affectedTests,
       affected_configs: affectedConfigs,
       evidence_ids: reviewEvidenceIds.slice(0, 40),
@@ -12595,6 +12824,25 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     dependent_component_count: review.dependent_components.length,
     affected_flow_count: review.affected_flows.length,
     affected_relationship_count: review.affected_relationships.length,
+    architecture_impact_surface_count: review.architecture_impact_map.length,
+    architecture_impact_component_surface_count: review.architecture_impact_map.filter(
+      (entry) => entry.surface_type === 'component',
+    ).length,
+    architecture_impact_route_surface_count: review.architecture_impact_map.filter(
+      (entry) => entry.surface_type === 'route',
+    ).length,
+    architecture_what_breaks_note_count:
+      review.review_evidence_summary.architecture_what_breaks.length,
+    architecture_evidence_gap_count:
+      review.review_evidence_summary.architecture_evidence_gap_ids.length,
+    architecture_confidence_gap_count:
+      review.review_evidence_summary.architecture_confidence_gaps.length,
+    architecture_affected_test_count: unique(
+      review.architecture_impact_map.flatMap((entry) => entry.affected_tests),
+    ).length,
+    architecture_affected_config_count: unique(
+      review.architecture_impact_map.flatMap((entry) => entry.affected_configs),
+    ).length,
     required_test_count: review.required_tests.length,
     evidence_id_count: review.review_evidence_summary.evidence_ids.length,
     blast_radius: review.blast_radius,
@@ -12617,6 +12865,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     },
     scoring_notes: [
       'Review eval is computed from deterministic local review, brain, graph, and evidence artifacts.',
+      'Architecture impact counts are populated only when changed files, components, or flows overlap the local impact map.',
       'Readiness combines surgicality, risk, blast radius, findings, test guidance, evidence, and secret safety.',
     ],
   };
@@ -12981,13 +13230,18 @@ function classifyReviewBlastRadius(params: {
   readonly dependentComponentCount: number;
   readonly flowCount: number;
   readonly relationshipCount: number;
+  readonly architectureImpactSurfaceCount: number;
+  readonly highCouplingImpactSurfaceCount: number;
+  readonly architectureConfidenceGapCount: number;
 }): BlastRadius {
   if (
     params.fileCount > 12 ||
     params.directComponentCount > 4 ||
     params.dependentComponentCount > 3 ||
     params.flowCount > 5 ||
-    params.relationshipCount > 80
+    params.relationshipCount > 80 ||
+    params.architectureImpactSurfaceCount > 5 ||
+    params.highCouplingImpactSurfaceCount > 1
   ) {
     return 'broad';
   }
@@ -12996,7 +13250,9 @@ function classifyReviewBlastRadius(params: {
     params.directComponentCount > 1 ||
     params.dependentComponentCount > 0 ||
     params.flowCount > 1 ||
-    params.relationshipCount > 40
+    params.relationshipCount > 40 ||
+    params.architectureImpactSurfaceCount > 0 ||
+    params.architectureConfidenceGapCount > 0
   ) {
     return 'moderate';
   }
@@ -13009,12 +13265,14 @@ function blastRadiusReasonLines(params: {
   readonly dependentComponents: readonly BrainEntity[];
   readonly affectedFlows: readonly AffectedFlowData[];
   readonly affectedRelationships: readonly ReviewAffectedRelationshipData[];
+  readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
   readonly affectedTests: readonly string[];
   readonly affectedConfigs: readonly string[];
 }): string[] {
   const directNames = params.directComponents.map((component) => component.name);
   const dependentNames = params.dependentComponents.map((component) => component.name);
   const routeFlowReasons = affectedRouteFlowReasons(params.affectedFlows);
+  const impactMapReasons = architectureImpactReasonLines(params.architectureImpactMap);
   return [
     `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
     params.dependentComponents.length === 0
@@ -13022,8 +13280,42 @@ function blastRadiusReasonLines(params: {
       : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
     `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
     ...routeFlowReasons,
+    ...impactMapReasons,
     `${params.affectedRelationships.length} graph relationship(s) touch the review blast radius.`,
   ].map(safeText);
+}
+
+function architectureImpactReasonLines(entries: readonly ReviewArchitectureImpactData[]): string[] {
+  if (entries.length === 0) {
+    return ['No architecture impact-map surfaces overlapped this review diff.'];
+  }
+  const affectedTests = unique(entries.flatMap((entry) => entry.affected_tests));
+  const affectedConfigs = unique(entries.flatMap((entry) => entry.affected_configs));
+  const evidenceGapIds = unique(entries.flatMap((entry) => entry.evidence_gap_ids));
+  const confidenceGaps = entries.filter((entry) => entry.confidence !== 'verified');
+  return [
+    `${entries.length} architecture impact-map surface(s) overlap the diff: ${entries
+      .map((entry) => entry.impact_id)
+      .slice(0, 5)
+      .join(', ')}.`,
+    ...entries.slice(0, 5).map((entry) => {
+      const routeLabel =
+        entry.route_path === undefined
+          ? entry.name
+          : `${entry.route_path} ${entry.route_type ?? ''}`;
+      const whatBreaks = entry.what_breaks.slice(0, 2).join(' ');
+      return `${entry.impact_id} connects changed files/components/routes to ${routeLabel}; coupling:${entry.coupling_level}; dependent components:${entry.dependent_components.length}; what breaks: ${whatBreaks || 'no note recorded'}.`;
+    }),
+    `Architecture impact-map linked tests/configs: tests ${affectedTests.slice(0, 5).join(', ') || 'none'}; configs ${affectedConfigs.slice(0, 5).join(', ') || 'none'}.`,
+    confidenceGaps.length === 0 && evidenceGapIds.length === 0
+      ? 'Architecture impact-map confidence has no matched evidence gap recorded.'
+      : `Architecture impact-map confidence gaps: ${
+          confidenceGaps
+            .map((entry) => `${entry.impact_id}:${entry.confidence}`)
+            .slice(0, 5)
+            .join(', ') || 'none'
+        }; evidence gaps: ${evidenceGapIds.slice(0, 5).join(', ') || 'none'}.`,
+  ];
 }
 
 function affectedRouteFlowReasons(flows: readonly AffectedFlowData[]): string[] {

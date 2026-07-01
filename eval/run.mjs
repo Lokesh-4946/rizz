@@ -228,6 +228,10 @@ function validateReviewAssertions(assertions) {
     'affected_flows_include',
     'affected_tests_include',
     'affected_configs_include',
+    'architecture_impact_surfaces_include',
+    'architecture_what_breaks_include',
+    'architecture_evidence_gaps_include',
+    'architecture_confidence_gaps_include',
     'required_tests_include',
     'blast_radius_reasons_include',
     'forbidden_output_substrings',
@@ -239,6 +243,8 @@ function validateReviewAssertions(assertions) {
     'minimum_dependent_components',
     'minimum_affected_flows',
     'minimum_affected_relationships',
+    'minimum_architecture_impact_surfaces',
+    'minimum_architecture_confidence_gaps',
   ]) {
     if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
       errors.push(`review.assertions.${field} must be a non-negative number`);
@@ -797,6 +803,13 @@ function idsFromRows(rows) {
     .filter((id) => id !== undefined);
 }
 
+function impactIdsFromRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => (isRecord(row) && typeof row.impact_id === 'string' ? row.impact_id : undefined))
+    .filter((id) => id !== undefined);
+}
+
 function reviewArray(review, field) {
   const value = review[field];
   return Array.isArray(value) ? value : [];
@@ -909,6 +922,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const directComponentIds = idsFromRows(review.direct_affected_components);
   const dependentComponentIds = idsFromRows(review.dependent_components);
   const affectedFlowIds = idsFromRows(review.affected_flows);
+  const architectureImpactSurfaces = impactIdsFromRows(review.architecture_impact_map);
   const affectedRelationships = reviewArray(review, 'affected_relationships');
   const evidenceSummary = isRecord(review.review_evidence_summary)
     ? review.review_evidence_summary
@@ -918,6 +932,15 @@ function assertReviewContract(task, repoDir, review, stdout) {
     : [];
   const affectedConfigs = Array.isArray(evidenceSummary.affected_configs)
     ? evidenceSummary.affected_configs
+    : [];
+  const architectureWhatBreaks = Array.isArray(evidenceSummary.architecture_what_breaks)
+    ? evidenceSummary.architecture_what_breaks
+    : [];
+  const architectureEvidenceGaps = Array.isArray(evidenceSummary.architecture_evidence_gap_ids)
+    ? evidenceSummary.architecture_evidence_gap_ids
+    : [];
+  const architectureConfidenceGaps = Array.isArray(evidenceSummary.architecture_confidence_gaps)
+    ? evidenceSummary.architecture_confidence_gaps
     : [];
 
   errors.push(
@@ -942,8 +965,28 @@ function assertReviewContract(task, repoDir, review, stdout) {
       'dependent_components',
     ),
     ...assertIncludesAll(affectedFlowIds, assertions.affected_flows_include, 'affected_flows'),
+    ...assertIncludesAll(
+      architectureImpactSurfaces,
+      assertions.architecture_impact_surfaces_include,
+      'architecture_impact_map',
+    ),
     ...assertIncludesAll(affectedTests, assertions.affected_tests_include, 'affected_tests'),
     ...assertIncludesAll(affectedConfigs, assertions.affected_configs_include, 'affected_configs'),
+    ...assertSubstringMatches(
+      architectureWhatBreaks,
+      assertions.architecture_what_breaks_include,
+      'architecture_what_breaks',
+    ),
+    ...assertSubstringMatches(
+      architectureEvidenceGaps,
+      assertions.architecture_evidence_gaps_include,
+      'architecture_evidence_gap_ids',
+    ),
+    ...assertSubstringMatches(
+      architectureConfidenceGaps,
+      assertions.architecture_confidence_gaps_include,
+      'architecture_confidence_gaps',
+    ),
     ...assertSubstringMatches(
       reviewArray(review, 'required_tests'),
       assertions.required_tests_include,
@@ -990,6 +1033,22 @@ function assertReviewContract(task, repoDir, review, stdout) {
       `affected_relationships ${affectedRelationships.length} below ${assertions.minimum_affected_relationships}`,
     );
   }
+  if (
+    assertions.minimum_architecture_impact_surfaces !== undefined &&
+    architectureImpactSurfaces.length < assertions.minimum_architecture_impact_surfaces
+  ) {
+    errors.push(
+      `architecture_impact_map ${architectureImpactSurfaces.length} below ${assertions.minimum_architecture_impact_surfaces}`,
+    );
+  }
+  if (
+    assertions.minimum_architecture_confidence_gaps !== undefined &&
+    architectureConfidenceGaps.length < assertions.minimum_architecture_confidence_gaps
+  ) {
+    errors.push(
+      `architecture_confidence_gaps ${architectureConfidenceGaps.length} below ${assertions.minimum_architecture_confidence_gaps}`,
+    );
+  }
   if (assertions.blast_radius !== undefined && review.blast_radius !== assertions.blast_radius) {
     errors.push(`blast_radius ${review.blast_radius} did not match ${assertions.blast_radius}`);
   }
@@ -1009,6 +1068,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
       dependentComponents: dependentComponentIds.length,
       affectedFlows: affectedFlowIds.length,
       affectedRelationships: affectedRelationships.length,
+      architectureImpactSurfaces: architectureImpactSurfaces.length,
       blastRadius: review.blast_radius,
     },
   };
