@@ -226,6 +226,14 @@ describe('project brain generation', () => {
         reused_understanding_count: number;
         recomputed_understanding_count: number;
         scan_efficiency_score: number;
+        understanding_deltas: {
+          previous_scan_available: boolean;
+          changed_surface_count: number;
+          new_surface_count: number;
+          stable_surface_count: number;
+          stale_surface_count: number;
+          new_surfaces: Array<{ surface_type: string; surface_id: string; status: string }>;
+        };
       }>(join(first.value.researchDir, 'incremental_update.json'));
       expect(firstIncremental).toMatchObject({
         previous_brain_fingerprint: null,
@@ -252,6 +260,20 @@ describe('project brain generation', () => {
       expect(firstIncremental.reused_understanding_count).toBe(0);
       expect(firstIncremental.recomputed_understanding_count).toBeGreaterThan(0);
       expect(firstIncremental.scan_efficiency_score).toBe(0);
+      expect(firstIncremental.understanding_deltas).toMatchObject({
+        previous_scan_available: false,
+        changed_surface_count: 0,
+        stable_surface_count: 0,
+        stale_surface_count: 0,
+      });
+      expect(firstIncremental.understanding_deltas.new_surface_count).toBeGreaterThan(0);
+      expect(firstIncremental.understanding_deltas.new_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_type: 'component',
+          surface_id: 'component:packages--brain',
+          status: 'new',
+        }),
+      );
 
       await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 2;');
       const second = await generateProjectBrain({
@@ -890,6 +912,36 @@ describe('project brain generation', () => {
         recomputed_files: number;
         file_reuse_ratio: number;
         file_status_counts: { changed: number; current: number };
+        understanding_deltas: {
+          previous_scan_available: boolean;
+          changed_surface_count: number;
+          new_surface_count: number;
+          stable_surface_count: number;
+          stale_surface_count: number;
+          changed_surfaces: Array<{
+            surface_id: string;
+            surface_type: string;
+            status: string;
+            previous_score: number | null;
+            current_score: number | null;
+            score_delta: number | null;
+          }>;
+          stable_surfaces: Array<{ surface_id: string; surface_type: string; status: string }>;
+          stale_surfaces: Array<{ surface_id: string; surface_type: string; status: string }>;
+          by_surface_type: {
+            architecture: { stable: number; changed: number; new: number; stale: number };
+            component: { stable: number; changed: number; new: number; stale: number };
+            evidence: { stable: number; changed: number; new: number; stale: number };
+            flow: { stable: number; changed: number; new: number; stale: number };
+            unknown: { stable: number; changed: number; new: number; stale: number };
+          };
+          score_deltas: Array<{
+            surface_id: string;
+            previous_score: number;
+            current_score: number;
+            delta: number;
+          }>;
+        };
       }>(join(researchDir, 'incremental_update.json'));
       expect(incremental).toMatchObject({
         scanned_files: 3,
@@ -928,6 +980,35 @@ describe('project brain generation', () => {
       expect(incremental.recomputed_understanding_count).toBeGreaterThan(0);
       expect(incremental.stale_fact_count).toBe(0);
       expect(incremental.scan_efficiency_score).toBeGreaterThan(0);
+      expect(incremental.understanding_deltas.previous_scan_available).toBe(true);
+      expect(incremental.understanding_deltas.changed_surface_count).toBeGreaterThan(0);
+      expect(incremental.understanding_deltas.stable_surface_count).toBeGreaterThan(0);
+      expect(incremental.understanding_deltas.stale_surface_count).toBe(0);
+      expect(incremental.understanding_deltas.changed_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: 'evidence:file-packages--brain--src--index.ts',
+          surface_type: 'evidence',
+          status: 'changed',
+          previous_score: expect.any(Number),
+          current_score: expect.any(Number),
+        }),
+      );
+      expect(incremental.understanding_deltas.stable_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: 'component:packages--brain',
+          surface_type: 'component',
+          status: 'stable',
+        }),
+      );
+      expect(incremental.understanding_deltas.stable_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: 'architecture:relationship-map',
+          surface_type: 'architecture',
+          status: 'stable',
+        }),
+      );
+      expect(incremental.understanding_deltas.by_surface_type.evidence.changed).toBeGreaterThan(0);
+      expect(incremental.understanding_deltas.by_surface_type.component.stable).toBeGreaterThan(0);
       expect(understandingScore.changed).toMatchObject({
         changed_file_count: 1,
         changed_entity_count: incremental.changed_entity_count,
@@ -952,6 +1033,13 @@ describe('project brain generation', () => {
           recomputed_understanding_count: number;
           stale_fact_count: number;
           scan_efficiency_score: number;
+          understanding_deltas: {
+            changed_surface_count: number;
+            stable_surface_count: number;
+            stale_surface_count: number;
+            changed_surfaces: Array<{ surface_id: string; surface_type: string }>;
+            stable_surfaces: Array<{ surface_id: string; surface_type: string }>;
+          };
         };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
       expect(latest.latest_incremental_update).toMatchObject({
@@ -962,6 +1050,14 @@ describe('project brain generation', () => {
         stale_fact_count: 0,
         scan_efficiency_score: incremental.scan_efficiency_score,
       });
+      expect(latest.latest_incremental_update.understanding_deltas).toMatchObject({
+        changed_surface_count: incremental.understanding_deltas.changed_surface_count,
+        stable_surface_count: incremental.understanding_deltas.stable_surface_count,
+        stale_surface_count: 0,
+      });
+      expect(latest.latest_incremental_update.understanding_deltas.changed_surfaces).toContainEqual(
+        expect.objectContaining({ surface_id: 'evidence:file-packages--brain--src--index.ts' }),
+      );
       expect(latest.latest_understanding_score).toMatchObject({
         overall_score: understandingScore.overall_score,
         dimensions: {
@@ -997,8 +1093,10 @@ describe('project brain generation', () => {
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Research Artifacts');
       expect(report).toContain('Incremental Understanding');
-      expect(report).toContain('changed understanding');
-      expect(report).toContain('scan efficiency');
+      expect(report).toContain('Changed Understanding Surfaces');
+      expect(report).toContain('Stable Understanding Surfaces');
+      expect(report).toContain('Stale Understanding Surfaces');
+      expect(report).toContain('Scan Efficiency');
       expect(report).toContain('<section class="objects" aria-label="Mission Control objects">');
       expect(report).toContain('<h3>weak</h3>');
       expect(report).toContain('<h3>usable</h3>');
@@ -1020,6 +1118,19 @@ describe('project brain generation', () => {
         reused_files: number;
         recomputed_files: number;
         file_reuse_ratio: number;
+        understanding_deltas: {
+          changed_surface_count: number;
+          new_surface_count: number;
+          stable_surface_count: number;
+          stale_surface_count: number;
+          changed_surfaces: Array<{ surface_id: string; surface_type: string; status: string }>;
+          new_surfaces: Array<{ surface_id: string; surface_type: string; status: string }>;
+          stable_surfaces: Array<{ surface_id: string; surface_type: string; status: string }>;
+          by_surface_type: {
+            architecture: { changed: number };
+            evidence: { new: number };
+          };
+        };
       }>(join(third.value.researchDir, 'incremental_update.json'));
       expect(mixedIncremental).toMatchObject({
         scanned_files: 4,
@@ -1031,6 +1142,26 @@ describe('project brain generation', () => {
       });
       expect(mixedIncremental.added_entity_count).toBeGreaterThan(0);
       expect(mixedIncremental.relationship_delta.added_count).toBeGreaterThan(0);
+      expect(mixedIncremental.understanding_deltas.new_surface_count).toBeGreaterThan(0);
+      expect(mixedIncremental.understanding_deltas.changed_surface_count).toBeGreaterThan(0);
+      expect(mixedIncremental.understanding_deltas.stable_surface_count).toBeGreaterThan(0);
+      expect(mixedIncremental.understanding_deltas.stale_surface_count).toBe(0);
+      expect(mixedIncremental.understanding_deltas.new_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: 'evidence:file-packages--brain--src--extra.ts',
+          surface_type: 'evidence',
+          status: 'new',
+        }),
+      );
+      expect(mixedIncremental.understanding_deltas.changed_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: 'architecture:relationship-map',
+          surface_type: 'architecture',
+          status: 'changed',
+        }),
+      );
+      expect(mixedIncremental.understanding_deltas.by_surface_type.evidence.new).toBeGreaterThan(0);
+      expect(mixedIncremental.understanding_deltas.by_surface_type.architecture.changed).toBe(1);
 
       const flows = await readJson<{
         entities: Array<{
@@ -3561,6 +3692,10 @@ describe('project brain generation', () => {
         evidence_delta: { changed_count: number; changed: string[] };
         changed_entities: Array<{ id: string; name: string }>;
         scan_efficiency_score: number;
+        understanding_deltas: {
+          changed_surfaces: Array<{ surface_id: string; name: string; surface_type: string }>;
+          stable_surfaces: Array<{ surface_id: string; name: string; surface_type: string }>;
+        };
       }>(join(second.value.researchDir, 'incremental_update.json'));
       expect(incremental.previous_brain_fingerprint).toMatch(/^[a-f0-9]{64}$/);
       expect(incremental.current_brain_fingerprint).toMatch(/^[a-f0-9]{64}$/);
@@ -3577,6 +3712,13 @@ describe('project brain generation', () => {
         expect.objectContaining({
           id: expect.stringMatching(/^evidence:redacted:sensitive-file:/),
           name: expect.stringMatching(/^redacted:sensitive-file:/),
+        }),
+      );
+      expect(incremental.understanding_deltas.changed_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: expect.stringMatching(/^evidence:redacted:sensitive-file:/),
+          name: expect.stringMatching(/^redacted:sensitive-file:/),
+          surface_type: 'evidence',
         }),
       );
       expect(incremental.scan_efficiency_score).toBeGreaterThan(0);
