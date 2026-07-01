@@ -1022,8 +1022,72 @@ export type ExplainProjectTargetResult =
   | { readonly ok: true; readonly value: ExplainProjectTargetSummary }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
+type AskQuestionIntent =
+  | 'read_first'
+  | 'breaks_if_changed'
+  | 'dependents'
+  | 'why_exists'
+  | 'evidence';
+
+type AskAnswerStatus = 'answered' | 'limited' | 'blocked';
+
+interface AskReadinessSummary {
+  readonly status: 'ready' | 'limited' | 'blocked';
+  readonly score: number;
+  readonly summary: string;
+  readonly reasons: readonly string[];
+  readonly next_required_improvements: readonly string[];
+}
+
+export interface AskProjectQuestionOptions {
+  readonly rootDir: string;
+  readonly question: string;
+  readonly now?: Date;
+}
+
+export interface AskProjectQuestionAnswer {
+  readonly schema_version: 1;
+  readonly generated_at: string;
+  readonly question: string;
+  readonly intent: AskQuestionIntent;
+  readonly status: AskAnswerStatus;
+  readonly answer: string;
+  readonly answer_items: readonly string[];
+  readonly confidence: Confidence;
+  readonly readiness: AskReadinessSummary;
+  readonly evidence_ids: readonly string[];
+  readonly evidence_summary: {
+    readonly evidence_count: number;
+    readonly records: readonly {
+      readonly id: string;
+      readonly description: string;
+      readonly confidence: Confidence;
+      readonly source_files: readonly string[];
+    }[];
+    readonly redacted_evidence_count: number;
+  };
+  readonly unknowns: readonly string[];
+  readonly related_entities: readonly string[];
+  readonly research_artifacts: readonly string[];
+  readonly deterministic: true;
+  readonly provider_calls_required: false;
+  readonly network_required: false;
+}
+
+export interface AskProjectQuestionSummary {
+  readonly rootDir: string;
+  readonly latestPath: string;
+  readonly reportPath: string;
+  readonly answer: AskProjectQuestionAnswer;
+}
+
+export type AskProjectQuestionResult =
+  | { readonly ok: true; readonly value: AskProjectQuestionSummary }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
 interface ExplainResearchArtifacts {
   readonly evidenceQuality: Record<string, unknown> | undefined;
+  readonly benchmarkReady: Record<string, unknown> | undefined;
   readonly benchmarkTasks: Record<string, unknown> | undefined;
   readonly availablePaths: readonly string[];
 }
@@ -13182,6 +13246,627 @@ export async function explainProjectTarget(
   }
 }
 
+export async function askProjectQuestion(
+  options: AskProjectQuestionOptions,
+): Promise<AskProjectQuestionResult> {
+  try {
+    const rootDir = options.rootDir;
+    const parsed = parseAskQuestion(options.question);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+
+    if (!(await hasProjectBrain(rootDir))) {
+      return {
+        ok: false,
+        error: {
+          code: 'BRAIN_MISSING',
+          message: 'Project brain not found. Run rizz brain, then rerun rizz ask.',
+        },
+      };
+    }
+
+    const schemaErrors = await validateBrainSchema(rootDir);
+    if (schemaErrors.length > 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'BRAIN_SCHEMA_INVALID',
+          message: `${schemaErrors.slice(0, 4).join('; ')}. Run rizz brain to refresh.`,
+        },
+      };
+    }
+
+    const brainDir = join(rootDir, '.rizz', 'brain');
+    const entitiesDir = join(brainDir, 'entities');
+    const latestPath = join(brainDir, 'latest.json');
+    const graphPath = join(brainDir, 'graph.json');
+    const latest = (await readJsonFile<Record<string, unknown>>(latestPath)) ?? {};
+    const graph =
+      (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
+      {};
+    const entitySets = await readExplainEntitySets(entitiesDir);
+    const research = await readExplainResearchArtifacts(rootDir);
+    const readiness = askReadinessFromBenchmark(research.benchmarkReady);
+    const now = (options.now ?? new Date()).toISOString();
+
+    const answer =
+      readiness.status === 'blocked'
+        ? buildBlockedAskAnswer({
+            now,
+            question: options.question,
+            intent: parsed.value.intent,
+            readiness,
+          })
+        : buildAskAnswer({
+            now,
+            question: options.question,
+            parsed: parsed.value,
+            readiness,
+            latest,
+            relationships: graph.relationships ?? [],
+            entitySets,
+            research,
+          });
+    if (!answer.ok) return { ok: false, error: answer.error };
+
+    const reportsDir = join(rootDir, '.rizz', 'reports');
+    await mkdir(reportsDir, { recursive: true });
+    const reportPath = join(reportsDir, 'ask.html');
+    await writeVerifiedFile(reportPath, renderAskReport(answer.value));
+
+    return {
+      ok: true,
+      value: {
+        rootDir,
+        latestPath,
+        reportPath,
+        answer: safeBrainValue(answer.value) as AskProjectQuestionAnswer,
+      },
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'ASK_FAILED', message } };
+  }
+}
+
+type ParsedAskQuestion =
+  | { readonly intent: 'read_first' }
+  | { readonly intent: 'breaks_if_changed'; readonly target: string }
+  | { readonly intent: 'dependents'; readonly target: string }
+  | { readonly intent: 'why_exists'; readonly target: string }
+  | { readonly intent: 'evidence'; readonly target: string };
+
+function parseAskQuestion(
+  question: string,
+):
+  | { readonly ok: true; readonly value: ParsedAskQuestion }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
+  const trimmed = question.trim();
+  if (trimmed === '') {
+    return {
+      ok: false,
+      error: {
+        code: 'ASK_QUESTION_REQUIRED',
+        message: 'Usage: rizz ask <project-intelligence-question>',
+      },
+    };
+  }
+
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[?!.]+$/g, '')
+    .trim();
+  if (
+    normalized === 'what should i read first' ||
+    normalized === 'what do i read first' ||
+    normalized === 'where should i start' ||
+    normalized === 'what should i inspect first'
+  ) {
+    return { ok: true, value: { intent: 'read_first' } };
+  }
+
+  const breaksTarget = askTargetAfterPrefix(normalized, ['what breaks if ', 'what breaks when ']);
+  if (breaksTarget !== undefined) {
+    const target = stripAskTargetSuffix(breaksTarget, [
+      ' is changed',
+      ' changes',
+      ' changed',
+      ' is removed',
+      ' removed',
+      ' moves',
+      ' moved',
+    ]);
+    return askTargetResult('breaks_if_changed', target);
+  }
+
+  const dependentsTarget = askTargetAfterPrefix(normalized, [
+    'who depends on ',
+    'what depends on ',
+    'who uses ',
+    'what uses ',
+  ]);
+  if (dependentsTarget !== undefined) return askTargetResult('dependents', dependentsTarget);
+
+  const whyTarget = askTargetBetween(normalized, 'why does ', ' exist');
+  if (whyTarget !== undefined) return askTargetResult('why_exists', whyTarget);
+  const whyHereTarget = askTargetBetween(normalized, 'why is ', ' here');
+  if (whyHereTarget !== undefined) return askTargetResult('why_exists', whyHereTarget);
+
+  const evidenceTarget = askTargetAfterPrefix(normalized, [
+    'what evidence backs ',
+    'what evidence supports ',
+    'what evidence proves ',
+    'evidence for ',
+  ]);
+  if (evidenceTarget !== undefined) return askTargetResult('evidence', evidenceTarget);
+
+  return {
+    ok: false,
+    error: {
+      code: 'ASK_UNSUPPORTED_QUESTION',
+      message:
+        'rizz ask only answers Project Intelligence questions over .rizz/brain and .rizz/research. Supported forms: what should I read first; what breaks if <target> changes; who depends on <target>; why does <target> exist; what evidence backs <target>.',
+    },
+  };
+}
+
+function askTargetAfterPrefix(value: string, prefixes: readonly string[]): string | undefined {
+  for (const prefix of prefixes) {
+    if (value.startsWith(prefix)) return value.slice(prefix.length).trim();
+  }
+  return undefined;
+}
+
+function askTargetBetween(value: string, prefix: string, suffix: string): string | undefined {
+  if (!value.startsWith(prefix) || !value.endsWith(suffix)) return undefined;
+  return value.slice(prefix.length, value.length - suffix.length).trim();
+}
+
+function stripAskTargetSuffix(value: string, suffixes: readonly string[]): string {
+  for (const suffix of suffixes) {
+    if (value.endsWith(suffix)) return value.slice(0, value.length - suffix.length).trim();
+  }
+  return value.trim();
+}
+
+function askTargetResult(
+  intent: Exclude<AskQuestionIntent, 'read_first'>,
+  target: string,
+):
+  | { readonly ok: true; readonly value: ParsedAskQuestion }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
+  const cleaned = target.trim();
+  if (
+    cleaned === '' ||
+    cleaned === 'this' ||
+    cleaned === 'this component' ||
+    cleaned === 'this file' ||
+    cleaned === 'this flow'
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: 'ASK_TARGET_REQUIRED',
+        message: 'This ask intent needs an explicit component, file, folder, or flow target.',
+      },
+    };
+  }
+  return { ok: true, value: { intent, target: cleaned } };
+}
+
+function askReadinessFromBenchmark(
+  benchmarkReady: Record<string, unknown> | undefined,
+): AskReadinessSummary {
+  const askReadiness = isRecord(benchmarkReady?.ask_readiness) ? benchmarkReady.ask_readiness : {};
+  const rawStatus = recordString(askReadiness, 'status', 'blocked');
+  const status = rawStatus === 'ready' || rawStatus === 'limited' ? rawStatus : 'blocked';
+  const score = recordNumber(askReadiness, 'score');
+  const summary = recordString(
+    askReadiness,
+    'summary',
+    'Ask readiness is missing. Run rizz brain to refresh local Project Intelligence artifacts.',
+  );
+  const reasons = recordArray(askReadiness, 'reasons')
+    .filter((item): item is string => typeof item === 'string')
+    .map(safeText);
+  const improvements = recordArray(askReadiness, 'next_required_improvements')
+    .filter((item): item is string => typeof item === 'string')
+    .map(safeText);
+  return {
+    status,
+    score,
+    summary: safeText(summary),
+    reasons:
+      reasons.length > 0
+        ? reasons
+        : ['Ask readiness is unavailable or blocked by missing local research artifacts.'],
+    next_required_improvements:
+      improvements.length > 0
+        ? improvements
+        : ['Run rizz brain and inspect .rizz/research/benchmark_ready.json.'],
+  };
+}
+
+function buildBlockedAskAnswer(params: {
+  readonly now: string;
+  readonly question: string;
+  readonly intent: AskQuestionIntent;
+  readonly readiness: AskReadinessSummary;
+}): { readonly ok: true; readonly value: AskProjectQuestionAnswer } {
+  return {
+    ok: true,
+    value: {
+      schema_version: 1,
+      generated_at: params.now,
+      question: safeText(params.question),
+      intent: params.intent,
+      status: 'blocked',
+      answer:
+        'Local Project Intelligence ask is blocked by readiness gates, so no repo answer was produced.',
+      answer_items: params.readiness.reasons.slice(0, 6),
+      confidence: 'uncertain',
+      readiness: params.readiness,
+      evidence_ids: [],
+      evidence_summary: {
+        evidence_count: 0,
+        records: [],
+        redacted_evidence_count: 0,
+      },
+      unknowns: unique([
+        ...params.readiness.reasons,
+        ...params.readiness.next_required_improvements,
+      ]).slice(0, 10),
+      related_entities: [],
+      research_artifacts: ['.rizz/research/benchmark_ready.json'],
+      deterministic: true,
+      provider_calls_required: false,
+      network_required: false,
+    },
+  };
+}
+
+function buildAskAnswer(params: {
+  readonly now: string;
+  readonly question: string;
+  readonly parsed: ParsedAskQuestion;
+  readonly readiness: AskReadinessSummary;
+  readonly latest: Record<string, unknown>;
+  readonly relationships: readonly BrainRelationship[];
+  readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
+  readonly research: ExplainResearchArtifacts;
+}):
+  | { readonly ok: true; readonly value: AskProjectQuestionAnswer }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
+  if (params.parsed.intent === 'read_first') {
+    return {
+      ok: true,
+      value: buildReadFirstAskAnswer({
+        now: params.now,
+        question: params.question,
+        readiness: params.readiness,
+        latest: params.latest,
+        entitySets: params.entitySets,
+      }),
+    };
+  }
+
+  const explainableEntities = [
+    ...params.entitySets.components,
+    ...params.entitySets.flows,
+    ...params.entitySets.files,
+    ...params.entitySets.folders,
+  ];
+  const resolved = resolveExplainTarget(params.parsed.target, explainableEntities);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      error: {
+        code: resolved.error.code.replace('EXPLAIN_', 'ASK_'),
+        message: resolved.error.message,
+      },
+    };
+  }
+  const explanation = buildExplanation({
+    now: params.now,
+    query: params.parsed.target,
+    target: resolved.value,
+    latest: params.latest,
+    relationships: params.relationships,
+    entitySets: params.entitySets,
+    research: params.research,
+  });
+  return {
+    ok: true,
+    value: buildTargetAskAnswer({
+      now: params.now,
+      question: params.question,
+      intent: params.parsed.intent,
+      readiness: params.readiness,
+      explanation,
+    }),
+  };
+}
+
+function buildReadFirstAskAnswer(params: {
+  readonly now: string;
+  readonly question: string;
+  readonly readiness: AskReadinessSummary;
+  readonly latest: Record<string, unknown>;
+  readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
+}): AskProjectQuestionAnswer {
+  const understandingScore = isRecord(params.latest.latest_understanding_score)
+    ? params.latest.latest_understanding_score
+    : {};
+  const readFirstPointers = recordArray(understandingScore, 'read_first')
+    .filter(isRecord)
+    .slice(0, 8);
+  const pointerItems = readFirstPointers.map((pointer) => {
+    const path = recordString(pointer, 'path', 'unknown path');
+    const reason = recordString(pointer, 'reason', 'Read this first.');
+    const componentId = recordString(pointer, 'component_id', 'unknown component');
+    return `${path} - ${reason} (${componentId})`;
+  });
+  const fallbackItems = params.entitySets.components
+    .flatMap((component) => stringArrayData(component, 'read_first'))
+    .slice(0, 8);
+  const answerItems = unique(pointerItems.length > 0 ? pointerItems : fallbackItems).slice(0, 8);
+  const relatedEntities = unique(
+    readFirstPointers
+      .map((pointer) => recordString(pointer, 'component_id', ''))
+      .filter((item) => item !== ''),
+  );
+  const relatedComponents =
+    relatedEntities.length > 0
+      ? params.entitySets.components.filter((component) => relatedEntities.includes(component.id))
+      : params.entitySets.components.slice(0, 4);
+  const evidenceIds = unique(relatedComponents.flatMap((component) => component.evidence_ids));
+  const evidenceSummary = askEvidenceSummary({
+    evidenceIds,
+    evidence: params.entitySets.evidence,
+  });
+  const unknowns = [
+    ...(answerItems.length === 0
+      ? ['No read-first pointers are recorded yet. Run rizz brain after adding source evidence.']
+      : []),
+    ...(params.readiness.status === 'limited' ? params.readiness.reasons.slice(0, 4) : []),
+  ];
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    question: safeText(params.question),
+    intent: 'read_first',
+    status: params.readiness.status === 'limited' ? 'limited' : 'answered',
+    answer:
+      answerItems.length === 0
+        ? 'No deterministic read-first answer is available yet.'
+        : 'Read these local Project Intelligence pointers first.',
+    answer_items: answerItems.map(safeText),
+    confidence: askConfidence(
+      answerItems.length === 0
+        ? 'uncertain'
+        : relatedComponents.length > 0
+          ? 'inferred'
+          : 'uncertain',
+      params.readiness.status,
+    ),
+    readiness: params.readiness,
+    evidence_ids: evidenceIds.map(safeText),
+    evidence_summary: evidenceSummary,
+    unknowns: unique(unknowns).slice(0, 10).map(safeText),
+    related_entities: relatedEntities.map(safeText),
+    research_artifacts: [
+      '.rizz/brain/latest.json',
+      '.rizz/research/understanding_score.json',
+      '.rizz/research/evidence_quality.json',
+      '.rizz/research/benchmark_ready.json',
+    ],
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+  };
+}
+
+function buildTargetAskAnswer(params: {
+  readonly now: string;
+  readonly question: string;
+  readonly intent: Exclude<AskQuestionIntent, 'read_first'>;
+  readonly readiness: AskReadinessSummary;
+  readonly explanation: ExplainSummaryData;
+}): AskProjectQuestionAnswer {
+  const explanation = params.explanation;
+  const answerItems = targetAskAnswerItems(params.intent, explanation);
+  const unknowns = unique([
+    ...(answerItems.length === 0
+      ? [`No ${params.intent} facts are recorded for this target.`]
+      : []),
+    ...explanation.unknowns,
+    ...explanation.evidence_gaps,
+    ...(params.readiness.status === 'limited' ? params.readiness.reasons.slice(0, 4) : []),
+  ]).slice(0, 12);
+  const relatedEntities = unique([
+    explanation.resolved_entity_id,
+    ...explanation.related_components,
+    ...explanation.related_flows,
+    ...explanation.depends_on.map((item) => relationshipEntityLabel(item)),
+    ...explanation.depended_on_by.map((item) => relationshipEntityLabel(item)),
+  ]).filter((item) => item !== '');
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    question: safeText(params.question),
+    intent: params.intent,
+    status: params.readiness.status === 'limited' ? 'limited' : 'answered',
+    answer: targetAskAnswerSummary(params.intent, explanation, answerItems.length),
+    answer_items: answerItems.map(safeText),
+    confidence: askConfidence(explanation.confidence, params.readiness.status),
+    readiness: params.readiness,
+    evidence_ids: explanation.evidence_ids.map(safeText),
+    evidence_summary: {
+      evidence_count: explanation.evidence_summary.evidence_count,
+      records: explanation.evidence_summary.records.map((record) => ({
+        id: safeText(record.id),
+        description: safeText(record.description),
+        confidence: record.confidence,
+        source_files: record.source_files.map(safeText),
+      })),
+      redacted_evidence_count: explanation.evidence_summary.redacted_evidence_count,
+    },
+    unknowns: unknowns.map(safeText),
+    related_entities: relatedEntities.map(safeText),
+    research_artifacts: unique([
+      '.rizz/brain/latest.json',
+      '.rizz/brain/graph.json',
+      '.rizz/research/benchmark_ready.json',
+      ...explanation.research_artifacts.proving,
+      ...explanation.research_artifacts.limiting,
+      ...(params.intent === 'breaks_if_changed' || params.intent === 'dependents'
+        ? ['.rizz/research/architecture_reasoning.json']
+        : []),
+    ]),
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+  };
+}
+
+function targetAskAnswerItems(
+  intent: Exclude<AskQuestionIntent, 'read_first'>,
+  explanation: ExplainSummaryData,
+): readonly string[] {
+  switch (intent) {
+    case 'breaks_if_changed':
+      return explanation.breaks_if_changed;
+    case 'dependents':
+      return unique([...explanation.consumers, ...explanation.depended_on_by]);
+    case 'why_exists':
+      return unique([
+        explanation.purpose,
+        ...explanation.responsibilities.slice(0, 5),
+        ...explanation.tradeoffs.slice(0, 3),
+      ]);
+    case 'evidence':
+      return explanation.evidence_summary.records.map(
+        (record) => `${record.id}: ${record.description}`,
+      );
+  }
+}
+
+function targetAskAnswerSummary(
+  intent: Exclude<AskQuestionIntent, 'read_first'>,
+  explanation: ExplainSummaryData,
+  itemCount: number,
+): string {
+  if (itemCount === 0) {
+    return `No deterministic ${intent} answer is recorded for ${explanation.resolved_entity_id}.`;
+  }
+  switch (intent) {
+    case 'breaks_if_changed':
+      return `Changing ${explanation.resolved_entity_id} may affect the recorded breakage surfaces below.`;
+    case 'dependents':
+      return `These recorded consumers or inbound dependency edges depend on ${explanation.resolved_entity_id}.`;
+    case 'why_exists':
+      return `${explanation.resolved_entity_id} exists for the purpose and responsibilities below.`;
+    case 'evidence':
+      return `These local evidence records back ${explanation.resolved_entity_id}.`;
+  }
+}
+
+function relationshipEntityLabel(label: string): string {
+  const marker = ': ';
+  const index = label.indexOf(marker);
+  return index === -1 ? label : label.slice(index + marker.length);
+}
+
+function askConfidence(
+  base: Confidence,
+  readinessStatus: AskReadinessSummary['status'],
+): Confidence {
+  if (readinessStatus === 'blocked') return 'uncertain';
+  if (readinessStatus === 'limited' && base === 'verified') return 'inferred';
+  return base;
+}
+
+function askEvidenceSummary(params: {
+  readonly evidenceIds: readonly string[];
+  readonly evidence: readonly BrainEntity[];
+}): AskProjectQuestionAnswer['evidence_summary'] {
+  const evidenceById = new Map(params.evidence.map((entity) => [entity.id, entity]));
+  const safeEvidenceIds = unique(params.evidenceIds.map(safeText));
+  return {
+    evidence_count: safeEvidenceIds.length,
+    records: safeEvidenceIds.slice(0, 12).map((id) => {
+      const evidence = evidenceById.get(id);
+      if (evidence === undefined) {
+        return {
+          id,
+          description: 'Evidence reference was recorded, but the evidence entity was not found.',
+          confidence: 'uncertain' as const,
+          source_files: [],
+        };
+      }
+      return {
+        id: safeText(evidence.id),
+        description: safeText(evidence.description),
+        confidence: evidence.confidence,
+        source_files: evidence.source_files.map(safeText),
+      };
+    }),
+    redacted_evidence_count: redactedReferenceCount(safeEvidenceIds),
+  };
+}
+
+function renderAskReport(answer: AskProjectQuestionAnswer): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rizz ask · ${htmlEscape(answer.intent)}</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
+    header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
+    h1 { font-size: clamp(30px, 5vw, 48px); margin: 0 0 8px; letter-spacing: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .muted { color: var(--muted); }
+    code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="badge">rizz ask · local Project Intelligence</p>
+      <h1>${htmlEscape(answer.intent)}</h1>
+      <p>${htmlEscape(answer.question)}</p>
+      <p class="muted">${htmlEscape(answer.status)} · ${htmlEscape(answer.confidence)} · readiness ${answer.readiness.score}/100 ${htmlEscape(answer.readiness.status)} · generated ${htmlEscape(answer.generated_at)}</p>
+    </header>
+    <section class="card"><h2>Answer</h2><p>${htmlEscape(answer.answer)}</p>${renderList(answer.answer_items)}</section>
+    <section class="grid">
+      <article class="card"><h2>Readiness Gate</h2>${renderList([
+        answer.readiness.summary,
+        ...answer.readiness.reasons,
+      ])}</article>
+      <article class="card"><h2>Improve</h2>${renderList(answer.readiness.next_required_improvements)}</article>
+      <article class="card"><h2>Unknowns</h2>${renderList(answer.unknowns)}</article>
+      <article class="card"><h2>Related Entities</h2>${renderList(answer.related_entities)}</article>
+      <article class="card"><h2>Evidence Summary</h2>${renderList([
+        `${answer.evidence_summary.evidence_count} evidence reference(s)`,
+        `${answer.evidence_summary.redacted_evidence_count} redacted evidence reference(s)`,
+        ...answer.evidence_summary.records.map((record) => `${record.id}: ${record.description}`),
+      ])}</article>
+      <article class="card"><h2>Research Artifacts</h2>${renderArtifactLinks(answer.research_artifacts)}</article>
+      <article class="card"><h2>Evidence IDs</h2>${renderList(answer.evidence_ids)}</article>
+    </section>
+  </main>
+</body>
+</html>
+`;
+}
+
 async function readExplainEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly folders: readonly BrainEntity[];
@@ -13234,6 +13919,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
 async function readExplainResearchArtifacts(rootDir: string): Promise<ExplainResearchArtifacts> {
   const researchDir = join(rootDir, '.rizz', 'research');
   const evidenceQualityPath = join(researchDir, RESEARCH_ARTIFACT_FILES.evidenceQuality);
+  const benchmarkReadyPath = join(researchDir, RESEARCH_ARTIFACT_FILES.benchmarkReady);
   const benchmarkTasksPath = join(researchDir, RESEARCH_ARTIFACT_FILES.benchmarkTasks);
   const available = await Promise.all(
     Object.values(RESEARCH_ARTIFACT_FILES).map(async (fileName) => {
@@ -13243,6 +13929,7 @@ async function readExplainResearchArtifacts(rootDir: string): Promise<ExplainRes
   );
   return {
     evidenceQuality: await readJsonFile<Record<string, unknown>>(evidenceQualityPath),
+    benchmarkReady: await readJsonFile<Record<string, unknown>>(benchmarkReadyPath),
     benchmarkTasks: await readJsonFile<Record<string, unknown>>(benchmarkTasksPath),
     availablePaths: available.filter((path): path is string => path !== undefined).map(safeText),
   };
