@@ -1261,6 +1261,14 @@ describe('project brain generation', () => {
       );
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(report).toContain('Project Intelligence');
+      expect(report).toContain('data-object="understanding" open');
+      expect(report).toContain('data-object="components"');
+      expect(report).toContain('data-object="flows"');
+      expect(report).toContain('data-object="architecture"');
+      expect(report).toContain('data-object="evidence"');
+      expect(report).toContain('data-object="unknowns"');
+      expect(report).toContain('data-object="review-readiness"');
+      expect(report).toContain('data-object="benchmark-tasks"');
       expect(report).toContain('Understanding Score');
       expect(report).toContain('Evidence Quality');
       expect(report).toContain('Unknown Risk');
@@ -1282,12 +1290,32 @@ describe('project brain generation', () => {
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Research Artifacts');
       expect(report).toContain('.rizz/research/benchmark_tasks.json');
+      expect(report).toContain(
+        '<a href="../brain/latest.json"><code>.rizz/brain/latest.json</code></a>',
+      );
+      expect(report).toContain(
+        '<a href="../research/benchmark_tasks.json"><code>.rizz/research/benchmark_tasks.json</code></a>',
+      );
       expect(report).toContain('Incremental Understanding');
       expect(report).toContain('Changed Understanding Surfaces');
       expect(report).toContain('Stable Understanding Surfaces');
       expect(report).toContain('Stale Understanding Surfaces');
       expect(report).toContain('Scan Efficiency');
       expect(report).toContain('<section class="objects" aria-label="Mission Control objects">');
+      const objectOrder = [
+        'data-object="understanding"',
+        'data-object="components"',
+        'data-object="flows"',
+        'data-object="architecture"',
+        'data-object="evidence"',
+        'data-object="unknowns"',
+        'data-object="review-readiness"',
+        'data-object="benchmark-tasks"',
+      ].map((marker) => report.indexOf(marker));
+      expect(objectOrder.every((index) => index >= 0)).toBe(true);
+      expect(objectOrder).toEqual([...objectOrder].sort((a, b) => a - b));
+      expect(report).not.toContain('data-object="read-first"');
+      expect(report).not.toContain('data-object="runbook"');
       expect(report).toContain('<h3>weak</h3>');
       expect(report).toContain('<h3>usable</h3>');
       expect(report).toContain('<h3>strong</h3>');
@@ -3520,6 +3548,7 @@ describe('project brain generation', () => {
       expect(report).toContain('Incremental Changed / Stable');
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Review Blast Radius');
+      expect(report).toContain('Benchmark Tasks');
       expect(report).toContain('Unknown Risk');
       expect(report).toContain('Raw Artifacts');
       expect(report).toContain('.rizz/research/evidence_quality.json');
@@ -4221,6 +4250,8 @@ describe('project brain generation', () => {
       expectNoLeaks('.rizz tree', generated);
       expect(files.get('reports/index.html')).toContain('Flagship Summary');
       expect(files.get('reports/index.html')).toContain('Evidence Quality Calibration');
+      expect(files.get('reports/index.html')).toContain('data-object="benchmark-tasks"');
+      expect(files.get('reports/index.html')).toContain('href="../research/benchmark_tasks.json"');
       expect(generated).toContain('redacted:sensitive-file:');
       expect(generated).toContain('[redacted secret]');
       expect(generated).toContain('.env.example');
