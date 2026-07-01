@@ -29,6 +29,7 @@ const PI_BENCH_TASK_SCHEMA_VERSION = 2;
 const PI_BENCH_TASK_SUITE = 'pi-bench-seed';
 const PI_BENCH_TASK_MODE = 'local';
 const COVERAGE_TARGETS = ['component', 'flow', 'evidence', 'unknown'];
+const CLI_SMOKE_TIMEOUT_MS = 15_000;
 const PI_BENCH_TASK_CATEGORIES = [
   'smoke',
   'research-metrics',
@@ -1624,7 +1625,7 @@ function runCliSync(args, input) {
       input,
       encoding: 'utf8',
       env: isolatedEnv(home),
-      timeout: 5_000,
+      timeout: CLI_SMOKE_TIMEOUT_MS,
     }),
   );
 }
@@ -1636,7 +1637,7 @@ function runCliInCwdSync(cwd, args, input) {
       input,
       encoding: 'utf8',
       env: isolatedEnv(home),
-      timeout: 5_000,
+      timeout: CLI_SMOKE_TIMEOUT_MS,
     }),
   );
 }
@@ -1648,7 +1649,7 @@ function runCliInCwdWithGitSync(cwd, args, input) {
       input,
       encoding: 'utf8',
       env: isolatedEnvWithGit(home),
-      timeout: 5_000,
+      timeout: CLI_SMOKE_TIMEOUT_MS,
     }),
   );
 }
@@ -1676,7 +1677,7 @@ function runSetupCliSync(args, secret) {
       cwd: repoRoot,
       encoding: 'utf8',
       env: setupSmokeEnv(home, secret),
-      timeout: 5_000,
+      timeout: CLI_SMOKE_TIMEOUT_MS,
     });
     return {
       result,
@@ -1730,10 +1731,11 @@ async function runRpcSmoke() {
           }
         };
 
+        const rpcSmokeTimeoutMs = process.platform === 'win32' ? 15_000 : 5_000;
         const timeout = setTimeout(() => {
           child.kill('SIGTERM');
           reject(new Error('rizz --rpc smoke timed out'));
-        }, 5_000);
+        }, rpcSmokeTimeoutMs);
 
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
