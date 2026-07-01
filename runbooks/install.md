@@ -142,10 +142,11 @@ pnpm pack:check
 Latest merged-develop public preview gate:
 
 - `pnpm check` passed
-- Vitest: 29 files / 279 tests
-- eval: 6/6
+- Vitest: 31 files / 320 tests
+- PI-Bench: 10/10 tasks
+- CLI process smoke: 9/9 checks
 - install-local: 5/5
-- footprint: 53ms cold start / 200KB core
+- footprint: 49ms cold start / 188KB core, under the 200KB budget
 
 ## Known Limits
 

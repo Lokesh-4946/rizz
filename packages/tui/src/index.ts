@@ -2,7 +2,7 @@
 // readline (decision D-015); the experience layer that must beat Hermes on editing, streaming,
 // approvals, navigation. Kept out of the default headless path.
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 export { type TuiOptions, startTui } from './tui.js';
 export { type Theme, createTheme, defaultColorEnabled } from './theme.js';

@@ -31,7 +31,7 @@ The current public preview surface is:
 - no workspace agents, cloud sync, browser extension, mobile app, IDE integration, custom skills, or
   enterprise providers in the default install
 
-The current release baseline is `0.1.0`.
+The current release baseline is `0.2.0`.
 
 ## Requirements
 
@@ -217,13 +217,14 @@ This runs lint, type-check, tests, eval smoke, install smoke, and the footprint 
 checks also run `pnpm pack:check` to verify public package contents. Publishing to npm is a deliberate
 release step after CI and package checks pass; pushes to GitHub do not publish packages.
 
-Current merged-develop verification:
+Current merged-develop release verification:
 
-- Biome: 95 files
-- Vitest: 29 files / 279 tests
-- eval: 6/6 CLI process smokes
+- Biome: 110 files
+- Vitest: 31 files / 320 tests
+- PI-Bench: 10/10 tasks
+- CLI process smoke: 9/9 checks
 - install-local: 5/5 shim smokes
-- footprint: 53ms cold start / 200KB core
+- footprint: 49ms cold start / 188KB core, under the 200KB budget
 
 ## Known Limits
 

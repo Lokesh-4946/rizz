@@ -9,6 +9,7 @@ In scope:
 
 - public npm install
 - local development install
+- local Project Intelligence Engine scan, explain, review, and generated `.rizz` artifacts
 - first-run setup
 - OpenRouter BYOK live path
 - Codex subscription route smoke
@@ -19,7 +20,7 @@ In scope:
 Out of scope:
 
 - Workspace Mode
-- Repo Brain or memory indexing
+- memory indexing outside the local project-scoped `.rizz` artifacts
 - OS/Jarvis connectors
 - custom skills
 - enterprise Bedrock/Azure routes
@@ -40,6 +41,27 @@ Expected coverage:
 - CLI process eval smoke
 - install-local smoke
 - footprint and cold-start budget
+
+## Local repo intelligence smoke
+
+Run this from the release checkout after `pnpm link:local`:
+
+```sh
+rizz
+rizz explain README.md
+rizz review --json
+test -f .rizz/brain/latest.json
+test -d .rizz/research
+test -f .rizz/reports/index.html
+test -f .rizz/reports/review.html
+```
+
+Pass criteria:
+
+- `rizz` writes only local `.rizz/brain`, `.rizz/research`, and `.rizz/reports` artifacts
+- `rizz explain README.md` succeeds after the brain exists
+- `rizz review --json` emits parseable JSON and writes review entities plus `.rizz/reports/review.html`
+- generated `.rizz` output contains no provider keys, tokens, or user secrets
 
 ## Public install smoke
 
