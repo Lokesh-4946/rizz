@@ -4912,6 +4912,8 @@ interface EvidenceGap {
   readonly entity_type?: EntityType | 'relationship';
   readonly field?: string;
   readonly confidence?: Confidence;
+  readonly from_entity_id?: string;
+  readonly to_entity_id?: string;
 }
 
 interface EvidenceCalibrationClaimSet {
@@ -5090,6 +5092,8 @@ function topEvidenceGaps(params: {
       entity_type: 'relationship' as const,
       severity: 'high' as const,
       confidence: relationship.confidence,
+      from_entity_id: safeText(relationship.from),
+      to_entity_id: safeText(relationship.to),
       reason: 'Relationship claim has no evidence reference.',
     })),
     ...params.entitiesWithoutEvidence
@@ -5391,6 +5395,256 @@ function buildEvidenceCalibrationBreakdown(params: {
   };
 }
 
+function unbackedClaimGroups(params: {
+  readonly claimEntitiesWithoutEvidence: readonly BrainEntity[];
+  readonly relationshipsWithoutEvidence: readonly BrainRelationship[];
+  readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+}): Array<Record<string, unknown>> {
+  const entityGroups = Object.entries(
+    countByValue(params.claimEntitiesWithoutEvidence.map((entity) => entity.type)),
+  ).map(([type, claimCount]) => {
+    const examples = params.claimEntitiesWithoutEvidence
+      .filter((entity) => entity.type === type)
+      .map((entity) => safeText(entity.id))
+      .slice(0, 5);
+    return {
+      group: `${safeText(type)} claims`,
+      claim_count: claimCount,
+      example_ids: examples,
+      inspect_hint: `Inspect ${safeText(type)} entities and add direct evidence_ids for claims users may rely on.`,
+    };
+  });
+  const relationshipGroup =
+    params.relationshipsWithoutEvidence.length === 0
+      ? []
+      : [
+          {
+            group: 'relationship claims',
+            claim_count: params.relationshipsWithoutEvidence.length,
+            example_ids: params.relationshipsWithoutEvidence
+              .slice(0, 5)
+              .map(
+                (relationship) =>
+                  `${safeText(relationship.from)} ${relationship.relation} ${safeText(
+                    relationship.to,
+                  )}`,
+              ),
+            inspect_hint:
+              'Inspect dependency and ownership edges first; unsupported links can mislead review blast-radius decisions.',
+          },
+        ];
+  const fieldGroups = [
+    {
+      group: 'component field claims',
+      claim_count: params.fieldCoverage.component.unsupported_fields,
+      example_ids: [],
+      inspect_hint:
+        'Inspect component field_evidence maps for populated fields that lack field-specific evidence.',
+    },
+    {
+      group: 'flow field claims',
+      claim_count: params.fieldCoverage.flow.unsupported_fields,
+      example_ids: [],
+      inspect_hint:
+        'Inspect flow field_evidence maps for populated flow steps, tests, contracts, or risks without evidence.',
+    },
+  ].filter((group) => group.claim_count > 0);
+  return [...entityGroups, ...relationshipGroup, ...fieldGroups]
+    .sort((a, b) => {
+      const aCount = typeof a.claim_count === 'number' ? a.claim_count : 0;
+      const bCount = typeof b.claim_count === 'number' ? b.claim_count : 0;
+      const aGroup = typeof a.group === 'string' ? a.group : '';
+      const bGroup = typeof b.group === 'string' ? b.group : '';
+      return bCount - aCount || aGroup.localeCompare(bGroup);
+    })
+    .slice(0, 10);
+}
+
+function lowConfidenceClaimAreas(params: {
+  readonly claimEntitiesWithWeakEvidence: readonly BrainEntity[];
+  readonly relationshipsWithWeakEvidence: readonly BrainRelationship[];
+  readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+}): Array<Record<string, unknown>> {
+  const entityGroups = Object.entries(
+    countByValue(params.claimEntitiesWithWeakEvidence.map((entity) => entity.type)),
+  ).map(([type, claimCount]) => {
+    const entities = params.claimEntitiesWithWeakEvidence.filter((entity) => entity.type === type);
+    return {
+      area: `${safeText(type)} evidence-backed claims`,
+      claim_count: claimCount,
+      confidence_mix: countByConfidence(entities.map((entity) => entity.confidence)),
+      example_ids: entities.map((entity) => safeText(entity.id)).slice(0, 5),
+      inspect_hint: `Confirm ${safeText(type)} evidence in source before treating inferred claims as verified.`,
+    };
+  });
+  const relationshipArea =
+    params.relationshipsWithWeakEvidence.length === 0
+      ? []
+      : [
+          {
+            area: 'relationship evidence-backed claims',
+            claim_count: params.relationshipsWithWeakEvidence.length,
+            confidence_mix: countByConfidence(
+              params.relationshipsWithWeakEvidence.map((relationship) => relationship.confidence),
+            ),
+            example_ids: params.relationshipsWithWeakEvidence
+              .slice(0, 5)
+              .map(
+                (relationship) =>
+                  `${safeText(relationship.from)} ${relationship.relation} ${safeText(
+                    relationship.to,
+                  )}`,
+              ),
+            inspect_hint:
+              'Confirm inferred relationships against source imports, manifests, or tests before using them for review scope.',
+          },
+        ];
+  const fieldAreas = [
+    {
+      area: 'component field evidence',
+      claim_count: params.fieldCoverage.component.weak_evidence_fields,
+      confidence_mix: {
+        verified:
+          params.fieldCoverage.component.fields_with_evidence -
+          params.fieldCoverage.component.weak_evidence_fields,
+        inferred: params.fieldCoverage.component.weak_evidence_fields,
+        uncertain: params.fieldCoverage.component.unsupported_fields,
+      },
+      example_ids: [],
+      inspect_hint:
+        'Confirm component fields backed by inferred component evidence before promoting them to verified.',
+    },
+    {
+      area: 'flow field evidence',
+      claim_count: params.fieldCoverage.flow.weak_evidence_fields,
+      confidence_mix: {
+        verified:
+          params.fieldCoverage.flow.fields_with_evidence -
+          params.fieldCoverage.flow.weak_evidence_fields,
+        inferred: params.fieldCoverage.flow.weak_evidence_fields,
+        uncertain: params.fieldCoverage.flow.unsupported_fields,
+      },
+      example_ids: [],
+      inspect_hint:
+        'Confirm flow fields backed by inferred flow evidence before using them as execution certainty.',
+    },
+  ].filter((area) => area.claim_count > 0);
+  return [...entityGroups, ...relationshipArea, ...fieldAreas]
+    .sort((a, b) => {
+      const aCount = typeof a.claim_count === 'number' ? a.claim_count : 0;
+      const bCount = typeof b.claim_count === 'number' ? b.claim_count : 0;
+      const aArea = typeof a.area === 'string' ? a.area : '';
+      const bArea = typeof b.area === 'string' ? b.area : '';
+      return bCount - aCount || aArea.localeCompare(bArea);
+    })
+    .slice(0, 10);
+}
+
+function readFirstEntityTargets(params: {
+  readonly gap: EvidenceGap;
+  readonly entitiesById: ReadonlyMap<string, BrainEntity>;
+}): BrainEntity[] {
+  const targetIds = unique([
+    params.gap.id,
+    ...(params.gap.from_entity_id === undefined ? [] : [params.gap.from_entity_id]),
+    ...(params.gap.to_entity_id === undefined ? [] : [params.gap.to_entity_id]),
+  ]);
+  return targetIds
+    .map((id) => params.entitiesById.get(id))
+    .filter((entity): entity is BrainEntity => entity !== undefined);
+}
+
+function readFirstFilesForEntity(entity: BrainEntity): string[] {
+  return unique([
+    ...entity.source_files,
+    ...stringArrayData(entity, 'read_first'),
+    ...stringArrayData(entity, 'important_files'),
+    ...stringArrayData(entity, 'files'),
+  ])
+    .map(safeText)
+    .slice(0, 5);
+}
+
+function suggestedReadFirstForEvidenceGaps(params: {
+  readonly topGaps: readonly EvidenceGap[];
+  readonly entitiesById: ReadonlyMap<string, BrainEntity>;
+}): Array<Record<string, unknown>> {
+  return params.topGaps.slice(0, 8).map((gap, index) => {
+    const targets = readFirstEntityTargets({ gap, entitiesById: params.entitiesById });
+    const files = unique(targets.flatMap(readFirstFilesForEntity)).slice(0, 6);
+    return {
+      priority: index + 1,
+      gap_kind: safeText(gap.kind),
+      target_id: safeText(gap.id),
+      ...(gap.field === undefined ? {} : { field: safeText(gap.field) }),
+      target_entities: targets.map((entity) => safeText(entity.id)).slice(0, 5),
+      read_first_files: files,
+      evidence_ids: unique(targets.flatMap((entity) => entity.evidence_ids.map(safeText))).slice(
+        0,
+        8,
+      ),
+      confidence: gap.confidence ?? 'uncertain',
+      reason: safeText(gap.reason),
+      inspect_hint: evidenceInspectHint(gap),
+    };
+  });
+}
+
+function redactionHiddenEvidenceSummary(params: {
+  readonly redactedEvidenceCount: number;
+  readonly redactedReferenceCount: number;
+  readonly unsafeSensitiveReferenceCount: number;
+  readonly confidenceDowngradeCount: number;
+  readonly redactionSafetyScore: number;
+}): Record<string, unknown> {
+  const hiddenCount = params.redactedEvidenceCount + params.redactedReferenceCount;
+  let impact = 'none';
+  if (params.unsafeSensitiveReferenceCount > 0) impact = 'unsafe';
+  if (params.unsafeSensitiveReferenceCount === 0 && hiddenCount > 0) impact = 'contained';
+  return {
+    hidden_evidence_count: hiddenCount,
+    redacted_evidence_count: params.redactedEvidenceCount,
+    redacted_reference_count: params.redactedReferenceCount,
+    unsafe_sensitive_reference_count: params.unsafeSensitiveReferenceCount,
+    confidence_downgrades: params.confidenceDowngradeCount,
+    redaction_safety_score: params.redactionSafetyScore,
+    impact,
+    user_impact:
+      impact === 'contained'
+        ? 'Some evidence is intentionally hidden behind redacted ids; inspect nearby non-sensitive files or rerun in a trusted local context before upgrading confidence.'
+        : 'No redaction-hidden evidence is limiting confidence.',
+  };
+}
+
+function calibrationSummary(params: {
+  readonly overallScore: number;
+  readonly qualityBand: string;
+  readonly evidenceCoverageScore: number;
+  readonly fieldEvidenceScore: number;
+  readonly referenceIntegrityScore: number;
+  readonly redactionSafetyScore: number;
+  readonly unsupportedClaims: number;
+  readonly weakEvidenceClaims: number;
+  readonly evidenceGapCount: number;
+  readonly confidenceDistribution: Record<Confidence, number>;
+}): Record<string, unknown> {
+  return {
+    overall_score: params.overallScore,
+    quality_band: safeText(params.qualityBand),
+    evidence_coverage_score: params.evidenceCoverageScore,
+    field_evidence_score: params.fieldEvidenceScore,
+    reference_integrity_score: params.referenceIntegrityScore,
+    redaction_safety_score: params.redactionSafetyScore,
+    unsupported_claims: params.unsupportedClaims,
+    weak_evidence_claims: params.weakEvidenceClaims,
+    evidence_gap_count: params.evidenceGapCount,
+    confidence_distribution: params.confidenceDistribution,
+    summary: `${params.unsupportedClaims} unsupported claim(s), ${params.weakEvidenceClaims} weak evidence claim(s), and ${params.evidenceGapCount} total actionability gap(s) limit confidence.`,
+    calibration_rule:
+      'Evidence confidence is calibrated from direct evidence coverage, field-specific evidence, missing references, claim confidence, and secret-safe redaction impact.',
+  };
+}
+
 function buildEvidenceQualityArtifact(params: {
   readonly now: string;
   readonly buckets: BrainBuckets;
@@ -5516,6 +5770,44 @@ function buildEvidenceQualityArtifact(params: {
     referenceIntegrityScore,
     fieldEvidenceScore,
   });
+  const qualityBand = evidenceQualityBand(overallScore, redactionSafetyScore);
+  const unbackedGroups = unbackedClaimGroups({
+    claimEntitiesWithoutEvidence,
+    relationshipsWithoutEvidence,
+    fieldCoverage,
+  });
+  const lowConfidenceAreas = lowConfidenceClaimAreas({
+    claimEntitiesWithWeakEvidence,
+    relationshipsWithWeakEvidence,
+    fieldCoverage,
+  });
+  const redactionHiddenEvidence = redactionHiddenEvidenceSummary({
+    redactedEvidenceCount,
+    redactedReferenceCount,
+    unsafeSensitiveReferenceCount,
+    confidenceDowngradeCount,
+    redactionSafetyScore,
+  });
+  const evidenceCalibrationSummary = calibrationSummary({
+    overallScore,
+    qualityBand,
+    evidenceCoverageScore,
+    fieldEvidenceScore,
+    referenceIntegrityScore,
+    redactionSafetyScore,
+    unsupportedClaims,
+    weakEvidenceClaims,
+    evidenceGapCount,
+    confidenceDistribution,
+  });
+  const suggestedReadFirst = suggestedReadFirstForEvidenceGaps({
+    topGaps,
+    entitiesById: entityById(entities),
+  });
+  const actionabilitySummary =
+    evidenceGapCount === 0
+      ? 'No evidence actionability gaps were detected in local research artifacts.'
+      : `${topGaps.length} prioritized evidence gap(s), ${unbackedGroups.length} unbacked claim group(s), and ${lowConfidenceAreas.length} low-confidence area(s) need inspection.`;
 
   return {
     generated_at: params.now,
@@ -5536,6 +5828,20 @@ function buildEvidenceQualityArtifact(params: {
     confidence_distribution: confidenceDistribution,
     field_coverage_by_entity_type: fieldCoverage,
     evidence_calibration: evidenceCalibration,
+    actionability: {
+      summary: actionabilitySummary,
+      top_evidence_gaps: topGaps,
+      unbacked_claim_groups: unbackedGroups,
+      low_confidence_claim_areas: lowConfidenceAreas,
+      redaction_hidden_evidence: redactionHiddenEvidence,
+      suggested_read_first: suggestedReadFirst,
+      calibration_summary: evidenceCalibrationSummary,
+    },
+    unbacked_claim_groups: unbackedGroups,
+    low_confidence_claim_areas: lowConfidenceAreas,
+    redaction_hidden_evidence: redactionHiddenEvidence,
+    suggested_read_first: suggestedReadFirst,
+    calibration_summary: evidenceCalibrationSummary,
     confidence_adjustments: {
       redaction_downgrades: confidenceDowngradeCount,
       weak_entity_claims: claimEntitiesWithWeakEvidence.length,
@@ -5548,7 +5854,7 @@ function buildEvidenceQualityArtifact(params: {
     top_evidence_gaps: topGaps,
     top_uncertain_areas: topUncertainAreas,
     overall_score: overallScore,
-    quality_band: evidenceQualityBand(overallScore, redactionSafetyScore),
+    quality_band: qualityBand,
     coverage_score: evidenceCoverageScore,
     reference_integrity_score: referenceIntegrityScore,
     field_evidence_score: fieldEvidenceScore,
@@ -10739,6 +11045,81 @@ function renderEvidenceCalibration(value: unknown): string {
   <article class="card"><h3>Inspect First</h3>${renderList(inspectFirst)}</article>`;
 }
 
+function renderEvidenceActionability(value: unknown): string {
+  if (!isRecord(value)) return '';
+  const actionability = isRecord(value.actionability) ? value.actionability : {};
+  let calibration: Record<string, unknown> = {};
+  if (isRecord(actionability.calibration_summary)) {
+    calibration = actionability.calibration_summary;
+  } else if (isRecord(value.calibration_summary)) {
+    calibration = value.calibration_summary;
+  }
+  let redaction: Record<string, unknown> = {};
+  if (isRecord(actionability.redaction_hidden_evidence)) {
+    redaction = actionability.redaction_hidden_evidence;
+  } else if (isRecord(value.redaction_hidden_evidence)) {
+    redaction = value.redaction_hidden_evidence;
+  }
+  let summary = 'Evidence actionability has not been summarized yet.';
+  if (typeof actionability.summary === 'string') {
+    summary = actionability.summary;
+  } else if (typeof calibration.summary === 'string') {
+    summary = calibration.summary;
+  }
+  const unbackedGroups = recordArray(actionability, 'unbacked_claim_groups')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((group) => {
+      const name = typeof group.group === 'string' ? group.group : 'claim group';
+      const count = typeof group.claim_count === 'number' ? group.claim_count : 0;
+      const hint = typeof group.inspect_hint === 'string' ? group.inspect_hint : '';
+      return `${name}: ${count} unbacked claim(s)${hint === '' ? '' : ` - ${hint}`}`;
+    });
+  const lowConfidenceAreas = recordArray(actionability, 'low_confidence_claim_areas')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((area) => {
+      const name = typeof area.area === 'string' ? area.area : 'low-confidence area';
+      const count = typeof area.claim_count === 'number' ? area.claim_count : 0;
+      const hint = typeof area.inspect_hint === 'string' ? area.inspect_hint : '';
+      return `${name}: ${count} claim(s)${hint === '' ? '' : ` - ${hint}`}`;
+    });
+  const readFirst = recordArray(actionability, 'suggested_read_first')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((item) => {
+      const priority = typeof item.priority === 'number' ? item.priority : 0;
+      const target = typeof item.target_id === 'string' ? item.target_id : 'unknown target';
+      const files = asStringArray(item.read_first_files).slice(0, 3);
+      const fileLabel = files.length === 0 ? 'inspect entity evidence' : files.join(', ');
+      return `P${priority} ${target}: ${fileLabel}`;
+    });
+  const redactionImpact = typeof redaction.impact === 'string' ? redaction.impact : 'none';
+  const hiddenCount =
+    typeof redaction.hidden_evidence_count === 'number' ? redaction.hidden_evidence_count : 0;
+  const downgrades =
+    typeof redaction.confidence_downgrades === 'number' ? redaction.confidence_downgrades : 0;
+  const coverage =
+    typeof calibration.evidence_coverage_score === 'number'
+      ? calibration.evidence_coverage_score
+      : 0;
+  const fieldCoverage =
+    typeof calibration.field_evidence_score === 'number' ? calibration.field_evidence_score : 0;
+  return `<article class="card"><h3>Evidence Actionability</h3>${renderList([
+    summary,
+    `evidence coverage: ${coverage}/100`,
+    `field evidence: ${fieldCoverage}/100`,
+  ])}</article>
+    <article class="card"><h3>Read First To Improve Confidence</h3>${renderList(readFirst)}</article>
+    <article class="card"><h3>Unbacked Claim Groups</h3>${renderList(unbackedGroups)}</article>
+    <article class="card"><h3>Low-Confidence Claim Areas</h3>${renderList(lowConfidenceAreas)}</article>
+    <article class="card"><h3>Redaction-Hidden Evidence</h3>${renderList([
+      `${hiddenCount} hidden evidence/reference(s)`,
+      `impact: ${redactionImpact}`,
+      `confidence downgrades: ${downgrades}`,
+    ])}</article>`;
+}
+
 function renderEvidenceQuality(value: unknown): string {
   if (!isRecord(value)) {
     return '<p class="muted">No evidence quality artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
@@ -10776,6 +11157,7 @@ function renderEvidenceQuality(value: unknown): string {
     : [];
   const uncertainAreas = asStringArray(value.top_uncertain_areas).slice(0, 8);
   const evidenceCalibration = renderEvidenceCalibration(value.evidence_calibration);
+  const evidenceActionability = renderEvidenceActionability(value);
   return `<div class="grid">
     <article class="card"><h3>Evidence Quality Score</h3><p>${score}/100 · ${htmlEscape(band)}</p></article>
     <article class="card"><h3>Calibration</h3>${renderList([
@@ -10795,6 +11177,7 @@ function renderEvidenceQuality(value: unknown): string {
     <article class="card"><h3>Top Evidence Gaps</h3>${renderList(topGaps)}</article>
     <article class="card"><h3>Unknown / Uncertain Areas</h3>${renderList(uncertainAreas)}</article>
     ${evidenceCalibration}
+    ${evidenceActionability}
   </div>`;
 }
 

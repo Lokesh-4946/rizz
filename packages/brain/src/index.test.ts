@@ -495,6 +495,11 @@ describe('project brain generation', () => {
         evidence_gap_count: number;
         evidence_coverage_score: number;
         redaction_safety_score: number;
+        redacted_evidence_count: number;
+        redacted_reference_count: number;
+        confidence_downgrades: number;
+        overall_score: number;
+        quality_band: string;
         field_coverage_by_entity_type: {
           component: { unsupported_fields: number; weak_evidence_fields: number };
           flow: { unsupported_fields: number; weak_evidence_fields: number };
@@ -532,6 +537,46 @@ describe('project brain generation', () => {
           inspect_first: Array<{ priority: number; id: string; inspect_hint: string }>;
           summary: string;
         };
+        actionability: {
+          summary: string;
+          top_evidence_gaps: Array<{ kind: string; id: string; reason: string }>;
+          unbacked_claim_groups: Array<{
+            group: string;
+            claim_count: number;
+            example_ids: string[];
+            inspect_hint: string;
+          }>;
+          low_confidence_claim_areas: Array<{
+            area: string;
+            claim_count: number;
+            confidence_mix: { verified: number; inferred: number; uncertain: number };
+            example_ids: string[];
+            inspect_hint: string;
+          }>;
+          redaction_hidden_evidence: {
+            hidden_evidence_count: number;
+            impact: string;
+            confidence_downgrades: number;
+          };
+          suggested_read_first: Array<{
+            priority: number;
+            target_id: string;
+            target_entities: string[];
+            read_first_files: string[];
+            inspect_hint: string;
+          }>;
+          calibration_summary: {
+            overall_score: number;
+            quality_band: string;
+            evidence_coverage_score: number;
+            summary: string;
+          };
+        };
+        unbacked_claim_groups: Array<{ group: string; claim_count: number }>;
+        low_confidence_claim_areas: Array<{ area: string; claim_count: number }>;
+        redaction_hidden_evidence: { hidden_evidence_count: number; impact: string };
+        suggested_read_first: Array<{ priority: number; target_id: string }>;
+        calibration_summary: { overall_score: number; summary: string };
         top_evidence_gaps: Array<{ kind: string; id: string; field?: string; reason: string }>;
         entity_evidence_coverage_ratio: number;
         relationship_evidence_coverage_ratio: number;
@@ -605,6 +650,52 @@ describe('project brain generation', () => {
         inspect_hint: expect.any(String),
       });
       expect(evidenceQuality.top_evidence_gaps.length).toBeGreaterThan(0);
+      expect(evidenceQuality.actionability.summary).toContain('prioritized evidence gap');
+      expect(evidenceQuality.actionability.top_evidence_gaps).toEqual(
+        evidenceQuality.top_evidence_gaps,
+      );
+      expect(evidenceQuality.actionability.unbacked_claim_groups.length).toBeGreaterThan(0);
+      expect(evidenceQuality.actionability.unbacked_claim_groups[0]).toMatchObject({
+        group: expect.any(String),
+        claim_count: expect.any(Number),
+        inspect_hint: expect.any(String),
+      });
+      expect(evidenceQuality.actionability.low_confidence_claim_areas.length).toBeGreaterThan(0);
+      expect(evidenceQuality.actionability.redaction_hidden_evidence).toMatchObject({
+        hidden_evidence_count:
+          evidenceQuality.redacted_evidence_count + evidenceQuality.redacted_reference_count,
+        impact:
+          evidenceQuality.redacted_evidence_count + evidenceQuality.redacted_reference_count > 0
+            ? 'contained'
+            : 'none',
+        confidence_downgrades: evidenceQuality.confidence_downgrades,
+      });
+      expect(evidenceQuality.actionability.suggested_read_first.length).toBeGreaterThan(0);
+      expect(evidenceQuality.actionability.suggested_read_first[0]).toMatchObject({
+        priority: 1,
+        target_id: expect.any(String),
+        inspect_hint: expect.any(String),
+      });
+      expect(evidenceQuality.actionability.calibration_summary).toMatchObject({
+        overall_score: evidenceQuality.overall_score,
+        quality_band: evidenceQuality.quality_band,
+        evidence_coverage_score: evidenceQuality.evidence_coverage_score,
+      });
+      expect(evidenceQuality.unbacked_claim_groups).toEqual(
+        evidenceQuality.actionability.unbacked_claim_groups,
+      );
+      expect(evidenceQuality.low_confidence_claim_areas).toEqual(
+        evidenceQuality.actionability.low_confidence_claim_areas,
+      );
+      expect(evidenceQuality.redaction_hidden_evidence).toEqual(
+        evidenceQuality.actionability.redaction_hidden_evidence,
+      );
+      expect(evidenceQuality.suggested_read_first).toEqual(
+        evidenceQuality.actionability.suggested_read_first,
+      );
+      expect(evidenceQuality.calibration_summary).toEqual(
+        evidenceQuality.actionability.calibration_summary,
+      );
       expect(evidenceQuality.entity_evidence_coverage_ratio).toBeGreaterThan(0);
       expect(evidenceQuality.relationship_evidence_coverage_ratio).toBeGreaterThan(0);
       expect(evidenceQuality.missing_evidence_references).toEqual([]);
@@ -625,6 +716,11 @@ describe('project brain generation', () => {
         'utf8',
       );
       expect(missionControlReport).toContain('Evidence Calibration');
+      expect(missionControlReport).toContain('Evidence Actionability');
+      expect(missionControlReport).toContain('Read First To Improve Confidence');
+      expect(missionControlReport).toContain('Unbacked Claim Groups');
+      expect(missionControlReport).toContain('Low-Confidence Claim Areas');
+      expect(missionControlReport).toContain('Redaction-Hidden Evidence');
       expect(missionControlReport).toContain('Inspect First');
 
       const flowUnderstanding = await readJson<{
@@ -4250,6 +4346,8 @@ describe('project brain generation', () => {
       expectNoLeaks('.rizz tree', generated);
       expect(files.get('reports/index.html')).toContain('Flagship Summary');
       expect(files.get('reports/index.html')).toContain('Evidence Quality Calibration');
+      expect(files.get('reports/index.html')).toContain('Evidence Actionability');
+      expect(files.get('reports/index.html')).toContain('Read First To Improve Confidence');
       expect(files.get('reports/index.html')).toContain('data-object="benchmark-tasks"');
       expect(files.get('reports/index.html')).toContain('href="../research/benchmark_tasks.json"');
       expect(generated).toContain('redacted:sensitive-file:');
@@ -4288,12 +4386,44 @@ describe('project brain generation', () => {
         confidence_distribution: expect.any(Object),
         field_coverage_by_entity_type: expect.any(Object),
         confidence_adjustments: expect.any(Object),
+        actionability: expect.any(Object),
+        unbacked_claim_groups: expect.any(Array),
+        low_confidence_claim_areas: expect.any(Array),
+        redaction_hidden_evidence: expect.any(Object),
+        suggested_read_first: expect.any(Array),
+        calibration_summary: expect.any(Object),
         top_evidence_gaps: expect.any(Array),
         top_uncertain_areas: expect.any(Array),
       });
       expect(evidenceQuality.redacted_evidence_count).toBeGreaterThan(0);
       expect(JSON.stringify(evidenceQuality)).not.toContain('client_secret_handler.ts');
       expect(JSON.stringify(evidenceQuality)).not.toContain('OPENAI_API_KEY');
+      const actionability = evidenceQuality.actionability as {
+        readonly summary?: string;
+        readonly unbacked_claim_groups?: readonly unknown[];
+        readonly low_confidence_claim_areas?: readonly unknown[];
+        readonly redaction_hidden_evidence?: {
+          readonly hidden_evidence_count?: number;
+          readonly impact?: string;
+          readonly confidence_downgrades?: number;
+        };
+        readonly suggested_read_first?: readonly unknown[];
+        readonly calibration_summary?: { readonly summary?: string };
+      };
+      expect(actionability.summary).toContain('prioritized evidence gap');
+      expect(actionability.unbacked_claim_groups?.length).toBeGreaterThan(0);
+      expect(actionability.low_confidence_claim_areas?.length).toBeGreaterThan(0);
+      expect(actionability.redaction_hidden_evidence).toMatchObject({
+        hidden_evidence_count: expect.any(Number),
+        impact: 'contained',
+        confidence_downgrades: expect.any(Number),
+      });
+      expect(actionability.redaction_hidden_evidence?.hidden_evidence_count).toBeGreaterThan(0);
+      expect(actionability.suggested_read_first?.length).toBeGreaterThan(0);
+      expect(actionability.calibration_summary?.summary).toContain('unsupported claim');
+      expect(JSON.stringify(actionability)).not.toContain('client_secret_handler.ts');
+      expect(JSON.stringify(actionability)).not.toContain('secret-token-flow.test.ts');
+      expect(JSON.stringify(actionability)).not.toContain('OPENAI_API_KEY');
       const evidenceCalibration = evidenceQuality.evidence_calibration as {
         readonly redaction_impact?: {
           readonly impact?: string;
