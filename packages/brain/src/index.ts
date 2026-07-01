@@ -10740,9 +10740,23 @@ function unknownRiskMetric(unknownCount: number): {
   return { value: String(unknownCount), posture: 'weak' };
 }
 
-function renderArtifactLinks(): string {
-  const artifacts = [
+function reportArtifactHref(artifactPath: string): string {
+  if (artifactPath.startsWith('.rizz/brain/')) {
+    return `../brain/${artifactPath.slice('.rizz/brain/'.length)}`;
+  }
+  if (artifactPath.startsWith('.rizz/research/')) {
+    return `../research/${artifactPath.slice('.rizz/research/'.length)}`;
+  }
+  if (artifactPath.startsWith('.rizz/reports/')) {
+    return artifactPath.slice('.rizz/reports/'.length);
+  }
+  return artifactPath;
+}
+
+function renderArtifactLinks(artifactPaths?: readonly string[]): string {
+  const artifacts = artifactPaths ?? [
     '.rizz/brain/latest.json',
+    '.rizz/brain/index.json',
     '.rizz/brain/graph.json',
     '.rizz/brain/entities/components.json',
     '.rizz/brain/entities/flows.json',
@@ -10750,9 +10764,15 @@ function renderArtifactLinks(): string {
     '.rizz/research/evidence_quality.json',
     '.rizz/research/understanding_score.json',
     '.rizz/research/architecture_reasoning.json',
+    '.rizz/research/benchmark_tasks.json',
   ];
   return `<ul class="artifact-links">${artifacts
-    .map((artifact) => `<li><code>${htmlEscape(artifact)}</code></li>`)
+    .map(
+      (artifact) =>
+        `<li><a href="${htmlEscape(reportArtifactHref(artifact))}"><code>${htmlEscape(
+          artifact,
+        )}</code></a></li>`,
+    )
     .join('')}</ul>`;
 }
 
@@ -10762,10 +10782,12 @@ function renderObjectDetails(params: {
   readonly body: string;
   readonly count?: number;
   readonly posture?: string;
+  readonly open?: boolean;
 }): string {
   const count = params.count === undefined ? '' : `<span>${params.count}</span>`;
   const posture = params.posture === undefined ? '' : `<span>${htmlEscape(params.posture)}</span>`;
-  return `<details class="object">
+  const open = params.open === true ? ' open' : '';
+  return `<details class="object" data-object="${htmlEscape(stableSlug(params.title))}"${open}>
     <summary>
       <span>${htmlEscape(params.title)}</span>
       <span class="summary-meta">${count}${posture}</span>
@@ -10891,10 +10913,8 @@ function renderFlagshipSummary(params: {
         .slice(0, 3)
     : [];
 
-  return `<details class="object flagship" open>
-    <summary><span>Flagship Summary</span><span class="summary-meta"><span>PIE</span><span>${htmlEscape(
-      understandingBand,
-    )}</span></span></summary>
+  return `<section class="flagship-summary">
+    <h3>Flagship Summary</h3>
     <p class="muted">Fast local answer to what Rizz understands, what changed, what to inspect first, and where confidence is weak.</p>
     <div class="flagship-grid">
       <article class="card compact">
@@ -10959,7 +10979,9 @@ function renderFlagshipSummary(params: {
       </article>
       <article class="card compact">
         <h3>Research Artifacts</h3>
-        ${renderList([
+        ${renderArtifactLinks([
+          '.rizz/brain/latest.json',
+          '.rizz/brain/index.json',
           '.rizz/research/understanding_score.json',
           '.rizz/research/evidence_quality.json',
           '.rizz/research/flow_coverage.json',
@@ -10970,7 +10992,7 @@ function renderFlagshipSummary(params: {
         <p class="muted">${params.evidenceCount} local evidence record(s).</p>
       </article>
     </div>
-  </details>`;
+  </section>`;
 }
 
 function renderUnderstandingDashboard(score: unknown): string {
@@ -11035,6 +11057,46 @@ function renderEvidenceIndex(evidence: readonly BrainEntity[]): string {
     .join('');
 }
 
+function renderBenchmarkTasks(value: unknown): string {
+  if (!isRecord(value)) {
+    return '<p class="muted">No benchmark task artifact is available yet.</p>';
+  }
+  const taskCount = recordNumber(value, 'task_count');
+  const summary = recordString(
+    value,
+    'summary',
+    'Benchmark task candidates are emitted from local research artifacts.',
+  );
+  const taskCategories = isRecord(value.task_categories) ? value.task_categories : {};
+  const categoryLabels = Object.entries(taskCategories)
+    .map(([category, count]) => `${category}: ${String(count)}`)
+    .sort((a, b) => a.localeCompare(b));
+  const path = recordString(value, 'path', '.rizz/research/benchmark_tasks.json');
+  const missionControl = recordString(value, 'mission_control', '.rizz/reports/index.html');
+
+  return `<div class="grid">
+    <article class="card compact">
+      <h3>Task Inventory</h3>
+      ${renderList([`${taskCount} benchmark task(s)`, summary])}
+    </article>
+    <article class="card compact">
+      <h3>Categories</h3>
+      ${renderList(categoryLabels)}
+    </article>
+    <article class="card compact">
+      <h3>Benchmark Artifacts</h3>
+      ${renderArtifactLinks([
+        path,
+        '.rizz/research/benchmark_ready.json',
+        '.rizz/research/understanding_score.json',
+        '.rizz/brain/latest.json',
+        '.rizz/brain/index.json',
+        missionControl,
+      ])}
+    </article>
+  </div>`;
+}
+
 function renderReport(params: {
   readonly projectName: string;
   readonly latest: Record<string, unknown>;
@@ -11095,6 +11157,24 @@ function renderReport(params: {
     reviewReadiness,
     evidenceMetric: evidenceQuality,
   });
+  const understandingObject = renderObjectDetails({
+    title: 'Understanding',
+    summary:
+      'The local answer to what Rizz understands, what changed, and which files or artifacts to inspect first.',
+    posture: understandingPosture,
+    open: true,
+    body: `${flagshipSummary}
+      ${renderUnderstandingDashboard(understandingScore)}
+      <h3><span>Read First</span></h3>
+      <h2>Start Here</h2>
+      <div class="grid">${renderReadFirstPointers(understandingScore)}</div>
+      <h3>Entry Points</h3>
+      <div class="grid">${renderStartHere(params.buckets.components, evidenceById)}</div>
+      <h3>Recommended Next Actions</h3>
+      ${renderList(recommendedActions.slice(0, 5))}
+      <h3>Incremental Understanding</h3>
+      ${renderIncrementalUnderstanding(params.latest.latest_incremental_update)}`,
+  });
   const componentObject = renderObjectDetails({
     title: 'Components',
     summary:
@@ -11117,17 +11197,49 @@ function renderReport(params: {
       'Reasoning from relationships, component pressure, coupling, boundaries, and evidence gaps.',
     posture: understandingPosture,
     body: `<p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}`,
+      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}
+      <h3>Dependency Graph</h3>
+      <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>
+        ${params.relationships
+          .map(
+            (rel) =>
+              `<tr data-search="${htmlEscape(
+                `${rel.from} ${rel.relation} ${rel.to} ${rel.confidence}`,
+              )}" data-kind="relationship" data-confidence="${htmlEscape(rel.confidence)}"><td>${htmlEscape(rel.from)}</td><td>${htmlEscape(rel.relation)}</td><td>${htmlEscape(rel.to)}</td><td>${htmlEscape(rel.confidence)}</td><td>${renderEvidenceLinks(rel.evidence_ids, evidenceById)}</td></tr>`,
+          )
+          .join('')}
+      </tbody></table>
+      <h3>Configuration & Environment</h3>
+      <div class="grid">${renderEntityCards(params.buckets.configs)}</div>
+      <h3>How To Run Locally</h3>
+      ${renderList(commands)}
+      <h3>How To Test</h3>
+      ${renderList(testCommands)}
+      <h3>Confidence Guide</h3>
+      <div class="grid">
+        <article class="card"><h3>strong</h3><p>Direct evidence is good enough for review orientation.</p></article>
+        <article class="card"><h3>usable</h3><p>Useful for navigation; confirm before relying on it.</p></article>
+        <article class="card"><h3>weak</h3><p>Incomplete or unsupported. Treat as a queue for evidence work.</p></article>
+      </div>`,
   });
   const reviewObject = renderObjectDetails({
-    title: 'Review Blast Radius',
-    summary: 'Latest review posture from the current git diff and project brain.',
+    title: 'Review Readiness',
+    summary: 'Latest review posture, affected flows, risk areas, and attention queue.',
     posture: reviewReadiness.posture,
-    body: `${renderLatestReview(params.latest)}
+    body: `<h3><span>Review Blast Radius</span></h3>
+      ${renderLatestReview(params.latest)}
       <h3>Affected Route Flows</h3>
       ${renderLatestReviewRouteFlows(params.latest, params.buckets.flows, evidenceById)}
       <h3>Risk Areas</h3>
-      <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>`,
+      <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>
+      <h3>Required Attention</h3>
+      ${renderList(
+        isRecord(understandingScore)
+          ? recordArray(understandingScore.review_readiness, 'required_attention')
+              .filter((item): item is string => typeof item === 'string')
+              .slice(0, 6)
+          : [],
+      )}`,
   });
   const evidenceObject = renderObjectDetails({
     title: 'Evidence',
@@ -11151,15 +11263,13 @@ function renderReport(params: {
       components: params.buckets.components,
     })}</div>`,
   });
-  const readFirstObject = renderObjectDetails({
-    title: 'Read First',
-    summary: 'Smallest useful entry points before changing or reviewing the project.',
-    body: `<h2>Start Here</h2>
-      <div class="grid">${renderReadFirstPointers(understandingScore)}</div>
-      <h3>Entry Points</h3>
-      <div class="grid">${renderStartHere(params.buckets.components, evidenceById)}</div>
-      <h3>Recommended Next Actions</h3>
-      ${renderList(recommendedActions.slice(0, 5))}`,
+  const benchmarkObject = renderObjectDetails({
+    title: 'Benchmark Tasks',
+    summary:
+      'Deterministic evaluation tasks that point back to local brain and research artifacts.',
+    posture:
+      recordNumber(params.latest.latest_benchmark_tasks, 'task_count') === 0 ? 'weak' : 'usable',
+    body: renderBenchmarkTasks(params.latest.latest_benchmark_tasks),
   });
   return `<!doctype html>
 <html lang="en">
@@ -11264,50 +11374,16 @@ function renderReport(params: {
         <span class="badge">${scanEfficiency}/100 scan efficiency</span>
       </div>
     </header>
-    ${flagshipSummary}
     <section class="objects" aria-label="Mission Control objects">
+      ${understandingObject}
       ${componentObject}
       ${flowObject}
       ${architectureObject}
-      ${reviewObject}
       ${evidenceObject}
       ${unknownObject}
-      ${readFirstObject}
+      ${reviewObject}
+      ${benchmarkObject}
     </section>
-    <details class="object">
-      <summary><span>Runbook</span><span class="summary-meta"><span>local</span></span></summary>
-      <h3>Overview</h3>
-      <div class="grid">
-        <article class="card"><h3>Tech Stack</h3>${renderList(params.stack)}</article>
-        <article class="card"><h3>Package Manager</h3><p>${htmlEscape(params.packageManager)}</p></article>
-        <article class="card"><h3>Relationships</h3><p>${params.relationships.length}</p></article>
-      </div>
-      <h3>How To Run Locally</h3>
-      ${renderList(commands)}
-      <h3>How To Test</h3>
-      ${renderList(testCommands)}
-      <h3>Incremental Understanding</h3>
-      ${renderIncrementalUnderstanding(params.latest.latest_incremental_update)}
-      <h3>Dependency Graph</h3>
-      <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>
-        ${params.relationships
-          .map(
-            (rel) =>
-              `<tr data-search="${htmlEscape(
-                `${rel.from} ${rel.relation} ${rel.to} ${rel.confidence}`,
-              )}" data-kind="relationship" data-confidence="${htmlEscape(rel.confidence)}"><td>${htmlEscape(rel.from)}</td><td>${htmlEscape(rel.relation)}</td><td>${htmlEscape(rel.to)}</td><td>${htmlEscape(rel.confidence)}</td><td>${renderEvidenceLinks(rel.evidence_ids, evidenceById)}</td></tr>`,
-          )
-          .join('')}
-      </tbody></table>
-      <h3>Configuration & Environment</h3>
-      <div class="grid">${renderEntityCards(params.buckets.configs)}</div>
-      <h3>Confidence Guide</h3>
-      <div class="grid">
-        <article class="card"><h3>strong</h3><p>Direct evidence is good enough for review orientation.</p></article>
-        <article class="card"><h3>usable</h3><p>Useful for navigation; confirm before relying on it.</p></article>
-        <article class="card"><h3>weak</h3><p>Incomplete or unsupported. Treat as a queue for evidence work.</p></article>
-      </div>
-    </details>
   </main>
 </body>
 </html>
