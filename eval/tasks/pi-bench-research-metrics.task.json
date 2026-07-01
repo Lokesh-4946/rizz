@@ -57,7 +57,18 @@
     {
       "path": ".rizz/research/evidence_quality.json",
       "type": "json",
-      "required_fields": ["evidence_records", "claims_with_evidence", "missing_evidence_references"]
+      "required_fields": [
+        "evidence_records",
+        "claims_with_evidence",
+        "missing_evidence_references",
+        "actionability.summary",
+        "actionability.top_evidence_gaps",
+        "actionability.unbacked_claim_groups",
+        "actionability.low_confidence_claim_areas",
+        "actionability.redaction_hidden_evidence.hidden_evidence_count",
+        "actionability.suggested_read_first",
+        "actionability.calibration_summary.summary"
+      ]
     },
     {
       "path": ".rizz/research/benchmark_ready.json",
