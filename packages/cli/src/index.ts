@@ -186,6 +186,7 @@ async function runExplainCommand(options: {
   process.stdout.write(`  confidence: ${explanation.confidence}\n`);
   process.stdout.write(`  latest report: ${displayLocalPath(result.value.reportPath)}\n`);
   process.stdout.write(`\nWhat this is\n  ${explanation.purpose}\n`);
+  writeSection('Confidence basis', explanation.confidence_basis);
   writeSection('Responsibilities', explanation.responsibilities);
   writeSection('Entry points', explanation.entry_points);
   if (explanation.flow !== undefined) {
@@ -210,6 +211,25 @@ async function runExplainCommand(options: {
   writeSection('Risks', explanation.risks);
   writeSection('Read first', explanation.read_first);
   writeSection('Unknowns', explanation.unknowns);
+  writeSection('Evidence summary', [
+    `${explanation.evidence_summary.evidence_count} evidence reference(s)`,
+    `${explanation.evidence_summary.field_evidence.length} field evidence reference(s)`,
+    `${explanation.evidence_summary.redacted_evidence_count} redacted evidence reference(s)`,
+    ...explanation.evidence_summary.records.map((record) => `${record.id}: ${record.description}`),
+  ]);
+  writeSection('Evidence gaps', explanation.evidence_gaps);
+  writeSection('Related components', explanation.related_components);
+  writeSection('Related flows', explanation.related_flows);
+  writeSection(
+    'Benchmark task hints',
+    explanation.benchmark_task_hints.map(
+      (task) => `${task.id}: ${task.expected_artifact} - ${task.prompt}`,
+    ),
+  );
+  writeSection('Research artifacts', [
+    ...explanation.research_artifacts.proving.map((path) => `proves: ${path}`),
+    ...explanation.research_artifacts.limiting.map((path) => `limits: ${path}`),
+  ]);
   writeSection('Evidence', explanation.evidence_ids);
   return 0;
 }

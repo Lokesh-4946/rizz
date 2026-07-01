@@ -878,7 +878,38 @@ interface ExplainSummaryData {
   readonly depends_on: readonly string[];
   readonly depended_on_by: readonly string[];
   readonly confidence: Confidence;
+  readonly confidence_basis: readonly string[];
   readonly unknowns: readonly string[];
+  readonly evidence_summary: {
+    readonly evidence_count: number;
+    readonly direct_evidence_ids: readonly string[];
+    readonly field_evidence: readonly string[];
+    readonly records: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly description: string;
+      readonly confidence: Confidence;
+      readonly source_files: readonly string[];
+      readonly kind?: string;
+    }[];
+    readonly redacted_evidence_count: number;
+  };
+  readonly evidence_gaps: readonly string[];
+  readonly related_components: readonly string[];
+  readonly related_flows: readonly string[];
+  readonly benchmark_task_hints: readonly {
+    readonly id: string;
+    readonly category: BenchmarkTaskCategory;
+    readonly prompt: string;
+    readonly expected_artifact: string;
+    readonly expected_check_fields: readonly string[];
+    readonly confidence: Confidence;
+    readonly why_it_matters: string;
+  }[];
+  readonly research_artifacts: {
+    readonly proving: readonly string[];
+    readonly limiting: readonly string[];
+  };
   readonly component?: {
     readonly boundary_type: string;
     readonly criticality: string;
@@ -987,6 +1018,12 @@ export interface ExplainProjectTargetSummary {
 export type ExplainProjectTargetResult =
   | { readonly ok: true; readonly value: ExplainProjectTargetSummary }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
+interface ExplainResearchArtifacts {
+  readonly evidenceQuality: Record<string, unknown> | undefined;
+  readonly benchmarkTasks: Record<string, unknown> | undefined;
+  readonly availablePaths: readonly string[];
+}
 
 const ENTITY_FILES: ReadonlyArray<readonly [keyof BrainBuckets, string, EntityType]> = [
   ['projects', 'project.json', 'project'],
@@ -12171,6 +12208,7 @@ export async function explainProjectTarget(
       (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
       {};
     const entitySets = await readExplainEntitySets(entitiesDir);
+    const research = await readExplainResearchArtifacts(rootDir);
     const explainableEntities = [
       ...entitySets.components,
       ...entitySets.flows,
@@ -12188,6 +12226,7 @@ export async function explainProjectTarget(
       latest,
       relationships: graph.relationships ?? [],
       entitySets,
+      research,
     });
     const reportsDir = join(rootDir, '.rizz', 'reports');
     await mkdir(reportsDir, { recursive: true });
@@ -12257,6 +12296,23 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     dependencies,
     risks,
     evidence,
+  };
+}
+
+async function readExplainResearchArtifacts(rootDir: string): Promise<ExplainResearchArtifacts> {
+  const researchDir = join(rootDir, '.rizz', 'research');
+  const evidenceQualityPath = join(researchDir, RESEARCH_ARTIFACT_FILES.evidenceQuality);
+  const benchmarkTasksPath = join(researchDir, RESEARCH_ARTIFACT_FILES.benchmarkTasks);
+  const available = await Promise.all(
+    Object.values(RESEARCH_ARTIFACT_FILES).map(async (fileName) => {
+      const relativePath = `.rizz/research/${fileName}`;
+      return (await exists(join(researchDir, fileName))) ? relativePath : undefined;
+    }),
+  );
+  return {
+    evidenceQuality: await readJsonFile<Record<string, unknown>>(evidenceQualityPath),
+    benchmarkTasks: await readJsonFile<Record<string, unknown>>(benchmarkTasksPath),
+    availablePaths: available.filter((path): path is string => path !== undefined).map(safeText),
   };
 }
 
@@ -12354,6 +12410,7 @@ function buildExplanation(params: {
   readonly latest: Record<string, unknown>;
   readonly relationships: readonly BrainRelationship[];
   readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
+  readonly research: ExplainResearchArtifacts;
 }): ExplainSummaryData {
   const target = params.target;
   if (target.type === 'flow') return buildFlowExplanation(params);
@@ -12363,6 +12420,12 @@ function buildExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const componentData = primaryComponent?.data ?? {};
   const targetData = target.data ?? {};
+  const relatedFlows = relatedFlowContext(target, params.entitySets.flows);
+  const relatedComponentIds = unique([
+    ...relatedComponents.map((component) => component.id),
+    ...relationshipContext.dependsOnEntityIds.filter((id) => id.startsWith('component:')),
+    ...relationshipContext.dependedOnByEntityIds.filter((id) => id.startsWith('component:')),
+  ]);
   const purpose =
     stringData(target, 'purpose') ??
     (typeof componentData.purpose === 'string' ? componentData.purpose : undefined) ??
@@ -12422,6 +12485,15 @@ function buildExplanation(params: {
     target.confidence,
     ...(primaryComponent === undefined ? [] : [primaryComponent.confidence]),
   ]);
+  const evidenceSummary = explainEvidenceSummary({
+    evidenceIds,
+    entities: [target, ...(primaryComponent === undefined ? [] : [primaryComponent])],
+    evidence: params.entitySets.evidence,
+  });
+  const benchmarkTaskHints = explainBenchmarkTaskHints({
+    targetIds: unique([target.id, ...relatedComponentIds, ...relatedFlows.map((flow) => flow.id)]),
+    benchmarkTasks: params.research.benchmarkTasks,
+  });
   const unknowns = explainUnknowns({
     target,
     confidence,
@@ -12459,10 +12531,32 @@ function buildExplanation(params: {
     depends_on: relationshipContext.dependsOn.map(safeText),
     depended_on_by: relationshipContext.dependedOnBy.map(safeText),
     confidence,
+    confidence_basis: explainConfidenceBasis({
+      confidence,
+      evidenceSummary,
+      unknowns,
+    }),
     unknowns: unique([
       ...unknowns,
       ...explainArray(targetData.unknowns, componentData.unknowns),
     ]).map(safeText),
+    evidence_summary: evidenceSummary,
+    evidence_gaps: explainEvidenceGaps({
+      targetIds: unique([
+        target.id,
+        ...relatedComponentIds,
+        ...relatedFlows.map((flow) => flow.id),
+      ]),
+      evidenceQuality: params.research.evidenceQuality,
+    }),
+    related_components: relatedComponentIds.map(safeText),
+    related_flows: relatedFlows.map((flow) => safeText(flow.id)),
+    benchmark_task_hints: benchmarkTaskHints,
+    research_artifacts: explainResearchArtifactsForTarget({
+      entityType: target.type,
+      benchmarkTaskHints,
+      availablePaths: params.research.availablePaths,
+    }),
     ...(primaryComponent !== undefined
       ? {
           component: {
@@ -12493,6 +12587,7 @@ function buildFlowExplanation(params: {
   readonly latest: Record<string, unknown>;
   readonly relationships: readonly BrainRelationship[];
   readonly entitySets: Awaited<ReturnType<typeof readExplainEntitySets>>;
+  readonly research: ExplainResearchArtifacts;
 }): ExplainSummaryData {
   const target = params.target;
   const relationshipContext = explainRelationshipContext(target, params.relationships);
@@ -12521,6 +12616,12 @@ function buildFlowExplanation(params: {
   const riskLabels = flowRisksForTarget.map(formatFlowRisk);
   const confidenceScore = asFlowConfidenceScore(target);
   const confidenceReason = safeText(flowConfidenceReason(target));
+  const relatedComponentIds = unique([
+    ...components,
+    ...relationshipContext.dependsOnEntityIds.filter((id) => id.startsWith('component:')),
+    ...relationshipContext.dependedOnByEntityIds.filter((id) => id.startsWith('component:')),
+  ]);
+  const relatedFlowIds = unique([target.id]);
   const evidenceIds = unique([
     ...target.evidence_ids,
     ...entrypoints.flatMap((entrypoint) => entrypoint.evidence),
@@ -12550,6 +12651,15 @@ function buildFlowExplanation(params: {
     ...steps.map((step) => step.path),
     ...files,
   ]).slice(0, 10);
+  const evidenceSummary = explainEvidenceSummary({
+    evidenceIds,
+    entities: [target],
+    evidence: params.entitySets.evidence,
+  });
+  const benchmarkTaskHints = explainBenchmarkTaskHints({
+    targetIds: relatedFlowIds,
+    benchmarkTasks: params.research.benchmarkTasks,
+  });
 
   return {
     generated_at: params.now,
@@ -12601,7 +12711,25 @@ function buildFlowExplanation(params: {
     depends_on: relationshipContext.dependsOn.map(safeText),
     depended_on_by: relationshipContext.dependedOnBy.map(safeText),
     confidence: target.confidence,
+    confidence_basis: explainConfidenceBasis({
+      confidence: target.confidence,
+      evidenceSummary,
+      unknowns: flowUnknowns,
+    }),
     unknowns: flowUnknowns.map(safeText),
+    evidence_summary: evidenceSummary,
+    evidence_gaps: explainEvidenceGaps({
+      targetIds: unique([...relatedFlowIds, ...relatedComponentIds]),
+      evidenceQuality: params.research.evidenceQuality,
+    }),
+    related_components: relatedComponentIds.map(safeText),
+    related_flows: relatedFlowIds.map(safeText),
+    benchmark_task_hints: benchmarkTaskHints,
+    research_artifacts: explainResearchArtifactsForTarget({
+      entityType: target.type,
+      benchmarkTaskHints,
+      availablePaths: params.research.availablePaths,
+    }),
     flow: {
       kind: flowKind(target),
       ...(framework !== undefined ? { framework: safeText(framework) } : {}),
@@ -12673,6 +12801,8 @@ function explainRelationshipContext(
 ): {
   readonly dependsOn: readonly string[];
   readonly dependedOnBy: readonly string[];
+  readonly dependsOnEntityIds: readonly string[];
+  readonly dependedOnByEntityIds: readonly string[];
   readonly evidenceIds: readonly string[];
 } {
   const dependencyRelations = new Set(['depends_on', 'calls', 'imports', 'configures']);
@@ -12685,7 +12815,187 @@ function explainRelationshipContext(
   return {
     dependsOn: unique(outbound.map((rel) => `${rel.relation}: ${rel.to}`)),
     dependedOnBy: unique(inbound.map((rel) => `${rel.relation}: ${rel.from}`)),
+    dependsOnEntityIds: unique(outbound.map((rel) => rel.to)),
+    dependedOnByEntityIds: unique(inbound.map((rel) => rel.from)),
     evidenceIds: unique([...outbound, ...inbound].flatMap((rel) => rel.evidence_ids)),
+  };
+}
+
+function relatedFlowContext(
+  target: BrainEntity,
+  flows: readonly BrainEntity[],
+): readonly BrainEntity[] {
+  if (target.type === 'flow') return [target];
+  const relatedSourceFiles = new Set([stringData(target, 'relativePath') ?? target.name]);
+  for (const file of target.source_files) relatedSourceFiles.add(file);
+  return sorted(
+    flows.filter((flow) => {
+      const flowComponents = stringArrayData(flow, 'components');
+      if (flowComponents.includes(target.id)) return true;
+      for (const sourceFile of flow.source_files) {
+        if (relatedSourceFiles.has(sourceFile)) return true;
+        if (target.type === 'folder' && sourceFile.startsWith(`${target.name}/`)) return true;
+      }
+      return false;
+    }),
+    (flow) => flow.id,
+  );
+}
+
+function explainEvidenceSummary(params: {
+  readonly evidenceIds: readonly string[];
+  readonly entities: readonly BrainEntity[];
+  readonly evidence: readonly BrainEntity[];
+}): ExplainSummaryData['evidence_summary'] {
+  const safeEvidenceIds = unique(params.evidenceIds.map(safeText));
+  const evidenceById = new Map(params.evidence.map((entity) => [entity.id, entity]));
+  const fieldEvidence = unique(
+    params.entities.flatMap((entity) =>
+      Object.entries(recordStringArrayData(entity, 'field_evidence')).flatMap(([field, ids]) =>
+        ids.map((id) => `${field}: ${id}`),
+      ),
+    ),
+  ).map(safeText);
+  const records = safeEvidenceIds.slice(0, 12).map((id) => {
+    const evidence = evidenceById.get(id);
+    if (evidence === undefined) {
+      return {
+        id,
+        label: id,
+        description: 'Evidence reference was recorded, but the evidence entity was not found.',
+        confidence: 'uncertain' as const,
+        source_files: [],
+      };
+    }
+    const kind = stringData(evidence, 'kind');
+    return {
+      id: safeText(evidence.id),
+      label: safeText(evidence.name),
+      description: safeText(evidence.description),
+      confidence: evidence.confidence,
+      source_files: evidence.source_files.map(safeText),
+      ...(kind === undefined ? {} : { kind: safeText(kind) }),
+    };
+  });
+  return {
+    evidence_count: safeEvidenceIds.length,
+    direct_evidence_ids: safeEvidenceIds,
+    field_evidence: fieldEvidence,
+    records,
+    redacted_evidence_count: redactedReferenceCount(safeEvidenceIds),
+  };
+}
+
+function explainConfidenceBasis(params: {
+  readonly confidence: Confidence;
+  readonly evidenceSummary: ExplainSummaryData['evidence_summary'];
+  readonly unknowns: readonly string[];
+}): readonly string[] {
+  const basis = [
+    `${params.evidenceSummary.evidence_count} direct evidence reference(s) support this explanation.`,
+    `${params.evidenceSummary.field_evidence.length} field-level evidence reference(s) support specific claims.`,
+  ];
+  if (params.confidence === 'verified') {
+    basis.push('Confidence is verified from local brain evidence.');
+  } else {
+    basis.push(`Confidence is ${params.confidence}; use unknowns and evidence gaps as limits.`);
+  }
+  if (params.unknowns.length > 0) {
+    basis.push(`${params.unknowns.length} unknown or confidence-limiting note(s) remain.`);
+  }
+  return basis.map(safeText);
+}
+
+function explainEvidenceGaps(params: {
+  readonly targetIds: readonly string[];
+  readonly evidenceQuality: Record<string, unknown> | undefined;
+}): readonly string[] {
+  if (params.evidenceQuality === undefined) {
+    return ['Evidence quality artifact is missing. Run rizz brain to refresh local research.'];
+  }
+  const targetIds = new Set(params.targetIds);
+  const topGaps = recordArray(params.evidenceQuality, 'top_evidence_gaps').filter(isRecord);
+  const targetGaps = topGaps.filter((gap) => {
+    const id = typeof gap.id === 'string' ? gap.id : '';
+    return targetIds.has(id);
+  });
+  const gaps = targetGaps.length > 0 ? targetGaps : topGaps.slice(0, 3);
+  if (gaps.length === 0) {
+    return ['No evidence gaps are recorded in .rizz/research/evidence_quality.json.'];
+  }
+  return gaps
+    .slice(0, 6)
+    .map((gap) => {
+      const id = typeof gap.id === 'string' ? gap.id : 'unknown';
+      const field = typeof gap.field === 'string' ? ` ${gap.field}` : '';
+      const severity = typeof gap.severity === 'string' ? gap.severity : 'unknown';
+      const reason = typeof gap.reason === 'string' ? gap.reason : 'Evidence gap recorded.';
+      return `${id}${field} [${severity}]: ${reason}`;
+    })
+    .map(safeText);
+}
+
+function explainBenchmarkTaskHints(params: {
+  readonly targetIds: readonly string[];
+  readonly benchmarkTasks: Record<string, unknown> | undefined;
+}): ExplainSummaryData['benchmark_task_hints'] {
+  if (params.benchmarkTasks === undefined) return [];
+  const targetIds = new Set(params.targetIds);
+  return recordArray(params.benchmarkTasks, 'tasks')
+    .filter(isRecord)
+    .filter((task) => {
+      const target = isRecord(task.target) ? task.target : undefined;
+      const entityId =
+        target !== undefined && typeof target.entity_id === 'string' ? target.entity_id : '';
+      return targetIds.has(entityId);
+    })
+    .slice(0, 5)
+    .map((task) => ({
+      id: typeof task.id === 'string' ? safeText(task.id) : 'task:unknown',
+      category: benchmarkTaskCategoryFromValue(task.category),
+      prompt: typeof task.prompt === 'string' ? safeText(task.prompt) : '',
+      expected_artifact:
+        typeof task.expected_artifact === 'string' ? safeText(task.expected_artifact) : '',
+      expected_check_fields: asStringArray(task.expected_check_fields).map(safeText),
+      confidence: confidenceFromValue(task.confidence),
+      why_it_matters: typeof task.why_it_matters === 'string' ? safeText(task.why_it_matters) : '',
+    }));
+}
+
+function benchmarkTaskCategoryFromValue(value: unknown): BenchmarkTaskCategory {
+  if (BENCHMARK_TASK_CATEGORIES.includes(value as BenchmarkTaskCategory)) {
+    return value as BenchmarkTaskCategory;
+  }
+  return 'evidence-unknown-coverage';
+}
+
+function explainResearchArtifactsForTarget(params: {
+  readonly entityType: EntityType;
+  readonly benchmarkTaskHints: readonly { readonly expected_artifact: string }[];
+  readonly availablePaths: readonly string[];
+}): ExplainSummaryData['research_artifacts'] {
+  const available = new Set(params.availablePaths);
+  const proving = new Set<string>();
+  if (params.entityType === 'flow') {
+    proving.add('.rizz/research/flow_understanding.json');
+    proving.add('.rizz/research/flow_coverage.json');
+    proving.add('.rizz/research/flow_confidence.json');
+  } else {
+    proving.add('.rizz/research/component_intelligence.json');
+  }
+  for (const hint of params.benchmarkTaskHints) proving.add(hint.expected_artifact);
+  const limiting = new Set([
+    '.rizz/research/evidence_quality.json',
+    '.rizz/research/confidence.json',
+  ]);
+  if (params.benchmarkTaskHints.length > 0) {
+    proving.add('.rizz/research/benchmark_tasks.json');
+  }
+  return {
+    proving: [...proving].filter((path) => available.has(path)).sort((a, b) => a.localeCompare(b)),
+    limiting: [...limiting]
+      .filter((path) => available.has(path))
+      .sort((a, b) => a.localeCompare(b)),
   };
 }
 
@@ -12796,6 +13106,27 @@ function renderExplainReport(
     <section class="grid">
 	      <article class="card"><h2>Responsibilities</h2>${renderList(explanation.responsibilities)}</article>
 	      <article class="card"><h2>Entry Points</h2>${renderList(explanation.entry_points)}</article>
+	      <article class="card"><h2>Confidence Basis</h2>${renderList(explanation.confidence_basis)}</article>
+	      <article class="card"><h2>Evidence Summary</h2>${renderList([
+          `${explanation.evidence_summary.evidence_count} evidence reference(s)`,
+          `${explanation.evidence_summary.field_evidence.length} field evidence reference(s)`,
+          `${explanation.evidence_summary.redacted_evidence_count} redacted evidence reference(s)`,
+          ...explanation.evidence_summary.records.map(
+            (record) => `${record.id}: ${record.description}`,
+          ),
+        ])}</article>
+	      <article class="card"><h2>Evidence Gaps</h2>${renderList(explanation.evidence_gaps)}</article>
+	      <article class="card"><h2>Related Components</h2>${renderList(explanation.related_components)}</article>
+	      <article class="card"><h2>Related Flows</h2>${renderList(explanation.related_flows)}</article>
+	      <article class="card"><h2>Benchmark Task Hints</h2>${renderList(
+          explanation.benchmark_task_hints.map(
+            (task) => `${task.id}: ${task.expected_artifact} - ${task.prompt}`,
+          ),
+        )}</article>
+	      <article class="card"><h2>Research Artifacts</h2>${renderList([
+          ...explanation.research_artifacts.proving.map((path) => `Proves: ${path}`),
+          ...explanation.research_artifacts.limiting.map((path) => `Limits: ${path}`),
+        ])}</article>
 	      ${renderComponentExplanationCards(explanation)}
 	      ${renderFlowExplanationCards(explanation)}
 	      <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>

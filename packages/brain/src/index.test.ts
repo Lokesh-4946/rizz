@@ -3669,6 +3669,36 @@ describe('project brain generation', () => {
       expect(component.value.explanation.evidence_ids).toContain(
         'evidence:file-packages--brain--package.json',
       );
+      expect(component.value.explanation.confidence_basis).toContainEqual(
+        expect.stringContaining('direct evidence reference'),
+      );
+      expect(component.value.explanation.evidence_summary).toMatchObject({
+        evidence_count: expect.any(Number),
+        redacted_evidence_count: 0,
+        records: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'evidence:file-packages--brain--package.json',
+            source_files: expect.arrayContaining(['packages/brain/package.json']),
+          }),
+        ]),
+      });
+      expect(component.value.explanation.related_flows).toContain('flow:packages--brain--test');
+      expect(component.value.explanation.benchmark_task_hints).toContainEqual(
+        expect.objectContaining({
+          category: 'component-explanation',
+          expected_artifact: '.rizz/research/component_intelligence.json',
+        }),
+      );
+      expect(component.value.explanation.research_artifacts).toMatchObject({
+        proving: expect.arrayContaining([
+          '.rizz/research/benchmark_tasks.json',
+          '.rizz/research/component_intelligence.json',
+        ]),
+        limiting: expect.arrayContaining([
+          '.rizz/research/confidence.json',
+          '.rizz/research/evidence_quality.json',
+        ]),
+      });
 
       const flow = await explainProjectTarget({
         rootDir: dir,
@@ -3700,9 +3730,37 @@ describe('project brain generation', () => {
       expect(flow.value.explanation.unknowns).toContainEqual(
         expect.stringContaining('Flow confidence reason:'),
       );
+      expect(flow.value.explanation.confidence_basis).toContainEqual(
+        expect.stringContaining('field-level evidence reference'),
+      );
+      expect(flow.value.explanation.evidence_summary.records).toContainEqual(
+        expect.objectContaining({
+          id: 'evidence:file-packages--brain--package.json',
+          source_files: expect.arrayContaining(['packages/brain/package.json']),
+        }),
+      );
+      expect(flow.value.explanation.related_components).toContain('component:packages--brain');
+      expect(flow.value.explanation.related_flows).toContain('flow:packages--brain--test');
+      expect(flow.value.explanation.benchmark_task_hints).toContainEqual(
+        expect.objectContaining({
+          category: 'flow-explanation',
+          expected_artifact: '.rizz/research/flow_understanding.json',
+        }),
+      );
+      expect(flow.value.explanation.research_artifacts.proving).toEqual(
+        expect.arrayContaining([
+          '.rizz/research/benchmark_tasks.json',
+          '.rizz/research/flow_confidence.json',
+          '.rizz/research/flow_coverage.json',
+          '.rizz/research/flow_understanding.json',
+        ]),
+      );
       const flowReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
       expect(flowReport).toContain('Flow Steps');
       expect(flowReport).toContain('flow:packages--brain--test');
+      expect(flowReport).toContain('Evidence Summary');
+      expect(flowReport).toContain('Benchmark Task Hints');
+      expect(flowReport).toContain('.rizz/research/flow_understanding.json');
       expect(flowReport).not.toContain('sk-or-v1-');
 
       const file = await explainProjectTarget({
