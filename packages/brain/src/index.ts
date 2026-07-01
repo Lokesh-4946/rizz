@@ -7736,6 +7736,69 @@ function completeRatio(numerator: number, denominator: number): number {
   return ratio(numerator, denominator);
 }
 
+type AskReadinessStatus = 'ready' | 'limited' | 'blocked';
+
+interface AskReadinessGate {
+  readonly key: string;
+  readonly label: string;
+  readonly status: AskReadinessStatus;
+  readonly score: number;
+  readonly reasons: readonly string[];
+  readonly next_required_improvements: readonly string[];
+}
+
+function askGateStatus(score: number, isBlocked: boolean): AskReadinessStatus {
+  if (isBlocked || score < 45) return 'blocked';
+  if (score < 80) return 'limited';
+  return 'ready';
+}
+
+function askGate(params: {
+  readonly key: string;
+  readonly label: string;
+  readonly score: number;
+  readonly isBlocked: boolean;
+  readonly readyReason: string;
+  readonly limitedReason: string;
+  readonly blockedReason: string;
+  readonly nextRequiredImprovement: string;
+}): AskReadinessGate {
+  const score = boundedScore(params.score);
+  const status = askGateStatus(score, params.isBlocked);
+  let reason = params.readyReason;
+  if (status === 'limited') {
+    reason = params.limitedReason;
+  } else if (status === 'blocked') {
+    reason = params.blockedReason;
+  }
+  const nextRequiredImprovements =
+    status === 'ready' ? [] : [safeText(params.nextRequiredImprovement)];
+  return {
+    key: params.key,
+    label: params.label,
+    status,
+    score,
+    reasons: [safeText(reason)],
+    next_required_improvements: nextRequiredImprovements,
+  };
+}
+
+function askReadinessOverallStatus(gates: readonly AskReadinessGate[]): AskReadinessStatus {
+  if (gates.some((gate) => gate.status === 'blocked')) return 'blocked';
+  if (gates.some((gate) => gate.status === 'limited')) return 'limited';
+  return 'ready';
+}
+
+function askReadinessSummary(status: AskReadinessStatus, score: number): string {
+  if (status === 'ready') {
+    return `${score}/100 local readiness for future broader repo questions.`;
+  }
+  if (status === 'limited') {
+    return `${score}/100 local readiness; future broader repo questions need more evidence before answers can be trusted broadly.`;
+  }
+  return `${score}/100 local readiness; future broader repo questions are blocked until the weak gates improve.`;
+}
+
 function buildBenchmarkReadyArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -7886,6 +7949,29 @@ function buildBenchmarkReadyArtifact(params: {
     coveredBenchmarkTaskCategories.length,
     BENCHMARK_TASK_CATEGORIES.length,
   );
+  const architectureImpactMap = isRecord(params.architectureReasoning)
+    ? params.architectureReasoning.impact_map
+    : undefined;
+  const architectureImpactSummaryRecord =
+    isRecord(architectureImpactMap) && isRecord(architectureImpactMap.summary)
+      ? architectureImpactMap.summary
+      : {};
+  const architectureImpactEntries = isRecord(architectureImpactMap)
+    ? recordArray(architectureImpactMap, 'entries').filter(isRecord)
+    : [];
+  const totalArchitectureImpactSurfaces = recordNumber(
+    architectureImpactSummaryRecord,
+    'total_surfaces',
+  );
+  const architectureImpactEntriesWithEvidence = architectureImpactEntries.filter(
+    (entry) =>
+      recordArray(entry, 'evidence_ids').length > 0 && recordArray(entry, 'what_breaks').length > 0,
+  ).length;
+  const architectureImpactCoverageRatio =
+    totalArchitectureImpactSurfaces === 0
+      ? 0
+      : ratio(architectureImpactEntriesWithEvidence, totalArchitectureImpactSurfaces);
+  const architectureImpactScore = boundedScore(architectureImpactCoverageRatio * 100);
   const confidenceScores = activeEntities.map((entity) =>
     confidenceScoreForValue(entity.confidence),
   );
@@ -7909,6 +7995,156 @@ function buildBenchmarkReadyArtifact(params: {
     readinessDimensionScores.reduce((total, score) => total + score, 0) /
       readinessDimensionScores.length,
   );
+  const evidenceQualityScore = recordNumber(params.evidenceQuality, 'overall_score');
+  const evidenceGapCount = recordNumber(params.evidenceQuality, 'evidence_gap_count');
+  const redactionSafetyScore = recordNumber(params.evidenceQuality, 'redaction_safety_score');
+  const redactedEvidenceCount = recordNumber(params.evidenceQuality, 'redacted_evidence_count');
+  const redactedReferenceCount = recordNumber(params.evidenceQuality, 'redacted_reference_count');
+  const unsafeSensitiveReferenceCount = recordNumber(
+    params.evidenceQuality,
+    'unsafe_sensitive_reference_count',
+  );
+  const unknownCoverageScore =
+    unknownItems.length > unknownsWithEvidence.length
+      ? Math.min(boundedScore(unknownCoverageRatio * 100), 79)
+      : boundedScore(unknownCoverageRatio * 100);
+  const incrementalFreshnessScore = boundedScore(
+    Math.max(0, 100 - params.incrementalMetrics.stale_fact_count * 15) * 0.45 +
+      params.incrementalMetrics.scan_efficiency_score * 0.35 +
+      boundedScore(activeFileRatio * 100) * 0.2,
+  );
+  const askGates = [
+    askGate({
+      key: 'component_coverage',
+      label: 'Component coverage',
+      score: componentCoverageRatio * 100,
+      isBlocked: components.length > 0 && componentsWithCoverage.length === 0,
+      readyReason: `${componentsWithCoverage.length}/${components.length} component(s) have boundary, flow, and evidence signals.`,
+      limitedReason:
+        'Some components are missing boundary, flow, or evidence signals needed for broad repo questions.',
+      blockedReason:
+        'No component has the boundary, flow, and evidence coverage needed for broad repo questions.',
+      nextRequiredImprovement:
+        'Add or refresh component evidence until important components have boundary, flow, and evidence signals.',
+    }),
+    askGate({
+      key: 'flow_coverage',
+      label: 'Flow coverage',
+      score: flowCoverageRatio * 100,
+      isBlocked: flows.length === 0 || (flows.length > 0 && flowsWithCoverage.length === 0),
+      readyReason: `${flowsWithCoverage.length}/${flows.length} flow(s) have entrypoint, step, and evidence signals.`,
+      limitedReason:
+        'Some flows are missing entrypoint, step, or evidence signals needed for future broader questions.',
+      blockedReason: 'No usable flow coverage is available for future broader repo questions.',
+      nextRequiredImprovement:
+        'Add route, command, test, or source evidence that lets Rizz reconstruct at least one evidence-backed flow.',
+    }),
+    askGate({
+      key: 'architecture_impact_coverage',
+      label: 'Architecture impact coverage',
+      score: architectureImpactScore,
+      isBlocked:
+        (components.length > 0 || flows.length > 0) && totalArchitectureImpactSurfaces === 0,
+      readyReason: `${architectureImpactEntriesWithEvidence}/${totalArchitectureImpactSurfaces} architecture impact surface(s) have evidence and what-breaks notes.`,
+      limitedReason:
+        'Architecture impact exists but does not yet cover every mapped surface with evidence and what-breaks notes.',
+      blockedReason:
+        'No architecture impact surface is mapped, so future broader questions cannot explain blast radius reliably.',
+      nextRequiredImprovement:
+        'Refresh architecture reasoning until components or routes have evidence-backed impact surfaces and what-breaks notes.',
+    }),
+    askGate({
+      key: 'evidence_quality',
+      label: 'Evidence quality',
+      score: evidenceQualityScore,
+      isBlocked: evidenceClaimCount > 0 && evidenceBackedClaimCount === 0,
+      readyReason: `${evidenceQualityScore}/100 evidence quality with ${evidenceGapCount} evidence gap(s).`,
+      limitedReason:
+        'Evidence quality has gaps, so broad answers should stay qualified until claims are better supported.',
+      blockedReason:
+        'Evidence claims are not backed strongly enough to support future broader repo questions.',
+      nextRequiredImprovement:
+        'Attach direct evidence to weak component, flow, relationship, and field claims.',
+    }),
+    askGate({
+      key: 'unknown_coverage',
+      label: 'Unknown coverage',
+      score: unknownCoverageScore,
+      isBlocked: unknownItems.length > 0 && unknownsWithEvidence.length === 0,
+      readyReason: `${unknownsWithEvidence.length}/${unknownItems.length} known unknown(s) have evidence pointers.`,
+      limitedReason:
+        'Some known unknowns lack evidence pointers, so broad answers need visible caveats.',
+      blockedReason:
+        'Known unknowns exist without evidence pointers, which blocks trustworthy broad answers.',
+      nextRequiredImprovement:
+        'Link each important unknown to source, test, risk, or architecture evidence.',
+    }),
+    askGate({
+      key: 'review_readiness',
+      label: 'Review readiness',
+      score: readinessScore,
+      isBlocked: blockingGaps.length > 0 && readinessScore < 45,
+      readyReason: `${readinessScore}/100 deterministic review readiness with no blocking benchmark gaps.`,
+      limitedReason:
+        'Review readiness has benchmark gaps that should be resolved before broad answers guide decisions.',
+      blockedReason:
+        'Review readiness is blocked by benchmark gaps in component, flow, or evidence coverage.',
+      nextRequiredImprovement:
+        'Clear benchmark readiness blocking gaps before relying on broad repo answers.',
+    }),
+    askGate({
+      key: 'benchmark_task_coverage',
+      label: 'Benchmark task coverage',
+      score: benchmarkTaskCategoryRatio * 100,
+      isBlocked: coveredBenchmarkTaskCategories.length === 0,
+      readyReason: `${coveredBenchmarkTaskCategories.length}/${BENCHMARK_TASK_CATEGORIES.length} benchmark task categories are covered.`,
+      limitedReason:
+        'Some benchmark task categories are missing, so future broad questions cannot be evaluated across all expected surfaces.',
+      blockedReason:
+        'No benchmark task categories are covered for evaluating future broad repo questions.',
+      nextRequiredImprovement:
+        'Emit benchmark tasks for component, flow, architecture impact, review, and evidence/unknown coverage.',
+    }),
+    askGate({
+      key: 'incremental_freshness',
+      label: 'Incremental freshness',
+      score: incrementalFreshnessScore,
+      isBlocked: activeFileEntities.length === 0 || missingEvidenceReferences.length > 0,
+      readyReason: `${activeFileEntities.length} active file entity/entities with ${params.incrementalMetrics.stale_fact_count} stale fact candidate(s).`,
+      limitedReason:
+        'Incremental freshness is usable but stale facts or low scan reuse should keep future broad answers cautious.',
+      blockedReason:
+        'Incremental freshness is blocked by missing active files or dangling evidence references.',
+      nextRequiredImprovement:
+        'Run a fresh local brain scan and resolve dangling evidence references before broad answers are trusted.',
+    }),
+    askGate({
+      key: 'redaction_safety',
+      label: 'Redaction safety',
+      score: redactionSafetyScore,
+      isBlocked: unsafeSensitiveReferenceCount > 0,
+      readyReason:
+        redactedEvidenceCount + redactedReferenceCount > 0
+          ? 'Sensitive references are represented with redacted identifiers and no unsafe references remain.'
+          : 'No unsafe sensitive references were detected in generated research artifacts.',
+      limitedReason:
+        'Sensitive references were handled, but redaction safety is below the ready threshold.',
+      blockedReason: 'Unsafe sensitive references remain in generated research artifacts.',
+      nextRequiredImprovement:
+        'Redact or omit unsafe secret, token, credential, and private path references before sharing artifacts.',
+    }),
+  ];
+  const askReadinessStatus = askReadinessOverallStatus(askGates);
+  const askReadinessScore = boundedScore(
+    askGates.reduce((total, gate) => total + gate.score, 0) / askGates.length,
+  );
+  const askReadinessReasons = askGates
+    .filter((gate) => gate.status !== 'ready')
+    .flatMap((gate) => gate.reasons)
+    .slice(0, 12);
+  const askReadinessNextRequiredImprovements = unique(
+    askGates.flatMap((gate) => gate.next_required_improvements),
+  ).slice(0, 12);
   return {
     schema_version: 1,
     generated_at: params.now,
@@ -8053,6 +8289,33 @@ function buildBenchmarkReadyArtifact(params: {
       notes: [
         'Benchmark readiness is computed from deterministic local brain facts only.',
         'Coverage ratios track component, flow, evidence, and known-unknown surfaces for PI-Bench seed fixtures.',
+      ],
+    },
+    ask_readiness: {
+      schema_version: 1,
+      status: askReadinessStatus,
+      score: askReadinessScore,
+      summary: askReadinessSummary(askReadinessStatus, askReadinessScore),
+      deterministic: true,
+      provider_calls_required: false,
+      network_required: false,
+      scope:
+        'Readiness gate for future broader repo questions; this does not provide a generic chat surface.',
+      gates: askGates,
+      reasons: askReadinessReasons,
+      next_required_improvements: askReadinessNextRequiredImprovements,
+      redaction_safety: {
+        status: unsafeSensitiveReferenceCount === 0 ? 'ready' : 'blocked',
+        redaction_applied: redactedEvidenceCount + redactedReferenceCount > 0,
+        redaction_safety_score: redactionSafetyScore,
+        redacted_evidence_count: redactedEvidenceCount,
+        redacted_reference_count: redactedReferenceCount,
+        unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+        output_share_safe: unsafeSensitiveReferenceCount === 0,
+      },
+      notes: [
+        'Ask readiness is deterministic and local-first; it only scores whether future broader questions have enough project intelligence support.',
+        'A ready gate does not create a chat surface or provider-backed question-answer surface.',
       ],
     },
   };
@@ -9841,6 +10104,9 @@ function buildLatest(params: {
     latest_architecture_reasoning: architectureReasoning,
     latest_evidence_quality: evidenceQuality,
     latest_understanding_score: understandingScore,
+    latest_ask_readiness: isRecord(benchmarkReady.ask_readiness)
+      ? benchmarkReady.ask_readiness
+      : undefined,
     latest_benchmark_tasks: {
       path: '.rizz/research/benchmark_tasks.json',
       task_count: recordNumber(benchmarkTasks, 'task_count'),
@@ -11093,8 +11359,34 @@ function nestedRecord(value: unknown, key: string): Record<string, unknown> {
   return isRecord(item) ? item : {};
 }
 
+function renderAskReadinessLine(value: unknown): string {
+  if (!isRecord(value)) {
+    return '<article class="card compact"><h3>Ask readiness</h3><p class="muted">No future-question readiness gate is available yet.</p></article>';
+  }
+  const score = recordNumber(value, 'score');
+  const status = recordString(value, 'status', scoreBand(score));
+  const summary = recordString(
+    value,
+    'summary',
+    'Local readiness for future broader repo questions has not been summarized yet.',
+  );
+  const improvements = recordArray(value, 'next_required_improvements')
+    .filter((item): item is string => typeof item === 'string')
+    .slice(0, 3);
+  return `<article class="card compact" data-search="${htmlEscape(
+    `ask readiness future broader repo questions ${score} ${status} ${summary} ${improvements.join(' ')}`,
+  )}">
+    <h3>Ask readiness</h3>
+    <p><strong>${score}/100 · ${htmlEscape(status)}</strong></p>
+    <p>${htmlEscape(summary)}</p>
+    <h4>Next</h4>
+    ${renderList(improvements)}
+  </article>`;
+}
+
 function renderFlagshipSummary(params: {
   readonly understandingScore: unknown;
+  readonly askReadiness: unknown;
   readonly evidenceQuality: unknown;
   readonly incrementalUpdate: unknown;
   readonly architectureReasoning: unknown;
@@ -11189,6 +11481,7 @@ function renderFlagshipSummary(params: {
           ...reviewAttention,
         ])}
       </article>
+      ${renderAskReadinessLine(params.askReadiness)}
       <article class="card compact">
         <h3>Incremental Changed / Stable</h3>
         ${renderList([
@@ -11213,6 +11506,7 @@ function renderFlagshipSummary(params: {
           '.rizz/research/evidence_quality.json',
           '.rizz/research/flow_coverage.json',
           '.rizz/research/architecture_reasoning.json',
+          '.rizz/research/benchmark_ready.json',
           '.rizz/research/benchmark_tasks.json',
           '.rizz/research/incremental_update.json',
         ])}
@@ -11374,8 +11668,10 @@ function renderReport(params: {
   const evidenceQuality = evidenceQualityMetric(params.latest.latest_evidence_quality);
   const reviewReadiness = reviewReadinessMetric(understandingScore);
   const unknownRisk = unknownRiskMetric(unknownCount);
+  const askReadiness = params.latest.latest_ask_readiness;
   const flagshipSummary = renderFlagshipSummary({
     understandingScore,
+    askReadiness,
     evidenceQuality: params.latest.latest_evidence_quality,
     incrementalUpdate,
     architectureReasoning: params.latest.latest_architecture_reasoning,
@@ -11590,6 +11886,7 @@ function renderReport(params: {
               : 'Open unknowns need source confirmation.',
         })}
       </div>
+      ${renderAskReadinessLine(askReadiness)}
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
         <span class="badge">${params.buckets.flows.length} flows</span>
