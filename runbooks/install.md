@@ -139,14 +139,14 @@ Release-facing changes should also run:
 pnpm pack:check
 ```
 
-Latest `0.2.0` release gate:
+Latest `0.2.1` release gate:
 
 - `pnpm check` passed
 - Vitest: 31 files / 320 tests
 - PI-Bench: 10/10 tasks
-- CLI process smoke: 9/9 checks
+- CLI process smoke: 10/10 checks
 - install-local: 5/5
-- footprint: 49ms cold start / 188KB core, under the 200KB budget
+- footprint: 53ms cold start / 188KB core, under the 200KB budget
 
 ## Known Limits
 

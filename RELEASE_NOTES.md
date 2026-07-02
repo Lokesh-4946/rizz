@@ -1,5 +1,26 @@
 # Release Notes
 
+## 0.2.1
+
+Rizz `0.2.1` is a patch release for the first-run Project Intelligence command contract.
+
+### Fixes
+
+- Bare `rizz` now generates the local Project Intelligence Layer in headless/non-interactive
+  runners with empty stdin.
+- `rizz`, `rizz understand`, and `rizz brain` now agree for Codex, CI, and agent workflows.
+- Added an eval smoke proving bare `rizz` writes `.rizz/brain`, `.rizz/research`, and
+  `.rizz/reports/index.html` without provider credentials.
+
+### Verification
+
+- Biome: 110 files
+- Vitest: 31 files / 320 tests
+- PI-Bench: 10/10 tasks
+- CLI process smoke: 10/10 checks
+- install-local smoke: 5/5 checks
+- footprint: 53ms cold start, 188KB core under the 200KB budget
+
 ## 0.2.0
 
 Rizz `0.2.0` is the first Project Intelligence Engineering release centered on understanding a
