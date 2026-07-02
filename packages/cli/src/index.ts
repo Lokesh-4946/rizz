@@ -331,14 +331,13 @@ function extractFlag(
   return { value, rest };
 }
 
-/** Non-TTY: read all of stdin as one prompt, run a single turn, print the reply. */
+/** Non-TTY: prompt input runs one turn; empty input falls back to repo understanding. */
 async function runPrint(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const input = Buffer.concat(chunks).toString('utf8').trim();
   if (input === '') {
-    process.stdout.write(`${USAGE}\n`);
-    return 0;
+    return runBrainCommand();
   }
 
   const resolved = await resolveProvider(select);
