@@ -615,6 +615,7 @@ interface IncrementalUnderstandingMetrics {
   readonly changed_entities: readonly IncrementalEntityDelta[];
   readonly relationship_delta: IncrementalRelationshipDelta;
   readonly evidence_delta: IncrementalEvidenceDelta;
+  readonly service_causality_delta: IncrementalServiceCausalityDelta;
   readonly reused_understanding_count: number;
   readonly recomputed_understanding_count: number;
   readonly stale_fact_count: number;
@@ -728,6 +729,55 @@ interface IncrementalEvidenceDelta {
   readonly added: readonly string[];
   readonly removed: readonly string[];
   readonly changed: readonly string[];
+}
+
+type IncrementalServiceCausalityPathStatus = 'stable' | 'recomputed' | 'drifted' | 'new' | 'stale';
+
+interface IncrementalServiceCausalityDelta {
+  readonly schema_version: number;
+  readonly previous_path_count: number;
+  readonly current_path_count: number;
+  readonly total_path_count: number;
+  readonly stable_path_count: number;
+  readonly recomputed_path_count: number;
+  readonly drifted_path_count: number;
+  readonly new_path_count: number;
+  readonly stale_path_count: number;
+  readonly evidence_changed_path_count: number;
+  readonly affected_flow_count: number;
+  readonly affected_service_count: number;
+  readonly affected_flows: readonly string[];
+  readonly affected_services: readonly string[];
+  readonly changed_evidence_ids: readonly string[];
+  readonly freshness_score: number;
+  readonly path_deltas: readonly IncrementalServiceCausalityPathDelta[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
+interface IncrementalServiceCausalityPathDelta {
+  readonly path_id: string;
+  readonly flow_id: string;
+  readonly service_id: string;
+  readonly service_name: string;
+  readonly status: IncrementalServiceCausalityPathStatus;
+  readonly previous_hash: string | null;
+  readonly current_hash: string | null;
+  readonly changed_files: readonly string[];
+  readonly changed_evidence_ids: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly reasons: readonly string[];
+}
+
+interface ServiceCausalitySnapshot {
+  readonly path_id: string;
+  readonly flow_id: string;
+  readonly flow_name: string;
+  readonly service_id: string;
+  readonly service_name: string;
+  readonly files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly semantic_hash: string;
 }
 
 interface EntitySemanticValue {
@@ -11560,6 +11610,14 @@ function buildIncrementalUnderstandingMetrics(params: {
     currentEntities,
     changedFileSet,
   });
+  const serviceCausalityDelta = buildServiceCausalityDelta({
+    previousEntities,
+    currentEntities,
+    changedFiles,
+    evidenceDelta,
+    serviceIncrementalHealth,
+    flowIncrementalHealth,
+  });
   const staleFactCandidates = unique([
     ...staleFiles.map((file) => entityId('file', file)),
     ...currentEntities
@@ -11619,6 +11677,7 @@ function buildIncrementalUnderstandingMetrics(params: {
     changed_entities: sorted(changedEntities.map(incrementalEntityDelta), (entity) => entity.id),
     relationship_delta: relationshipDelta,
     evidence_delta: evidenceDelta,
+    service_causality_delta: serviceCausalityDelta,
     reused_understanding_count: stableEntityCount,
     recomputed_understanding_count: recomputedUnderstandingCount,
     stale_fact_count: staleFactCandidates.length,
@@ -11772,6 +11831,237 @@ function entityIncrementalFiles(entity: BrainEntity): string[] {
     ...stringArrayData(entity, 'entrypoints'),
     ...stringArrayData(entity, 'deployment_configs'),
   ]);
+}
+
+function buildServiceCausalityDelta(params: {
+  readonly previousEntities: readonly BrainEntity[];
+  readonly currentEntities: readonly BrainEntity[];
+  readonly changedFiles: readonly string[];
+  readonly evidenceDelta: IncrementalEvidenceDelta;
+  readonly serviceIncrementalHealth: IncrementalEntityTypeHealth;
+  readonly flowIncrementalHealth: IncrementalEntityTypeHealth;
+}): IncrementalServiceCausalityDelta {
+  const previousPaths = serviceCausalitySnapshots(params.previousEntities);
+  const currentPaths = serviceCausalitySnapshots(params.currentEntities);
+  const previousById = new Map(previousPaths.map((path) => [path.path_id, path]));
+  const currentById = new Map(currentPaths.map((path) => [path.path_id, path]));
+  const changedFileSet = new Set(params.changedFiles);
+  const changedEvidenceSet = new Set([
+    ...params.evidenceDelta.added,
+    ...params.evidenceDelta.removed,
+    ...params.evidenceDelta.changed,
+    ...params.changedFiles.map(evidenceId),
+  ]);
+  const recomputedFlowSet = new Set([
+    ...params.flowIncrementalHealth.recomputed_ids,
+    ...params.flowIncrementalHealth.source_changed_ids,
+  ]);
+  const recomputedServiceSet = new Set([
+    ...params.serviceIncrementalHealth.recomputed_ids,
+    ...params.serviceIncrementalHealth.source_changed_ids,
+  ]);
+  const pathDeltas: IncrementalServiceCausalityPathDelta[] = [];
+
+  for (const current of currentPaths) {
+    const previous = previousById.get(current.path_id);
+    pathDeltas.push(
+      serviceCausalityPathDelta({
+        previous,
+        current,
+        changedFileSet,
+        changedEvidenceSet,
+        recomputedFlowSet,
+        recomputedServiceSet,
+      }),
+    );
+  }
+
+  for (const previous of previousPaths) {
+    if (currentById.has(previous.path_id)) continue;
+    pathDeltas.push(
+      serviceCausalityPathDelta({
+        previous,
+        current: undefined,
+        changedFileSet,
+        changedEvidenceSet,
+        recomputedFlowSet,
+        recomputedServiceSet,
+      }),
+    );
+  }
+
+  const sortedPathDeltas = sorted(pathDeltas, (path) => path.path_id);
+  const stablePathCount = sortedPathDeltas.filter((path) => path.status === 'stable').length;
+  const recomputedPathCount = sortedPathDeltas.filter(
+    (path) => path.status === 'recomputed' || path.status === 'new',
+  ).length;
+  const driftedPathCount = sortedPathDeltas.filter((path) => path.status === 'drifted').length;
+  const newPathCount = sortedPathDeltas.filter((path) => path.status === 'new').length;
+  const stalePathCount = sortedPathDeltas.filter((path) => path.status === 'stale').length;
+  const evidenceChangedPaths = sortedPathDeltas.filter(
+    (path) => path.changed_evidence_ids.length > 0,
+  );
+  const affectedPaths = sortedPathDeltas.filter((path) => path.status !== 'stable');
+  const changedEvidenceIds = unique(sortedPathDeltas.flatMap((path) => path.changed_evidence_ids));
+  const freshnessDenominator = currentPaths.length + stalePathCount;
+  const freshnessNumerator = Math.max(0, currentPaths.length - driftedPathCount - stalePathCount);
+
+  return {
+    schema_version: 1,
+    previous_path_count: previousPaths.length,
+    current_path_count: currentPaths.length,
+    total_path_count: sortedPathDeltas.length,
+    stable_path_count: stablePathCount,
+    recomputed_path_count: recomputedPathCount,
+    drifted_path_count: driftedPathCount,
+    new_path_count: newPathCount,
+    stale_path_count: stalePathCount,
+    evidence_changed_path_count: evidenceChangedPaths.length,
+    affected_flow_count: unique(affectedPaths.map((path) => path.flow_id)).length,
+    affected_service_count: unique(affectedPaths.map((path) => path.service_id)).length,
+    affected_flows: unique(affectedPaths.map((path) => path.flow_id)),
+    affected_services: unique(affectedPaths.map((path) => path.service_id)),
+    changed_evidence_ids: changedEvidenceIds,
+    freshness_score: scorePercent(freshnessNumerator, freshnessDenominator),
+    path_deltas: sortedPathDeltas,
+    summary: safeText(
+      `${stablePathCount} stable, ${recomputedPathCount} recomputed/new, ${driftedPathCount} drifted, and ${stalePathCount} stale service causality path(s).`,
+    ),
+    calibration_rule:
+      'Service causality freshness compares flow-to-service path fingerprints and linked evidence ids across scans; drift means a causality claim stayed structurally identical while linked service, flow, or evidence files changed.',
+  };
+}
+
+function serviceCausalitySnapshots(entities: readonly BrainEntity[]): ServiceCausalitySnapshot[] {
+  return sorted(
+    entities
+      .filter((entity) => entity.type === 'flow')
+      .flatMap((flow) =>
+        safeFlowServiceCausality(flow).map((service) => {
+          const files = unique(service.files);
+          const evidenceIds = unique(service.evidence_ids);
+          const pathId = serviceCausalityPathId(flow.id, service.service_id);
+          return {
+            path_id: pathId,
+            flow_id: safeText(flow.id),
+            flow_name: safeText(flow.name),
+            service_id: safeText(service.service_id),
+            service_name: safeText(service.service_name),
+            files,
+            evidence_ids: evidenceIds,
+            semantic_hash: stableHash({
+              flow_id: safeText(flow.id),
+              service_id: safeText(service.service_id),
+              service_name: safeText(service.service_name),
+              service_root: safeText(service.service_root),
+              files,
+              step_ids: unique(service.step_ids),
+              cause: safeText(service.cause),
+              effects: unique(service.effects),
+              evidence_ids: evidenceIds,
+              confidence: service.confidence,
+              unknowns: unique(service.unknowns),
+            }),
+          };
+        }),
+      ),
+    (path) => path.path_id,
+  );
+}
+
+function serviceCausalityPathId(flowId: string, serviceId: string): string {
+  return `service-causality:${safeText(flowId)}->${safeText(serviceId)}`;
+}
+
+function serviceCausalityPathDelta(params: {
+  readonly previous: ServiceCausalitySnapshot | undefined;
+  readonly current: ServiceCausalitySnapshot | undefined;
+  readonly changedFileSet: ReadonlySet<string>;
+  readonly changedEvidenceSet: ReadonlySet<string>;
+  readonly recomputedFlowSet: ReadonlySet<string>;
+  readonly recomputedServiceSet: ReadonlySet<string>;
+}): IncrementalServiceCausalityPathDelta {
+  const path = params.current ?? params.previous;
+  if (path === undefined) {
+    throw new Error('service causality delta requires a previous or current path');
+  }
+  const evidenceIds = unique([...(params.current ?? path).evidence_ids]);
+  const changedEvidenceIds = unique(
+    [...evidenceIds, ...(params.previous?.evidence_ids ?? [])].filter((id) =>
+      params.changedEvidenceSet.has(id),
+    ),
+  );
+  const changedFiles = unique(
+    [...(params.current?.files ?? []), ...(params.previous?.files ?? [])].filter((file) =>
+      params.changedFileSet.has(file),
+    ),
+  );
+  const isFlowRecomputed = params.recomputedFlowSet.has(path.flow_id);
+  const isServiceRecomputed = params.recomputedServiceSet.has(path.service_id);
+  const hasEvidenceChange = changedEvidenceIds.length > 0;
+  const hasSourceChange = changedFiles.length > 0;
+  const hasAffectedBase =
+    hasEvidenceChange || hasSourceChange || isFlowRecomputed || isServiceRecomputed;
+  const isSemanticChanged =
+    params.previous !== undefined &&
+    params.current !== undefined &&
+    params.previous.semantic_hash !== params.current.semantic_hash;
+  let status: IncrementalServiceCausalityPathStatus = 'stable';
+  if (params.current === undefined) {
+    status = 'stale';
+  } else if (params.previous === undefined) {
+    status = 'new';
+  } else if (isSemanticChanged) {
+    status = 'recomputed';
+  } else if (hasAffectedBase) {
+    status = 'drifted';
+  }
+
+  return {
+    path_id: path.path_id,
+    flow_id: path.flow_id,
+    service_id: path.service_id,
+    service_name: path.service_name,
+    status,
+    previous_hash: params.previous?.semantic_hash ?? null,
+    current_hash: params.current?.semantic_hash ?? null,
+    changed_files: changedFiles,
+    changed_evidence_ids: changedEvidenceIds,
+    evidence_ids: evidenceIds,
+    reasons: serviceCausalityDeltaReasons({
+      status,
+      hasEvidenceChange,
+      hasSourceChange,
+      isSemanticChanged,
+      isFlowRecomputed,
+      isServiceRecomputed,
+    }),
+  };
+}
+
+function serviceCausalityDeltaReasons(params: {
+  readonly status: IncrementalServiceCausalityPathStatus;
+  readonly hasEvidenceChange: boolean;
+  readonly hasSourceChange: boolean;
+  readonly isSemanticChanged: boolean;
+  readonly isFlowRecomputed: boolean;
+  readonly isServiceRecomputed: boolean;
+}): string[] {
+  const reasons: string[] = [];
+  if (params.status === 'new') reasons.push('new flow-service causality path');
+  if (params.status === 'stale')
+    reasons.push('previous flow-service causality path is no longer current');
+  if (params.isSemanticChanged) reasons.push('causality fingerprint changed');
+  if (params.hasEvidenceChange) reasons.push('linked evidence changed');
+  if (params.hasSourceChange) reasons.push('linked source file changed');
+  if (params.isFlowRecomputed) reasons.push('owning flow was recomputed');
+  if (params.isServiceRecomputed) reasons.push('target service was recomputed');
+  if (params.status === 'stable')
+    reasons.push('causality fingerprint and linked evidence are stable');
+  if (params.status === 'drifted') {
+    reasons.push('causality fingerprint stayed stable while linked evidence changed');
+  }
+  return reasons.map(safeText);
 }
 
 function buildUnderstandingDeltas(params: {
@@ -12909,6 +13199,34 @@ function buildLatest(params: {
         removed_count: params.incrementalMetrics.evidence_delta.removed_count,
         changed_count: params.incrementalMetrics.evidence_delta.changed_count,
       },
+      service_causality_delta: {
+        schema_version: params.incrementalMetrics.service_causality_delta.schema_version,
+        previous_path_count: params.incrementalMetrics.service_causality_delta.previous_path_count,
+        current_path_count: params.incrementalMetrics.service_causality_delta.current_path_count,
+        stable_path_count: params.incrementalMetrics.service_causality_delta.stable_path_count,
+        recomputed_path_count:
+          params.incrementalMetrics.service_causality_delta.recomputed_path_count,
+        drifted_path_count: params.incrementalMetrics.service_causality_delta.drifted_path_count,
+        new_path_count: params.incrementalMetrics.service_causality_delta.new_path_count,
+        stale_path_count: params.incrementalMetrics.service_causality_delta.stale_path_count,
+        evidence_changed_path_count:
+          params.incrementalMetrics.service_causality_delta.evidence_changed_path_count,
+        affected_flow_count: params.incrementalMetrics.service_causality_delta.affected_flow_count,
+        affected_service_count:
+          params.incrementalMetrics.service_causality_delta.affected_service_count,
+        affected_flows: params.incrementalMetrics.service_causality_delta.affected_flows.slice(
+          0,
+          12,
+        ),
+        affected_services:
+          params.incrementalMetrics.service_causality_delta.affected_services.slice(0, 12),
+        changed_evidence_ids:
+          params.incrementalMetrics.service_causality_delta.changed_evidence_ids.slice(0, 20),
+        freshness_score: params.incrementalMetrics.service_causality_delta.freshness_score,
+        path_deltas: params.incrementalMetrics.service_causality_delta.path_deltas.slice(0, 12),
+        summary: params.incrementalMetrics.service_causality_delta.summary,
+        calibration_rule: params.incrementalMetrics.service_causality_delta.calibration_rule,
+      },
       understanding_deltas: {
         schema_version: params.incrementalMetrics.understanding_deltas.schema_version,
         previous_scan_available:
@@ -12961,6 +13279,7 @@ function buildLatest(params: {
       incremental_health: {
         services: params.incrementalMetrics.service_incremental_health,
         flows: params.incrementalMetrics.flow_incremental_health,
+        service_causality: params.incrementalMetrics.service_causality_delta,
       },
     },
   };
