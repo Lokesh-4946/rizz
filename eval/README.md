@@ -59,9 +59,11 @@ quality measurable through deterministic finding counts, affected surface counts
 counts, risk, surgicality, review-readiness, and secret-safety/redaction indicators.
 Route-aware review tasks can additionally assert affected flow metadata with
 `route_flows_include`: flow id, framework, route path, route type, entrypoints, changed files,
-linked tests, and linked configs. The Next.js route review seed uses this to prove alias-resolved
-component, content, and config imports support review blast-radius reasoning without exposing
-secret-like fixture paths.
+linked tests, linked configs, and nested `service_causality_include` entries. Service-causality
+assertions cover the reached service, changed service files, reconstructed step IDs, effects,
+evidence IDs, confidence, and known unknowns. The Next.js route review seed uses this to prove
+alias-resolved component, content, and config imports support review blast-radius reasoning without
+exposing secret-like fixture paths.
 
 The understanding-task seed uses `understanding_tasks` to score answers a user would ask while
 orienting in a repo: what to read first, which component has review-impact evidence, which evidence

@@ -353,6 +353,48 @@ function validateReviewAssertions(assertions) {
             );
           }
         }
+        if (flow.service_causality_include !== undefined) {
+          if (
+            !Array.isArray(flow.service_causality_include) ||
+            flow.service_causality_include.length === 0
+          ) {
+            errors.push(
+              `review.assertions.route_flows_include[${index}].service_causality_include must include objects`,
+            );
+          } else {
+            for (const [causalityIndex, causality] of flow.service_causality_include.entries()) {
+              if (!isRecord(causality)) {
+                errors.push(
+                  `review.assertions.route_flows_include[${index}].service_causality_include[${causalityIndex}] must be an object`,
+                );
+                continue;
+              }
+              for (const field of ['service_id', 'service_name', 'cause_includes', 'confidence']) {
+                if (causality[field] !== undefined && !isNonEmptyString(causality[field])) {
+                  errors.push(
+                    `review.assertions.route_flows_include[${index}].service_causality_include[${causalityIndex}].${field} must be a non-empty string`,
+                  );
+                }
+              }
+              for (const field of [
+                'files_include',
+                'step_ids_include',
+                'effects_include',
+                'evidence_ids_include',
+                'unknowns_include',
+              ]) {
+                if (
+                  causality[field] !== undefined &&
+                  (!isStringArray(causality[field]) || causality[field].length === 0)
+                ) {
+                  errors.push(
+                    `review.assertions.route_flows_include[${index}].service_causality_include[${causalityIndex}].${field} must include strings`,
+                  );
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -909,6 +951,60 @@ function assertReviewFindings(review, expected) {
   return errors;
 }
 
+function assertReviewServiceCausality(flow, expected) {
+  const entries = reviewArray(flow, 'service_causality');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matchedEntry = entries.find((entry) => {
+      if (!isRecord(entry)) return false;
+      const serviceIdMatches =
+        item.service_id === undefined || String(entry.service_id ?? '') === item.service_id;
+      const serviceNameMatches =
+        item.service_name === undefined || String(entry.service_name ?? '') === item.service_name;
+      const causeMatches =
+        item.cause_includes === undefined ||
+        String(entry.cause ?? '').includes(item.cause_includes);
+      const confidenceMatches =
+        item.confidence === undefined || String(entry.confidence ?? '') === item.confidence;
+      return serviceIdMatches && serviceNameMatches && causeMatches && confidenceMatches;
+    });
+    if (matchedEntry === undefined) {
+      errors.push(
+        `affected_flows.service_causality missing ${item.service_id ?? item.service_name}`,
+      );
+      continue;
+    }
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(matchedEntry, 'files'),
+        item.files_include,
+        'affected_flows.service_causality.files',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedEntry, 'step_ids'),
+        item.step_ids_include,
+        'affected_flows.service_causality.step_ids',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedEntry, 'effects'),
+        item.effects_include,
+        'affected_flows.service_causality.effects',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedEntry, 'evidence_ids'),
+        item.evidence_ids_include,
+        'affected_flows.service_causality.evidence_ids',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedEntry, 'unknowns'),
+        item.unknowns_include,
+        'affected_flows.service_causality.unknowns',
+      ),
+    );
+  }
+  return errors;
+}
+
 function assertReviewRouteFlows(review, expected) {
   const flows = reviewArray(review, 'affected_flows');
   const errors = [];
@@ -949,6 +1045,7 @@ function assertReviewRouteFlows(review, expected) {
         item.configs_include,
         'affected_flows.configs',
       ),
+      ...assertReviewServiceCausality(matchedFlow, item.service_causality_include),
     );
   }
   return errors;
@@ -1059,6 +1156,10 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const affectedConfigs = Array.isArray(evidenceSummary.affected_configs)
     ? evidenceSummary.affected_configs
     : [];
+  const serviceCausalityPaths =
+    typeof evidenceSummary.service_causality_paths === 'number'
+      ? evidenceSummary.service_causality_paths
+      : 0;
   const architectureWhatBreaks = Array.isArray(evidenceSummary.architecture_what_breaks)
     ? evidenceSummary.architecture_what_breaks
     : [];
@@ -1206,7 +1307,9 @@ function assertReviewContract(task, repoDir, review, stdout) {
     summary: {
       directComponents: directComponentIds.length,
       dependentComponents: dependentComponentIds.length,
+      affectedServices: affectedServiceIds.length,
       affectedFlows: affectedFlowIds.length,
+      serviceCausalityPaths,
       affectedRelationships: affectedRelationships.length,
       architectureImpactSurfaces: architectureImpactSurfaces.length,
       blastRadius: review.blast_radius,
@@ -1642,7 +1745,7 @@ function runPiBenchTasks(loadedTasks) {
             ? ''
             : ` | understanding tasks ${result.summary.understandingTasks}`;
         console.log(
-          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, flows ${result.summary.affectedFlows}, relationships ${result.summary.affectedRelationships}${understanding}`,
+          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, services ${result.summary.affectedServices}, flows ${result.summary.affectedFlows}, service causality ${result.summary.serviceCausalityPaths}, relationships ${result.summary.affectedRelationships}${understanding}`,
         );
       } else {
         scoreTotal += result.summary.readinessScore;
