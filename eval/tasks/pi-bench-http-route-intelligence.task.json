@@ -59,6 +59,32 @@
     "evidence": { "minimum_total": 5, "minimum_covered": 5, "minimum_ratio": 0.5 },
     "unknown": { "minimum_total": 1, "minimum_covered": 1, "minimum_ratio": 0.5 }
   },
+  "flow_service_causality": {
+    "include": [
+      {
+        "flow_id": "flow:http--post--orders--src--server.ts",
+        "framework": "express-fastify-http",
+        "route_path": "/orders",
+        "route_type": "POST",
+        "service_id": "service:src--orders",
+        "service_name": "src/orders",
+        "files_include": ["src/orders/service.ts"],
+        "step_ids_include": ["flow-http--post--orders--src--server.ts"],
+        "cause_includes": "HTTP POST /orders reaches service:src--orders",
+        "evidence_ids_include": ["evidence:file-src--orders--service.ts"],
+        "confidence": "uncertain"
+      }
+    ],
+    "exclude": [
+      {
+        "flow_id": "flow:http--get--health--src--server.ts",
+        "framework": "express-fastify-http",
+        "route_path": "/health",
+        "route_type": "GET",
+        "service_id": "service:src--orders"
+      }
+    ]
+  },
   "artifact_assertions": [
     {
       "path": ".rizz/research/flow_understanding.json",

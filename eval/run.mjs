@@ -165,6 +165,60 @@ function validateArtifactAssertions(assertions) {
   return errors;
 }
 
+function validateFlowServiceCausalityEntries(entries, field) {
+  const errors = [];
+  if (entries === undefined) return errors;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return [`flow_service_causality.${field} must include objects`];
+  }
+  for (const [index, item] of entries.entries()) {
+    if (!isRecord(item)) {
+      errors.push(`flow_service_causality.${field}[${index}] must be an object`);
+      continue;
+    }
+    for (const key of [
+      'flow_id',
+      'framework',
+      'route_path',
+      'route_type',
+      'service_id',
+      'service_name',
+      'cause_includes',
+      'confidence',
+    ]) {
+      if (item[key] !== undefined && !isNonEmptyString(item[key])) {
+        errors.push(`flow_service_causality.${field}[${index}].${key} must be a non-empty string`);
+      }
+    }
+    for (const key of [
+      'files_include',
+      'step_ids_include',
+      'effects_include',
+      'evidence_ids_include',
+      'unknowns_include',
+    ]) {
+      if (item[key] !== undefined && (!isStringArray(item[key]) || item[key].length === 0)) {
+        errors.push(`flow_service_causality.${field}[${index}].${key} must include strings`);
+      }
+    }
+  }
+  return errors;
+}
+
+function validateFlowServiceCausalitySpec(spec) {
+  const errors = [];
+  if (spec === undefined) return errors;
+  if (!isRecord(spec)) return ['flow_service_causality must be an object'];
+  if (spec.include === undefined && spec.exclude === undefined) {
+    errors.push('flow_service_causality must include include or exclude');
+  }
+  errors.push(
+    ...validateFlowServiceCausalityEntries(spec.include, 'include'),
+    ...validateFlowServiceCausalityEntries(spec.exclude, 'exclude'),
+  );
+  return errors;
+}
+
 function validateReviewDiff(diff) {
   const errors = [];
   if (!isRecord(diff)) return ['review.diff must be an object'];
@@ -616,6 +670,7 @@ function validatePiBenchTask(task) {
     if (task.incremental !== undefined) errors.push(...validateIncrementalSpec(task.incremental));
   }
   errors.push(...validateUnderstandingTasks(task.understanding_tasks));
+  errors.push(...validateFlowServiceCausalitySpec(task.flow_service_causality));
   errors.push(...validateArtifactAssertions(task.artifact_assertions));
   errors.push(...validateRubric(task.rubric));
   return errors;
@@ -793,6 +848,121 @@ function assertArtifactContracts(task, repoDir) {
       }
     }
   }
+  return errors;
+}
+
+function flowData(flow) {
+  return isRecord(flow) && isRecord(flow.data) ? flow.data : {};
+}
+
+function flowServiceCausalityArray(flow) {
+  const value = flowData(flow).service_causality;
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function flowMatchesServiceCausalityItem(flow, item) {
+  if (!isRecord(flow)) return false;
+  const data = flowData(flow);
+  const flowIdMatches = item.flow_id === undefined || String(flow.id ?? '') === item.flow_id;
+  const frameworkMatches =
+    item.framework === undefined || String(data.framework ?? '') === item.framework;
+  const routePathMatches =
+    item.route_path === undefined || String(data.route_path ?? '') === item.route_path;
+  const routeTypeMatches =
+    item.route_type === undefined || String(data.route_type ?? '') === item.route_type;
+  return flowIdMatches && frameworkMatches && routePathMatches && routeTypeMatches;
+}
+
+function serviceCausalityEntryMatches(entry, item) {
+  const serviceIdMatches =
+    item.service_id === undefined || String(entry.service_id ?? '') === item.service_id;
+  const serviceNameMatches =
+    item.service_name === undefined || String(entry.service_name ?? '') === item.service_name;
+  const causeMatches =
+    item.cause_includes === undefined || String(entry.cause ?? '').includes(item.cause_includes);
+  const confidenceMatches =
+    item.confidence === undefined || String(entry.confidence ?? '') === item.confidence;
+  return serviceIdMatches && serviceNameMatches && causeMatches && confidenceMatches;
+}
+
+function serviceCausalityFlowLabel(item) {
+  return item.flow_id ?? `${item.route_type ?? ''} ${item.route_path ?? '(unknown route)'}`.trim();
+}
+
+function assertFlowServiceCausality(task, repoDir) {
+  const spec = task.flow_service_causality;
+  if (spec === undefined) return [];
+
+  const errors = [];
+  let flows;
+  try {
+    const artifact = readJsonArtifact(repoDir, '.rizz/brain/entities/flows.json');
+    flows = Array.isArray(artifact.entities) ? artifact.entities : [];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return [`could not read flow service causality artifact: ${message}`];
+  }
+
+  for (const item of spec.include ?? []) {
+    const matchedFlow = flows.find((flow) => flowMatchesServiceCausalityItem(flow, item));
+    if (matchedFlow === undefined) {
+      errors.push(`flow_service_causality missing flow ${serviceCausalityFlowLabel(item)}`);
+      continue;
+    }
+    const matchedEntry = flowServiceCausalityArray(matchedFlow).find((entry) =>
+      serviceCausalityEntryMatches(entry, item),
+    );
+    if (matchedEntry === undefined) {
+      errors.push(
+        `flow_service_causality missing ${item.service_id ?? item.service_name} for ${serviceCausalityFlowLabel(item)}`,
+      );
+      continue;
+    }
+    errors.push(
+      ...assertIncludesAll(
+        Array.isArray(matchedEntry.files) ? matchedEntry.files : [],
+        item.files_include,
+        'flow_service_causality.files',
+      ),
+      ...assertSubstringMatches(
+        Array.isArray(matchedEntry.step_ids) ? matchedEntry.step_ids : [],
+        item.step_ids_include,
+        'flow_service_causality.step_ids',
+      ),
+      ...assertIncludesAll(
+        Array.isArray(matchedEntry.effects) ? matchedEntry.effects : [],
+        item.effects_include,
+        'flow_service_causality.effects',
+      ),
+      ...assertIncludesAll(
+        Array.isArray(matchedEntry.evidence_ids) ? matchedEntry.evidence_ids : [],
+        item.evidence_ids_include,
+        'flow_service_causality.evidence_ids',
+      ),
+      ...assertSubstringMatches(
+        Array.isArray(matchedEntry.unknowns) ? matchedEntry.unknowns : [],
+        item.unknowns_include,
+        'flow_service_causality.unknowns',
+      ),
+    );
+  }
+
+  for (const item of spec.exclude ?? []) {
+    const matchedFlow = flows.find((flow) => flowMatchesServiceCausalityItem(flow, item));
+    if (matchedFlow === undefined) {
+      errors.push(`flow_service_causality missing flow ${serviceCausalityFlowLabel(item)}`);
+      continue;
+    }
+    const matchedEntry = flowServiceCausalityArray(matchedFlow).find((entry) =>
+      serviceCausalityEntryMatches(entry, item),
+    );
+    if (matchedEntry !== undefined) {
+      errors.push(
+        `flow_service_causality falsely linked ${item.service_id ?? item.service_name} to ${serviceCausalityFlowLabel(item)}`,
+      );
+    }
+  }
+
   return errors;
 }
 
@@ -1621,6 +1791,7 @@ function runReviewPiBenchTask(task) {
     }
     errors.push(...assertExpectedArtifacts(task, repoDir));
     errors.push(...assertArtifactContracts(task, repoDir));
+    errors.push(...assertFlowServiceCausality(task, repoDir));
     const understandingScore = assertUnderstandingTasks(task, repoDir);
     errors.push(...understandingScore.errors);
 
@@ -1683,6 +1854,7 @@ function runPiBenchTask(task) {
 
     errors.push(...assertExpectedArtifacts(task, repoDir));
     errors.push(...assertArtifactContracts(task, repoDir));
+    errors.push(...assertFlowServiceCausality(task, repoDir));
     errors.push(...assertExplainContract(task, repoDir));
     const understandingTaskScore = assertUnderstandingTasks(task, repoDir);
     errors.push(...understandingTaskScore.errors);
