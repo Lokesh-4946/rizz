@@ -2653,6 +2653,17 @@ describe('project brain generation', () => {
             configs?: string[];
             tests?: string[];
             services?: string[];
+            service_causality?: Array<{
+              service_id: string;
+              service_name: string;
+              files: string[];
+              step_ids: string[];
+              cause: string;
+              effects: string[];
+              evidence_ids: string[];
+              confidence: string;
+              unknowns: string[];
+            }>;
             entrypoints?: Array<{ type: string; path: string; symbol: string | null }>;
             steps?: Array<{ type: string; path: string; symbol: string | null }>;
             inputs?: string[];
@@ -2695,6 +2706,23 @@ describe('project brain generation', () => {
         configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
         tests: expect.arrayContaining(['src/orders/orders.test.ts']),
         services: expect.arrayContaining(['service:src--orders']),
+        service_causality: expect.arrayContaining([
+          expect.objectContaining({
+            service_id: 'service:src--orders',
+            service_name: 'src/orders',
+            files: expect.arrayContaining(['src/orders/service.ts']),
+            step_ids: expect.arrayContaining([
+              expect.stringContaining('flow-http--post--orders--src--server.ts:002'),
+            ]),
+            cause: expect.stringContaining('HTTP POST /orders reaches service:src--orders'),
+            effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+            evidence_ids: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
+            confidence: 'uncertain',
+            unknowns: expect.arrayContaining([
+              'No API route evidence was linked directly to this service.',
+            ]),
+          }),
+        ]),
         steps: expect.arrayContaining([
           expect.objectContaining({
             type: 'route',
@@ -2721,6 +2749,7 @@ describe('project brain generation', () => {
           'evidence:file-src--orders--service.ts',
         ]),
         services: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
+        service_causality: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
         tests: expect.arrayContaining(['evidence:file-src--orders--orders.test.ts']),
       });
 
@@ -2773,6 +2802,7 @@ describe('project brain generation', () => {
           route_path?: string;
           route_type?: string;
           services?: string[];
+          service_causality?: Array<{ service_id: string; effects: string[] }>;
           outputs: string[];
         }>;
       }>(join(result.value.researchDir, 'flow_understanding.json'));
@@ -2783,6 +2813,12 @@ describe('project brain generation', () => {
           route_path: '/orders',
           route_type: 'POST',
           services: expect.arrayContaining(['service:src--orders']),
+          service_causality: expect.arrayContaining([
+            expect.objectContaining({
+              service_id: 'service:src--orders',
+              effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+            }),
+          ]),
           outputs: expect.arrayContaining(['HTTP/API response.']),
         }),
       );
@@ -2829,6 +2865,7 @@ describe('project brain generation', () => {
             affected_files: string[];
             affected_tests: string[];
             affected_configs: string[];
+            service_causality?: Array<{ service_id: string; effects: string[] }>;
             coupling_level: string;
             confidence: string;
             evidence_ids: string[];
@@ -2849,6 +2886,12 @@ describe('project brain generation', () => {
           affected_files: expect.arrayContaining(['src/server.ts', 'src/orders/service.ts']),
           affected_tests: expect.arrayContaining(['src/orders/orders.test.ts']),
           affected_configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
+          service_causality: expect.arrayContaining([
+            expect.objectContaining({
+              service_id: 'service:src--orders',
+              effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+            }),
+          ]),
           coupling_level: 'medium',
           confidence: 'inferred',
           evidence_ids: expect.arrayContaining([
@@ -2878,6 +2921,12 @@ describe('project brain generation', () => {
         route_path: '/orders',
         route_type: 'POST',
         services: expect.arrayContaining(['service:src--orders']),
+        service_causality: expect.arrayContaining([
+          expect.objectContaining({
+            service_id: 'service:src--orders',
+            effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+          }),
+        ]),
         entrypoints: expect.arrayContaining([
           expect.objectContaining({ path: 'src/server.ts', symbol: 'POST /orders' }),
         ]),
@@ -2890,6 +2939,8 @@ describe('project brain generation', () => {
       expect(flowExplainReport).toContain('POST /orders');
       expect(flowExplainReport).toContain('HTTP POST /orders route enters src/server.ts');
       expect(flowExplainReport).toContain('service:src--orders');
+      expect(flowExplainReport).toContain('Service Causality');
+      expect(flowExplainReport).toContain('env:DEFAULT_CURRENCY');
       expect(flowExplainReport).not.toContain(dir);
 
       const serviceExplained = await explainProjectTarget({
@@ -2986,6 +3037,13 @@ describe('project brain generation', () => {
             route_type?: string;
             files?: string[];
             services?: string[];
+            service_causality?: Array<{
+              service_id: string;
+              files: string[];
+              cause: string;
+              effects: string[];
+              evidence_ids: string[];
+            }>;
             steps?: Array<{ type: string; path: string; symbol: string | null }>;
             field_evidence?: Record<string, string[]>;
           };
@@ -3000,6 +3058,23 @@ describe('project brain generation', () => {
         route_type: 'POST',
         files: expect.arrayContaining(['app/routers/kb.py', 'app/services/kb_service.py']),
         services: expect.arrayContaining(['service:app--services']),
+        service_causality: expect.arrayContaining([
+          expect.objectContaining({
+            service_id: 'service:app--services',
+            files: expect.arrayContaining(['app/services/kb_service.py']),
+            cause: expect.stringContaining(
+              'FastAPI POST /kb/youtube reaches service:app--services',
+            ),
+            effects: expect.arrayContaining([
+              'storage:sqlite/database',
+              'storage:temporary filesystem',
+              'env:DATABASE_PATH',
+              'external:http-client',
+              'external:youtube',
+            ]),
+            evidence_ids: expect.arrayContaining(['evidence:file-app--services--kb_service.py']),
+          }),
+        ]),
         steps: expect.arrayContaining([
           expect.objectContaining({
             type: 'route',
@@ -3013,6 +3088,7 @@ describe('project brain generation', () => {
         ]),
         field_evidence: expect.objectContaining({
           services: expect.arrayContaining(['evidence:file-app--services--kb_service.py']),
+          service_causality: expect.arrayContaining(['evidence:file-app--services--kb_service.py']),
         }),
       });
 

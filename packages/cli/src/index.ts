@@ -302,6 +302,14 @@ async function runExplainCommand(options: {
     writeSection('Required tests', explanation.flow.required_tests);
     writeSection('Confidence reasons', explanation.flow.confidence_reasons);
     writeSection('Services', explanation.flow.services);
+    writeSection(
+      'Service causality',
+      explanation.flow.service_causality.map((item) => {
+        const effects =
+          item.effects.length === 0 ? 'no effects recorded yet' : item.effects.join(', ');
+        return `${item.service_id}: ${item.cause} Effects: ${effects}. Confidence: ${item.confidence}.`;
+      }),
+    );
   }
   if (explanation.service !== undefined) {
     writeSection('Service routes', explanation.service.routes);
