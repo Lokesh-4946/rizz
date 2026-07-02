@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  addVerificationEvidence,
   askProjectQuestion,
   explainProjectTarget,
   generateProjectBrain,
@@ -160,6 +161,102 @@ describe('project brain generation', () => {
         join(dir, '.rizz', 'brain', 'snapshots', '2026-06-28T10-30-00.000Z.json'),
       );
       expect(snapshot).toHaveProperty('latest');
+    });
+  });
+
+  it('ingests verification evidence into research storage and review eval counts', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'verified-app',
+          scripts: { test: 'vitest run', typecheck: 'tsc -b' },
+          devDependencies: { vitest: '^2.0.0', typescript: '^5.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const value = 1;\n');
+      await writeFile(join(dir, 'src', 'index.test.ts'), 'import { it } from "vitest";\n');
+
+      const generated = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:35:00.000Z'),
+      });
+      expect(generated.ok).toBe(true);
+      if (!generated.ok) return;
+      const reportBefore = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const value = 2;\n');
+
+      const added = await addVerificationEvidence({
+        rootDir: dir,
+        name: 'unit tests',
+        command: 'pnpm test',
+        status: 'passed',
+        outputSummary: 'passed with token sk-or-v1-1234567890abcdef redacted',
+        affectedConfidenceAreas: ['local'],
+        now: new Date('2026-06-28T10:36:00.000Z'),
+      });
+      expect(added.ok).toBe(true);
+      if (!added.ok) return;
+
+      const artifact = await readJson<{
+        items: Array<{ id: string; output_summary?: string }>;
+        status_counts: { passed: number };
+        local_checks_passed: string[];
+      }>(join(dir, '.rizz', 'research', 'verification_evidence.json'));
+      expect(artifact.items).toContainEqual(
+        expect.objectContaining({
+          id: added.value.item.id,
+          output_summary: 'passed with token [redacted secret] redacted',
+        }),
+      );
+      expect(artifact.status_counts.passed).toBe(1);
+      expect(artifact.local_checks_passed).toContain('unit tests: pnpm test');
+
+      const latest = await readJson<{
+        latest_verification_evidence?: {
+          latest_item_id?: string;
+          status_counts?: { passed?: number };
+        };
+        latest_research_artifacts?: { verification_evidence?: string };
+      }>(join(dir, '.rizz', 'brain', 'latest.json'));
+      expect(latest.latest_verification_evidence).toMatchObject({
+        latest_item_id: added.value.item.id,
+        status_counts: { passed: 1 },
+      });
+      expect(latest.latest_research_artifacts?.verification_evidence).toBe(
+        '.rizz/research/verification_evidence.json',
+      );
+      const index = await readJson<{
+        research_paths?: { verification_evidence?: string };
+      }>(join(dir, '.rizz', 'brain', 'index.json'));
+      expect(index.research_paths?.verification_evidence).toBe(
+        '.rizz/research/verification_evidence.json',
+      );
+      const reportAfter = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(reportAfter).toBe(reportBefore);
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:37:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.review_evidence_summary.verification_evidence_ids).toContain(
+        added.value.item.id,
+      );
+      expect(review.value.review.verification_status.passed_checks).toContain(
+        'unit tests: pnpm test',
+      );
+      expect(review.value.reviewEval).toMatchObject({
+        verification_evidence_count: 1,
+        verification_passed_count: 1,
+        verification_failed_count: 0,
+      });
     });
   });
 
@@ -332,6 +429,7 @@ describe('project brain generation', () => {
         'benchmark_tasks.json',
         'understanding_score.json',
         'pie_acceptance.json',
+        'verification_evidence.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
         artifactNames,
@@ -5655,6 +5753,99 @@ describe('project brain generation', () => {
       expect(report).toContain('flow:packages--cli--check');
       expect(report).toContain('packages/cli/package.json');
       expect(report).toContain('Missing tests');
+    });
+  });
+
+  it('records verification evidence and calibrates review without erasing production unknowns', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'verified-app',
+          scripts: {
+            lint: 'eslint .',
+            typecheck: 'tsc --noEmit',
+            build: 'vite build',
+            test: 'pytest',
+          },
+        }),
+      );
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const answer = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:00:00.000Z'),
+      });
+
+      const lint = await addVerificationEvidence({
+        rootDir: dir,
+        name: 'lint',
+        command: 'npm run lint',
+        status: 'passed',
+        now: new Date('2026-06-28T11:01:00.000Z'),
+        outputSummary: 'passed; checked .env output redaction',
+      });
+      expect(lint).toMatchObject({ ok: true });
+      const pytest = await addVerificationEvidence({
+        rootDir: dir,
+        name: 'pytest',
+        command: 'pytest',
+        status: 'passed',
+        now: new Date('2026-06-28T11:02:00.000Z'),
+      });
+      expect(pytest).toMatchObject({ ok: true });
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const answer = 2;\n');
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:03:00.000Z'),
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      if (!result.ok) return;
+      expect(result.value.review.verification_status).toMatchObject({
+        total_checks: 2,
+        local_checks_passed: expect.arrayContaining(['lint: npm run lint', 'pytest: pytest']),
+        risks_reduced: expect.arrayContaining([
+          'Local syntax/build/test regression risk reduced by recorded passed checks.',
+        ]),
+        remaining_unknowns: expect.arrayContaining([
+          'No production or deployment smoke evidence has been recorded yet.',
+        ]),
+      });
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          category: 'Missing tests',
+          severity: 'low',
+          title: 'Runtime files changed without new tests, but local checks are recorded',
+        }),
+      );
+      expect(result.value.review.review_evidence_summary.verification_evidence_ids).toHaveLength(2);
+      expect(result.value.reviewEval).toMatchObject({
+        verification_evidence_count: 2,
+        verification_passed_count: 2,
+        verification_failed_count: 0,
+      });
+
+      const artifact = await readJson<{
+        local_checks_passed: string[];
+        remaining_unknowns: string[];
+      }>(join(dir, '.rizz', 'research', 'verification_evidence.json'));
+      expect(artifact.local_checks_passed).toEqual(
+        expect.arrayContaining(['lint: npm run lint', 'pytest: pytest']),
+      );
+      expect(JSON.stringify(artifact)).not.toContain('.env');
+      expect(artifact.remaining_unknowns).toContain(
+        'No production or deployment smoke evidence has been recorded yet.',
+      );
+
+      const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(reviewReport).toContain('Verification Calibration');
+      expect(reviewReport).toContain('Local syntax/build/test regression risk reduced');
     });
   });
 
