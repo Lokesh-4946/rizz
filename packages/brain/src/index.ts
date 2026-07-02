@@ -262,6 +262,7 @@ interface ArchitectureImpactEntry {
   readonly affected_files: readonly string[];
   readonly affected_tests: readonly string[];
   readonly affected_configs: readonly string[];
+  readonly service_causality?: readonly FlowServiceCausality[];
   readonly dependent_components: readonly string[];
   readonly coupling_level: ComponentIntelligence['coupling']['level'];
   readonly coupling_score: number;
@@ -395,6 +396,19 @@ interface FlowStep {
   readonly evidence: readonly string[];
 }
 
+interface FlowServiceCausality {
+  readonly service_id: string;
+  readonly service_name: string;
+  readonly service_root: string;
+  readonly files: readonly string[];
+  readonly step_ids: readonly string[];
+  readonly cause: string;
+  readonly effects: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly unknowns: readonly string[];
+}
+
 interface FlowRisk {
   readonly risk_id: string;
   readonly kind: FlowRiskKind;
@@ -472,6 +486,7 @@ interface FlowIntelligence {
   readonly files: readonly string[];
   readonly dependencies: readonly string[];
   readonly services?: readonly string[];
+  readonly service_causality?: readonly FlowServiceCausality[];
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly risks: readonly FlowRisk[];
@@ -1048,6 +1063,7 @@ interface ExplainSummaryData {
     readonly steps: readonly FlowStep[];
     readonly components: readonly string[];
     readonly services: readonly string[];
+    readonly service_causality: readonly FlowServiceCausality[];
     readonly files: readonly string[];
     readonly dependencies: readonly string[];
     readonly tests: readonly string[];
@@ -3683,6 +3699,46 @@ function safeFlowRisks(entity: BrainEntity): FlowRisk[] {
   }));
 }
 
+function safeFlowServiceCausality(entity: BrainEntity): FlowServiceCausality[] {
+  const entries = entity.data?.service_causality;
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry): entry is FlowServiceCausality => {
+      if (!isRecord(entry)) return false;
+      return (
+        typeof entry.service_id === 'string' &&
+        typeof entry.service_name === 'string' &&
+        typeof entry.service_root === 'string' &&
+        Array.isArray(entry.files) &&
+        entry.files.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.step_ids) &&
+        entry.step_ids.every((item) => typeof item === 'string') &&
+        typeof entry.cause === 'string' &&
+        Array.isArray(entry.effects) &&
+        entry.effects.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.evidence_ids) &&
+        entry.evidence_ids.every((item) => typeof item === 'string') &&
+        (entry.confidence === 'verified' ||
+          entry.confidence === 'inferred' ||
+          entry.confidence === 'uncertain') &&
+        Array.isArray(entry.unknowns) &&
+        entry.unknowns.every((item) => typeof item === 'string')
+      );
+    })
+    .map((entry) => ({
+      service_id: safeText(entry.service_id),
+      service_name: safeText(entry.service_name),
+      service_root: safeText(entry.service_root),
+      files: entry.files.map(safeText),
+      step_ids: entry.step_ids.map(safeText),
+      cause: safeText(entry.cause),
+      effects: entry.effects.map(safeText),
+      evidence_ids: entry.evidence_ids.map(safeText),
+      confidence: entry.confidence,
+      unknowns: entry.unknowns.map(safeText),
+    }));
+}
+
 function flowRisks(entity: BrainEntity): FlowRisk[] {
   const risks = entity.data?.risks;
   if (!Array.isArray(risks)) return [];
@@ -3938,6 +3994,14 @@ function inferScriptFlow(params: {
     });
   }
   const baseConfidence = flowConfidenceFor({ tests, signals, unknowns });
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel: 'Command',
+    entryLabel: params.scriptName,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind,
@@ -3961,6 +4025,7 @@ function inferScriptFlow(params: {
     files,
     dependencies,
     services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests,
     risks,
@@ -4011,6 +4076,7 @@ function inferScriptFlow(params: {
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: tests.map(evidenceId),
       risks: unique(risks.flatMap((risk) => risk.evidence)),
@@ -4383,6 +4449,14 @@ function inferNextAppRouteFlow(params: {
     route_type: params.routeType,
     entry_file: params.file.relativePath,
   };
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel: 'Next.js',
+    entryLabel: `${params.routeType} ${params.routePath}`,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind,
@@ -4409,6 +4483,7 @@ function inferNextAppRouteFlow(params: {
     files,
     dependencies,
     services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests: relatedTests,
     risks,
@@ -4445,6 +4520,7 @@ function inferNextAppRouteFlow(params: {
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -4834,6 +4910,14 @@ function inferHttpRouteDeclarationFlow(params: {
     params.file.relativePath,
     ...importContext.importedFiles.map((file) => file.relativePath),
   ]);
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel,
+    entryLabel: `${params.declaration.method} ${params.declaration.routePath}`,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind: 'api',
@@ -4863,6 +4947,7 @@ function inferHttpRouteDeclarationFlow(params: {
     files,
     dependencies,
     services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests: relatedTests,
     risks,
@@ -4891,6 +4976,7 @@ function inferHttpRouteDeclarationFlow(params: {
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -5000,6 +5086,14 @@ function inferRouteFlow(params: {
     params.file.relativePath,
     ...importContext.importedFiles.map((file) => file.relativePath),
   ]);
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel: 'API',
+    entryLabel: params.file.relativePath,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind: 'api',
@@ -5022,6 +5116,7 @@ function inferRouteFlow(params: {
     files,
     dependencies,
     services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests: unique(relatedTests),
     risks,
@@ -5058,6 +5153,7 @@ function inferRouteFlow(params: {
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -5090,6 +5186,7 @@ function buildFlowEntity(
     evidenceIds: unique([
       ...intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
       ...intelligence.steps.flatMap((step) => step.evidence),
+      ...(intelligence.service_causality ?? []).flatMap((item) => item.evidence_ids),
       ...intelligence.risks.flatMap((risk) => risk.evidence),
     ]),
     relatedEntityIds: unique([
@@ -5629,6 +5726,7 @@ const FLOW_UNDERSTANDING_FIELDS = [
   'components',
   'files',
   'dependencies',
+  'service_causality',
   'configs',
   'tests',
   'risks',
@@ -7061,6 +7159,7 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
       const configs = flowStringArray(flow, 'configs');
       const tests = flowStringArray(flow, 'tests');
       const risks = flowRisks(flow);
+      const serviceCausality = safeFlowServiceCausality(flow);
       const sharedFiles = files.filter(
         (file) =>
           !file.includes('/app/') &&
@@ -7079,6 +7178,7 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
         files: files.map(safeText),
         configs: configs.map(safeText),
         tests: tests.map(safeText),
+        service_causality: serviceCausality,
         confidence: routeArchitectureConfidence(flow),
         confidence_score: routeArchitectureScore(flow),
         assumptions: [
@@ -7111,6 +7211,12 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
           ...(tests.length === 0
             ? [`Route ${routePath} has no directly linked test, so regressions are easier to miss.`]
             : []),
+          ...serviceCausality.flatMap((item) =>
+            item.effects.map(
+              (effect) =>
+                `Changing ${item.service_id} can affect route ${routePath} through ${effect}.`,
+            ),
+          ),
         ]).map(safeText),
         shared_files: sharedFiles.map(safeText),
         risks: risks.map(formatFlowRisk).map(safeText),
@@ -7993,6 +8099,7 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
   const components = flowStringArray(flow, 'components').map(safeText);
   const tests = flowStringArray(flow, 'tests').map(safeText);
   const configs = flowStringArray(flow, 'configs').map(safeText);
+  const serviceCausality = safeFlowServiceCausality(flow);
   const couplingLevel = routeCouplingLevel(flow);
   const couplingScore = routeCouplingScore(flow);
   return {
@@ -8007,6 +8114,7 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
     affected_files: files,
     affected_tests: tests,
     affected_configs: configs,
+    service_causality: serviceCausality,
     dependent_components: [],
     coupling_level: couplingLevel,
     coupling_score: couplingScore,
@@ -8025,6 +8133,11 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
       ...(tests.length === 0
         ? [`Route ${routePath} has no directly linked test artifact in the impact map.`]
         : []),
+      ...serviceCausality.flatMap((item) =>
+        item.effects.map(
+          (effect) => `${item.service_id} can affect route ${routePath} through ${effect}.`,
+        ),
+      ),
     ]).map(safeText),
     reasons: [
       `framework:${safeText(framework)}`,
@@ -8574,6 +8687,60 @@ function serviceIdsForFiles(files: readonly string[], services: readonly BrainEn
       )
       .map((service) => service.id),
   );
+}
+
+function flowServiceCausality(params: {
+  readonly frameworkLabel: string;
+  readonly entryLabel: string;
+  readonly serviceIds: readonly string[];
+  readonly services: readonly BrainEntity[];
+  readonly files: readonly string[];
+  readonly steps: readonly FlowStep[];
+}): FlowServiceCausality[] {
+  return params.serviceIds.flatMap((serviceId): FlowServiceCausality[] => {
+    const service = params.services.find((item) => item.id === serviceId);
+    if (service === undefined) return [];
+    const serviceFiles = service.source_files.filter((file) => params.files.includes(file));
+    const serviceSteps = params.steps.filter(
+      (step) => step.type === 'service' && service.source_files.includes(step.path),
+    );
+    const storage = serviceDataStringArray(service, 'storage_dependencies');
+    const envVars = serviceDataStringArray(service, 'environment_variables');
+    const externalServices = serviceDataStringArray(service, 'external_services');
+    const jobs = serviceDataStringArray(service, 'jobs');
+    const routes = serviceDataStringArray(service, 'routes');
+    const effects = unique([
+      ...storage.map((item) => `storage:${item}`),
+      ...envVars.map((item) => `env:${item}`),
+      ...externalServices.map((item) => `external:${item}`),
+      ...jobs.map((item) => `job:${item}`),
+      ...routes.map((item) => `route:${item}`),
+    ]);
+    const evidenceIds = unique([
+      ...service.evidence_ids,
+      ...serviceSteps.flatMap((step) => step.evidence),
+      ...serviceFiles.map(evidenceId),
+    ]);
+    return [
+      {
+        service_id: safeText(service.id),
+        service_name: safeText(service.name),
+        service_root: safeText(stringData(service, 'service_root') ?? service.name),
+        files: serviceFiles.map(safeText),
+        step_ids: serviceSteps.map((step) => safeText(step.step_id)),
+        cause: safeText(
+          `${params.frameworkLabel} ${params.entryLabel} reaches ${service.id} through static import evidence.`,
+        ),
+        effects: effects.map(safeText),
+        evidence_ids: evidenceIds.map(safeText),
+        confidence: weakestConfidence([
+          service.confidence,
+          serviceSteps.length > 0 ? 'inferred' : 'uncertain',
+        ]),
+        unknowns: serviceDataStringArray(service, 'unknowns'),
+      },
+    ];
+  });
 }
 
 function enrichServicesWithFlows(
@@ -11850,6 +12017,7 @@ function buildResearchArtifacts(params: {
         failure_modes: flowStringArray(flow, 'failure_modes'),
         required_tests: flowStringArray(flow, 'required_tests'),
         services: flowStringArray(flow, 'services'),
+        service_causality: safeFlowServiceCausality(flow),
         confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
       })),
       orphan_entrypoints: flows
@@ -11905,6 +12073,7 @@ function buildResearchArtifacts(params: {
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
         services: flowStringArray(flow, 'services').length,
+        service_causality: safeFlowServiceCausality(flow).length,
         tests: flowStringArray(flow, 'tests').length,
         configs: flowStringArray(flow, 'configs').length,
         entry_contract: flowStringArray(flow, 'entry_contract').length,
@@ -16303,6 +16472,7 @@ function buildFlowExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const entrypoints = safeFlowEntrypoints(target);
   const steps = safeFlowSteps(target);
+  const serviceCausality = safeFlowServiceCausality(target);
   const flowRisksForTarget = safeFlowRisks(target);
   const components = flowStringArray(target, 'components').map(safeText);
   const services = flowStringArray(target, 'services').map(safeText);
@@ -16337,6 +16507,7 @@ function buildFlowExplanation(params: {
     ...target.evidence_ids,
     ...entrypoints.flatMap((entrypoint) => entrypoint.evidence),
     ...steps.flatMap((step) => step.evidence),
+    ...serviceCausality.flatMap((item) => item.evidence_ids),
     ...flowRisksForTarget.flatMap((risk) => risk.evidence),
     ...relationshipContext.evidenceIds,
   ]).map(safeText);
@@ -16384,6 +16555,7 @@ function buildFlowExplanation(params: {
     responsibilities: unique([
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
       `Covers ${components.length} component(s), ${services.length} service(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      ...serviceCausality.map((item) => item.cause),
       ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
     ]).map(safeText),
@@ -16450,6 +16622,7 @@ function buildFlowExplanation(params: {
       steps,
       components,
       services,
+      service_causality: serviceCausality,
       files,
       dependencies,
       tests,
@@ -16481,6 +16654,11 @@ function formatFlowEntrypoint(entrypoint: FlowEntrypoint): string {
 
 function formatFlowStep(step: FlowStep): string {
   return `${step.order}. ${step.type}: ${step.path} - ${step.description}`;
+}
+
+function formatFlowServiceCausality(item: FlowServiceCausality): string {
+  const effects = item.effects.length === 0 ? 'no effects recorded yet' : item.effects.join(', ');
+  return `${item.service_id}: ${item.cause} Effects: ${effects}. Confidence: ${item.confidence}.`;
 }
 
 function formatFlowRisk(risk: FlowRisk): string {
@@ -16951,6 +17129,9 @@ function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
         explanation.flow.components,
       )}</article>
       <article class="card"><h2>Flow Services</h2>${renderList(explanation.flow.services)}</article>
+      <article class="card"><h2>Service Causality</h2>${renderList(
+        explanation.flow.service_causality.map(formatFlowServiceCausality),
+      )}</article>
       <article class="card"><h2>Flow Confidence</h2>${renderList([
         `${explanation.flow.confidence_score}: ${explanation.flow.confidence_reason}`,
       ])}</article>`;
