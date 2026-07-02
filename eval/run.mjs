@@ -242,6 +242,7 @@ function validateReviewAssertions(assertions) {
   for (const field of [
     'minimum_direct_components',
     'minimum_dependent_components',
+    'minimum_affected_services',
     'minimum_affected_flows',
     'minimum_affected_relationships',
     'minimum_architecture_impact_surfaces',
@@ -270,6 +271,50 @@ function validateReviewAssertions(assertions) {
           errors.push(
             `review.assertions.findings_include[${index}] must include category or title_includes`,
           );
+        }
+      }
+    }
+  }
+  if (assertions.affected_services_include !== undefined) {
+    if (
+      !Array.isArray(assertions.affected_services_include) ||
+      assertions.affected_services_include.length === 0
+    ) {
+      errors.push('review.assertions.affected_services_include must include objects');
+    } else {
+      for (const [index, service] of assertions.affected_services_include.entries()) {
+        if (!isRecord(service)) {
+          errors.push(`review.assertions.affected_services_include[${index}] must be an object`);
+          continue;
+        }
+        for (const field of ['id', 'name', 'runtime', 'framework']) {
+          if (service[field] !== undefined && !isNonEmptyString(service[field])) {
+            errors.push(
+              `review.assertions.affected_services_include[${index}].${field} must be a non-empty string`,
+            );
+          }
+        }
+        for (const field of [
+          'changed_files_include',
+          'affected_flows_include',
+          'tests_include',
+          'configs_include',
+          'storage_dependencies_include',
+          'environment_variables_include',
+          'external_services_include',
+          'deployment_configs_include',
+          'risks_include',
+          'reasons_include',
+          'evidence_ids_include',
+        ]) {
+          if (
+            service[field] !== undefined &&
+            (!isStringArray(service[field]) || service[field].length === 0)
+          ) {
+            errors.push(
+              `review.assertions.affected_services_include[${index}].${field} must include strings`,
+            );
+          }
         }
       }
     }
@@ -909,6 +954,85 @@ function assertReviewRouteFlows(review, expected) {
   return errors;
 }
 
+function assertReviewAffectedServices(review, expected) {
+  const services = reviewArray(review, 'affected_services');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matchedService = services.find((service) => {
+      if (!isRecord(service)) return false;
+      const idMatches = item.id === undefined || String(service.id ?? '') === item.id;
+      const nameMatches = item.name === undefined || String(service.name ?? '') === item.name;
+      const runtimeMatches =
+        item.runtime === undefined || String(service.runtime ?? '') === item.runtime;
+      const frameworkMatches =
+        item.framework === undefined || String(service.framework ?? '') === item.framework;
+      return idMatches && nameMatches && runtimeMatches && frameworkMatches;
+    });
+    if (matchedService === undefined) {
+      errors.push(`affected_services missing service metadata for ${item.id ?? item.name}`);
+      continue;
+    }
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'changed_files'),
+        item.changed_files_include,
+        'affected_services.changed_files',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'affected_flows'),
+        item.affected_flows_include,
+        'affected_services.affected_flows',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'tests'),
+        item.tests_include,
+        'affected_services.tests',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'configs'),
+        item.configs_include,
+        'affected_services.configs',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'storage_dependencies'),
+        item.storage_dependencies_include,
+        'affected_services.storage_dependencies',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'environment_variables'),
+        item.environment_variables_include,
+        'affected_services.environment_variables',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'external_services'),
+        item.external_services_include,
+        'affected_services.external_services',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'deployment_configs'),
+        item.deployment_configs_include,
+        'affected_services.deployment_configs',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedService, 'risks'),
+        item.risks_include,
+        'affected_services.risks',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedService, 'reasons'),
+        item.reasons_include,
+        'affected_services.reasons',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'evidence_ids'),
+        item.evidence_ids_include,
+        'affected_services.evidence_ids',
+      ),
+    );
+  }
+  return errors;
+}
+
 function assertNoForbiddenReviewOutput(output, forbidden) {
   const errors = [];
   for (const item of forbidden ?? []) {
@@ -922,6 +1046,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const errors = [];
   const directComponentIds = idsFromRows(review.direct_affected_components);
   const dependentComponentIds = idsFromRows(review.dependent_components);
+  const affectedServiceIds = idsFromRows(review.affected_services);
   const affectedFlowIds = idsFromRows(review.affected_flows);
   const architectureImpactSurfaces = impactIdsFromRows(review.architecture_impact_map);
   const affectedRelationships = reviewArray(review, 'affected_relationships');
@@ -965,6 +1090,11 @@ function assertReviewContract(task, repoDir, review, stdout) {
       assertions.dependent_components_include,
       'dependent_components',
     ),
+    ...assertIncludesAll(
+      affectedServiceIds,
+      assertions.affected_services_include?.map((service) => service.id).filter(isNonEmptyString),
+      'affected_services',
+    ),
     ...assertIncludesAll(affectedFlowIds, assertions.affected_flows_include, 'affected_flows'),
     ...assertIncludesAll(
       architectureImpactSurfaces,
@@ -999,6 +1129,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
       'blast_radius_reasons',
     ),
     ...assertReviewFindings(review, assertions.findings_include),
+    ...assertReviewAffectedServices(review, assertions.affected_services_include),
     ...assertReviewRouteFlows(review, assertions.route_flows_include),
   );
 
@@ -1016,6 +1147,14 @@ function assertReviewContract(task, repoDir, review, stdout) {
   ) {
     errors.push(
       `dependent_components ${dependentComponentIds.length} below ${assertions.minimum_dependent_components}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_services !== undefined &&
+    affectedServiceIds.length < assertions.minimum_affected_services
+  ) {
+    errors.push(
+      `affected_services ${affectedServiceIds.length} below ${assertions.minimum_affected_services}`,
     );
   }
   if (
