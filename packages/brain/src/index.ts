@@ -698,6 +698,45 @@ type BlastRadius = 'narrow' | 'moderate' | 'broad';
 
 type RecommendedAction = 'approve' | 'request changes' | 'investigate';
 
+export type VerificationStatus = 'passed' | 'failed' | 'skipped' | 'unknown';
+
+export interface VerificationEvidenceItem {
+  readonly id: string;
+  readonly name: string;
+  readonly command: string;
+  readonly status: VerificationStatus;
+  readonly timestamp: string;
+  readonly output_summary?: string;
+  readonly affected_confidence_areas: readonly string[];
+}
+
+export interface VerificationEvidenceArtifactData {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly project_name: string;
+  readonly items: readonly VerificationEvidenceItem[];
+  readonly status_counts: Record<VerificationStatus, number>;
+  readonly local_checks_passed: readonly string[];
+  readonly local_checks_failed: readonly string[];
+  readonly production_checks_passed: readonly string[];
+  readonly production_checks_failed: readonly string[];
+  readonly risks_reduced: readonly string[];
+  readonly remaining_unknowns: readonly string[];
+}
+
+interface ReviewVerificationStatusData {
+  readonly artifact_path: string;
+  readonly total_checks: number;
+  readonly passed_checks: readonly string[];
+  readonly failed_checks: readonly string[];
+  readonly local_checks_passed: readonly string[];
+  readonly production_checks_passed: readonly string[];
+  readonly production_checks_failed: readonly string[];
+  readonly risks_reduced: readonly string[];
+  readonly remaining_unknowns: readonly string[];
+  readonly calibration_note: string;
+}
+
 interface ReviewEvalArtifactData {
   readonly schema_version: number;
   readonly generated_at: string;
@@ -719,6 +758,9 @@ interface ReviewEvalArtifactData {
   readonly architecture_what_breaks_note_count: number;
   readonly architecture_evidence_gap_count: number;
   readonly architecture_confidence_gap_count: number;
+  readonly verification_evidence_count: number;
+  readonly verification_passed_count: number;
+  readonly verification_failed_count: number;
   readonly architecture_affected_test_count: number;
   readonly architecture_affected_config_count: number;
   readonly required_test_count: number;
@@ -807,6 +849,7 @@ interface ReviewEvidenceSummaryData {
   readonly architecture_what_breaks: readonly string[];
   readonly affected_tests: readonly string[];
   readonly affected_configs: readonly string[];
+  readonly verification_evidence_ids: readonly string[];
   readonly evidence_ids: readonly string[];
 }
 
@@ -848,6 +891,7 @@ interface ReviewSummaryData {
   readonly affected_entities: readonly string[];
   readonly blast_radius_reasons: readonly string[];
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
+  readonly verification_status: ReviewVerificationStatusData;
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
@@ -980,6 +1024,28 @@ export interface ReviewProjectChangesOptions {
   readonly now?: Date;
   readonly json?: boolean;
 }
+
+export interface AddVerificationEvidenceOptions {
+  readonly rootDir: string;
+  readonly name: string;
+  readonly command: string;
+  readonly status: VerificationStatus;
+  readonly now?: Date;
+  readonly outputSummary?: string;
+  readonly affectedConfidenceAreas?: readonly string[];
+}
+
+export interface AddVerificationEvidenceSummary {
+  readonly rootDir: string;
+  readonly researchDir: string;
+  readonly artifactPath: string;
+  readonly item: VerificationEvidenceItem;
+  readonly artifact: VerificationEvidenceArtifactData;
+}
+
+export type AddVerificationEvidenceResult =
+  | { readonly ok: true; readonly value: AddVerificationEvidenceSummary }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
 export interface ReviewProjectChangesSummary {
   readonly rootDir: string;
@@ -1133,6 +1199,7 @@ const RESEARCH_ARTIFACT_FILES = {
   benchmarkTasks: 'benchmark_tasks.json',
   understandingScore: 'understanding_score.json',
   pieAcceptance: 'pie_acceptance.json',
+  verificationEvidence: 'verification_evidence.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -1363,6 +1430,177 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
   } catch {
     return undefined;
   }
+}
+
+function verificationEvidenceArtifactPath(rootDir: string): string {
+  return join(rootDir, '.rizz', 'research', RESEARCH_ARTIFACT_FILES.verificationEvidence);
+}
+
+function emptyVerificationEvidenceArtifact(
+  projectName: string,
+  generatedAt: string,
+): VerificationEvidenceArtifactData {
+  return buildVerificationEvidenceArtifact({
+    projectName,
+    generatedAt,
+    items: [],
+  });
+}
+
+function isVerificationStatus(value: unknown): value is VerificationStatus {
+  return value === 'passed' || value === 'failed' || value === 'skipped' || value === 'unknown';
+}
+
+function verificationItemFromRecord(value: unknown): VerificationEvidenceItem | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = typeof value.id === 'string' ? safeText(value.id) : undefined;
+  const name = typeof value.name === 'string' ? safeText(value.name) : undefined;
+  const command = typeof value.command === 'string' ? safeText(value.command) : undefined;
+  const timestamp = typeof value.timestamp === 'string' ? safeText(value.timestamp) : undefined;
+  if (
+    id === undefined ||
+    name === undefined ||
+    command === undefined ||
+    timestamp === undefined ||
+    !isVerificationStatus(value.status)
+  ) {
+    return undefined;
+  }
+  const outputSummary =
+    typeof value.output_summary === 'string' ? safeText(value.output_summary) : undefined;
+  return {
+    id,
+    name,
+    command,
+    status: value.status,
+    timestamp,
+    ...(outputSummary !== undefined && outputSummary !== ''
+      ? { output_summary: outputSummary }
+      : {}),
+    affected_confidence_areas: asStringArray(value.affected_confidence_areas).map(safeText),
+  };
+}
+
+async function readVerificationEvidenceArtifact(
+  rootDir: string,
+  generatedAt: string,
+): Promise<VerificationEvidenceArtifactData> {
+  const existing = await readJsonFile<{ readonly items?: readonly unknown[] }>(
+    verificationEvidenceArtifactPath(rootDir),
+  );
+  const items = (existing?.items ?? [])
+    .map(verificationItemFromRecord)
+    .filter((item): item is VerificationEvidenceItem => item !== undefined);
+  return buildVerificationEvidenceArtifact({ projectName: basename(rootDir), generatedAt, items });
+}
+
+function verificationStatusCounts(
+  items: readonly VerificationEvidenceItem[],
+): Record<VerificationStatus, number> {
+  return {
+    passed: items.filter((item) => item.status === 'passed').length,
+    failed: items.filter((item) => item.status === 'failed').length,
+    skipped: items.filter((item) => item.status === 'skipped').length,
+    unknown: items.filter((item) => item.status === 'unknown').length,
+  };
+}
+
+function verificationLabel(item: VerificationEvidenceItem): string {
+  return `${item.name}: ${item.command}`;
+}
+
+function commandLooksLocal(command: string): boolean {
+  return /(^|\s)(npm|pnpm|yarn|bun|pytest|vitest|jest|tsc|ruff|eslint|cargo|go)\b|lint|typecheck|build|test/i.test(
+    command,
+  );
+}
+
+function commandLooksProduction(command: string): boolean {
+  return /https?:\/\/|curl|vercel|prod|production|deploy|smoke/i.test(command);
+}
+
+function buildVerificationEvidenceArtifact(params: {
+  readonly projectName: string;
+  readonly generatedAt: string;
+  readonly items: readonly VerificationEvidenceItem[];
+}): VerificationEvidenceArtifactData {
+  const items = sorted(params.items, (item) => `${item.timestamp}:${item.id}`);
+  const localPassed = items.filter(
+    (item) =>
+      item.status === 'passed' &&
+      (item.affected_confidence_areas.includes('local') || commandLooksLocal(item.command)),
+  );
+  const localFailed = items.filter(
+    (item) =>
+      item.status === 'failed' &&
+      (item.affected_confidence_areas.includes('local') || commandLooksLocal(item.command)),
+  );
+  const productionPassed = items.filter(
+    (item) =>
+      item.status === 'passed' &&
+      (item.affected_confidence_areas.includes('production') ||
+        commandLooksProduction(item.command)),
+  );
+  const productionFailed = items.filter(
+    (item) =>
+      item.status === 'failed' &&
+      (item.affected_confidence_areas.includes('production') ||
+        commandLooksProduction(item.command)),
+  );
+  const risksReduced = unique([
+    ...(localPassed.length > 0
+      ? ['Local syntax/build/test regression risk reduced by recorded passed checks.']
+      : []),
+    ...(productionPassed.length > 0
+      ? ['Production reachability risk reduced by recorded smoke checks.']
+      : []),
+  ]);
+  return {
+    schema_version: 1,
+    generated_at: params.generatedAt,
+    project_name: params.projectName,
+    items,
+    status_counts: verificationStatusCounts(items),
+    local_checks_passed: localPassed.map(verificationLabel),
+    local_checks_failed: localFailed.map(verificationLabel),
+    production_checks_passed: productionPassed.map(verificationLabel),
+    production_checks_failed: productionFailed.map(verificationLabel),
+    risks_reduced: risksReduced,
+    remaining_unknowns: unique([
+      ...(items.length === 0 ? ['No runtime verification evidence has been recorded yet.'] : []),
+      ...(productionPassed.length === 0 && productionFailed.length === 0
+        ? ['No production or deployment smoke evidence has been recorded yet.']
+        : []),
+      ...(localFailed.length > 0 ? ['At least one local verification check failed.'] : []),
+      ...(productionFailed.length > 0 ? ['At least one production smoke check failed.'] : []),
+    ]),
+  };
+}
+
+function reviewVerificationStatus(
+  artifact: VerificationEvidenceArtifactData,
+): ReviewVerificationStatusData {
+  const passedChecks = artifact.items
+    .filter((item) => item.status === 'passed')
+    .map(verificationLabel);
+  const failedChecks = artifact.items
+    .filter((item) => item.status === 'failed')
+    .map(verificationLabel);
+  return {
+    artifact_path: `.rizz/research/${RESEARCH_ARTIFACT_FILES.verificationEvidence}`,
+    total_checks: artifact.items.length,
+    passed_checks: passedChecks,
+    failed_checks: failedChecks,
+    local_checks_passed: artifact.local_checks_passed,
+    production_checks_passed: artifact.production_checks_passed,
+    production_checks_failed: artifact.production_checks_failed,
+    risks_reduced: artifact.risks_reduced,
+    remaining_unknowns: artifact.remaining_unknowns,
+    calibration_note:
+      artifact.local_checks_passed.length > 0
+        ? 'Recorded verification evidence can reduce local regression risk, but production risk stays separate until deployment smoke evidence exists.'
+        : 'No local verification evidence has been recorded, so review risk remains based on static brain evidence.',
+  };
 }
 
 async function writeVerifiedFile(path: string, contents: string): Promise<void> {
@@ -10691,6 +10929,7 @@ function buildResearchArtifacts(params: {
     benchmarkTasks,
     understandingScore,
     pieAcceptance,
+    verificationEvidence: emptyVerificationEvidenceArtifact(params.projectName, params.now),
   };
 }
 
@@ -13346,6 +13585,7 @@ export async function generateProjectBrain(
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
         pie_acceptance: '.rizz/research/pie_acceptance.json',
+        verification_evidence: '.rizz/research/verification_evidence.json',
       },
     };
     const researchArtifacts = buildResearchArtifacts({
@@ -13426,6 +13666,92 @@ export async function hasProjectBrain(rootDir: string): Promise<boolean> {
   return exists(join(rootDir, '.rizz', 'brain', 'latest.json'));
 }
 
+export async function addVerificationEvidence(
+  options: AddVerificationEvidenceOptions,
+): Promise<AddVerificationEvidenceResult> {
+  try {
+    const name = options.name.trim();
+    const command = options.command.trim();
+    if (name === '') {
+      return {
+        ok: false,
+        error: { code: 'VERIFY_NAME_REQUIRED', message: 'Verification evidence needs a name.' },
+      };
+    }
+    if (command === '') {
+      return {
+        ok: false,
+        error: {
+          code: 'VERIFY_COMMAND_REQUIRED',
+          message: 'Verification evidence needs the command that was run.',
+        },
+      };
+    }
+    const rootDir = options.rootDir;
+    const now = (options.now ?? new Date()).toISOString();
+    const researchDir = join(rootDir, '.rizz', 'research');
+    await mkdir(researchDir, { recursive: true });
+    const existing = await readVerificationEvidenceArtifact(rootDir, now);
+    const item: VerificationEvidenceItem = {
+      id: `verification:${stableSlug(name)}:${createHash('sha256')
+        .update(`${name}\0${command}\0${now}`)
+        .digest('hex')
+        .slice(0, 12)}`,
+      name: safeText(name),
+      command: safeText(command),
+      status: options.status,
+      timestamp: now,
+      ...(options.outputSummary !== undefined && options.outputSummary.trim() !== ''
+        ? { output_summary: safeText(options.outputSummary.trim()) }
+        : {}),
+      affected_confidence_areas: unique([
+        ...(options.affectedConfidenceAreas ?? []).map(safeText),
+        ...(commandLooksProduction(command) ? ['production'] : []),
+        ...(commandLooksLocal(command) ? ['local'] : []),
+      ]),
+    };
+    const artifact = buildVerificationEvidenceArtifact({
+      projectName: basename(rootDir),
+      generatedAt: now,
+      items: [...existing.items, item],
+    });
+    const artifactPath = verificationEvidenceArtifactPath(rootDir);
+    await writeVerifiedFile(artifactPath, jsonString(safeResearchValue(artifact)));
+    if (await hasProjectBrain(rootDir)) {
+      const brainDir = join(rootDir, '.rizz', 'brain');
+      const latestPath = join(brainDir, 'latest.json');
+      const latest = (await readJsonFile<Record<string, unknown>>(latestPath)) ?? {};
+      await writeVerifiedFile(
+        latestPath,
+        jsonString(
+          safeBrainValue({
+            ...latest,
+            latest_verification_evidence: {
+              artifact_path: '.rizz/research/verification_evidence.json',
+              total_checks: artifact.items.length,
+              status_counts: artifact.status_counts,
+              latest_item_id: item.id,
+              latest_status: item.status,
+              updated_at: now,
+            },
+            latest_research_artifacts: {
+              ...(isRecord(latest.latest_research_artifacts)
+                ? latest.latest_research_artifacts
+                : {}),
+              verification_evidence: '.rizz/research/verification_evidence.json',
+            },
+          }),
+        ),
+      );
+      await updateBrainIndexVerificationEvidencePath(join(brainDir, 'index.json'));
+    }
+    return { ok: true, value: { rootDir, researchDir, artifactPath, item, artifact } };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'VERIFY_EVIDENCE_FAILED', message } };
+  }
+}
+
 export async function reviewProjectChanges(
   options: ReviewProjectChangesOptions,
 ): Promise<ReviewProjectChangesResult> {
@@ -13468,6 +13794,7 @@ export async function reviewProjectChanges(
     const entitySets = await readReviewEntitySets(entitiesDir);
     const gitChanges = readGitChanges(rootDir);
     if (!gitChanges.ok) return { ok: false, error: gitChanges.error };
+    const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now);
 
     const review = buildReview({
       rootDir,
@@ -13477,6 +13804,7 @@ export async function reviewProjectChanges(
       entitySets,
       changedFiles: gitChanges.value.changedFiles,
       diffText: gitChanges.value.diffText,
+      verificationEvidence,
     });
     const reviewEval = buildReviewEvalArtifact(review);
 
@@ -13541,13 +13869,16 @@ export async function reviewProjectChanges(
           (entry) => entry.impact_id,
         ),
         review_evidence_summary: review.review_evidence_summary,
+        verification_status: review.verification_status,
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
+          verification_evidence: '.rizz/research/verification_evidence.json',
         },
       },
       latest_research_artifacts: {
         ...(isRecord(latest.latest_research_artifacts) ? latest.latest_research_artifacts : {}),
         review_eval: '.rizz/research/review_eval.json',
+        verification_evidence: '.rizz/research/verification_evidence.json',
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
       latest_open_questions: mergeStrings(latest.latest_open_questions, [
@@ -13568,6 +13899,10 @@ export async function reviewProjectChanges(
     };
     await writeVerifiedFile(latestPath, jsonString(safeBrainValue(updatedLatest)));
     await writeVerifiedFile(join(researchDir, 'review_eval.json'), jsonString(reviewEval));
+    await writeVerifiedFile(
+      verificationEvidenceArtifactPath(rootDir),
+      jsonString(safeResearchValue(verificationEvidence)),
+    );
     await updateBrainIndexReviewEvalPath(join(brainDir, 'index.json'));
 
     const reviewReport = renderReviewReport(review);
@@ -15585,6 +15920,7 @@ function buildReview(params: {
   readonly entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>;
   readonly changedFiles: readonly string[];
   readonly diffText: string;
+  readonly verificationEvidence: VerificationEvidenceArtifactData;
 }): ReviewSummaryData {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
   const changedFileSet = new Set(changedFiles);
@@ -15718,6 +16054,8 @@ function buildReview(params: {
     affectedTests,
     affectedConfigs,
   });
+  const verificationStatus = reviewVerificationStatus(params.verificationEvidence);
+  const hasLocalVerification = verificationStatus.local_checks_passed.length > 0;
 
   const findings: ReviewFindingData[] = [];
   const addFinding = (
@@ -15813,17 +16151,24 @@ function buildReview(params: {
   if (changedSourceFiles.length > 0 && changedTestFiles.length === 0) {
     addFinding({
       slug: 'missing-tests',
-      severity: changedSourceFiles.length > 4 ? 'high' : 'medium',
+      severity: hasLocalVerification ? 'low' : changedSourceFiles.length > 4 ? 'high' : 'medium',
       category: 'Missing tests',
-      title: 'Runtime files changed without test artifacts in the diff',
+      title: hasLocalVerification
+        ? 'Runtime files changed without new tests, but local checks are recorded'
+        : 'Runtime files changed without test artifacts in the diff',
       description: safeText(
-        `${changedSourceFiles.length} source file(s) changed, but no test file changed with them. Existing linked test evidence: ${affectedTests.slice(0, 5).join(', ') || 'none detected'}.`,
+        `${changedSourceFiles.length} source file(s) changed, but no test file changed with them. Existing linked test evidence: ${affectedTests.slice(0, 5).join(', ') || 'none detected'}. ${
+          hasLocalVerification
+            ? `Recorded local checks passed: ${verificationStatus.local_checks_passed.slice(0, 4).join(', ')}.`
+            : ''
+        }`,
       ),
       affected_files: changedSourceFiles.map(safeText),
       affected_entities: graphAffectedEntities,
-      confidence: 'verified',
-      recommendation:
-        'Run the existing quality gate and add focused tests for the changed behavior or document why existing coverage is sufficient.',
+      confidence: hasLocalVerification ? 'inferred' : 'verified',
+      recommendation: hasLocalVerification
+        ? 'Use the recorded checks as local regression evidence, then add focused tests if the behavior changed.'
+        : 'Run the existing quality gate and add focused tests for the changed behavior or document why existing coverage is sufficient.',
     });
   }
 
@@ -16001,8 +16346,10 @@ function buildReview(params: {
       architecture_what_breaks: architectureWhatBreaks,
       affected_tests: affectedTests,
       affected_configs: affectedConfigs,
+      verification_evidence_ids: params.verificationEvidence.items.map((item) => item.id),
       evidence_ids: reviewEvidenceIds.slice(0, 40),
     },
+    verification_status: verificationStatus,
     findings,
     overall_risk: overallRisk,
     surgicality_score: surgicalityScore,
@@ -16110,6 +16457,9 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
       review.review_evidence_summary.architecture_evidence_gap_ids.length,
     architecture_confidence_gap_count:
       review.review_evidence_summary.architecture_confidence_gaps.length,
+    verification_evidence_count: review.verification_status.total_checks,
+    verification_passed_count: review.verification_status.passed_checks.length,
+    verification_failed_count: review.verification_status.failed_checks.length,
     architecture_affected_test_count: unique(
       review.architecture_impact_map.flatMap((entry) => entry.affected_tests),
     ).length,
@@ -16139,6 +16489,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     scoring_notes: [
       'Review eval is computed from deterministic local review, brain, graph, and evidence artifacts.',
       'Architecture impact counts are populated only when changed files, components, or flows overlap the local impact map.',
+      'Verification evidence can reduce local regression risk only when checks are explicitly recorded.',
       'Readiness combines surgicality, risk, blast radius, findings, test guidance, evidence, and secret safety.',
     ],
   };
@@ -16155,6 +16506,24 @@ async function updateBrainIndexReviewEvalPath(indexPath: string): Promise<void> 
         research_paths: {
           ...researchPaths,
           review_eval: '.rizz/research/review_eval.json',
+          verification_evidence: '.rizz/research/verification_evidence.json',
+        },
+      }),
+    ),
+  );
+}
+
+async function updateBrainIndexVerificationEvidencePath(indexPath: string): Promise<void> {
+  const index = (await readJsonFile<Record<string, unknown>>(indexPath)) ?? {};
+  const researchPaths = isRecord(index.research_paths) ? index.research_paths : {};
+  await writeVerifiedFile(
+    indexPath,
+    jsonString(
+      safeBrainValue({
+        ...index,
+        research_paths: {
+          ...researchPaths,
+          verification_evidence: '.rizz/research/verification_evidence.json',
         },
       }),
     ),
@@ -16871,6 +17240,20 @@ function renderReviewReport(review: ReviewSummaryData): string {
         <article class="card"><h2>Evidence Records</h2><p>${review.review_evidence_summary.evidence_ids.length}</p></article>
       </div>
       ${renderList(review.blast_radius_reasons)}
+    </section>
+    <section>
+      <h2>Verification Calibration</h2>
+      <div class="grid">
+        <article class="card"><h2>Recorded Checks</h2><p>${review.verification_status.total_checks}</p></article>
+        <article class="card"><h2>Passed</h2><p>${review.verification_status.passed_checks.length}</p></article>
+        <article class="card"><h2>Failed</h2><p>${review.verification_status.failed_checks.length}</p></article>
+        <article class="card"><h2>Production Smoke</h2><p>${review.verification_status.production_checks_passed.length}</p></article>
+      </div>
+      <p class="muted">${htmlEscape(review.verification_status.calibration_note)}</p>
+      <h3>Risks Reduced</h3>
+      ${renderList(review.verification_status.risks_reduced)}
+      <h3>Remaining Unknowns</h3>
+      ${renderList(review.verification_status.remaining_unknowns)}
     </section>
     <section>
       <h2>Direct Components</h2>

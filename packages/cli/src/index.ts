@@ -30,6 +30,7 @@ Usage:
   rizz explain <x>   explain a component or file from the project brain
   rizz explain flow <id>
                      explain a reconstructed flow from the project brain
+  rizz verify add    record verification evidence for review calibration
   rizz review        review current git diff with the project brain
   rizz chat          launch model TUI
   rizz setup         choose model route
@@ -157,6 +158,54 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     process.stdout.write('  reviewer focus:\n');
     for (const finding of summary.review.findings.slice(0, 5)) {
       process.stdout.write(`    - [${finding.severity}] ${finding.category}: ${finding.title}\n`);
+    }
+  }
+  return 0;
+}
+
+async function runVerifyAddCommand(options: {
+  readonly name: string;
+  readonly command: string;
+  readonly status: 'passed' | 'failed' | 'skipped' | 'unknown';
+  readonly summary?: string;
+  readonly areas: readonly string[];
+  readonly json: boolean;
+}): Promise<number> {
+  const { addVerificationEvidence } = await import('@valoir/rizz-brain');
+  const result = await addVerificationEvidence({
+    rootDir: process.cwd(),
+    name: options.name,
+    command: options.command,
+    status: options.status,
+    ...(options.summary !== undefined ? { outputSummary: options.summary } : {}),
+    affectedConfidenceAreas: options.areas,
+  });
+  if (!result.ok) {
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else {
+      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    }
+    return 1;
+  }
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result.value)}\n`);
+    return 0;
+  }
+  process.stdout.write(`rizz recorded verification evidence ${result.value.item.id}\n`);
+  process.stdout.write(`  name: ${result.value.item.name}\n`);
+  process.stdout.write(`  status: ${result.value.item.status}\n`);
+  process.stdout.write(`  artifact: ${displayLocalPath(result.value.artifactPath)}\n`);
+  if (result.value.artifact.risks_reduced.length > 0) {
+    process.stdout.write('  risks reduced:\n');
+    for (const risk of result.value.artifact.risks_reduced.slice(0, 4)) {
+      process.stdout.write(`    - ${risk}\n`);
+    }
+  }
+  if (result.value.artifact.remaining_unknowns.length > 0) {
+    process.stdout.write('  remaining unknowns:\n');
+    for (const unknown of result.value.artifact.remaining_unknowns.slice(0, 4)) {
+      process.stdout.write(`    - ${unknown}\n`);
     }
   }
   return 0;
@@ -329,6 +378,30 @@ function extractFlag(
   }
   rest.splice(i, 2);
   return { value, rest };
+}
+
+function extractRepeatedFlag(
+  argv: readonly string[],
+  flag: string,
+): { values: string[]; rest: string[] } {
+  const rest = [...argv];
+  const values: string[] = [];
+  for (let i = 0; i < rest.length; ) {
+    if (rest[i] !== flag) {
+      i += 1;
+      continue;
+    }
+    const value = rest[i + 1];
+    rest.splice(i, value === undefined ? 1 : 2);
+    if (value !== undefined) values.push(value);
+  }
+  return { values, rest };
+}
+
+function isVerificationStatus(
+  value: string | undefined,
+): value is 'passed' | 'failed' | 'skipped' | 'unknown' {
+  return value === 'passed' || value === 'failed' || value === 'skipped' || value === 'unknown';
 }
 
 /** Non-TTY: prompt input runs one turn; empty input falls back to repo understanding. */
@@ -539,6 +612,49 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     }
     return runReviewCommand({ json: reviewArgs.includes('--json') });
+  }
+  if (c.rest[0] === 'verify') {
+    const verifyArgs = c.rest.slice(1);
+    if (verifyArgs[0] !== 'add') {
+      process.stderr.write(
+        "rizz: verify currently supports 'add'\nTry 'rizz verify add --name lint --command \"npm run lint\" --status passed'.\n",
+      );
+      return 2;
+    }
+    const wantsJson = verifyArgs.includes('--json');
+    const name = extractFlag(verifyArgs.slice(1), '--name');
+    const command = extractFlag(name.rest, '--command');
+    const status = extractFlag(command.rest, '--status');
+    const summary = extractFlag(status.rest, '--summary');
+    const areas = extractRepeatedFlag(summary.rest, '--area');
+    const allowed = new Set(['--json']);
+    const unknown = areas.rest.find((arg) => !allowed.has(arg));
+    if (name.missingValue || command.missingValue || status.missingValue || summary.missingValue) {
+      process.stderr.write('rizz: verify add flags need values\n');
+      return 2;
+    }
+    if (unknown !== undefined) {
+      process.stderr.write(`rizz: unknown verify option '${unknown}'\nTry 'rizz --help'.\n`);
+      return 2;
+    }
+    if (name.value === undefined || command.value === undefined) {
+      process.stderr.write("rizz: verify add needs --name and --command\nTry 'rizz --help'.\n");
+      return 2;
+    }
+    if (!isVerificationStatus(status.value)) {
+      process.stderr.write(
+        "rizz: verify add --status must be passed, failed, skipped, or unknown\nTry 'rizz --help'.\n",
+      );
+      return 2;
+    }
+    return runVerifyAddCommand({
+      name: name.value,
+      command: command.value,
+      status: status.value,
+      ...(summary.value !== undefined ? { summary: summary.value } : {}),
+      areas: areas.values,
+      json: wantsJson,
+    });
   }
   if (c.rest[0] === 'ask') {
     const askArgs = c.rest.slice(1);
