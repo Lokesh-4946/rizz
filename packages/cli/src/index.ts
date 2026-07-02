@@ -30,6 +30,8 @@ Usage:
   rizz explain <x>   explain a component or file from the project brain
   rizz explain flow <id>
                      explain a reconstructed flow from the project brain
+  rizz explain service <x>
+                     explain a detected service from the project brain
   rizz verify add    record verification evidence for review calibration
   rizz review        review current git diff with the project brain
   rizz chat          launch model TUI
@@ -130,6 +132,7 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     `  direct/dependent components: ${summary.review.direct_affected_components.length}/${summary.review.dependent_components.length}\n`,
   );
   process.stdout.write(`  affected flows: ${summary.review.affected_flows.length}\n`);
+  process.stdout.write(`  affected services: ${summary.review.affected_services.length}\n`);
   process.stdout.write(`  findings: ${summary.findings}\n`);
   process.stdout.write(`  action: ${summary.recommendedAction}\n`);
   process.stdout.write(`  review: ${displayLocalPath(summary.reviewPath)}\n`);
@@ -145,6 +148,14 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     for (const flow of summary.review.affected_flows.slice(0, 5)) {
       process.stdout.write(
         `    - ${flow.id} (${flow.kind}, ${flow.confidence}, ${flow.changed_files.length} changed file(s))\n`,
+      );
+    }
+  }
+  if (summary.review.affected_services.length > 0) {
+    process.stdout.write('  affected services:\n');
+    for (const service of summary.review.affected_services.slice(0, 5)) {
+      process.stdout.write(
+        `    - ${service.id} (${service.framework}, ${service.confidence}, ${service.affected_flows.length} flow(s))\n`,
       );
     }
   }
@@ -290,6 +301,16 @@ async function runExplainCommand(options: {
     writeSection('State transitions', explanation.flow.state_transitions);
     writeSection('Required tests', explanation.flow.required_tests);
     writeSection('Confidence reasons', explanation.flow.confidence_reasons);
+    writeSection('Services', explanation.flow.services);
+  }
+  if (explanation.service !== undefined) {
+    writeSection('Service routes', explanation.service.routes);
+    writeSection('Service jobs', explanation.service.jobs);
+    writeSection('Storage dependencies', explanation.service.storage_dependencies);
+    writeSection('Environment variables', explanation.service.environment_variables);
+    writeSection('External services/APIs', explanation.service.external_services);
+    writeSection('Deployment configs', explanation.service.deployment_configs);
+    writeSection('Service related flows', explanation.service.related_flows);
   }
   writeSection('Important files', explanation.important_files);
   writeSection('Dependencies', explanation.dependencies);
@@ -720,11 +741,16 @@ async function main(argv: readonly string[]): Promise<number> {
     const targets = explainArgs.filter((arg) => !allowed.has(arg));
     let target = targets[0];
     const isFlowTarget = targets.length === 2 && targets[0] === 'flow';
+    const isServiceTarget = targets.length === 2 && targets[0] === 'service';
     if (isFlowTarget) {
       const flowId = targets[1] ?? '';
       target = flowId.startsWith('flow:') ? flowId : `flow:${flowId}`;
     }
-    if ((targets.length !== 1 && !isFlowTarget) || target === undefined) {
+    if (isServiceTarget) {
+      const serviceId = targets[1] ?? '';
+      target = serviceId.startsWith('service:') ? serviceId : `service ${serviceId}`;
+    }
+    if ((targets.length !== 1 && !isFlowTarget && !isServiceTarget) || target === undefined) {
       const error = {
         ok: false,
         error: {

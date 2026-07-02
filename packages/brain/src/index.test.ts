@@ -429,6 +429,7 @@ describe('project brain generation', () => {
         'benchmark_tasks.json',
         'understanding_score.json',
         'pie_acceptance.json',
+        'service_intelligence.json',
         'verification_evidence.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
@@ -2618,8 +2619,9 @@ describe('project brain generation', () => {
         join(dir, 'src', 'orders', 'service.ts'),
         [
           'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          '  const currency = process.env.DEFAULT_CURRENCY ?? "USD";',
           '  if (input === undefined) throw new Error("invalid order");',
-          '  return { id: "order-1", input };',
+          '  return { id: `order-1-${currency}`, input };',
           '}',
           '',
         ].join('\n'),
@@ -2650,6 +2652,7 @@ describe('project brain generation', () => {
             dependencies?: string[];
             configs?: string[];
             tests?: string[];
+            services?: string[];
             entrypoints?: Array<{ type: string; path: string; symbol: string | null }>;
             steps?: Array<{ type: string; path: string; symbol: string | null }>;
             inputs?: string[];
@@ -2691,6 +2694,7 @@ describe('project brain generation', () => {
         dependencies: expect.arrayContaining(['dependency:express', 'dependency:fastify']),
         configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
         tests: expect.arrayContaining(['src/orders/orders.test.ts']),
+        services: expect.arrayContaining(['service:src--orders']),
         steps: expect.arrayContaining([
           expect.objectContaining({
             type: 'route',
@@ -2716,7 +2720,50 @@ describe('project brain generation', () => {
           'evidence:file-src--server.ts',
           'evidence:file-src--orders--service.ts',
         ]),
+        services: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
         tests: expect.arrayContaining(['evidence:file-src--orders--orders.test.ts']),
+      });
+
+      const services = await readJson<{
+        entities: Array<{
+          id: string;
+          type: string;
+          name: string;
+          confidence: string;
+          data?: {
+            runtime?: string;
+            framework?: string;
+            files?: string[];
+            entrypoints?: string[];
+            related_flows?: string[];
+            related_components?: string[];
+            risks?: string[];
+            unknowns?: string[];
+            field_evidence?: Record<string, string[]>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'services.json'));
+      const ordersService = services.entities.find(
+        (service) => service.id === 'service:src--orders',
+      );
+      expect(ordersService).toMatchObject({
+        id: 'service:src--orders',
+        type: 'service',
+        name: 'src/orders',
+        confidence: 'uncertain',
+        data: {
+          runtime: 'node',
+          framework: 'express-fastify-http',
+          files: expect.arrayContaining(['src/orders/service.ts']),
+          entrypoints: expect.arrayContaining(['src/orders/service.ts']),
+          related_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
+          risks: expect.arrayContaining([
+            'Environment variables are read but no service-local config artifact was linked.',
+          ]),
+          unknowns: expect.arrayContaining([
+            'No API route evidence was linked directly to this service.',
+          ]),
+        },
       });
 
       const flowUnderstanding = await readJson<{
@@ -2725,6 +2772,7 @@ describe('project brain generation', () => {
           framework?: string;
           route_path?: string;
           route_type?: string;
+          services?: string[];
           outputs: string[];
         }>;
       }>(join(result.value.researchDir, 'flow_understanding.json'));
@@ -2734,7 +2782,37 @@ describe('project brain generation', () => {
           framework: 'express-fastify-http',
           route_path: '/orders',
           route_type: 'POST',
+          services: expect.arrayContaining(['service:src--orders']),
           outputs: expect.arrayContaining(['HTTP/API response.']),
+        }),
+      );
+      const serviceIntelligence = await readJson<{
+        total_services: number;
+        services_with_related_flows: number;
+        flow_links: Array<{ flow_id: string; service_ids: string[] }>;
+        services: Array<{
+          id: string;
+          runtime: string;
+          framework: string;
+          related_flows: string[];
+          evidence_ids: string[];
+        }>;
+      }>(join(result.value.researchDir, 'service_intelligence.json'));
+      expect(serviceIntelligence.total_services).toBe(1);
+      expect(serviceIntelligence.services_with_related_flows).toBe(1);
+      expect(serviceIntelligence.flow_links).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:http--post--orders--src--server.ts',
+          service_ids: expect.arrayContaining(['service:src--orders']),
+        }),
+      );
+      expect(serviceIntelligence.services).toContainEqual(
+        expect.objectContaining({
+          id: 'service:src--orders',
+          runtime: 'node',
+          framework: 'express-fastify-http',
+          related_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
+          evidence_ids: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
         }),
       );
 
@@ -2799,15 +2877,204 @@ describe('project brain generation', () => {
         framework: 'express-fastify-http',
         route_path: '/orders',
         route_type: 'POST',
+        services: expect.arrayContaining(['service:src--orders']),
         entrypoints: expect.arrayContaining([
           expect.objectContaining({ path: 'src/server.ts', symbol: 'POST /orders' }),
         ]),
         outputs: expect.arrayContaining(['HTTP/API response.']),
       });
-      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
-      expect(explainReport).toContain('POST /orders');
-      expect(explainReport).toContain('HTTP POST /orders route enters src/server.ts');
-      expect(explainReport).not.toContain(dir);
+      const flowExplainReport = await readFile(
+        join(dir, '.rizz', 'reports', 'explain.html'),
+        'utf8',
+      );
+      expect(flowExplainReport).toContain('POST /orders');
+      expect(flowExplainReport).toContain('HTTP POST /orders route enters src/server.ts');
+      expect(flowExplainReport).toContain('service:src--orders');
+      expect(flowExplainReport).not.toContain(dir);
+
+      const serviceExplained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'service src/orders',
+        now: new Date('2026-06-28T12:32:00.000Z'),
+      });
+      expect(serviceExplained.ok).toBe(true);
+      if (!serviceExplained.ok) return;
+      expect(serviceExplained.value.explanation.resolved_entity_id).toBe('service:src--orders');
+      expect(serviceExplained.value.explanation.entity_type).toBe('service');
+      expect(serviceExplained.value.explanation.service).toMatchObject({
+        runtime: 'node',
+        framework: 'express-fastify-http',
+        related_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
+      });
+      const serviceExplainReport = await readFile(
+        join(dir, '.rizz', 'reports', 'explain.html'),
+        'utf8',
+      );
+      expect(serviceExplainReport).toContain('Service Runtime');
+      expect(serviceExplainReport).toContain('Related Flows');
+      expect(serviceExplainReport).toContain('flow:http--post--orders--src--server.ts');
+      expect(serviceExplainReport).not.toContain(dir);
+
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(missionControl).toContain('Service Intelligence');
+      expect(missionControl).toContain('rizz explain service src/orders');
+      expect(missionControl).toContain('.rizz/research/service_intelligence.json');
+    });
+  });
+
+  it('links FastAPI route flows to Python service intelligence', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'app', 'routers'), { recursive: true });
+      await mkdir(join(dir, 'app', 'services'), { recursive: true });
+      await writeFile(
+        join(dir, 'pyproject.toml'),
+        [
+          '[project]',
+          'name = "kb-api"',
+          'version = "0.1.0"',
+          'dependencies = ["fastapi", "requests"]',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'routers', 'kb.py'),
+        [
+          'from fastapi import APIRouter',
+          'from app.services.kb_service import ingest_video',
+          '',
+          'router = APIRouter()',
+          '',
+          '@router.post("/kb/youtube")',
+          'def ingest_youtube(payload: dict):',
+          '    return ingest_video(payload["url"])',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'services', 'kb_service.py'),
+        [
+          'import os',
+          'import sqlite3',
+          'import requests',
+          '',
+          'DATABASE_PATH = os.getenv("DATABASE_PATH", "/tmp/kb.db")',
+          '',
+          'def ingest_video(url: str) -> dict:',
+          '    if not url:',
+          '        raise ValueError("missing url")',
+          '    sqlite3.connect(DATABASE_PATH)',
+          '    requests.get(url)',
+          '    return {"source": "youtube", "url": url}',
+          '',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:40:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            framework?: string;
+            route_path?: string;
+            route_type?: string;
+            files?: string[];
+            services?: string[];
+            steps?: Array<{ type: string; path: string; symbol: string | null }>;
+            field_evidence?: Record<string, string[]>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const kbFlow = flows.entities.find(
+        (flow) => flow.id === 'flow:http--post--kb--youtube--app--routers--kb.py',
+      );
+      expect(kbFlow?.data).toMatchObject({
+        framework: 'fastapi',
+        route_path: '/kb/youtube',
+        route_type: 'POST',
+        files: expect.arrayContaining(['app/routers/kb.py', 'app/services/kb_service.py']),
+        services: expect.arrayContaining(['service:app--services']),
+        steps: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'route',
+            path: 'app/routers/kb.py',
+            symbol: 'POST /kb/youtube',
+          }),
+          expect.objectContaining({
+            type: 'service',
+            path: 'app/services/kb_service.py',
+          }),
+        ]),
+        field_evidence: expect.objectContaining({
+          services: expect.arrayContaining(['evidence:file-app--services--kb_service.py']),
+        }),
+      });
+
+      const services = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            runtime?: string;
+            storage_dependencies?: string[];
+            environment_variables?: string[];
+            external_services?: string[];
+            related_flows?: string[];
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'services.json'));
+      expect(services.entities).toContainEqual(
+        expect.objectContaining({
+          id: 'service:app--services',
+          data: expect.objectContaining({
+            runtime: 'python',
+            storage_dependencies: expect.arrayContaining([
+              'sqlite/database',
+              'temporary filesystem',
+            ]),
+            environment_variables: expect.arrayContaining(['DATABASE_PATH']),
+            external_services: expect.arrayContaining(['http-client', 'youtube']),
+            related_flows: expect.arrayContaining([
+              'flow:http--post--kb--youtube--app--routers--kb.py',
+            ]),
+          }),
+        }),
+      );
+
+      const serviceIntelligence = await readJson<{
+        services_with_storage: number;
+        services_with_external_apis: number;
+        flow_links: Array<{ flow_id: string; service_ids: string[] }>;
+      }>(join(result.value.researchDir, 'service_intelligence.json'));
+      expect(serviceIntelligence.services_with_storage).toBe(1);
+      expect(serviceIntelligence.services_with_external_apis).toBe(1);
+      expect(serviceIntelligence.flow_links).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:http--post--kb--youtube--app--routers--kb.py',
+          service_ids: expect.arrayContaining(['service:app--services']),
+        }),
+      );
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'service app/services',
+        now: new Date('2026-06-28T12:41:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation.service).toMatchObject({
+        runtime: 'python',
+        storage_dependencies: expect.arrayContaining(['sqlite/database']),
+        external_services: expect.arrayContaining(['http-client', 'youtube']),
+        related_flows: expect.arrayContaining([
+          'flow:http--post--kb--youtube--app--routers--kb.py',
+        ]),
+      });
     });
   });
 
@@ -5881,6 +6148,123 @@ describe('project brain generation', () => {
       expect(report).toContain('flow:packages--cli--check');
       expect(report).toContain('packages/cli/package.json');
       expect(report).toContain('Missing tests');
+    });
+  });
+
+  it('reviews service changes with affected service blast radius evidence', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'orders'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'service-review-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { express: '^5.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import { createOrder } from "./orders/service.js";',
+          '',
+          'const app = express();',
+          'app.post("/orders", (_req, res) => res.json(createOrder({})));',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'orders', 'service.ts'),
+        [
+          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          '  if (input === undefined) throw new Error("missing input");',
+          '  return { id: "order-1", input };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'orders', 'service.test.ts'),
+        'import { it } from "vitest"; it("covers orders service", () => {});\n',
+      );
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:00:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'src', 'orders', 'service.ts'),
+        [
+          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          '  if (input === undefined) throw new Error("missing input");',
+          '  return { id: "order-2", input };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:01:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.changed_files).toEqual(['src/orders/service.ts']);
+      expect(result.value.review.affected_services).toContainEqual(
+        expect.objectContaining({
+          id: 'service:src--orders',
+          changed_files: ['src/orders/service.ts'],
+          affected_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
+          tests: expect.arrayContaining(['src/orders/service.test.ts']),
+          evidence_ids: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
+        }),
+      );
+      expect(result.value.review.affected_flows).toContainEqual(
+        expect.objectContaining({
+          id: 'flow:http--post--orders--src--server.ts',
+          changed_files: ['src/orders/service.ts'],
+          services: expect.arrayContaining(['service:src--orders']),
+          tests: expect.arrayContaining(['src/orders/service.test.ts']),
+        }),
+      );
+      expect(result.value.review.review_evidence_summary).toMatchObject({
+        affected_services: 1,
+        affected_flows: 1,
+        affected_tests: expect.arrayContaining(['src/orders/service.test.ts']),
+      });
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('affected service(s) link the change'),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Service intelligence overlaps the diff',
+          affected_entities: expect.arrayContaining(['service:src--orders']),
+        }),
+      );
+      expect(result.value.reviewEval).toMatchObject({
+        affected_service_count: 1,
+        affected_flow_count: 1,
+      });
+
+      const latest = await readJson<{
+        latest_review_status: { affected_services?: string[]; affected_flows?: string[] };
+        project_state?: { last_reviewed_services?: string[] };
+      }>(join(dir, '.rizz', 'brain', 'latest.json'));
+      expect(latest.latest_review_status.affected_services).toEqual(['service:src--orders']);
+      expect(latest.latest_review_status.affected_flows).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
+      expect(latest.project_state?.last_reviewed_services).toEqual(['service:src--orders']);
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Affected Services');
+      expect(report).toContain('service:src--orders');
+      expect(report).toContain('flow:http--post--orders--src--server.ts');
     });
   });
 
