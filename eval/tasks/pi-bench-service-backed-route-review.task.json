@@ -97,7 +97,28 @@
           "route_path": "/kb/youtube",
           "route_type": "POST",
           "entrypoints_include": ["app/routers/kb.py#POST /kb/youtube"],
-          "changed_files_include": ["app/services/kb_service.py"]
+          "changed_files_include": ["app/services/kb_service.py"],
+          "service_causality_include": [
+            {
+              "service_id": "service:app--services",
+              "service_name": "app/services",
+              "files_include": ["app/services/kb_service.py"],
+              "step_ids_include": ["flow-http--post--kb--youtube--app--routers--kb.py"],
+              "cause_includes": "FastAPI POST /kb/youtube reaches service:app--services",
+              "effects_include": [
+                "storage:sqlite/database",
+                "storage:temporary filesystem",
+                "env:DATABASE_PATH",
+                "external:http-client",
+                "external:youtube"
+              ],
+              "evidence_ids_include": ["evidence:file-app--services--kb_service.py"],
+              "confidence": "inferred",
+              "unknowns_include": [
+                "No background job or script evidence was linked directly to this service."
+              ]
+            }
+          ]
         }
       ],
       "findings_include": [
@@ -117,6 +138,7 @@
     ".rizz/brain/entities/services.json",
     ".rizz/research/flow_understanding.json",
     ".rizz/research/service_intelligence.json",
+    ".rizz/research/evidence_quality.json",
     ".rizz/research/architecture_reasoning.json",
     ".rizz/research/benchmark_ready.json",
     ".rizz/brain/entities/reviews.json",
@@ -136,7 +158,15 @@
         "POST",
         "app/routers/kb.py",
         "app/services/kb_service.py",
-        "service:app--services"
+        "service:app--services",
+        "\"service_causality\"",
+        "FastAPI POST /kb/youtube reaches service:app--services",
+        "storage:sqlite/database",
+        "env:DATABASE_PATH",
+        "external:http-client",
+        "external:youtube",
+        "flow-http--post--kb--youtube--app--routers--kb.py",
+        "evidence:file-app--services--kb_service.py"
       ],
       "forbidden_substrings": [
         "sk-test-service-review-secret",
@@ -208,8 +238,54 @@
         "fastapi",
         "/kb/youtube",
         "service:app--services",
+        "\"service_causality\"",
+        "FastAPI POST /kb/youtube reaches service:app--services",
+        "storage:sqlite/database",
+        "env:DATABASE_PATH",
+        "external:http-client",
+        "external:youtube",
+        "flow-http--post--kb--youtube--app--routers--kb.py",
+        "evidence:file-app--services--kb_service.py",
         "HTTP request route input.",
         "Returns an HTTP/API response from the route flow."
+      ]
+    },
+    {
+      "path": ".rizz/research/evidence_quality.json",
+      "type": "json",
+      "required_fields": [
+        "service_causality_claim_count",
+        "service_causality_evidence_backed_claims",
+        "service_causality_uncertain_claims",
+        "service_causality_missing_evidence_claims",
+        "service_causality_missing_effect_claims",
+        "service_causality_missing_step_link_claims",
+        "service_causality_coverage_score",
+        "service_causality_quality.total_claims",
+        "service_causality_quality.evidence_backed_claims",
+        "service_causality_quality.weak_evidence_claims",
+        "service_causality_quality.confidence_mix.inferred",
+        "service_causality_quality.confidence_mix.uncertain",
+        "service_causality_quality.claim_examples",
+        "evidence_calibration.surface_confidence_mix",
+        "actionability.low_confidence_claim_areas"
+      ],
+      "required_substrings": [
+        "\"service_causality_claim_count\": 1",
+        "\"service_causality_evidence_backed_claims\": 1",
+        "\"service_causality_uncertain_claims\": 0",
+        "\"service_causality_missing_evidence_claims\": 0",
+        "\"service_causality_missing_effect_claims\": 0",
+        "\"service_causality_missing_step_link_claims\": 0",
+        "\"service_causality_coverage_score\": 100",
+        "\"surface\": \"service_causality\"",
+        "flow:http--post--kb--youtube--app--routers--kb.py",
+        "service:app--services"
+      ],
+      "forbidden_substrings": [
+        "sk-test-service-review-secret",
+        "provider-token.env",
+        "OPENAI_API_KEY"
       ]
     },
     {
@@ -219,6 +295,10 @@
       "required_substrings": [
         "impact:flow:http--post--kb--youtube--app--routers--kb.py",
         "Changing route /kb/youtube can alter POST request handling",
+        "\"service_causality\"",
+        "storage:sqlite/database",
+        "env:DATABASE_PATH",
+        "external:http-client",
         "app/services/kb_service.py",
         "Dockerfile"
       ]
@@ -235,6 +315,8 @@
         "affected_flow_count",
         "affected_relationship_count",
         "architecture_impact_route_surface_count",
+        "service_causality_path_count",
+        "service_causality_effect_count",
         "required_test_count",
         "secret_safety.output_secret_safe"
       ],
@@ -243,6 +325,8 @@
         "\"provider_calls_required\": false",
         "\"network_required\": false",
         "\"affected_service_count\": 1",
+        "\"service_causality_path_count\": 1",
+        "\"service_causality_effect_count\": 5",
         "\"output_secret_safe\": true"
       ],
       "forbidden_substrings": [
@@ -270,6 +354,40 @@
     }
   ],
   "understanding_tasks": [
+    {
+      "id": "explain-service-causality-path",
+      "prompt": "Explain the service causality path for the FastAPI /kb/youtube route, including effects, evidence, and reconstructed step links.",
+      "source": {
+        "type": "explain_json",
+        "target": "flow:http--post--kb--youtube--app--routers--kb.py"
+      },
+      "assertions": {
+        "required_fields": [
+          "resolved_entity_id",
+          "entity_type",
+          "flow.service_causality",
+          "flow.steps"
+        ],
+        "required_substrings": [
+          "flow:http--post--kb--youtube--app--routers--kb.py",
+          "service:app--services",
+          "FastAPI POST /kb/youtube reaches service:app--services",
+          "storage:sqlite/database",
+          "storage:temporary filesystem",
+          "env:DATABASE_PATH",
+          "external:http-client",
+          "external:youtube",
+          "flow-http--post--kb--youtube--app--routers--kb.py",
+          "evidence:file-app--services--kb_service.py"
+        ],
+        "forbidden_substrings": [
+          "sk-test-service-review-secret",
+          "provider-token.env",
+          "OPENAI_API_KEY",
+          "ACTUAL_FLOW_ID_HERE"
+        ]
+      }
+    },
     {
       "id": "explain-service-backed-route",
       "prompt": "Explain which service backs the FastAPI /kb/youtube route and what evidence limits production confidence.",
