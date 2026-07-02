@@ -827,6 +827,8 @@ interface ReviewEvalArtifactData {
   readonly direct_affected_component_count: number;
   readonly dependent_component_count: number;
   readonly affected_flow_count: number;
+  readonly service_causality_path_count: number;
+  readonly service_causality_effect_count: number;
   readonly affected_relationship_count: number;
   readonly architecture_impact_surface_count: number;
   readonly architecture_impact_component_surface_count: number;
@@ -886,6 +888,7 @@ interface AffectedFlowData {
   readonly changed_files: readonly string[];
   readonly components: readonly string[];
   readonly services: readonly string[];
+  readonly service_causality: readonly FlowServiceCausality[];
   readonly tests: readonly string[];
   readonly configs: readonly string[];
   readonly risks: number;
@@ -943,6 +946,8 @@ interface ReviewEvidenceSummaryData {
   readonly affected_services: number;
   readonly dependent_components: number;
   readonly affected_flows: number;
+  readonly service_causality_paths: number;
+  readonly service_causality_effects: readonly string[];
   readonly architecture_impact_surfaces: number;
   readonly architecture_confidence_gaps: readonly string[];
   readonly architecture_evidence_gap_ids: readonly string[];
@@ -15433,6 +15438,8 @@ export async function reviewProjectChanges(
         dependent_components: review.dependent_components.map((component) => component.id),
         affected_services: review.affected_services.map((service) => service.id),
         affected_flows: review.affected_flows.map((flow) => flow.id),
+        service_causality_paths: review.review_evidence_summary.service_causality_paths,
+        service_causality_effects: review.review_evidence_summary.service_causality_effects,
         architecture_impact_surfaces: review.architecture_impact_map.map(
           (entry) => entry.impact_id,
         ),
@@ -17753,10 +17760,15 @@ function buildReview(params: {
   const architectureWhatBreaks = unique(
     architectureImpactMap.flatMap((entry) => entry.what_breaks),
   ).map(safeText);
+  const serviceCausalityPaths = affectedFlows.flatMap((flow) => flow.service_causality);
+  const serviceCausalityEffects = unique(serviceCausalityPaths.flatMap((item) => item.effects)).map(
+    safeText,
+  );
   const reviewEvidenceIds = unique([
     ...allAffectedComponents.flatMap((component) => component.evidence_ids),
     ...affectedServices.flatMap((service) => service.evidence_ids),
     ...affectedFlows.flatMap((flow) => flow.evidence_ids),
+    ...serviceCausalityPaths.flatMap((item) => item.evidence_ids),
     ...affectedRelationships.flatMap((relationship) => relationship.evidence_ids),
     ...architectureImpactMap.flatMap((entry) => entry.evidence_ids),
     ...changedFiles.map(evidenceId),
@@ -17990,6 +18002,31 @@ function buildReview(params: {
     });
   }
 
+  if (serviceCausalityPaths.length > 0) {
+    addFinding({
+      slug: 'service-causality',
+      severity: serviceCausalityEffects.length > 0 ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'Service causality explains affected flow blast radius',
+      description: safeText(
+        `${serviceCausalityPaths.length} flow-to-service causality path(s) are affected. Effects: ${
+          serviceCausalityEffects.slice(0, 6).join(', ') || 'none recorded'
+        }.`,
+      ),
+      affected_files: unique(affectedFlows.flatMap((flow) => flow.changed_files)),
+      affected_entities: unique([
+        ...affectedFlowIds,
+        ...serviceCausalityPaths.map((item) => item.service_id),
+      ]),
+      evidenceIds: unique(serviceCausalityPaths.flatMap((item) => item.evidence_ids)),
+      confidence: serviceCausalityPaths.every((item) => item.confidence === 'verified')
+        ? 'verified'
+        : 'inferred',
+      recommendation:
+        'Review the affected flow path, service behavior, and recorded side effects before treating this change as local.',
+    });
+  }
+
   if (architectureImpactMap.length > 0) {
     addFinding({
       slug: 'architecture-impact-map',
@@ -18095,6 +18132,8 @@ function buildReview(params: {
       affected_services: affectedServices.length,
       dependent_components: dependentComponents.length,
       affected_flows: affectedFlows.length,
+      service_causality_paths: serviceCausalityPaths.length,
+      service_causality_effects: serviceCausalityEffects,
       architecture_impact_surfaces: architectureImpactMap.length,
       architecture_confidence_gaps: architectureConfidenceGaps.map(safeText),
       architecture_evidence_gap_ids: architectureEvidenceGapIds,
@@ -18184,6 +18223,8 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
   const safeReview = safeResearchValue(review);
   const redactedCount = redactedReferenceCount(safeReview);
   const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeReview);
+  const serviceCausality = review.affected_flows.flatMap((flow) => flow.service_causality);
+  const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   return {
     schema_version: 1,
     generated_at: review.generated_at,
@@ -18199,6 +18240,8 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     direct_affected_component_count: review.direct_affected_components.length,
     dependent_component_count: review.dependent_components.length,
     affected_flow_count: review.affected_flows.length,
+    service_causality_path_count: serviceCausality.length,
+    service_causality_effect_count: serviceCausalityEffects.length,
     affected_relationship_count: review.affected_relationships.length,
     architecture_impact_surface_count: review.architecture_impact_map.length,
     architecture_impact_component_surface_count: review.architecture_impact_map.filter(
@@ -18552,6 +18595,7 @@ function affectedFlowEntities(
         changed_files: matchedChangedFiles.map(safeText),
         components: flowComponents.map(safeText),
         services: flowServices.map(safeText),
+        service_causality: safeFlowServiceCausality(flow),
         tests: flowStringArray(flow, 'tests').map(safeText),
         configs: flowStringArray(flow, 'configs').map(safeText),
         risks: flowRisks(flow).length,
@@ -18588,6 +18632,7 @@ function affectedFlowReasons(params: {
     changed_files: [],
     components: flowStringArray(params.flow, 'components'),
     services: flowStringArray(params.flow, 'services'),
+    service_causality: safeFlowServiceCausality(params.flow),
     tests: flowStringArray(params.flow, 'tests'),
     configs: flowStringArray(params.flow, 'configs'),
     risks: flowRisks(params.flow).length,
@@ -18740,6 +18785,8 @@ function blastRadiusReasonLines(params: {
   const directNames = params.directComponents.map((component) => component.name);
   const dependentNames = params.dependentComponents.map((component) => component.name);
   const routeFlowReasons = affectedRouteFlowReasons(params.affectedFlows);
+  const serviceCausality = params.affectedFlows.flatMap((flow) => flow.service_causality);
+  const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   const impactMapReasons = architectureImpactReasonLines(params.architectureImpactMap);
   return [
     `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
@@ -18747,6 +18794,9 @@ function blastRadiusReasonLines(params: {
       ? 'No dependent consumer components were found from import/call/dependency graph edges.'
       : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
     `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
+    serviceCausality.length === 0
+      ? 'No service causality path was recorded for the affected flows.'
+      : `${serviceCausality.length} service causality path(s) explain flow-to-service blast radius; effects: ${serviceCausalityEffects.slice(0, 6).join(', ') || 'none recorded'}.`,
     `${params.affectedServices.length} affected service(s) link the change to routes, jobs, storage, external API, env, or deployment evidence.`,
     ...routeFlowReasons,
     ...impactMapReasons,
@@ -18892,11 +18942,17 @@ function reviewFlowFocusLabel(flow: AffectedFlowData): string {
 }
 
 function reviewFlowCausalityFocusLabels(flow: AffectedFlowData): string[] {
-  if (flow.route_path === undefined) return [];
-  return flow.reasons
-    .map((reason) => routeEvidenceCategoryFromReason(reason))
-    .filter((category): category is FlowEvidenceCategory => category !== undefined)
-    .map((category) => `route flow: ${flow.route_path} ${category} evidence`);
+  const routeLabels =
+    flow.route_path === undefined
+      ? []
+      : flow.reasons
+          .map((reason) => routeEvidenceCategoryFromReason(reason))
+          .filter((category): category is FlowEvidenceCategory => category !== undefined)
+          .map((category) => `route flow: ${flow.route_path} ${category} evidence`);
+  const serviceLabels = flow.service_causality.map(
+    (item) => `flow service causality: ${item.service_id}`,
+  );
+  return [...routeLabels, ...serviceLabels];
 }
 
 function routeEvidenceCategoryFromReason(reason: string): FlowEvidenceCategory | undefined {
@@ -18953,7 +19009,7 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Service Causality</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
         <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
@@ -18961,6 +19017,7 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
         <td>${renderList(flow.changed_files)}</td>
         <td>${renderList(flow.components)}</td>
         <td>${renderList(flow.services)}</td>
+        <td>${renderList(flow.service_causality.map(formatFlowServiceCausality))}</td>
         <td>${renderList(flow.tests)}</td>
         <td>${renderList(flow.configs)}</td>
         <td>${htmlEscape(flow.confidence)} · ${flow.score}</td>

@@ -6447,9 +6447,10 @@ describe('project brain generation', () => {
       await writeFile(
         join(dir, 'src', 'orders', 'service.ts'),
         [
-          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          'export function createOrder(input: unknown): { id: string; input: unknown; region: string } {',
           '  if (input === undefined) throw new Error("missing input");',
-          '  return { id: "order-1", input };',
+          '  const region = process.env.ORDER_REGION ?? "us";',
+          '  return { id: "order-1", input, region };',
           '}',
           '',
         ].join('\n'),
@@ -6468,9 +6469,10 @@ describe('project brain generation', () => {
       await writeFile(
         join(dir, 'src', 'orders', 'service.ts'),
         [
-          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          'export function createOrder(input: unknown): { id: string; input: unknown; region: string } {',
           '  if (input === undefined) throw new Error("missing input");',
-          '  return { id: "order-2", input };',
+          '  const region = process.env.ORDER_REGION ?? "eu";',
+          '  return { id: "order-2", input, region };',
           '}',
           '',
         ].join('\n'),
@@ -6498,14 +6500,35 @@ describe('project brain generation', () => {
           id: 'flow:http--post--orders--src--server.ts',
           changed_files: ['src/orders/service.ts'],
           services: expect.arrayContaining(['service:src--orders']),
+          service_causality: expect.arrayContaining([
+            expect.objectContaining({
+              service_id: 'service:src--orders',
+              effects: expect.arrayContaining(['env:ORDER_REGION']),
+              evidence_ids: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
+            }),
+          ]),
           tests: expect.arrayContaining(['src/orders/service.test.ts']),
         }),
       );
       expect(result.value.review.review_evidence_summary).toMatchObject({
         affected_services: 1,
         affected_flows: 1,
+        service_causality_paths: 1,
+        service_causality_effects: expect.arrayContaining(['env:ORDER_REGION']),
         affected_tests: expect.arrayContaining(['src/orders/service.test.ts']),
       });
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('service causality path(s) explain flow-to-service blast radius'),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Service causality explains affected flow blast radius',
+          affected_entities: expect.arrayContaining([
+            'flow:http--post--orders--src--server.ts',
+            'service:src--orders',
+          ]),
+        }),
+      );
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('affected service(s) link the change'),
       );
@@ -6518,21 +6541,32 @@ describe('project brain generation', () => {
       expect(result.value.reviewEval).toMatchObject({
         affected_service_count: 1,
         affected_flow_count: 1,
+        service_causality_path_count: 1,
+        service_causality_effect_count: 1,
       });
 
       const latest = await readJson<{
-        latest_review_status: { affected_services?: string[]; affected_flows?: string[] };
+        latest_review_status: {
+          affected_services?: string[];
+          affected_flows?: string[];
+          service_causality_paths?: number;
+          service_causality_effects?: string[];
+        };
         project_state?: { last_reviewed_services?: string[] };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
       expect(latest.latest_review_status.affected_services).toEqual(['service:src--orders']);
       expect(latest.latest_review_status.affected_flows).toContain(
         'flow:http--post--orders--src--server.ts',
       );
+      expect(latest.latest_review_status.service_causality_paths).toBe(1);
+      expect(latest.latest_review_status.service_causality_effects).toContain('env:ORDER_REGION');
       expect(latest.project_state?.last_reviewed_services).toEqual(['service:src--orders']);
 
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('Affected Services');
+      expect(report).toContain('Service Causality');
       expect(report).toContain('service:src--orders');
+      expect(report).toContain('env:ORDER_REGION');
       expect(report).toContain('flow:http--post--orders--src--server.ts');
     });
   });
