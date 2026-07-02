@@ -3021,6 +3021,126 @@ describe('project brain generation', () => {
     });
   });
 
+  it('reconstructs deployment flows with deployment config risks and Mission Control summary', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'packages', 'web', 'src'), { recursive: true });
+      await mkdir(join(dir, '.github', 'workflows'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'web', 'package.json'),
+        JSON.stringify({
+          name: '@sample/web',
+          scripts: {
+            build: 'vite build',
+            deploy: 'pnpm build && vercel deploy --prod',
+          },
+          devDependencies: { vite: '^5.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'web', 'src', 'index.ts'),
+        'export const app = true;\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'web', 'vercel.json'),
+        JSON.stringify({
+          version: 2,
+          env: {
+            DATABASE_PATH: '/tmp/app.db',
+            AUTH_ENABLED: 'false',
+            CORS_ORIGINS: '*',
+          },
+        }),
+      );
+      await writeFile(
+        join(dir, '.github', 'workflows', 'deploy.yml'),
+        'name: deploy\non: workflow_dispatch\njobs:\n  deploy:\n    steps:\n      - run: pnpm --filter @sample/web deploy\n',
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:40:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            configs?: string[];
+            signals?: string[];
+            risks?: Array<{ kind: string; description: string }>;
+            required_tests?: string[];
+            failure_modes?: string[];
+            confidence_reasons?: string[];
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const deployFlow = flows.entities.find((flow) => flow.id === 'flow:packages--web--deploy');
+      expect(deployFlow?.data).toMatchObject({
+        configs: expect.arrayContaining([
+          'packages/web/package.json',
+          'packages/web/vercel.json',
+          '.github/workflows/deploy.yml',
+        ]),
+        signals: expect.arrayContaining(['deployment', 'configuration']),
+        required_tests: expect.arrayContaining(['production smoke check']),
+        confidence_reasons: expect.arrayContaining(['Deployment config evidence is recorded.']),
+      });
+      expect(deployFlow?.data?.failure_modes).toContain(
+        'Deployment can succeed locally while production storage, auth, CORS, or runtime env remain unverified.',
+      );
+      expect(deployFlow?.data?.risks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'deployment_storage' }),
+          expect.objectContaining({ kind: 'deployment_auth' }),
+          expect.objectContaining({ kind: 'deployment_cors' }),
+        ]),
+      );
+
+      const architectureReasoning = await readJson<{
+        deployment_intelligence: {
+          summary: {
+            deployment_flow_count: number;
+            deployment_config_count: number;
+            production_risk_count: number;
+            posture: string;
+          };
+          flows: Array<{
+            flow_id: string;
+            configs: string[];
+            production_risk_count: number;
+            required_tests: string[];
+          }>;
+        };
+        review_hints: Array<{ reason: string; affected_flows?: string[] }>;
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.deployment_intelligence.summary).toMatchObject({
+        deployment_flow_count: 1,
+        production_risk_count: 3,
+        posture: 'risky until verified',
+      });
+      expect(architectureReasoning.deployment_intelligence.flows).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:packages--web--deploy',
+          production_risk_count: 3,
+          required_tests: expect.arrayContaining(['production smoke check']),
+        }),
+      );
+      expect(architectureReasoning.review_hints).toContainEqual(
+        expect.objectContaining({
+          reason: expect.stringContaining('Deployment flows should be reviewed'),
+          affected_flows: expect.arrayContaining(['flow:packages--web--deploy']),
+        }),
+      );
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).toContain('Deployment Intelligence');
+      expect(report).toContain('risky until verified');
+    });
+  });
+
   it('understands Next.js app router route, render, and metadata flows', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'src', 'app', 'docs', '[slug]'), { recursive: true });
@@ -5395,16 +5515,21 @@ describe('project brain generation', () => {
     });
   });
 
-  it('skips default local agent, build, binary, and tsbuildinfo noise', async () => {
+  it('skips default local agent, deployment-state, editor, build, binary, and tsbuildinfo noise', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'src'), { recursive: true });
       await mkdir(join(dir, '.agents', 'handoffs'), { recursive: true });
       await mkdir(join(dir, '.codex'), { recursive: true });
+      await mkdir(join(dir, '.vercel'), { recursive: true });
+      await mkdir(join(dir, '.vscode'), { recursive: true });
       await mkdir(join(dir, 'dist-pack'), { recursive: true });
       await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'sample-app' }));
+      await writeFile(join(dir, 'vercel.json'), JSON.stringify({ version: 2 }));
       await writeFile(join(dir, 'src', 'index.ts'), 'export const ok = true;');
       await writeFile(join(dir, '.agents', 'handoffs', 'handoff.md'), 'local agent memory');
       await writeFile(join(dir, '.codex', 'config.toml'), 'model = "test"');
+      await writeFile(join(dir, '.vercel', 'project.json'), '{"projectId":"local-only"}');
+      await writeFile(join(dir, '.vscode', 'settings.json'), '{"editor.formatOnSave":true}');
       await writeFile(join(dir, 'dist-pack', 'sample.tgz'), 'packed package');
       await writeFile(join(dir, 'tsconfig.tsbuildinfo'), '{}');
 
@@ -5415,12 +5540,15 @@ describe('project brain generation', () => {
 
       expect(result).toMatchObject({
         ok: true,
-        value: { scannedFiles: 2, changedFiles: 2 },
+        value: { scannedFiles: 3, changedFiles: 3 },
       });
       const generated = await readTreeText(join(dir, '.rizz'));
       expect(generated).toContain('src/index.ts');
+      expect(generated).toContain('vercel.json');
       expect(generated).not.toContain('local agent memory');
       expect(generated).not.toContain('.codex/config.toml');
+      expect(generated).not.toContain('.vercel/project.json');
+      expect(generated).not.toContain('.vscode/settings.json');
       expect(generated).not.toContain('sample.tgz');
       expect(generated).not.toContain('tsconfig.tsbuildinfo');
     });

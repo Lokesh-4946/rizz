@@ -372,7 +372,10 @@ type FlowRiskKind =
   | 'missing_config'
   | 'weak_evidence'
   | 'orphan_step'
-  | 'changed_hotspot';
+  | 'changed_hotspot'
+  | 'deployment_storage'
+  | 'deployment_auth'
+  | 'deployment_cors';
 
 interface FlowEntrypoint {
   readonly type: FlowEntrypointType;
@@ -1208,9 +1211,14 @@ const IGNORED_DIRS = new Set([
   '.claude',
   '.codex',
   '.git',
+  '.idea',
+  '.pytest_cache',
   '.rizz',
   '.next',
   '.turbo',
+  '.vercel',
+  '.vscode',
+  '__pycache__',
   'build',
   'coverage',
   'dist',
@@ -1251,16 +1259,27 @@ const CONFIG_FILES = new Set([
   '.env.example',
   'Dockerfile',
   'Makefile',
+  'Procfile',
   'docker-compose.yml',
+  'docker-compose.yaml',
+  'fly.toml',
+  'netlify.toml',
   'package.json',
   'pnpm-lock.yaml',
   'pyproject.toml',
+  'railway.json',
+  'render.yaml',
+  'render.yml',
   'requirements.txt',
+  'serverless.yml',
+  'serverless.yaml',
+  'vercel.json',
   'next.config.js',
   'next.config.mjs',
   'next.config.ts',
   'tsconfig.json',
   'vite.config.ts',
+  'wrangler.toml',
 ]);
 
 function shouldSkipFile(name: string): boolean {
@@ -2806,6 +2825,96 @@ function filesReferencedByCommand(
   );
 }
 
+function isDeployLikeScript(scriptName: string, command: string): boolean {
+  return /(^|[^a-z])(deploy|release|publish|vercel|netlify|flyctl|railway|render|wrangler|serverless|docker\s+push|kubectl|helm)([^a-z]|$)/i.test(
+    `${scriptName} ${command}`,
+  );
+}
+
+function isDeploymentConfigPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const name = basename(lower);
+  return (
+    lower.startsWith('.github/workflows/') ||
+    name === 'vercel.json' ||
+    name === 'netlify.toml' ||
+    name === 'fly.toml' ||
+    name === 'railway.json' ||
+    name === 'render.yaml' ||
+    name === 'render.yml' ||
+    name === 'wrangler.toml' ||
+    name === 'serverless.yml' ||
+    name === 'serverless.yaml' ||
+    name === 'procfile' ||
+    name === 'dockerfile' ||
+    name === 'docker-compose.yml' ||
+    name === 'docker-compose.yaml'
+  );
+}
+
+function deploymentConfigFilesForPackage(
+  files: readonly FileFact[],
+  pkg: PackageJsonFact,
+): FileFact[] {
+  const componentPath = packageComponentPath(pkg);
+  const deploymentConfigs = files.filter((file) => isDeploymentConfigPath(file.relativePath));
+  if (componentPath === undefined) {
+    return uniqueFileFacts(
+      deploymentConfigs.filter(
+        (file) => !file.relativePath.includes('/') || file.relativePath.startsWith('.github/'),
+      ),
+    );
+  }
+  return uniqueFileFacts(
+    deploymentConfigs.filter(
+      (file) =>
+        file.relativePath.startsWith(`${componentPath}/`) ||
+        !file.relativePath.includes('/') ||
+        file.relativePath.startsWith('.github/'),
+    ),
+  );
+}
+
+function deploymentRisksForConfigs(params: {
+  readonly rootDir: string;
+  readonly flowId: string;
+  readonly configs: readonly string[];
+}): FlowRisk[] {
+  const risks: FlowRisk[] = [];
+  for (const config of params.configs.filter(isDeploymentConfigPath)) {
+    const text = readTextIfAvailable(params.rootDir, config) ?? '';
+    const evidence = [evidenceId(config)];
+    if (/\/tmp\b|tmp\/|sqlite|\.db\b|local\s+file|filesystem/i.test(text)) {
+      risks.push({
+        risk_id: `${params.flowId}:deployment-storage:${stableSlug(config)}`,
+        kind: 'deployment_storage',
+        description:
+          'Deployment config or runtime settings suggest filesystem, SQLite, or temporary storage that may be ephemeral in serverless production.',
+        evidence,
+      });
+    }
+    if (/AUTH_ENABLED["']?\s*[:=]\s*["']?false|auth\s*[:=]\s*false/i.test(text)) {
+      risks.push({
+        risk_id: `${params.flowId}:deployment-auth:${stableSlug(config)}`,
+        kind: 'deployment_auth',
+        description:
+          'Deployment config appears to disable authentication; acceptable for demos, risky for production surfaces.',
+        evidence,
+      });
+    }
+    if (/CORS_ORIGINS["']?\s*[:=]\s*["']?\*|Access-Control-Allow-Origin.*\*/i.test(text)) {
+      risks.push({
+        risk_id: `${params.flowId}:deployment-cors:${stableSlug(config)}`,
+        kind: 'deployment_cors',
+        description:
+          'Deployment config appears to allow broad CORS access; production usage should confirm intended origins.',
+        evidence,
+      });
+    }
+  }
+  return risks;
+}
+
 function resolveRelativeImportFiles(
   files: readonly FileFact[],
   fromPath: string,
@@ -3198,6 +3307,7 @@ function inferFlowContracts(params: {
   });
   const hasRouteEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'route');
   const hasCommandEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'command');
+  const isDeploymentFlow = params.signals.includes('deployment');
   const isNextPageRoute = params.routeContract?.route_type === 'page';
   const isNextLayoutRoute = params.routeContract?.route_type === 'layout';
   const isNextMetadataRoute = params.routeContract?.route_type === 'metadata';
@@ -3233,6 +3343,11 @@ function inferFlowContracts(params: {
     ...(params.configs.length > 0
       ? [`Entrypoint depends on config artifact(s): ${params.configs.slice(0, 4).join(', ')}.`]
       : []),
+    ...(isDeploymentFlow
+      ? [
+          'Deployment entrypoint is inferred from a deploy-like package script and deployment config evidence.',
+        ]
+      : []),
   ]);
   const exitContract = unique([
     ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
@@ -3246,6 +3361,9 @@ function inferFlowContracts(params: {
       ? ['Exits by returning metadata asset content or a metadata response.']
       : []),
     ...(hasCommandEntry ? ['Exits through the package script command result.'] : []),
+    ...(isDeploymentFlow
+      ? ['Exits when the deployment provider/build command accepts or rejects the release.']
+      : []),
     ...(outputEvidence.length > 0 ? ['Source evidence includes a return or response output.'] : []),
     ...(params.tests.length > 0
       ? [`Expected behavior is test-backed by ${params.tests.slice(0, 4).join(', ')}.`]
@@ -3253,6 +3371,7 @@ function inferFlowContracts(params: {
   ]);
   const inputs = unique([
     ...commandInput,
+    ...(isDeploymentFlow ? ['Deployment provider environment and build-time configuration.'] : []),
     ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
       ? ['HTTP request route input.']
       : []),
@@ -3284,6 +3403,11 @@ function inferFlowContracts(params: {
       ? ['State/session/cache/database or filesystem side effect inferred from source.']
       : []),
     ...(params.configs.length > 0 ? ['Reads configuration that can alter runtime behavior.'] : []),
+    ...(isDeploymentFlow
+      ? [
+          'May publish a build artifact, serverless function, container, or static output to a deployment provider.',
+        ]
+      : []),
   ]);
   const stateTransitions = unique([
     ...(sideEffectEvidence.length > 0
@@ -3311,12 +3435,18 @@ function inferFlowContracts(params: {
     ...(params.configs.length === 0
       ? ['No directly linked configs were detected for this flow.']
       : []),
+    ...(isDeploymentFlow
+      ? [
+          'Deployment can succeed locally while production storage, auth, CORS, or runtime env remain unverified.',
+        ]
+      : []),
   ]);
   const requiredTests = unique([
     ...params.tests,
     ...(validationEvidence.length > 0 ? ['validation failure coverage'] : []),
     ...(sideEffectEvidence.length > 0 ? ['state/session/cache/database side-effect coverage'] : []),
     ...(outputEvidence.length > 0 ? ['response/output contract coverage'] : []),
+    ...(isDeploymentFlow ? ['production smoke check'] : []),
   ]);
   const confidenceReasons = unique([
     params.confidenceReason,
@@ -3327,6 +3457,7 @@ function inferFlowContracts(params: {
         ]
       : []),
     ...params.signals.map((signal) => `Signal: ${signal}.`),
+    ...(isDeploymentFlow ? ['Deployment config evidence is recorded.'] : []),
     ...(entryEvidence.length > 0 ? ['Entrypoint evidence is recorded.'] : []),
     ...(stepEvidence.length > 0 ? ['Step evidence is recorded.'] : []),
     ...(validationEvidence.length > 0 ? ['Validation evidence is recorded.'] : []),
@@ -3350,6 +3481,9 @@ function inferFlowContracts(params: {
       inputs: unique([...inputEvidence, ...validationEvidence, ...entryEvidence]),
       outputs: unique([...outputEvidence, ...baseEvidence]),
       side_effects: sideEffectEvidence,
+      ...(isDeploymentFlow
+        ? { side_effects: unique([...sideEffectEvidence, ...baseEvidence]) }
+        : {}),
       ...(params.routeContract !== undefined && sideEffectEvidence.length === 0
         ? { side_effects: baseEvidence }
         : {}),
@@ -3359,11 +3493,13 @@ function inferFlowContracts(params: {
         ...failureEvidence,
         ...validationEvidence,
         ...(params.routeContract !== undefined ? baseEvidence : []),
+        ...(isDeploymentFlow ? params.configs.map(evidenceId) : []),
       ]),
       required_tests: unique([
         ...params.tests.map(evidenceId),
         ...validationEvidence,
         ...sideEffectEvidence,
+        ...(isDeploymentFlow ? params.configs.map(evidenceId) : []),
       ]),
       confidence_reasons: unique([
         ...entryEvidence,
@@ -3514,6 +3650,10 @@ function inferScriptFlow(params: {
   const ownerComponentId = ownerPath === undefined ? undefined : entityId('component', ownerPath);
   const ownerFiles = sourceFilesForPackage(params.files, params.packageFact);
   const commandFiles = filesReferencedByCommand(params.files, params.command, ownerPath);
+  const isDeploymentScript = isDeployLikeScript(params.scriptName, params.command);
+  const deploymentConfigs = isDeploymentScript
+    ? deploymentConfigFilesForPackage(params.files, params.packageFact)
+    : [];
   const commandEntryFiles = commandFiles.filter((file) => classifySourceKind(file) === 'source');
   const entryFiles = uniqueFileFacts([
     ...(commandEntryFiles.length > 0 ? commandEntryFiles : []),
@@ -3556,6 +3696,7 @@ function inferScriptFlow(params: {
   const files = unique([
     params.packageFact.relativePath,
     ...commandFiles.map((file) => file.relativePath),
+    ...deploymentConfigs.map((file) => file.relativePath),
     ...entryFiles.map((file) => file.relativePath),
     ...importContext.importedFiles.map((file) => file.relativePath),
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'important_files')),
@@ -3563,6 +3704,7 @@ function inferScriptFlow(params: {
   ]).slice(0, 30);
   const configs = unique([
     params.packageFact.relativePath,
+    ...deploymentConfigs.map((file) => file.relativePath),
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
   ]);
   const tests = unique(
@@ -3658,6 +3800,7 @@ function inferScriptFlow(params: {
 
   const signals = unique([
     'package script',
+    ...(isDeploymentScript ? ['deployment'] : []),
     ...(entryFiles.length > 0 ? ['source entry'] : []),
     ...(commandFiles.length > 0 ? ['command path'] : []),
     ...(importedSpecifiers.size > 0 ? ['static import'] : []),
@@ -3673,6 +3816,11 @@ function inferScriptFlow(params: {
       : []),
     ...(entryFiles.length === 0
       ? ['No source entry file was detected for this package script.']
+      : []),
+    ...(isDeploymentScript
+      ? [
+          'Deployment flow is inferred from static script/config evidence; production reachability is not verified until smoke evidence is recorded.',
+        ]
       : []),
   ]);
   const risks: FlowRisk[] = [];
@@ -3692,6 +3840,13 @@ function inferScriptFlow(params: {
       evidence: [scriptEvidenceId],
     });
   }
+  risks.push(
+    ...deploymentRisksForConfigs({
+      rootDir: params.rootDir,
+      flowId,
+      configs,
+    }),
+  );
   if (files.some((file) => params.changedFiles.has(file))) {
     risks.push({
       risk_id: `${flowId}:changed-hotspot`,
@@ -3753,6 +3908,14 @@ function inferScriptFlow(params: {
           path: file.relativePath,
           needle: params.scriptName,
           reason: `Source file is an inferred handler for ${params.scriptName}.`,
+        }),
+      ),
+      ...deploymentConfigs.map((file) =>
+        flowEvidenceForNeedle({
+          rootDir: params.rootDir,
+          path: file.relativePath,
+          needle: basename(file.relativePath),
+          reason: `Deployment config ${file.relativePath} is linked to deploy-like script ${params.scriptName}.`,
         }),
       ),
     ]),
@@ -7657,6 +7820,67 @@ function buildArchitectureImpactMap(params: {
   };
 }
 
+function isDeploymentFlow(flow: BrainEntity): boolean {
+  return flowStringArray(flow, 'signals').includes('deployment');
+}
+
+function buildDeploymentIntelligence(flows: readonly BrainEntity[]): Record<string, unknown> {
+  const deploymentFlows = flows.filter(isDeploymentFlow);
+  const entries = deploymentFlows.map((flow) => {
+    const risks = flowRisks(flow).filter((risk) => risk.kind.startsWith('deployment_'));
+    const configs = flowStringArray(flow, 'configs').filter(isDeploymentConfigPath);
+    const requiredTests = flowStringArray(flow, 'required_tests');
+    return {
+      flow_id: safeText(flow.id),
+      name: safeText(flow.name),
+      configs: configs.map(safeText),
+      required_tests: requiredTests.map(safeText),
+      production_risk_count: risks.length,
+      production_risks: risks.map((risk) => safeText(risk.description)),
+      smoke_required: requiredTests.includes('production smoke check'),
+      confidence: flow.confidence,
+      confidence_score: asFlowConfidenceScore(flow),
+      evidence_ids: unique([...flow.evidence_ids, ...configs.map(evidenceId)]).slice(0, 12),
+    };
+  });
+  const productionRiskCount = entries.reduce(
+    (count, entry) => count + Number(entry.production_risk_count),
+    0,
+  );
+  const configCount = unique(entries.flatMap((entry) => entry.configs)).length;
+  return {
+    summary: {
+      deployment_flow_count: entries.length,
+      deployment_config_count: configCount,
+      production_risk_count: productionRiskCount,
+      smoke_required_count: entries.filter((entry) => entry.smoke_required).length,
+      posture: deploymentPosture(entries.length, productionRiskCount),
+    },
+    flows: entries,
+    unknowns: unique([
+      ...(entries.length === 0
+        ? ['No deployment flow was reconstructed from local evidence.']
+        : []),
+      ...(entries.some((entry) => entry.smoke_required)
+        ? [
+            'Deployment flows need recorded production smoke evidence before production confidence improves.',
+          ]
+        : []),
+      ...(productionRiskCount > 0
+        ? ['Deployment configuration includes production risks that require explicit review.']
+        : []),
+    ]),
+    calibration_rule:
+      'Deployment intelligence is deterministic static inference from deploy-like package scripts, deployment configs, flow contracts, and recorded risk evidence.',
+  };
+}
+
+function deploymentPosture(deploymentFlowCount: number, productionRiskCount: number): string {
+  if (deploymentFlowCount === 0) return 'no deployment evidence';
+  if (productionRiskCount > 0) return 'risky until verified';
+  return 'needs smoke evidence';
+}
+
 function buildArchitectureReasoningArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -7899,6 +8123,20 @@ function buildArchitectureReasoningArtifact(params: {
   }
   const routeArchitecture = routeArchitectureRecords(flows);
   const routeWhatBreaks = routeArchitectureWhatBreaks(flows);
+  const deploymentIntelligence = buildDeploymentIntelligence(flows);
+  const deploymentFlowIds = recordArray(deploymentIntelligence, 'flows')
+    .filter(isRecord)
+    .map((flow) => String(flow.flow_id ?? ''))
+    .filter((id) => id !== '');
+  if (deploymentFlowIds.length > 0) {
+    reviewHints.push({
+      reason:
+        'Deployment flows should be reviewed with deployment config, smoke checks, storage, auth, and CORS evidence.',
+      affected_flows: deploymentFlowIds,
+      suggested_tests: ['production smoke check'],
+      confidence: 'inferred',
+    });
+  }
   if (routeArchitecture.length > 0) {
     reviewHints.push({
       reason: 'Next.js app-router surfaces should be reviewed as route-level architecture.',
@@ -7994,6 +8232,7 @@ function buildArchitectureReasoningArtifact(params: {
     what_breaks: whatBreaks,
     route_architecture: routeArchitecture,
     route_what_breaks: routeWhatBreaks,
+    deployment_intelligence: deploymentIntelligence,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
@@ -11847,6 +12086,13 @@ function renderArchitectureReasoning(value: unknown): string {
   const reviewHints = Array.isArray(value.review_hints) ? value.review_hints.filter(isRecord) : [];
   const impactMap = isRecord(value.impact_map) ? value.impact_map : {};
   const impactEntries = Array.isArray(impactMap.entries) ? impactMap.entries.filter(isRecord) : [];
+  const deploymentIntelligence = isRecord(value.deployment_intelligence)
+    ? value.deployment_intelligence
+    : {};
+  const deploymentSummary = isRecord(deploymentIntelligence.summary)
+    ? deploymentIntelligence.summary
+    : {};
+  const deploymentFlows = recordArray(deploymentIntelligence, 'flows').filter(isRecord);
   const architectureAssumptions = Array.isArray(value.architecture_assumptions)
     ? value.architecture_assumptions.filter(isRecord)
     : [];
@@ -11992,8 +12238,24 @@ function renderArchitectureReasoning(value: unknown): string {
       typeof impact.coupling_level === 'string' ? impact.coupling_level : 'unknown coupling';
     return `${impactId}: ${surfaceType}, ${affectedFlows} flow(s), ${affectedTests} test(s), ${affectedConfigs} config(s), ${coupling} coupling`;
   });
+  const deploymentLabels = [
+    `flows: ${String(deploymentSummary.deployment_flow_count ?? 0)}`,
+    `configs: ${String(deploymentSummary.deployment_config_count ?? 0)}`,
+    `production risks: ${String(deploymentSummary.production_risk_count ?? 0)}`,
+    `posture: ${String(deploymentSummary.posture ?? 'unknown')}`,
+    ...deploymentFlows.slice(0, 4).map((flow) => {
+      const flowId = typeof flow.flow_id === 'string' ? flow.flow_id : 'unknown flow';
+      const risks = typeof flow.production_risk_count === 'number' ? flow.production_risk_count : 0;
+      const configs = Array.isArray(flow.configs)
+        ? flow.configs.filter((item): item is string => typeof item === 'string').length
+        : 0;
+      return `${flowId}: ${configs} deploy config(s), ${risks} production risk(s)`;
+    }),
+    ...asStringArray(deploymentIntelligence.unknowns).slice(0, 4),
+  ];
   return `<div class="grid">
     <article class="card"><h3>Confidence Debt</h3>${renderArchitectureConfidenceDebt(confidenceDebt)}</article>
+    <article class="card"><h3>Deployment Intelligence</h3>${renderList(deploymentLabels)}</article>
     <article class="card"><h3>Impact Map</h3>${renderList([
       architectureImpactSummary(value),
       ...impactLabels,
@@ -16541,6 +16803,7 @@ function isTestPath(path: string): boolean {
 function isConfigPath(path: string): boolean {
   return (
     path.startsWith('.github/') ||
+    isDeploymentConfigPath(path) ||
     CONFIG_FILES.has(basename(path)) ||
     /(^|\/)(Dockerfile|Makefile|.*config\.(ts|js|mjs|cjs|json|yml|yaml))$/.test(path)
   );
