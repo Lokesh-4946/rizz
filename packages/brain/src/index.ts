@@ -2921,6 +2921,83 @@ function importSpecifiersFromText(text: string): string[] {
   return [...specifiers].sort((a, b) => a.localeCompare(b));
 }
 
+interface ImportBinding {
+  readonly specifier: string;
+  readonly local_names: readonly string[];
+}
+
+function importBindingsFromText(text: string): ImportBinding[] {
+  const bindings: ImportBinding[] = [];
+  for (const match of text.matchAll(/import\s+([^'";]+?)\s+from\s+['"]([^'"]+)['"]/g)) {
+    const clause = match[1]?.trim();
+    const specifier = match[2]?.trim();
+    if (clause === undefined || specifier === undefined || specifier === '') continue;
+    const localNames = importClauseLocalNames(clause);
+    if (localNames.length > 0) {
+      bindings.push({ specifier: safeText(specifier), local_names: localNames });
+    }
+  }
+  for (const match of text.matchAll(
+    /(?:const|let|var)\s+(.+?)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g,
+  )) {
+    const clause = match[1]?.trim();
+    const specifier = match[2]?.trim();
+    if (clause === undefined || specifier === undefined || specifier === '') continue;
+    const localNames = requireClauseLocalNames(clause);
+    if (localNames.length > 0) {
+      bindings.push({ specifier: safeText(specifier), local_names: localNames });
+    }
+  }
+  return bindings;
+}
+
+function importClauseLocalNames(clause: string): string[] {
+  const names: string[] = [];
+  const trimmed = clause.trim();
+  if (trimmed.startsWith('*')) {
+    const namespace = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(trimmed)?.[1];
+    return namespace === undefined ? [] : [safeText(namespace)];
+  }
+  const namedStart = trimmed.indexOf('{');
+  if (namedStart > 0) {
+    const defaultName = trimmed.slice(0, namedStart).replace(/,$/, '').trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(defaultName)) names.push(safeText(defaultName));
+  } else if (!trimmed.startsWith('{')) {
+    const defaultName = trimmed.split(',')[0]?.trim();
+    if (defaultName !== undefined && /^[A-Za-z_$][\w$]*$/.test(defaultName)) {
+      names.push(safeText(defaultName));
+    }
+  }
+  const named = /\{([^}]+)\}/.exec(trimmed)?.[1];
+  if (named !== undefined) {
+    for (const item of named.split(',')) {
+      const [rawName, alias] = item.split(/\s+as\s+/);
+      const localName = (alias ?? rawName)?.trim();
+      if (localName !== undefined && /^[A-Za-z_$][\w$]*$/.test(localName)) {
+        names.push(safeText(localName));
+      }
+    }
+  }
+  return unique(names);
+}
+
+function requireClauseLocalNames(clause: string): string[] {
+  const trimmed = clause.trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(trimmed)) return [safeText(trimmed)];
+  const named = /^\{([^}]+)\}$/.exec(trimmed)?.[1];
+  if (named === undefined) return [];
+  return unique(
+    named
+      .split(',')
+      .map((item) => {
+        const [, alias] = item.split(':');
+        const localName = (alias ?? item).trim();
+        return /^[A-Za-z_$][\w$]*$/.test(localName) ? safeText(localName) : undefined;
+      })
+      .filter((item): item is string => item !== undefined),
+  );
+}
+
 const RESOLVABLE_SOURCE_EXTENSIONS = [
   '.ts',
   '.tsx',
@@ -4774,6 +4851,87 @@ function httpRouteDeclarationsForFile(params: {
   );
 }
 
+function offsetForLine(text: string, line: number): number {
+  if (line <= 1) return 0;
+  let currentLine = 1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== '\n') continue;
+    currentLine += 1;
+    if (currentLine === line) return index + 1;
+  }
+  return text.length;
+}
+
+function httpRouteHandlerText(params: {
+  readonly text: string;
+  readonly declaration: HttpRouteDeclaration;
+}): string | undefined {
+  const start = offsetForLine(params.text, params.declaration.line);
+  const callStart = params.text.indexOf('(', start);
+  if (callStart < 0) return undefined;
+  let depth = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let escaped = false;
+  for (let index = callStart; index < params.text.length; index += 1) {
+    const char = params.text[index];
+    if (char === undefined) continue;
+    if (quote !== undefined) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    if (char !== ')') continue;
+    depth -= 1;
+    if (depth === 0) return params.text.slice(callStart, index + 1);
+  }
+  return params.text.slice(callStart, Math.min(params.text.length, callStart + 2000));
+}
+
+function textContainsIdentifier(text: string, identifier: string): boolean {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}($|[^A-Za-z0-9_$])`).test(text);
+}
+
+function reachableHttpRouteImportedFiles(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly routeFile: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+  readonly importContext: {
+    readonly importedFiles: readonly FileFact[];
+  };
+}): FileFact[] {
+  if (params.routeFile.relativePath.endsWith('.py')) return [...params.importContext.importedFiles];
+  const text = readTextIfAvailable(params.rootDir, params.routeFile.relativePath);
+  if (text === undefined) return [...params.importContext.importedFiles];
+  const handlerText = httpRouteHandlerText({ text, declaration: params.declaration });
+  if (handlerText === undefined) return [...params.importContext.importedFiles];
+  const aliases = importAliasContextForConfigs({ rootDir: params.rootDir, files: params.files });
+  const bindings = importBindingsFromText(text);
+  if (bindings.length === 0) return [...params.importContext.importedFiles];
+  const reachableFiles = bindings.flatMap((binding) => {
+    if (!binding.local_names.some((name) => textContainsIdentifier(handlerText, name))) return [];
+    return [
+      ...resolveRelativeImportFiles(params.files, params.routeFile.relativePath, binding.specifier),
+      ...resolveAliasImportFiles(params.files, binding.specifier, aliases),
+      ...resolveDottedImportFiles(params.files, binding.specifier),
+    ];
+  });
+  return uniqueFileFacts(reachableFiles);
+}
+
 function owningPackageFactForFile(
   packageFacts: readonly PackageJsonFact[],
   filePath: string,
@@ -4884,7 +5042,14 @@ function inferHttpRouteDeclarationFlow(params: {
     files: params.files,
     entryFiles: [params.file],
   });
-  const allScannedFiles = [params.file, ...importContext.importedFiles];
+  const reachableImportedFiles = reachableHttpRouteImportedFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    routeFile: params.file,
+    declaration: params.declaration,
+    importContext,
+  });
+  const allScannedFiles = [params.file, ...reachableImportedFiles];
   const componentIds = componentIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.components,
@@ -4956,7 +5121,7 @@ function inferHttpRouteDeclarationFlow(params: {
       )}().`,
       evidence: [evId],
     },
-    ...importContext.importedFiles.slice(0, 8).map((file, index) => ({
+    ...reachableImportedFiles.slice(0, 8).map((file, index) => ({
       step_id: flowStepId(flowId, index + 2),
       order: index + 2,
       type: 'service' as const,
@@ -4997,7 +5162,7 @@ function inferHttpRouteDeclarationFlow(params: {
     'route file',
     `${params.declaration.method.toLowerCase()} route`,
     ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
-    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(reachableImportedFiles.length > 0 ? ['reachable relative import'] : []),
     ...(relatedTests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
