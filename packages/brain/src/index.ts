@@ -250,6 +250,31 @@ interface ArchitectureConfidenceDebt {
 
 type ArchitectureImpactSurfaceType = 'component' | 'route';
 
+interface ArchitectureServiceCausalityReasoning {
+  readonly total_paths: number;
+  readonly affected_flows: readonly string[];
+  readonly affected_services: readonly string[];
+  readonly effect_count: number;
+  readonly effects: readonly string[];
+  readonly effect_categories: readonly string[];
+  readonly route_impacts: readonly {
+    readonly flow_id: string;
+    readonly route_path: string;
+    readonly service_id: string;
+    readonly effects: readonly string[];
+    readonly what_breaks: readonly string[];
+    readonly evidence_ids: readonly string[];
+    readonly confidence: Confidence;
+  }[];
+  readonly missing_effect_paths: readonly string[];
+  readonly missing_step_link_paths: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence_distribution: Record<Confidence, number>;
+  readonly top_risky_effects: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly calibration_rule: string;
+}
+
 interface ArchitectureImpactEntry {
   readonly impact_id: string;
   readonly surface_type: ArchitectureImpactSurfaceType;
@@ -282,6 +307,10 @@ interface ArchitectureImpactMap {
     readonly high_coupling_surfaces: number;
     readonly test_backed_surfaces: number;
     readonly config_backed_surfaces: number;
+    readonly service_causality_paths: number;
+    readonly service_causality_effect_count: number;
+    readonly service_causality_backed_surfaces: number;
+    readonly service_causality_unknown_count: number;
     readonly top_impacted_surfaces: readonly string[];
   };
   readonly entries: readonly ArchitectureImpactEntry[];
@@ -8350,6 +8379,18 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
           (effect) => `${item.service_id} can affect route ${routePath} through ${effect}.`,
         ),
       ),
+      ...serviceCausality
+        .filter((item) => item.effects.length === 0)
+        .map(
+          (item) =>
+            `${item.service_id} reaches route ${routePath}, but no service side effect is recorded; blast radius remains uncertain.`,
+        ),
+      ...serviceCausality
+        .filter((item) => item.step_ids.length === 0)
+        .map(
+          (item) =>
+            `${item.service_id} reaches route ${routePath} without a linked flow step; inspect reachability before relying on this impact.`,
+        ),
     ]).map(safeText),
     reasons: [
       `framework:${safeText(framework)}`,
@@ -8358,8 +8399,82 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
       `files:${files.length}`,
       `tests:${tests.length}`,
       `configs:${configs.length}`,
+      `service_causality:${serviceCausality.length}`,
       `coupling:${couplingLevel}`,
     ],
+  };
+}
+
+function serviceCausalityEffectCategory(effect: string): string {
+  const [category] = effect.split(':');
+  if (category === undefined || category.trim() === '') return 'unknown';
+  return safeText(category);
+}
+
+function buildArchitectureServiceCausalityReasoning(
+  flows: readonly BrainEntity[],
+): ArchitectureServiceCausalityReasoning {
+  const claims = flows.flatMap((flow) =>
+    safeFlowServiceCausality(flow).map((claim) => ({ flow, claim })),
+  );
+  const effects = unique(claims.flatMap(({ claim }) => claim.effects)).map(safeText);
+  const missingEffectPaths = claims
+    .filter(({ claim }) => claim.effects.length === 0)
+    .map(({ flow, claim }) => `${safeText(flow.id)} -> ${safeText(claim.service_id)}`);
+  const missingStepLinkPaths = claims
+    .filter(({ claim }) => claim.step_ids.length === 0)
+    .map(({ flow, claim }) => `${safeText(flow.id)} -> ${safeText(claim.service_id)}`);
+  const routeImpacts = claims
+    .filter(({ flow }) => isArchitectureRouteFlow(flow))
+    .map(({ flow, claim }) => {
+      const routePath = safeText(routePathForFlow(flow));
+      const whatBreaks =
+        claim.effects.length === 0
+          ? [
+              `${safeText(claim.service_id)} reaches route ${routePath}, but no side effect is recorded yet.`,
+            ]
+          : claim.effects.map(
+              (effect) =>
+                `${safeText(claim.service_id)} can change route ${routePath} behavior through ${safeText(effect)}.`,
+            );
+      return {
+        flow_id: safeText(flow.id),
+        route_path: routePath,
+        service_id: safeText(claim.service_id),
+        effects: claim.effects.map(safeText),
+        what_breaks: whatBreaks.map(safeText),
+        evidence_ids: claim.evidence_ids.map(safeText),
+        confidence: claim.confidence,
+      };
+    });
+  const unknowns = unique([
+    ...(claims.length === 0
+      ? ['No service causality paths were reconstructed for architecture reasoning yet.']
+      : []),
+    ...missingEffectPaths.map((path) => `${path} has no recorded service effect.`),
+    ...missingStepLinkPaths.map((path) => `${path} is not linked to a reconstructed flow step.`),
+    ...claims.flatMap(({ claim }) => claim.unknowns),
+  ]).map(safeText);
+  return {
+    total_paths: claims.length,
+    affected_flows: unique(claims.map(({ flow }) => flow.id)).map(safeText),
+    affected_services: unique(claims.map(({ claim }) => claim.service_id)).map(safeText),
+    effect_count: effects.length,
+    effects,
+    effect_categories: unique(effects.map(serviceCausalityEffectCategory)),
+    route_impacts: routeImpacts,
+    missing_effect_paths: missingEffectPaths.map(safeText),
+    missing_step_link_paths: missingStepLinkPaths.map(safeText),
+    evidence_ids: unique(claims.flatMap(({ claim }) => claim.evidence_ids)).map(safeText),
+    confidence_distribution: countByConfidence(claims.map(({ claim }) => claim.confidence)),
+    top_risky_effects: effects
+      .filter((effect) =>
+        /env|secret|token|credential|storage|db|database|external|api/i.test(effect),
+      )
+      .slice(0, 10),
+    unknowns: unknowns.slice(0, 20),
+    calibration_rule:
+      'Service causality reasoning is deterministic static inference from flow steps, service ownership, side-effect signals, evidence IDs, and confidence.',
   };
 }
 
@@ -8387,6 +8502,8 @@ function buildArchitectureImpactMap(params: {
         a.impact_id.localeCompare(b.impact_id),
     )
     .slice(0, 50);
+  const serviceCausality = entries.flatMap((entry) => entry.service_causality ?? []);
+  const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   return {
     summary: {
       total_surfaces: entries.length,
@@ -8395,6 +8512,14 @@ function buildArchitectureImpactMap(params: {
       high_coupling_surfaces: entries.filter((entry) => entry.coupling_level === 'high').length,
       test_backed_surfaces: entries.filter((entry) => entry.affected_tests.length > 0).length,
       config_backed_surfaces: entries.filter((entry) => entry.affected_configs.length > 0).length,
+      service_causality_paths: serviceCausality.length,
+      service_causality_effect_count: serviceCausalityEffects.length,
+      service_causality_backed_surfaces: entries.filter(
+        (entry) => (entry.service_causality ?? []).length > 0,
+      ).length,
+      service_causality_unknown_count: serviceCausality.filter(
+        (item) => item.effects.length === 0 || item.step_ids.length === 0,
+      ).length,
       top_impacted_surfaces: entries.slice(0, 5).map((entry) => entry.impact_id),
     },
     entries,
@@ -9322,6 +9447,7 @@ function buildArchitectureReasoningArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
   });
+  const serviceCausalityReasoning = buildArchitectureServiceCausalityReasoning(flows);
   const architectureUnknowns = unique([
     ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
     ...(componentsWithoutFlows.length > 0
@@ -9340,6 +9466,7 @@ function buildArchitectureReasoningArtifact(params: {
     ...(crossComponentFlows.length === 0 && flows.length > 0
       ? ['No cross-component flows were reconstructed from static evidence yet.']
       : []),
+    ...serviceCausalityReasoning.unknowns,
   ]).map(safeText);
   const confidenceDebt = buildArchitectureConfidenceDebt({
     assumptions: architectureAssumptions,
@@ -9362,6 +9489,7 @@ function buildArchitectureReasoningArtifact(params: {
     route_what_breaks: routeWhatBreaks,
     deployment_intelligence: deploymentIntelligence,
     service_intelligence: serviceIntelligence,
+    service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
@@ -9375,6 +9503,8 @@ function buildArchitectureReasoningArtifact(params: {
       high_pressure_count: highPressures.length,
       intentional_coupling_count: intentionalCouplings.length,
       risky_coupling_count: riskyCouplings.length,
+      service_causality_path_count: serviceCausalityReasoning.total_paths,
+      service_causality_unknown_count: serviceCausalityReasoning.unknowns.length,
       evidence_gap_count: evidenceGaps.length,
       top_design_pressures: highPressures.slice(0, 10).map((pressure) => pressure.pressure_id),
       top_risky_couplings: riskyCouplings.slice(0, 10).map((rationale) => rationale.component_id),
