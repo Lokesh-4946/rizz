@@ -1945,6 +1945,27 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'bare rizz writes local project brain in headless empty-stdin mode',
+      run() {
+        withTempDirSync('rizz-bare-brain-smoke-', (dir) => {
+          writeFileSync(
+            join(dir, 'package.json'),
+            JSON.stringify({ name: 'bare-brain-smoke', scripts: { start: 'node index.js' } }),
+          );
+          writeFileSync(join(dir, 'index.js'), 'export const ok = true;\n');
+
+          const result = runCliInCwdSync(dir, [], '');
+          assert(result.error === undefined, String(result.error));
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          assert(result.stdout.includes('rizz understood 2 file(s)'), 'expected brain summary');
+          assert(!result.stdout.includes('Usage:'), 'bare rizz printed help instead of scanning');
+          assert(existsSync(join(dir, '.rizz', 'brain', 'latest.json')), 'missing latest.json');
+          assert(existsSync(join(dir, '.rizz', 'reports', 'index.html')), 'missing report');
+          assert(existsSync(join(dir, '.rizz', 'research')), 'missing research artifacts');
+        });
+      },
+    },
+    {
       name: 'rizz brain writes local project brain without provider credentials',
       run() {
         withTempDirSync('rizz-brain-smoke-', (dir) => {
