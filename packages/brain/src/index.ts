@@ -14028,12 +14028,96 @@ function renderAskReadinessLine(value: unknown): string {
   </article>`;
 }
 
+function incrementalHealthFromLatest(latest: Record<string, unknown>): {
+  readonly services: Record<string, unknown>;
+  readonly flows: Record<string, unknown>;
+} {
+  const projectState = nestedRecord(latest, 'project_state');
+  const projectHealth = nestedRecord(projectState, 'incremental_health');
+  const latestIncremental = nestedRecord(latest, 'latest_incremental_update');
+  const services = nestedRecord(projectHealth, 'services');
+  const flows = nestedRecord(projectHealth, 'flows');
+  return {
+    services:
+      Object.keys(services).length > 0
+        ? services
+        : nestedRecord(latestIncremental, 'service_incremental_health'),
+    flows:
+      Object.keys(flows).length > 0
+        ? flows
+        : nestedRecord(latestIncremental, 'flow_incremental_health'),
+  };
+}
+
+function incrementalHealthLine(label: string, health: Record<string, unknown>): string {
+  const total = recordNumber(health, 'total');
+  const changed = recordNumber(health, 'changed');
+  const reused = recordNumber(health, 'reused');
+  const recomputed = recordNumber(health, 'recomputed');
+  const stale = recordNumber(health, 'stale');
+  return `${label}: ${changed} changed, ${reused} reused, ${recomputed} recomputed, ${stale} stale of ${total}`;
+}
+
+function renderIncrementalHealthCard(latest: Record<string, unknown>): string {
+  const health = incrementalHealthFromLatest(latest);
+  const serviceSourceChanged = asStringArray(health.services.source_changed_ids).length;
+  const flowSourceChanged = asStringArray(health.flows.source_changed_ids).length;
+  return `<article class="card compact">
+    <h3>Incremental Health</h3>
+    ${renderList([
+      incrementalHealthLine('services', health.services),
+      incrementalHealthLine('flows', health.flows),
+      `${serviceSourceChanged} source-changed service(s)`,
+      `${flowSourceChanged} source-changed flow(s)`,
+    ])}
+  </article>`;
+}
+
+interface FlowServiceCausalityRow {
+  readonly flowId: string;
+  readonly flowName: string;
+  readonly service: FlowServiceCausality;
+}
+
+function flowServiceCausalityRows(flows: readonly BrainEntity[]): FlowServiceCausalityRow[] {
+  return flows.flatMap((flow) =>
+    safeFlowServiceCausality(flow).map((service) => ({
+      flowId: flow.id,
+      flowName: flow.name,
+      service,
+    })),
+  );
+}
+
+function renderServiceCausalityCard(flows: readonly BrainEntity[]): string {
+  const rows = flowServiceCausalityRows(flows);
+  const flowCount = new Set(rows.map((row) => row.flowId)).size;
+  const serviceCount = new Set(rows.map((row) => row.service.service_id)).size;
+  const topRows = rows
+    .slice(0, 4)
+    .map(
+      (row) =>
+        `${row.flowName} -> ${row.service.service_name}: ${row.service.effects.length} effect(s), ${row.service.confidence}`,
+    );
+  return `<article class="card compact">
+    <h3>Service Causality</h3>
+    ${renderList([
+      `${rows.length} flow-service causality link(s)`,
+      `${flowCount} flow(s) with service evidence`,
+      `${serviceCount} linked service(s)`,
+      ...topRows,
+    ])}
+  </article>`;
+}
+
 function renderFlagshipSummary(params: {
   readonly understandingScore: unknown;
   readonly askReadiness: unknown;
   readonly evidenceQuality: unknown;
   readonly incrementalUpdate: unknown;
   readonly architectureReasoning: unknown;
+  readonly latest: Record<string, unknown>;
+  readonly flows: readonly BrainEntity[];
   readonly flowCount: number;
   readonly evidenceCount: number;
   readonly reviewReadiness: { readonly value: number; readonly posture: string };
@@ -14108,6 +14192,8 @@ function renderFlagshipSummary(params: {
           `${flowStatus} flow posture`,
         ])}
       </article>
+      ${renderServiceCausalityCard(params.flows)}
+      ${renderIncrementalHealthCard(params.latest)}
       <article class="card compact">
         <h3>Architecture Confidence Debt</h3>
         ${renderList([
@@ -14160,6 +14246,60 @@ function renderFlagshipSummary(params: {
       </article>
     </div>
   </section>`;
+}
+
+function renderIncrementalHealthDetails(latest: Record<string, unknown>): string {
+  const health = incrementalHealthFromLatest(latest);
+  const rows: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['Services', health.services],
+    ['Flows', health.flows],
+  ];
+  return `<table><thead><tr><th>Surface</th><th>Summary</th><th>Changed</th><th>Reused</th><th>Recomputed</th><th>Stale</th><th>Source Changed</th></tr></thead><tbody>${rows
+    .map(([label, item]) => {
+      const changed = asStringArray(item.changed_ids);
+      const reused = asStringArray(item.reused_ids);
+      const recomputed = asStringArray(item.recomputed_ids);
+      const stale = asStringArray(item.stale_ids);
+      const sourceChanged = asStringArray(item.source_changed_ids);
+      return `<tr>
+        <td><strong>${htmlEscape(label)}</strong></td>
+        <td>${htmlEscape(incrementalHealthLine(label.toLowerCase(), item))}</td>
+        <td>${renderList(changed.slice(0, 8))}</td>
+        <td>${renderList(reused.slice(0, 8))}</td>
+        <td>${renderList(recomputed.slice(0, 8))}</td>
+        <td>${renderList(stale.slice(0, 8))}</td>
+        <td>${renderList(sourceChanged.slice(0, 8))}</td>
+      </tr>`;
+    })
+    .join('')}</tbody></table>`;
+}
+
+function renderServiceCausalityDetails(
+  flows: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const rows = flowServiceCausalityRows(flows);
+  if (rows.length === 0) {
+    return '<p class="muted">No service causality links detected yet.</p>';
+  }
+  return `<table><thead><tr><th>Flow</th><th>Service</th><th>Cause</th><th>Effects</th><th>Evidence</th><th>Unknowns</th></tr></thead><tbody>${rows
+    .map(
+      (row) => `<tr data-search="${htmlEscape(
+        `${row.flowId} ${row.flowName} ${row.service.service_id} ${row.service.cause} ${row.service.effects.join(' ')}`,
+      )}">
+        <td><strong>${htmlEscape(row.flowName)}</strong><br><span class="muted">${htmlEscape(
+          row.flowId,
+        )}</span></td>
+        <td><strong>${htmlEscape(row.service.service_name)}</strong><br><span class="muted">${htmlEscape(
+          row.service.service_id,
+        )} · ${htmlEscape(row.service.confidence)}</span></td>
+        <td>${htmlEscape(row.service.cause)}</td>
+        <td>${renderList(row.service.effects)}</td>
+        <td>${renderEvidenceLinks(row.service.evidence_ids, evidenceById)}</td>
+        <td>${renderList(row.service.unknowns)}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
 }
 
 function renderUnderstandingDashboard(score: unknown): string {
@@ -14344,6 +14484,8 @@ function renderReport(params: {
     evidenceQuality: params.latest.latest_evidence_quality,
     incrementalUpdate,
     architectureReasoning: params.latest.latest_architecture_reasoning,
+    latest: params.latest,
+    flows: params.buckets.flows,
     flowCount: params.buckets.flows.length,
     evidenceCount: params.buckets.evidence.length,
     reviewReadiness,
@@ -14390,6 +14532,21 @@ function renderReport(params: {
     count: params.buckets.services.length,
     posture: params.buckets.services.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderServiceCards(params.buckets.services, evidenceById)}</div>`,
+  });
+  const serviceCausalityObject = renderObjectDetails({
+    title: 'Service Causality',
+    summary:
+      'Flow-service cause, effect, evidence, and unknown rows reconstructed from local service links.',
+    count: flowServiceCausalityRows(params.buckets.flows).length,
+    posture: flowServiceCausalityRows(params.buckets.flows).length === 0 ? 'weak' : 'usable',
+    body: renderServiceCausalityDetails(params.buckets.flows, evidenceById),
+  });
+  const incrementalHealthObject = renderObjectDetails({
+    title: 'Incremental Health',
+    summary:
+      'Service and flow reuse, recompute, source-change, and stale-state health from latest project state.',
+    posture: scanEfficiency >= 70 ? 'strong' : scanEfficiency >= 40 ? 'usable' : 'weak',
+    body: renderIncrementalHealthDetails(params.latest),
   });
   const architectureObject = renderObjectDetails({
     title: 'Architecture',
@@ -14580,7 +14737,9 @@ function renderReport(params: {
       ${understandingObject}
       ${componentObject}
       ${serviceObject}
+      ${serviceCausalityObject}
       ${flowObject}
+      ${incrementalHealthObject}
       ${architectureObject}
       ${evidenceObject}
       ${unknownObject}

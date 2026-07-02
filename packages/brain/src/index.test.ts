@@ -1667,7 +1667,10 @@ describe('project brain generation', () => {
       expect(report).toContain('Project Intelligence');
       expect(report).toContain('data-object="understanding" open');
       expect(report).toContain('data-object="components"');
+      expect(report).toContain('data-object="service-intelligence"');
+      expect(report).toContain('data-object="service-causality"');
       expect(report).toContain('data-object="flows"');
+      expect(report).toContain('data-object="incremental-health"');
       expect(report).toContain('data-object="architecture"');
       expect(report).toContain('data-object="evidence"');
       expect(report).toContain('data-object="unknowns"');
@@ -1690,6 +1693,8 @@ describe('project brain generation', () => {
       expect(report).toContain('Evidence Quality Calibration');
       expect(report).toContain('Flow Coverage');
       expect(report).toContain('Architecture Confidence Debt');
+      expect(report).toContain('Service Causality');
+      expect(report).toContain('Incremental Health');
       expect(report).toContain('Incremental Changed / Stable');
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Research Artifacts');
@@ -1714,7 +1719,10 @@ describe('project brain generation', () => {
       const objectOrder = [
         'data-object="understanding"',
         'data-object="components"',
+        'data-object="service-intelligence"',
+        'data-object="service-causality"',
         'data-object="flows"',
+        'data-object="incremental-health"',
         'data-object="architecture"',
         'data-object="evidence"',
         'data-object="unknowns"',
@@ -1725,6 +1733,7 @@ describe('project brain generation', () => {
       expect(objectOrder).toEqual([...objectOrder].sort((a, b) => a - b));
       expect(report).not.toContain('data-object="read-first"');
       expect(report).not.toContain('data-object="runbook"');
+      expect(report).not.toContain(dir);
       expect(report).toContain('<h3>weak</h3>');
       expect(report).toContain('<h3>usable</h3>');
       expect(report).toContain('<h3>strong</h3>');
@@ -3146,6 +3155,19 @@ describe('project brain generation', () => {
       expect(latest.project_state?.incremental_health?.flows?.recomputed_ids).toContain(
         'flow:http--post--orders--src--server.ts',
       );
+
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(missionControl).toContain('Service Causality');
+      expect(missionControl).toContain('Incremental Health');
+      expect(missionControl).toContain('flow-service causality link(s)');
+      expect(missionControl).toContain('source-changed service(s)');
+      expect(missionControl).toContain('source-changed flow(s)');
+      expect(missionControl).toContain('data-object="service-causality"');
+      expect(missionControl).toContain('data-object="incremental-health"');
+      expect(missionControl).toContain('service:src--orders');
+      expect(missionControl).toContain('flow:http--post--orders--src--server.ts');
+      expect(missionControl).toContain('env:DEFAULT_CURRENCY');
+      expect(missionControl).not.toContain(dir);
 
       const flowUnderstanding = await readJson<{
         incremental_update: {
