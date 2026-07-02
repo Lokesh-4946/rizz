@@ -2938,8 +2938,37 @@ describe('project brain generation', () => {
       );
 
       const architectureReasoning = await readJson<{
+        service_causality_reasoning: {
+          total_paths: number;
+          affected_flows: string[];
+          affected_services: string[];
+          effect_count: number;
+          effects: string[];
+          effect_categories: string[];
+          route_impacts: Array<{
+            flow_id: string;
+            route_path: string;
+            service_id: string;
+            effects: string[];
+            what_breaks: string[];
+            evidence_ids: string[];
+            confidence: string;
+          }>;
+          missing_effect_paths: string[];
+          missing_step_link_paths: string[];
+          evidence_ids: string[];
+          confidence_distribution: { verified: number; inferred: number; uncertain: number };
+          top_risky_effects: string[];
+          unknowns: string[];
+        };
         impact_map: {
-          summary: { route_surfaces: number };
+          summary: {
+            route_surfaces: number;
+            service_causality_paths: number;
+            service_causality_effect_count: number;
+            service_causality_backed_surfaces: number;
+            service_causality_unknown_count: number;
+          };
           entries: Array<{
             impact_id: string;
             surface_type: string;
@@ -2959,7 +2988,39 @@ describe('project brain generation', () => {
           }>;
         };
       }>(join(result.value.researchDir, 'architecture_reasoning.json'));
-      expect(architectureReasoning.impact_map.summary.route_surfaces).toBe(2);
+      expect(architectureReasoning.service_causality_reasoning).toMatchObject({
+        total_paths: 3,
+        affected_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
+        affected_services: expect.arrayContaining(['service:src--orders']),
+        effect_count: 1,
+        effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+        effect_categories: expect.arrayContaining(['env']),
+        missing_effect_paths: [],
+        missing_step_link_paths: [],
+        evidence_ids: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
+        confidence_distribution: { verified: 0, inferred: 0, uncertain: 3 },
+        top_risky_effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+      });
+      expect(architectureReasoning.service_causality_reasoning.route_impacts).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:http--post--orders--src--server.ts',
+          route_path: '/orders',
+          service_id: 'service:src--orders',
+          effects: expect.arrayContaining(['env:DEFAULT_CURRENCY']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('service:src--orders can change route /orders behavior'),
+          ]),
+          evidence_ids: expect.arrayContaining(['evidence:file-src--orders--service.ts']),
+          confidence: 'uncertain',
+        }),
+      );
+      expect(architectureReasoning.impact_map.summary).toMatchObject({
+        route_surfaces: 2,
+        service_causality_paths: 2,
+        service_causality_effect_count: 1,
+        service_causality_backed_surfaces: 2,
+        service_causality_unknown_count: 0,
+      });
       expect(architectureReasoning.impact_map.entries).toContainEqual(
         expect.objectContaining({
           impact_id: 'impact:flow:http--post--orders--src--server.ts',
@@ -2990,6 +3051,7 @@ describe('project brain generation', () => {
             'framework:express-fastify-http',
             'route_type:POST',
             'tests:1',
+            'service_causality:1',
           ]),
         }),
       );
