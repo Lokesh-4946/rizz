@@ -2755,6 +2755,80 @@ describe('project brain generation', () => {
         tests: expect.arrayContaining(['evidence:file-src--orders--orders.test.ts']),
       });
 
+      const evidenceQuality = await readJson<{
+        service_causality_claim_count: number;
+        service_causality_evidence_backed_claims: number;
+        service_causality_uncertain_claims: number;
+        service_causality_missing_evidence_claims: number;
+        service_causality_missing_effect_claims: number;
+        service_causality_missing_step_link_claims: number;
+        service_causality_coverage_score: number;
+        service_causality_quality: {
+          total_claims: number;
+          evidence_backed_claims: number;
+          weak_evidence_claims: number;
+          confidence_mix: { verified: number; inferred: number; uncertain: number };
+          claim_examples: Array<{
+            flow_id: string;
+            service_id: string;
+            evidence_ids: number;
+            effects: number;
+            step_ids: number;
+            confidence: string;
+          }>;
+        };
+        evidence_calibration: {
+          surface_confidence_mix: Array<{
+            surface: string;
+            total_claims: number;
+            evidence_backed_claims: number;
+            confidence_mix: { verified: number; inferred: number; uncertain: number };
+          }>;
+        };
+        actionability: {
+          low_confidence_claim_areas: Array<{ area: string; inspect_hint: string }>;
+        };
+      }>(join(result.value.researchDir, 'evidence_quality.json'));
+      expect(evidenceQuality).toMatchObject({
+        service_causality_claim_count: 3,
+        service_causality_evidence_backed_claims: 3,
+        service_causality_uncertain_claims: 3,
+        service_causality_missing_evidence_claims: 0,
+        service_causality_missing_effect_claims: 0,
+        service_causality_missing_step_link_claims: 0,
+        service_causality_coverage_score: 100,
+      });
+      expect(evidenceQuality.service_causality_quality).toMatchObject({
+        total_claims: 3,
+        evidence_backed_claims: 3,
+        weak_evidence_claims: 3,
+        confidence_mix: { verified: 0, inferred: 0, uncertain: 3 },
+      });
+      expect(evidenceQuality.service_causality_quality.claim_examples).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:http--post--orders--src--server.ts',
+          service_id: 'service:src--orders',
+          evidence_ids: expect.any(Number),
+          effects: expect.any(Number),
+          step_ids: expect.any(Number),
+          confidence: 'uncertain',
+        }),
+      );
+      expect(evidenceQuality.evidence_calibration.surface_confidence_mix).toContainEqual(
+        expect.objectContaining({
+          surface: 'service_causality',
+          total_claims: 3,
+          evidence_backed_claims: 3,
+          confidence_mix: { verified: 0, inferred: 0, uncertain: 3 },
+        }),
+      );
+      expect(evidenceQuality.actionability.low_confidence_claim_areas).toContainEqual(
+        expect.objectContaining({
+          area: 'service causality evidence-backed claims',
+          inspect_hint: expect.stringContaining('static-import service causality'),
+        }),
+      );
+
       const services = await readJson<{
         entities: Array<{
           id: string;
@@ -3417,6 +3491,14 @@ describe('project brain generation', () => {
             dependencies?: string[];
             configs?: string[];
             tests?: string[];
+            services?: string[];
+            service_causality?: Array<{
+              service_id: string;
+              effects: string[];
+              evidence_ids: string[];
+              step_ids: string[];
+              confidence: string;
+            }>;
             entrypoints?: Array<{ type: string; path: string; symbol: string | null }>;
             steps?: Array<{ type: string; path: string; symbol: string | null }>;
             inputs?: string[];
@@ -3438,6 +3520,18 @@ describe('project brain generation', () => {
         dependencies: expect.arrayContaining(['dependency:hono']),
         configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
         tests: expect.arrayContaining(['src/sessions/session.test.ts']),
+        services: expect.arrayContaining(['service:src--sessions']),
+        service_causality: expect.arrayContaining([
+          expect.objectContaining({
+            service_id: 'service:src--sessions',
+            effects: [],
+            evidence_ids: expect.arrayContaining(['evidence:file-src--sessions--service.ts']),
+            step_ids: expect.arrayContaining([
+              expect.stringContaining('flow-hono--post--sessions--src--api.ts:002'),
+            ]),
+            confidence: 'uncertain',
+          }),
+        ]),
         entrypoints: expect.arrayContaining([
           expect.objectContaining({
             type: 'route',
@@ -3470,8 +3564,64 @@ describe('project brain generation', () => {
           'evidence:file-src--api.ts',
           'evidence:file-src--sessions--service.ts',
         ]),
+        service_causality: expect.arrayContaining(['evidence:file-src--sessions--service.ts']),
         tests: expect.arrayContaining(['evidence:file-src--sessions--session.test.ts']),
       });
+
+      const evidenceQuality = await readJson<{
+        service_causality_claim_count: number;
+        service_causality_evidence_backed_claims: number;
+        service_causality_uncertain_claims: number;
+        service_causality_missing_effect_claims: number;
+        service_causality_missing_step_link_claims: number;
+        service_causality_quality: {
+          missing_effect_claims: number;
+          missing_step_link_claims: number;
+          claim_examples: Array<{ flow_id: string; service_id: string; effects: number }>;
+        };
+        top_evidence_gaps: Array<{ kind: string; id: string; field?: string; reason: string }>;
+        top_uncertain_areas: string[];
+        actionability: {
+          top_evidence_gaps: Array<{
+            kind: string;
+            id: string;
+            field?: string;
+            reason: string;
+          }>;
+        };
+      }>(join(result.value.researchDir, 'evidence_quality.json'));
+      expect(evidenceQuality).toMatchObject({
+        service_causality_claim_count: 2,
+        service_causality_evidence_backed_claims: 2,
+        service_causality_uncertain_claims: 2,
+        service_causality_missing_effect_claims: 2,
+        service_causality_missing_step_link_claims: 0,
+      });
+      expect(evidenceQuality.service_causality_quality).toMatchObject({
+        missing_effect_claims: 2,
+        missing_step_link_claims: 0,
+      });
+      expect(evidenceQuality.service_causality_quality.claim_examples).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:hono--post--sessions--src--api.ts',
+          service_id: 'service:src--sessions',
+          effects: 0,
+        }),
+      );
+      expect(evidenceQuality.top_evidence_gaps).toContainEqual(
+        expect.objectContaining({
+          kind: 'uncertain_service_causality_effect',
+          id: 'flow:hono--post--sessions--src--api.ts service_causality service:src--sessions',
+          field: 'service_causality',
+          reason: expect.stringContaining('no recorded effects'),
+        }),
+      );
+      expect(evidenceQuality.actionability.top_evidence_gaps).toEqual(
+        evidenceQuality.top_evidence_gaps,
+      );
+      expect(evidenceQuality.top_uncertain_areas).toContain(
+        'service causality: flow:hono--post--sessions--src--api.ts service_causality service:src--sessions (uncertain_service_causality_effect)',
+      );
 
       const flowUnderstanding = await readJson<{
         contracts: Array<{

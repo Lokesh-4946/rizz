@@ -5697,6 +5697,27 @@ interface EvidenceGap {
   readonly to_entity_id?: string;
 }
 
+interface ServiceCausalityQualitySummary {
+  readonly total_claims: number;
+  readonly evidence_backed_claims: number;
+  readonly unsupported_claims: number;
+  readonly weak_evidence_claims: number;
+  readonly uncertain_claims: number;
+  readonly missing_evidence_claims: number;
+  readonly missing_effect_claims: number;
+  readonly missing_step_link_claims: number;
+  readonly evidence_coverage_score: number;
+  readonly confidence_mix: Record<Confidence, number>;
+  readonly claim_examples: readonly {
+    readonly flow_id: string;
+    readonly service_id: string;
+    readonly evidence_ids: number;
+    readonly effects: number;
+    readonly step_ids: number;
+    readonly confidence: Confidence;
+  }[];
+}
+
 interface EvidenceCalibrationClaimSet {
   readonly name: string;
   readonly claims: readonly BrainEntity[];
@@ -5855,11 +5876,93 @@ function fieldEvidenceGapRecords(params: {
   return gaps;
 }
 
+function serviceCausalityQualitySummary(
+  flows: readonly BrainEntity[],
+): ServiceCausalityQualitySummary {
+  const claims = flows.flatMap((flow) =>
+    safeFlowServiceCausality(flow).map((claim) => ({ flow, claim })),
+  );
+  const evidenceBackedClaims = claims.filter(({ claim }) => claim.evidence_ids.length > 0);
+  const weakEvidenceClaims = evidenceBackedClaims.filter(
+    ({ claim }) => claim.confidence !== 'verified',
+  );
+  const missingEvidenceClaims = claims.filter(({ claim }) => claim.evidence_ids.length === 0);
+  const missingEffectClaims = claims.filter(({ claim }) => claim.effects.length === 0);
+  const missingStepLinkClaims = claims.filter(({ claim }) => claim.step_ids.length === 0);
+  const confidenceMix = countByConfidence(claims.map(({ claim }) => claim.confidence));
+  return {
+    total_claims: claims.length,
+    evidence_backed_claims: evidenceBackedClaims.length,
+    unsupported_claims: missingEvidenceClaims.length,
+    weak_evidence_claims: weakEvidenceClaims.length,
+    uncertain_claims: confidenceMix.uncertain,
+    missing_evidence_claims: missingEvidenceClaims.length,
+    missing_effect_claims: missingEffectClaims.length,
+    missing_step_link_claims: missingStepLinkClaims.length,
+    evidence_coverage_score: scorePercent(evidenceBackedClaims.length, claims.length),
+    confidence_mix: confidenceMix,
+    claim_examples: claims.slice(0, 8).map(({ flow, claim }) => ({
+      flow_id: safeText(flow.id),
+      service_id: safeText(claim.service_id),
+      evidence_ids: claim.evidence_ids.length,
+      effects: claim.effects.length,
+      step_ids: claim.step_ids.length,
+      confidence: claim.confidence,
+    })),
+  };
+}
+
+function serviceCausalityEvidenceGapRecords(flows: readonly BrainEntity[]): EvidenceGap[] {
+  const gaps: EvidenceGap[] = [];
+  for (const flow of flows) {
+    for (const claim of safeFlowServiceCausality(flow)) {
+      const id = `${safeText(flow.id)} service_causality ${safeText(claim.service_id)}`;
+      if (claim.evidence_ids.length === 0) {
+        gaps.push({
+          kind: 'unsupported_service_causality',
+          id,
+          entity_type: 'flow',
+          field: 'service_causality',
+          severity: 'high',
+          confidence: claim.confidence,
+          reason:
+            'Service causality claim has no evidence_ids; static reachability cannot be inspected.',
+        });
+      }
+      if (claim.effects.length === 0) {
+        gaps.push({
+          kind: 'uncertain_service_causality_effect',
+          id,
+          entity_type: 'flow',
+          field: 'service_causality',
+          severity: 'medium',
+          confidence: claim.confidence,
+          reason: 'Service causality claim has no recorded effects, so impact is uncertain.',
+        });
+      }
+      if (claim.step_ids.length === 0) {
+        gaps.push({
+          kind: 'uncertain_service_causality_step',
+          id,
+          entity_type: 'flow',
+          field: 'service_causality',
+          severity: 'medium',
+          confidence: claim.confidence,
+          reason:
+            'Service causality claim is not linked to a reconstructed flow step; treat static-import reachability as uncertain.',
+        });
+      }
+    }
+  }
+  return gaps;
+}
+
 function topEvidenceGaps(params: {
   readonly entitiesWithoutEvidence: readonly BrainEntity[];
   readonly relationshipsWithoutEvidence: readonly BrainRelationship[];
   readonly missingEvidenceReferences: readonly string[];
   readonly fieldGaps: readonly EvidenceGap[];
+  readonly serviceCausalityGaps: readonly EvidenceGap[];
 }): EvidenceGap[] {
   const gaps: EvidenceGap[] = [
     ...params.missingEvidenceReferences.map((id) => ({
@@ -5889,6 +5992,7 @@ function topEvidenceGaps(params: {
         reason: 'Entity claim has no evidence reference.',
       })),
     ...params.fieldGaps,
+    ...params.serviceCausalityGaps,
   ];
   const severityRank = (severity: EvidenceGap['severity']): number => {
     if (severity === 'high') return 0;
@@ -6035,6 +6139,15 @@ function evidenceInspectHint(gap: EvidenceGap): string {
   if (gap.kind === 'unsupported_field') {
     return 'Inspect the field-specific evidence map for this component or flow.';
   }
+  if (gap.kind === 'unsupported_service_causality') {
+    return 'Inspect the flow service_causality entry and attach direct source evidence for the service reachability claim.';
+  }
+  if (
+    gap.kind === 'uncertain_service_causality_effect' ||
+    gap.kind === 'uncertain_service_causality_step'
+  ) {
+    return 'Inspect the service_causality effects and step_ids before relying on service impact claims.';
+  }
   return 'Inspect the entity evidence_ids and source files before relying on this claim.';
 }
 
@@ -6083,6 +6196,7 @@ function buildEvidenceCalibrationBreakdown(params: {
   readonly buckets: BrainBuckets;
   readonly relationships: readonly BrainRelationship[];
   readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly serviceCausalityQuality: ServiceCausalityQualitySummary;
   readonly topGaps: readonly EvidenceGap[];
   readonly redactedEvidenceCount: number;
   readonly redactedReferenceCount: number;
@@ -6151,6 +6265,15 @@ function buildEvidenceCalibrationBreakdown(params: {
       coverage: params.fieldCoverage.component,
     }),
     fieldCalibrationSurface({ surface: 'flow_fields', coverage: params.fieldCoverage.flow }),
+    {
+      surface: 'service_causality',
+      total_claims: params.serviceCausalityQuality.total_claims,
+      evidence_backed_claims: params.serviceCausalityQuality.evidence_backed_claims,
+      unsupported_claims: params.serviceCausalityQuality.unsupported_claims,
+      weak_evidence_claims: params.serviceCausalityQuality.weak_evidence_claims,
+      evidence_coverage_score: params.serviceCausalityQuality.evidence_coverage_score,
+      confidence_mix: params.serviceCausalityQuality.confidence_mix,
+    },
   ];
   const allSurfaces = [...categorySurfaces, ...surfaceMix];
   const weakAreas = topEvidenceWeakAreas(allSurfaces);
@@ -6181,6 +6304,7 @@ function unbackedClaimGroups(params: {
   readonly claimEntitiesWithoutEvidence: readonly BrainEntity[];
   readonly relationshipsWithoutEvidence: readonly BrainRelationship[];
   readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly serviceCausalityQuality: ServiceCausalityQualitySummary;
 }): Array<Record<string, unknown>> {
   const entityGroups = Object.entries(
     countByValue(params.claimEntitiesWithoutEvidence.map((entity) => entity.type)),
@@ -6231,7 +6355,22 @@ function unbackedClaimGroups(params: {
         'Inspect flow field_evidence maps for populated flow steps, tests, contracts, or risks without evidence.',
     },
   ].filter((group) => group.claim_count > 0);
-  return [...entityGroups, ...relationshipGroup, ...fieldGroups]
+  const serviceCausalityGroup =
+    params.serviceCausalityQuality.unsupported_claims === 0
+      ? []
+      : [
+          {
+            group: 'service causality claims',
+            claim_count: params.serviceCausalityQuality.unsupported_claims,
+            example_ids: params.serviceCausalityQuality.claim_examples
+              .filter((claim) => claim.evidence_ids === 0)
+              .map((claim) => `${claim.flow_id} -> ${claim.service_id}`)
+              .slice(0, 5),
+            inspect_hint:
+              'Inspect flow service_causality entries and add direct evidence_ids for static service reachability claims.',
+          },
+        ];
+  return [...entityGroups, ...relationshipGroup, ...fieldGroups, ...serviceCausalityGroup]
     .sort((a, b) => {
       const aCount = typeof a.claim_count === 'number' ? a.claim_count : 0;
       const bCount = typeof b.claim_count === 'number' ? b.claim_count : 0;
@@ -6246,6 +6385,7 @@ function lowConfidenceClaimAreas(params: {
   readonly claimEntitiesWithWeakEvidence: readonly BrainEntity[];
   readonly relationshipsWithWeakEvidence: readonly BrainRelationship[];
   readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly serviceCausalityQuality: ServiceCausalityQualitySummary;
 }): Array<Record<string, unknown>> {
   const entityGroups = Object.entries(
     countByValue(params.claimEntitiesWithWeakEvidence.map((entity) => entity.type)),
@@ -6311,7 +6451,22 @@ function lowConfidenceClaimAreas(params: {
         'Confirm flow fields backed by inferred flow evidence before using them as execution certainty.',
     },
   ].filter((area) => area.claim_count > 0);
-  return [...entityGroups, ...relationshipArea, ...fieldAreas]
+  const serviceCausalityArea =
+    params.serviceCausalityQuality.weak_evidence_claims === 0
+      ? []
+      : [
+          {
+            area: 'service causality evidence-backed claims',
+            claim_count: params.serviceCausalityQuality.weak_evidence_claims,
+            confidence_mix: params.serviceCausalityQuality.confidence_mix,
+            example_ids: params.serviceCausalityQuality.claim_examples
+              .map((claim) => `${claim.flow_id} -> ${claim.service_id}`)
+              .slice(0, 5),
+            inspect_hint:
+              'Treat static-import service causality as inferred until runtime traces, smoke checks, or direct behavior tests verify it.',
+          },
+        ];
+  return [...entityGroups, ...relationshipArea, ...fieldAreas, ...serviceCausalityArea]
     .sort((a, b) => {
       const aCount = typeof a.claim_count === 'number' ? a.claim_count : 0;
       const bCount = typeof b.claim_count === 'number' ? b.claim_count : 0;
@@ -6434,9 +6589,19 @@ function buildEvidenceQualityArtifact(params: {
 }): Record<string, unknown> {
   const entities = allBucketEntities(params.buckets);
   const claimEntities = entities.filter((entity) => entity.type !== 'evidence');
+  const fieldEvidenceEntries = [
+    ...params.buckets.components.flatMap((component) =>
+      Object.values(recordStringArrayData(component, 'field_evidence')),
+    ),
+    ...params.buckets.flows.flatMap((flow) =>
+      Object.values(recordStringArrayData(flow, 'field_evidence')),
+    ),
+  ];
+  const fieldEvidenceIds = unique(fieldEvidenceEntries.flat());
   const referencedEvidenceIds = unique([
     ...entities.flatMap((entity) => entity.evidence_ids),
     ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+    ...fieldEvidenceIds,
   ]);
   const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
   const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
@@ -6483,14 +6648,6 @@ function buildEvidenceQualityArtifact(params: {
     relationshipsWithEvidence.length,
     params.relationships.length,
   );
-  const fieldEvidenceEntries = [
-    ...params.buckets.components.flatMap((component) =>
-      Object.values(recordStringArrayData(component, 'field_evidence')),
-    ),
-    ...params.buckets.flows.flatMap((flow) =>
-      Object.values(recordStringArrayData(flow, 'field_evidence')),
-    ),
-  ];
   const fieldsWithEvidence = fieldEvidenceEntries.filter((ids) => ids.length > 0).length;
   const fieldEvidenceScore = scorePercent(fieldsWithEvidence, fieldEvidenceEntries.length);
   const fieldCoverage = fieldCoverageByEntityType({
@@ -6501,6 +6658,8 @@ function buildEvidenceQualityArtifact(params: {
     components: params.buckets.components,
     flows: params.buckets.flows,
   });
+  const serviceCausalityQuality = serviceCausalityQualitySummary(params.buckets.flows);
+  const serviceCausalityGaps = serviceCausalityEvidenceGapRecords(params.buckets.flows);
   const unsupportedFieldClaims =
     fieldCoverage.component.unsupported_fields + fieldCoverage.flow.unsupported_fields;
   const weakEvidenceFieldClaims =
@@ -6508,13 +6667,19 @@ function buildEvidenceQualityArtifact(params: {
   const unsupportedClaims =
     claimEntitiesWithoutEvidence.length +
     relationshipsWithoutEvidence.length +
-    unsupportedFieldClaims;
+    unsupportedFieldClaims +
+    serviceCausalityQuality.unsupported_claims;
   const weakEvidenceClaims =
     claimEntitiesWithWeakEvidence.length +
     relationshipsWithWeakEvidence.length +
-    weakEvidenceFieldClaims;
+    weakEvidenceFieldClaims +
+    serviceCausalityQuality.weak_evidence_claims;
   const evidenceGapCount =
-    missingEvidenceReferences.length + unsupportedClaims + weakEvidenceClaims;
+    missingEvidenceReferences.length +
+    unsupportedClaims +
+    weakEvidenceClaims +
+    serviceCausalityQuality.missing_effect_claims +
+    serviceCausalityQuality.missing_step_link_claims;
   const evidenceCoverageScore = scorePercent(claimsWithEvidence, totalClaims);
   const referenceIntegrityScore = Math.max(0, 100 - missingEvidenceReferences.length * 10);
   const redactionSafetyScore = Math.max(0, 100 - unsafeSensitiveReferenceCount * 25);
@@ -6530,6 +6695,7 @@ function buildEvidenceQualityArtifact(params: {
       .filter((entity) => entity.confidence === 'uncertain')
       .slice(0, 8)
       .map((entity) => `${entity.type}: ${entity.id}`),
+    ...serviceCausalityGaps.slice(0, 8).map((gap) => `service causality: ${gap.id} (${gap.kind})`),
     ...missingEvidenceReferences.slice(0, 8).map((id) => `missing evidence: ${id}`),
   ]).slice(0, 12);
   const topGaps = topEvidenceGaps({
@@ -6537,11 +6703,13 @@ function buildEvidenceQualityArtifact(params: {
     relationshipsWithoutEvidence,
     missingEvidenceReferences,
     fieldGaps,
+    serviceCausalityGaps,
   });
   const evidenceCalibration = buildEvidenceCalibrationBreakdown({
     buckets: params.buckets,
     relationships: params.relationships,
     fieldCoverage,
+    serviceCausalityQuality,
     topGaps,
     redactedEvidenceCount,
     redactedReferenceCount,
@@ -6557,11 +6725,13 @@ function buildEvidenceQualityArtifact(params: {
     claimEntitiesWithoutEvidence,
     relationshipsWithoutEvidence,
     fieldCoverage,
+    serviceCausalityQuality,
   });
   const lowConfidenceAreas = lowConfidenceClaimAreas({
     claimEntitiesWithWeakEvidence,
     relationshipsWithWeakEvidence,
     fieldCoverage,
+    serviceCausalityQuality,
   });
   const redactionHiddenEvidence = redactionHiddenEvidenceSummary({
     redactedEvidenceCount,
@@ -6609,6 +6779,14 @@ function buildEvidenceQualityArtifact(params: {
     redaction_safety_score: redactionSafetyScore,
     confidence_distribution: confidenceDistribution,
     field_coverage_by_entity_type: fieldCoverage,
+    service_causality_quality: serviceCausalityQuality,
+    service_causality_claim_count: serviceCausalityQuality.total_claims,
+    service_causality_evidence_backed_claims: serviceCausalityQuality.evidence_backed_claims,
+    service_causality_uncertain_claims: serviceCausalityQuality.uncertain_claims,
+    service_causality_missing_evidence_claims: serviceCausalityQuality.missing_evidence_claims,
+    service_causality_missing_effect_claims: serviceCausalityQuality.missing_effect_claims,
+    service_causality_missing_step_link_claims: serviceCausalityQuality.missing_step_link_claims,
+    service_causality_coverage_score: serviceCausalityQuality.evidence_coverage_score,
     evidence_calibration: evidenceCalibration,
     actionability: {
       summary: actionabilitySummary,
