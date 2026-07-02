@@ -14742,6 +14742,93 @@ function renderServiceCausalityCard(flows: readonly BrainEntity[]): string {
   </article>`;
 }
 
+interface ServiceReachabilityQuality {
+  readonly score: number;
+  readonly posture: string;
+  readonly pathCount: number;
+  readonly evidenceCoverage: number;
+  readonly freshnessScore: number;
+  readonly uncertainCount: number;
+  readonly unknownCount: number;
+  readonly missingEvidenceCount: number;
+  readonly missingEffectCount: number;
+  readonly missingStepLinkCount: number;
+  readonly driftedPathCount: number;
+  readonly stalePathCount: number;
+  readonly summary: string;
+}
+
+function serviceReachabilityQualityFromLatest(
+  latest: Record<string, unknown>,
+): ServiceReachabilityQuality {
+  const architectureReasoning = nestedRecord(latest, 'latest_architecture_reasoning');
+  const causalityReasoning = nestedRecord(architectureReasoning, 'service_causality_reasoning');
+  const evidenceQuality = nestedRecord(latest, 'latest_evidence_quality');
+  const quality = nestedRecord(evidenceQuality, 'service_causality_quality');
+  const incrementalUpdate = nestedRecord(latest, 'latest_incremental_update');
+  const delta = nestedRecord(incrementalUpdate, 'service_causality_delta');
+  const confidenceDistribution = nestedRecord(causalityReasoning, 'confidence_distribution');
+
+  const pathCount = recordNumber(causalityReasoning, 'total_paths');
+  const totalClaims = recordNumber(quality, 'total_claims');
+  const evidenceCoverage =
+    totalClaims > 0
+      ? recordNumber(quality, 'evidence_coverage_score')
+      : recordNumber(evidenceQuality, 'service_causality_coverage_score');
+  const freshnessScore = recordNumber(delta, 'freshness_score');
+  const uncertainCount = Math.max(
+    recordNumber(confidenceDistribution, 'uncertain'),
+    recordNumber(evidenceQuality, 'service_causality_uncertain_claims'),
+  );
+  const unknownCount =
+    asStringArray(causalityReasoning.unknowns).length +
+    asStringArray(causalityReasoning.missing_effect_paths).length +
+    asStringArray(causalityReasoning.missing_step_link_paths).length;
+  const missingEvidenceCount = recordNumber(
+    evidenceQuality,
+    'service_causality_missing_evidence_claims',
+  );
+  const missingEffectCount = recordNumber(
+    evidenceQuality,
+    'service_causality_missing_effect_claims',
+  );
+  const missingStepLinkCount = recordNumber(
+    evidenceQuality,
+    'service_causality_missing_step_link_claims',
+  );
+  const driftedPathCount = recordNumber(delta, 'drifted_path_count');
+  const stalePathCount = recordNumber(delta, 'stale_path_count');
+  const baseScore = pathCount === 0 ? 0 : Math.round((evidenceCoverage + freshnessScore) / 2);
+  const qualityPenalty =
+    Math.min(25, uncertainCount * 4) +
+    Math.min(20, missingEvidenceCount * 8) +
+    Math.min(15, missingEffectCount * 5) +
+    Math.min(15, missingStepLinkCount * 5) +
+    Math.min(20, driftedPathCount * 4 + stalePathCount * 6);
+  const score = Math.max(0, Math.min(100, baseScore - qualityPenalty));
+  const posture = qualityBandFromScore(score);
+  const summary =
+    pathCount === 0
+      ? 'No flow-service reachability paths are reconstructed yet.'
+      : `${pathCount} static reachability path(s); ${uncertainCount} uncertain/static-import-only, ${unknownCount} unknown, ${freshnessScore}/100 fresh.`;
+
+  return {
+    score,
+    posture,
+    pathCount,
+    evidenceCoverage,
+    freshnessScore,
+    uncertainCount,
+    unknownCount,
+    missingEvidenceCount,
+    missingEffectCount,
+    missingStepLinkCount,
+    driftedPathCount,
+    stalePathCount,
+    summary,
+  };
+}
+
 function renderFlagshipSummary(params: {
   readonly understandingScore: unknown;
   readonly askReadiness: unknown;
@@ -14909,29 +14996,109 @@ function renderIncrementalHealthDetails(latest: Record<string, unknown>): string
 function renderServiceCausalityDetails(
   flows: readonly BrainEntity[],
   evidenceById: ReadonlyMap<string, BrainEntity>,
+  latest: Record<string, unknown>,
 ): string {
   const rows = flowServiceCausalityRows(flows);
+  const reachability = serviceReachabilityQualityFromLatest(latest);
+  const architectureReasoning = nestedRecord(latest, 'latest_architecture_reasoning');
+  const causalityReasoning = nestedRecord(architectureReasoning, 'service_causality_reasoning');
+  const incrementalUpdate = nestedRecord(latest, 'latest_incremental_update');
+  const delta = nestedRecord(incrementalUpdate, 'service_causality_delta');
+  const routeImpacts = recordArray(causalityReasoning, 'route_impacts').filter(isRecord);
+  const pathDeltas = recordArray(delta, 'path_deltas').filter(isRecord);
+  const effects = asStringArray(causalityReasoning.effects).slice(0, 8);
+  const unknowns = asStringArray(causalityReasoning.unknowns).slice(0, 6);
+  const missingEffectPaths = asStringArray(causalityReasoning.missing_effect_paths).slice(0, 6);
+  const missingStepLinkPaths = asStringArray(causalityReasoning.missing_step_link_paths).slice(
+    0,
+    6,
+  );
+  const qualityCards = `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${reachability.score}/100 · ${htmlEscape(reachability.posture)}</div>
+      <h3>Reachability Quality</h3>
+      ${renderList([
+        reachability.summary,
+        `${reachability.evidenceCoverage}/100 evidence coverage`,
+        `${reachability.uncertainCount} uncertain/static-import-only claim(s)`,
+        `${reachability.missingEvidenceCount} missing evidence claim(s)`,
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Effects & Unknowns</h3>
+      ${renderList([
+        `${recordNumber(causalityReasoning, 'effect_count')} distinct effect(s)`,
+        `${reachability.missingEffectCount} missing effect claim(s)`,
+        `${reachability.missingStepLinkCount} missing step-link claim(s)`,
+        ...effects,
+        ...unknowns,
+        ...missingEffectPaths,
+        ...missingStepLinkPaths,
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Freshness</h3>
+      ${renderList([
+        `${reachability.freshnessScore}/100 freshness`,
+        `${recordNumber(delta, 'stable_path_count')} stable path(s)`,
+        `${recordNumber(delta, 'recomputed_path_count')} recomputed/new path(s)`,
+        `${reachability.driftedPathCount} drifted path(s)`,
+        `${reachability.stalePathCount} stale path(s)`,
+        ...asStringArray(delta.affected_flows)
+          .slice(0, 3)
+          .map((flow) => `affected flow: ${flow}`),
+        ...asStringArray(delta.affected_services)
+          .slice(0, 3)
+          .map((service) => `affected service: ${service}`),
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/research/architecture_reasoning.json',
+        '.rizz/research/evidence_quality.json',
+        '.rizz/research/incremental_update.json',
+      ])}
+    </article>
+  </div>`;
   if (rows.length === 0) {
-    return '<p class="muted">No service causality links detected yet.</p>';
+    return `${qualityCards}<p class="muted">No service causality links detected yet.</p>`;
   }
-  return `<table><thead><tr><th>Flow</th><th>Service</th><th>Cause</th><th>Effects</th><th>Evidence</th><th>Unknowns</th></tr></thead><tbody>${rows
-    .map(
-      (row) => `<tr data-search="${htmlEscape(
+  const pathCards = rows
+    .slice(0, 8)
+    .map((row) => {
+      const routeImpact = routeImpacts.find(
+        (impact) => impact.flow_id === row.flowId && impact.service_id === row.service.service_id,
+      );
+      const pathDelta = pathDeltas.find(
+        (deltaItem) =>
+          deltaItem.flow_id === row.flowId && deltaItem.service_id === row.service.service_id,
+      );
+      const routePath = recordString(routeImpact, 'route_path', row.flowName);
+      const deltaStatus = recordString(pathDelta, 'status', 'unknown freshness');
+      const whatBreaks = asStringArray(routeImpact?.what_breaks).slice(0, 3);
+      const reasons = asStringArray(pathDelta?.reasons).slice(0, 3);
+      return `<article class="card compact" data-search="${htmlEscape(
         `${row.flowId} ${row.flowName} ${row.service.service_id} ${row.service.cause} ${row.service.effects.join(' ')}`,
       )}">
-        <td><strong>${htmlEscape(row.flowName)}</strong><br><span class="muted">${htmlEscape(
-          row.flowId,
-        )}</span></td>
-        <td><strong>${htmlEscape(row.service.service_name)}</strong><br><span class="muted">${htmlEscape(
-          row.service.service_id,
-        )} · ${htmlEscape(row.service.confidence)}</span></td>
-        <td>${htmlEscape(row.service.cause)}</td>
-        <td>${renderList(row.service.effects)}</td>
-        <td>${renderEvidenceLinks(row.service.evidence_ids, evidenceById)}</td>
-        <td>${renderList(row.service.unknowns)}</td>
-      </tr>`,
-    )
-    .join('')}</tbody></table>`;
+        <div class="badge">${htmlEscape(row.service.confidence)} · ${htmlEscape(deltaStatus)}</div>
+        <h3>${htmlEscape(routePath)} -> ${htmlEscape(row.service.service_name)}</h3>
+        <p class="muted">${htmlEscape(row.flowId)} · ${htmlEscape(row.service.service_id)}</p>
+        <p>${htmlEscape(row.service.cause)}</p>
+        <h4>Effects</h4>
+        ${renderList(row.service.effects)}
+        <h4>What Breaks</h4>
+        ${renderList(whatBreaks)}
+        <h4>Unknowns</h4>
+        ${renderList(row.service.unknowns)}
+        <h4>Freshness Reasons</h4>
+        ${renderList(reasons)}
+        <h4>Evidence</h4>
+        ${renderEvidenceLinks(row.service.evidence_ids, evidenceById)}
+      </article>`;
+    })
+    .join('');
+  return `${qualityCards}<h3>Reachability Paths</h3><div class="grid">${pathCards}</div>`;
 }
 
 function renderUnderstandingDashboard(score: unknown): string {
@@ -15165,13 +15332,14 @@ function renderReport(params: {
     posture: params.buckets.services.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderServiceCards(params.buckets.services, evidenceById)}</div>`,
   });
+  const serviceCausalityRows = flowServiceCausalityRows(params.buckets.flows);
+  const serviceReachability = serviceReachabilityQualityFromLatest(params.latest);
   const serviceCausalityObject = renderObjectDetails({
     title: 'Service Causality',
-    summary:
-      'Flow-service cause, effect, evidence, and unknown rows reconstructed from local service links.',
-    count: flowServiceCausalityRows(params.buckets.flows).length,
-    posture: flowServiceCausalityRows(params.buckets.flows).length === 0 ? 'weak' : 'usable',
-    body: renderServiceCausalityDetails(params.buckets.flows, evidenceById),
+    summary: `Reachability ${serviceReachability.score}/100: ${serviceReachability.summary}`,
+    count: serviceCausalityRows.length,
+    posture: serviceCausalityRows.length === 0 ? 'weak' : serviceReachability.posture,
+    body: renderServiceCausalityDetails(params.buckets.flows, evidenceById, params.latest),
   });
   const incrementalHealthObject = renderObjectDetails({
     title: 'Incremental Health',
