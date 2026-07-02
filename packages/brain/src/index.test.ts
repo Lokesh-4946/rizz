@@ -3156,6 +3156,28 @@ describe('project brain generation', () => {
           recomputed_ids: string[];
           source_changed_ids: string[];
         };
+        service_causality_delta: {
+          previous_path_count: number;
+          current_path_count: number;
+          stable_path_count: number;
+          recomputed_path_count: number;
+          drifted_path_count: number;
+          evidence_changed_path_count: number;
+          affected_flow_count: number;
+          affected_service_count: number;
+          affected_flows: string[];
+          affected_services: string[];
+          changed_evidence_ids: string[];
+          freshness_score: number;
+          path_deltas: Array<{
+            flow_id: string;
+            service_id: string;
+            status: string;
+            changed_files: string[];
+            changed_evidence_ids: string[];
+            reasons: string[];
+          }>;
+        };
         understanding_deltas: {
           by_surface_type: {
             flow: { changed: number; stable: number };
@@ -3190,6 +3212,35 @@ describe('project brain generation', () => {
       expect(incremental.flow_incremental_health.source_changed_ids).toContain(
         'flow:http--post--orders--src--server.ts',
       );
+      expect(incremental.service_causality_delta).toMatchObject({
+        previous_path_count: 2,
+        current_path_count: 2,
+        stable_path_count: 0,
+        recomputed_path_count: 0,
+        drifted_path_count: 2,
+        evidence_changed_path_count: 2,
+        affected_flow_count: 2,
+        affected_service_count: 1,
+        affected_flows: ['flow:http--post--orders--src--server.ts', 'flow:scripts--dev'],
+        affected_services: ['service:src--orders'],
+        changed_evidence_ids: ['evidence:file-src--orders--service.ts'],
+        freshness_score: 0,
+      });
+      expect(incremental.service_causality_delta.path_deltas).toContainEqual(
+        expect.objectContaining({
+          flow_id: 'flow:http--post--orders--src--server.ts',
+          service_id: 'service:src--orders',
+          status: 'drifted',
+          changed_files: ['src/orders/service.ts'],
+          changed_evidence_ids: ['evidence:file-src--orders--service.ts'],
+          reasons: expect.arrayContaining([
+            'linked evidence changed',
+            'linked source file changed',
+            'target service was recomputed',
+            'causality fingerprint stayed stable while linked evidence changed',
+          ]),
+        }),
+      );
       expect(incremental.understanding_deltas.by_surface_type.flow.changed).toBeGreaterThan(0);
       expect(incremental.understanding_deltas.by_surface_type.service.changed).toBe(1);
 
@@ -3202,11 +3253,21 @@ describe('project brain generation', () => {
           flow_recomputed: number;
           service_incremental_health: { source_changed_ids: string[] };
           flow_incremental_health: { reused_ids: string[]; source_changed_ids: string[] };
+          service_causality_delta: {
+            drifted_path_count: number;
+            affected_services: string[];
+            changed_evidence_ids: string[];
+            freshness_score: number;
+          };
         };
         project_state?: {
           incremental_health?: {
             services?: { recomputed_ids: string[] };
             flows?: { reused_ids: string[]; recomputed_ids: string[] };
+            service_causality?: {
+              drifted_path_count: number;
+              affected_flows: string[];
+            };
           };
         };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
@@ -3229,6 +3290,16 @@ describe('project brain generation', () => {
       expect(latest.project_state?.incremental_health?.flows?.recomputed_ids).toContain(
         'flow:http--post--orders--src--server.ts',
       );
+      expect(latest.latest_incremental_update.service_causality_delta).toMatchObject({
+        drifted_path_count: 2,
+        affected_services: ['service:src--orders'],
+        changed_evidence_ids: ['evidence:file-src--orders--service.ts'],
+        freshness_score: 0,
+      });
+      expect(latest.project_state?.incremental_health?.service_causality).toMatchObject({
+        drifted_path_count: 2,
+        affected_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
+      });
 
       const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(missionControl).toContain('Service Causality');
