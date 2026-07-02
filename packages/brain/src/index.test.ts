@@ -1487,6 +1487,7 @@ describe('project brain generation', () => {
             component: { stable: number; changed: number; new: number; stale: number };
             evidence: { stable: number; changed: number; new: number; stale: number };
             flow: { stable: number; changed: number; new: number; stale: number };
+            service: { stable: number; changed: number; new: number; stale: number };
             unknown: { stable: number; changed: number; new: number; stale: number };
           };
           score_deltas: Array<{
@@ -1755,6 +1756,7 @@ describe('project brain generation', () => {
           by_surface_type: {
             architecture: { changed: number };
             evidence: { new: number };
+            service: { new: number };
           };
         };
       }>(join(third.value.researchDir, 'incremental_update.json'));
@@ -2919,6 +2921,197 @@ describe('project brain generation', () => {
       expect(missionControl).toContain('Service Intelligence');
       expect(missionControl).toContain('rizz explain service src/orders');
       expect(missionControl).toContain('.rizz/research/service_intelligence.json');
+    });
+  });
+
+  it('reports service and related flow incremental reuse after a service source change', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src', 'orders'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'http-route-incremental-app',
+          scripts: { dev: 'tsx src/server.ts', test: 'vitest run' },
+          dependencies: { express: '^5.0.0' },
+          devDependencies: { tsx: '^4.0.0', vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import { createOrder } from "./orders/service.js";',
+          '',
+          'const app = express();',
+          'app.post("/orders", async (req, res) => {',
+          '  const order = createOrder(req.body);',
+          '  return res.json(order);',
+          '});',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'health.ts'),
+        [
+          'import express from "express";',
+          '',
+          'const health = express();',
+          'health.get("/health", (_req, res) => res.json({ ok: true }));',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'orders', 'service.ts'),
+        [
+          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          '  const currency = process.env.DEFAULT_CURRENCY ?? "USD";',
+          '  return { id: `order-1-${currency}`, input };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'orders', 'orders.test.ts'),
+        'import { it } from "vitest";\nit("covers the post orders route", () => {});\n',
+      );
+
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:50:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      await writeFile(
+        join(dir, 'src', 'orders', 'service.ts'),
+        [
+          'export function createOrder(input: unknown): { id: string; input: unknown } {',
+          '  const currency = process.env.DEFAULT_CURRENCY ?? "USD";',
+          '  return { id: `order-2-${currency}`, input };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const second = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:51:00.000Z'),
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+
+      const incremental = await readJson<{
+        changed_files: string[];
+        service_count: number;
+        service_changed: number;
+        service_recomputed: number;
+        service_reused: number;
+        reused_understanding_count: number;
+        service_incremental_health: {
+          changed_ids: string[];
+          recomputed_ids: string[];
+          source_changed_ids: string[];
+        };
+        flow_count: number;
+        flow_changed: number;
+        flow_recomputed: number;
+        flow_reused: number;
+        flow_incremental_health: {
+          changed_ids: string[];
+          reused_ids: string[];
+          recomputed_ids: string[];
+          source_changed_ids: string[];
+        };
+        understanding_deltas: {
+          by_surface_type: {
+            flow: { changed: number; stable: number };
+            service: { changed: number };
+          };
+        };
+      }>(join(second.value.researchDir, 'incremental_update.json'));
+      expect(incremental.changed_files).toEqual(['src/orders/service.ts']);
+      expect(incremental).toMatchObject({
+        service_count: 1,
+        service_changed: 1,
+        service_recomputed: 1,
+        service_reused: 0,
+      });
+      expect(incremental.flow_count).toBeGreaterThan(1);
+      expect(incremental.flow_changed).toBeGreaterThan(0);
+      expect(incremental.flow_recomputed).toBeGreaterThan(0);
+      expect(incremental.reused_understanding_count).toBeGreaterThan(0);
+      expect(incremental.service_incremental_health.changed_ids).toEqual(['service:src--orders']);
+      expect(incremental.service_incremental_health.recomputed_ids).toEqual([
+        'service:src--orders',
+      ]);
+      expect(incremental.service_incremental_health.source_changed_ids).toEqual([
+        'service:src--orders',
+      ]);
+      expect(incremental.flow_incremental_health.changed_ids).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
+      expect(incremental.flow_incremental_health.recomputed_ids).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
+      expect(incremental.flow_incremental_health.source_changed_ids).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
+      expect(incremental.understanding_deltas.by_surface_type.flow.changed).toBeGreaterThan(0);
+      expect(incremental.understanding_deltas.by_surface_type.service.changed).toBe(1);
+
+      const latest = await readJson<{
+        latest_incremental_update: {
+          service_count: number;
+          service_recomputed: number;
+          flow_count: number;
+          flow_reused: number;
+          flow_recomputed: number;
+          service_incremental_health: { source_changed_ids: string[] };
+          flow_incremental_health: { reused_ids: string[]; source_changed_ids: string[] };
+        };
+        project_state?: {
+          incremental_health?: {
+            services?: { recomputed_ids: string[] };
+            flows?: { reused_ids: string[]; recomputed_ids: string[] };
+          };
+        };
+      }>(join(dir, '.rizz', 'brain', 'latest.json'));
+      expect(latest.latest_incremental_update).toMatchObject({
+        service_count: 1,
+        service_recomputed: 1,
+      });
+      expect(latest.latest_incremental_update.flow_count).toBe(incremental.flow_count);
+      expect(latest.latest_incremental_update.flow_reused).toBe(incremental.flow_reused);
+      expect(latest.latest_incremental_update.flow_recomputed).toBe(incremental.flow_recomputed);
+      expect(
+        latest.latest_incremental_update.service_incremental_health.source_changed_ids,
+      ).toEqual(['service:src--orders']);
+      expect(latest.latest_incremental_update.flow_incremental_health.source_changed_ids).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
+      expect(latest.project_state?.incremental_health?.services?.recomputed_ids).toEqual([
+        'service:src--orders',
+      ]);
+      expect(latest.project_state?.incremental_health?.flows?.recomputed_ids).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
+
+      const flowUnderstanding = await readJson<{
+        incremental_update: {
+          changed_count: number;
+          reused_count: number;
+          recomputed_count: number;
+          source_changed: string[];
+        };
+      }>(join(second.value.researchDir, 'flow_understanding.json'));
+      expect(flowUnderstanding.incremental_update).toMatchObject({
+        changed_count: incremental.flow_changed,
+        reused_count: incremental.flow_reused,
+        recomputed_count: incremental.flow_recomputed,
+      });
+      expect(flowUnderstanding.incremental_update.source_changed).toContain(
+        'flow:http--post--orders--src--server.ts',
+      );
     });
   });
 

@@ -548,6 +548,18 @@ interface IncrementalUnderstandingMetrics {
   readonly current_files: readonly string[];
   readonly new_files: readonly string[];
   readonly affected_flows: readonly string[];
+  readonly service_count: number;
+  readonly service_changed: number;
+  readonly service_stale: number;
+  readonly service_reused: number;
+  readonly service_recomputed: number;
+  readonly service_incremental_health: IncrementalEntityTypeHealth;
+  readonly flow_count: number;
+  readonly flow_changed: number;
+  readonly flow_stale: number;
+  readonly flow_reused: number;
+  readonly flow_recomputed: number;
+  readonly flow_incremental_health: IncrementalEntityTypeHealth;
   readonly previous_entity_count: number;
   readonly current_entity_count: number;
   readonly added_entity_count: number;
@@ -573,11 +585,28 @@ interface IncrementalEntityDelta {
   readonly name: string;
 }
 
+interface IncrementalEntityTypeHealth {
+  readonly entity_type: 'service' | 'flow';
+  readonly total: number;
+  readonly changed: number;
+  readonly new: number;
+  readonly stale: number;
+  readonly reused: number;
+  readonly recomputed: number;
+  readonly status_counts: Readonly<Record<string, number>>;
+  readonly changed_ids: readonly string[];
+  readonly reused_ids: readonly string[];
+  readonly recomputed_ids: readonly string[];
+  readonly stale_ids: readonly string[];
+  readonly source_changed_ids: readonly string[];
+}
+
 type IncrementalUnderstandingSurfaceType =
   | 'architecture'
   | 'component'
   | 'evidence'
   | 'flow'
+  | 'service'
   | 'unknown';
 
 type IncrementalUnderstandingSurfaceStatus = 'changed' | 'new' | 'stable' | 'stale';
@@ -11039,6 +11068,18 @@ function buildIncrementalUnderstandingMetrics(params: {
     params.relationships,
   );
   const evidenceDelta = buildEvidenceDelta(previousEntities, currentEntities);
+  const serviceIncrementalHealth = buildEntityTypeIncrementalHealth({
+    entityType: 'service',
+    previousEntities,
+    currentEntities,
+    changedFileSet,
+  });
+  const flowIncrementalHealth = buildEntityTypeIncrementalHealth({
+    entityType: 'flow',
+    previousEntities,
+    currentEntities,
+    changedFileSet,
+  });
   const staleFactCandidates = unique([
     ...staleFiles.map((file) => entityId('file', file)),
     ...currentEntities
@@ -11056,6 +11097,7 @@ function buildIncrementalUnderstandingMetrics(params: {
     previousRelationships: params.previous.relationships,
     currentRelationships: params.relationships,
     relationshipDelta,
+    changedFiles,
   });
 
   return {
@@ -11074,6 +11116,18 @@ function buildIncrementalUnderstandingMetrics(params: {
     current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
     new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
     affected_flows: changedFlows.map((flow) => flow.id),
+    service_count: serviceIncrementalHealth.total,
+    service_changed: serviceIncrementalHealth.changed,
+    service_stale: serviceIncrementalHealth.stale,
+    service_reused: serviceIncrementalHealth.reused,
+    service_recomputed: serviceIncrementalHealth.recomputed,
+    service_incremental_health: serviceIncrementalHealth,
+    flow_count: flowIncrementalHealth.total,
+    flow_changed: flowIncrementalHealth.changed,
+    flow_stale: flowIncrementalHealth.stale,
+    flow_reused: flowIncrementalHealth.reused,
+    flow_recomputed: flowIncrementalHealth.recomputed,
+    flow_incremental_health: flowIncrementalHealth,
     previous_entity_count: previousEntities.length,
     current_entity_count: currentEntities.length,
     added_entity_count: addedEntities.length,
@@ -11155,6 +11209,91 @@ function buildEvidenceDelta(
   };
 }
 
+function buildEntityTypeIncrementalHealth(params: {
+  readonly entityType: 'service' | 'flow';
+  readonly previousEntities: readonly BrainEntity[];
+  readonly currentEntities: readonly BrainEntity[];
+  readonly changedFileSet: ReadonlySet<string>;
+}): IncrementalEntityTypeHealth {
+  const previousById = new Map(
+    params.previousEntities
+      .filter((entity) => entity.type === params.entityType)
+      .map((entity) => [entity.id, entity]),
+  );
+  const currentEntities = params.currentEntities.filter(
+    (entity) => entity.type === params.entityType,
+  );
+  const currentById = new Map(currentEntities.map((entity) => [entity.id, entity]));
+  const changedIds: string[] = [];
+  const newIds: string[] = [];
+  const reusedIds: string[] = [];
+  const recomputedIds: string[] = [];
+  const staleIds: string[] = [];
+  const sourceChangedIds: string[] = [];
+
+  for (const current of currentEntities) {
+    const previous = previousById.get(current.id);
+    const isNew = previous === undefined;
+    const isStale = current.latest_status === 'stale';
+    const isSemanticChanged =
+      previous !== undefined && entitySemanticHash(previous) !== entitySemanticHash(current);
+    const isSourceChanged = entityIncrementalFiles(current).some((file) =>
+      params.changedFileSet.has(file),
+    );
+
+    if (isSourceChanged) sourceChangedIds.push(current.id);
+    if (isNew) newIds.push(current.id);
+    if (isStale) {
+      staleIds.push(current.id);
+      continue;
+    }
+    if (isNew || isSemanticChanged || isSourceChanged || current.latest_status === 'changed') {
+      changedIds.push(current.id);
+      recomputedIds.push(current.id);
+      continue;
+    }
+    if (previous !== undefined) reusedIds.push(current.id);
+  }
+
+  for (const previous of previousById.values()) {
+    if (!currentById.has(previous.id)) staleIds.push(previous.id);
+  }
+
+  return {
+    entity_type: params.entityType,
+    total: currentEntities.length,
+    changed: changedIds.length,
+    new: newIds.length,
+    stale: unique(staleIds).length,
+    reused: reusedIds.length,
+    recomputed: recomputedIds.length,
+    status_counts: countByValue(currentEntities.map((entity) => entity.latest_status)),
+    changed_ids: unique(changedIds),
+    reused_ids: unique(reusedIds),
+    recomputed_ids: unique(recomputedIds),
+    stale_ids: unique(staleIds),
+    source_changed_ids: unique(sourceChangedIds),
+  };
+}
+
+function entityIncrementalFiles(entity: BrainEntity): string[] {
+  if (entity.type === 'flow') {
+    return unique([
+      ...stringArrayData(entity, 'files'),
+      ...stringArrayData(entity, 'tests'),
+      ...stringArrayData(entity, 'configs'),
+    ]);
+  }
+  return unique([
+    ...entity.source_files,
+    ...stringArrayData(entity, 'files'),
+    ...stringArrayData(entity, 'tests'),
+    ...stringArrayData(entity, 'configs'),
+    ...stringArrayData(entity, 'entrypoints'),
+    ...stringArrayData(entity, 'deployment_configs'),
+  ]);
+}
+
 function buildUnderstandingDeltas(params: {
   readonly previousFingerprint: string | null;
   readonly previousEntities: readonly BrainEntity[];
@@ -11162,10 +11301,12 @@ function buildUnderstandingDeltas(params: {
   readonly previousRelationships: readonly BrainRelationship[];
   readonly currentRelationships: readonly BrainRelationship[];
   readonly relationshipDelta: IncrementalRelationshipDelta;
+  readonly changedFiles: readonly string[];
 }): IncrementalUnderstandingDeltas {
   const entitySurfaces = buildEntityUnderstandingSurfaces(
     params.previousEntities,
     params.currentEntities,
+    new Set(params.changedFiles),
   );
   const unknownSurfaces = buildUnknownUnderstandingSurfaces(
     params.previousEntities,
@@ -11222,13 +11363,14 @@ function buildUnderstandingDeltas(params: {
       `${changedSurfaces.length} changed, ${newSurfaces.length} new, ${stableSurfaces.length} stable, and ${staleSurfaces.length} stale understanding surface(s).`,
     ),
     calibration_rule:
-      'Understanding deltas are deterministic local comparisons of component, flow, architecture, evidence, unknown, and confidence-score surfaces across scans.',
+      'Understanding deltas are deterministic local comparisons of component, service, flow, architecture, evidence, unknown, and confidence-score surfaces across scans.',
   };
 }
 
 function buildEntityUnderstandingSurfaces(
   previousEntities: readonly BrainEntity[],
   currentEntities: readonly BrainEntity[],
+  changedFileSet: ReadonlySet<string>,
 ): IncrementalUnderstandingSurface[] {
   const previousById = new Map(
     previousEntities.filter(isDeltaEntitySurface).map((entity) => [entity.id, entity]),
@@ -11239,7 +11381,7 @@ function buildEntityUnderstandingSurfaces(
   const surfaces: IncrementalUnderstandingSurface[] = [];
   for (const current of currentById.values()) {
     const previous = previousById.get(current.id);
-    const status = entitySurfaceStatus(previous, current);
+    const status = entitySurfaceStatus(previous, current, changedFileSet);
     surfaces.push(entityUnderstandingSurface({ previous, current, status }));
   }
   for (const previous of previousById.values()) {
@@ -11326,21 +11468,34 @@ function buildArchitectureUnderstandingSurface(params: {
 }
 
 function isDeltaEntitySurface(entity: BrainEntity): boolean {
-  return entity.type === 'component' || entity.type === 'flow' || entity.type === 'evidence';
+  return (
+    entity.type === 'component' ||
+    entity.type === 'flow' ||
+    entity.type === 'service' ||
+    entity.type === 'evidence'
+  );
 }
 
 function entitySurfaceType(entity: BrainEntity): IncrementalUnderstandingSurfaceType {
   if (entity.type === 'component') return 'component';
   if (entity.type === 'flow') return 'flow';
+  if (entity.type === 'service') return 'service';
   return 'evidence';
 }
 
 function entitySurfaceStatus(
   previous: BrainEntity | undefined,
   current: BrainEntity,
+  changedFileSet: ReadonlySet<string>,
 ): IncrementalUnderstandingSurfaceStatus {
   if (previous === undefined) return 'new';
   if (entitySemanticHash(previous) !== entitySemanticHash(current)) return 'changed';
+  if (
+    (current.type === 'flow' || current.type === 'service') &&
+    entityIncrementalFiles(current).some((file) => changedFileSet.has(file))
+  ) {
+    return 'changed';
+  }
   return 'stable';
 }
 
@@ -11375,7 +11530,7 @@ function unknownSurfaceEntityMap(
 ): Map<string, { readonly entity: BrainEntity; readonly unknown: string }> {
   const out = new Map<string, { readonly entity: BrainEntity; readonly unknown: string }>();
   for (const entity of entities.filter(
-    (item) => item.type === 'component' || item.type === 'flow',
+    (item) => item.type === 'component' || item.type === 'flow' || item.type === 'service',
   )) {
     for (const unknown of stringArrayData(entity, 'unknowns')) {
       const surfaceId = `unknown:${entity.id}:${stableSlug(safeText(unknown))}`;
@@ -11417,6 +11572,11 @@ function unknownUnderstandingSurface(params: {
 function understandingEntityScore(entity: BrainEntity): number {
   if (entity.type === 'component') return boundedScore(componentConfidenceScore(entity) * 100);
   if (entity.type === 'flow') return boundedScore(asFlowConfidenceScore(entity) * 100);
+  if (entity.type === 'service') {
+    return boundedScore(
+      (numberData(entity, 'confidence_score') ?? confidenceScoreForValue(entity.confidence)) * 100,
+    );
+  }
   return boundedScore(confidenceScoreForValue(entity.confidence) * 100);
 }
 
@@ -11453,6 +11613,7 @@ function understandingSurfaceCounts(
       component: { changed: 0, new: 0, stable: 0, stale: 0 },
       evidence: { changed: 0, new: 0, stable: 0, stale: 0 },
       flow: { changed: 0, new: 0, stable: 0, stale: 0 },
+      service: { changed: 0, new: 0, stable: 0, stale: 0 },
       unknown: { changed: 0, new: 0, stable: 0, stale: 0 },
     };
   for (const surface of surfaces) {
@@ -11856,11 +12017,21 @@ function buildResearchArtifacts(params: {
         .filter((flow) => flowStringArray(flow, 'components').length === 0)
         .map((flow) => flow.id),
       incremental_update: {
-        previous_total_flows: flows.length,
-        current_total_flows: flows.length,
-        added: [],
-        removed: [],
-        changed: changedFlows.map((flow) => flow.id),
+        previous_total_flows:
+          params.incrementalMetrics.flow_count -
+          params.incrementalMetrics.flow_incremental_health.new +
+          params.incrementalMetrics.flow_stale,
+        current_total_flows: params.incrementalMetrics.flow_count,
+        changed: params.incrementalMetrics.flow_incremental_health.changed_ids,
+        reused: params.incrementalMetrics.flow_incremental_health.reused_ids,
+        recomputed: params.incrementalMetrics.flow_incremental_health.recomputed_ids,
+        stale: params.incrementalMetrics.flow_incremental_health.stale_ids,
+        changed_count: params.incrementalMetrics.flow_changed,
+        reused_count: params.incrementalMetrics.flow_reused,
+        recomputed_count: params.incrementalMetrics.flow_recomputed,
+        stale_count: params.incrementalMetrics.flow_stale,
+        source_changed: params.incrementalMetrics.flow_incremental_health.source_changed_ids,
+        affected_by_changed_files: changedFlows.map((flow) => flow.id),
       },
     },
     flowCoverage: {
@@ -12229,6 +12400,18 @@ function buildLatest(params: {
       stable_entity_count: params.incrementalMetrics.stable_entity_count,
       added_entity_count: params.incrementalMetrics.added_entity_count,
       removed_entity_count: params.incrementalMetrics.removed_entity_count,
+      service_count: params.incrementalMetrics.service_count,
+      service_changed: params.incrementalMetrics.service_changed,
+      service_stale: params.incrementalMetrics.service_stale,
+      service_reused: params.incrementalMetrics.service_reused,
+      service_recomputed: params.incrementalMetrics.service_recomputed,
+      service_incremental_health: params.incrementalMetrics.service_incremental_health,
+      flow_count: params.incrementalMetrics.flow_count,
+      flow_changed: params.incrementalMetrics.flow_changed,
+      flow_stale: params.incrementalMetrics.flow_stale,
+      flow_reused: params.incrementalMetrics.flow_reused,
+      flow_recomputed: params.incrementalMetrics.flow_recomputed,
+      flow_incremental_health: params.incrementalMetrics.flow_incremental_health,
       reused_understanding_count: params.incrementalMetrics.reused_understanding_count,
       recomputed_understanding_count: params.incrementalMetrics.recomputed_understanding_count,
       stale_fact_count: params.incrementalMetrics.stale_fact_count,
@@ -12293,6 +12476,10 @@ function buildLatest(params: {
       changed_files: params.changedFiles,
       stale_files: params.staleFiles,
       relationship_count: params.relationships.length,
+      incremental_health: {
+        services: params.incrementalMetrics.service_incremental_health,
+        flows: params.incrementalMetrics.flow_incremental_health,
+      },
     },
   };
 }
