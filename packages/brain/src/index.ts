@@ -15,7 +15,7 @@ import {
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
-type ReasoningType = 'component' | 'flow' | 'architecture' | 'review';
+type ReasoningType = 'component' | 'flow' | 'architecture' | 'review' | 'service';
 
 type BenchmarkTaskCategory =
   | 'component-explanation'
@@ -355,7 +355,7 @@ type NextAppRouteType = 'api' | 'layout' | 'metadata' | 'page';
 
 type HttpRouteMethod = 'ALL' | 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT';
 
-type HttpRouteFramework = 'express-fastify-http' | 'hono';
+type HttpRouteFramework = 'express-fastify-http' | 'fastapi' | 'hono';
 
 type FlowStepType =
   | 'route'
@@ -471,6 +471,7 @@ interface FlowIntelligence {
   readonly components: readonly string[];
   readonly files: readonly string[];
   readonly dependencies: readonly string[];
+  readonly services?: readonly string[];
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly risks: readonly FlowRisk[];
@@ -485,6 +486,33 @@ interface FlowIntelligence {
   readonly confidence_reasons: readonly string[];
   readonly confidence: FlowConfidence;
   readonly evidence: readonly FlowEvidence[];
+  readonly field_evidence: Readonly<Record<string, readonly string[]>>;
+  readonly unknowns: readonly string[];
+  readonly signals: readonly string[];
+}
+
+type ServiceRuntime = 'node' | 'python' | 'unknown';
+
+interface ServiceIntelligence {
+  readonly service_id: string;
+  readonly name: string;
+  readonly runtime: ServiceRuntime;
+  readonly framework: string;
+  readonly service_root: string;
+  readonly files: readonly string[];
+  readonly entrypoints: readonly string[];
+  readonly routes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly storage_dependencies: readonly string[];
+  readonly environment_variables: readonly string[];
+  readonly external_services: readonly string[];
+  readonly deployment_configs: readonly string[];
+  readonly related_flows: readonly string[];
+  readonly related_components: readonly string[];
+  readonly risks: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly evidence_ids: readonly string[];
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
   readonly unknowns: readonly string[];
   readonly signals: readonly string[];
@@ -751,6 +779,7 @@ interface ReviewEvalArtifactData {
   readonly findings_by_severity: Record<ReviewSeverity, number>;
   readonly findings_by_category: Record<ReviewCategory, number>;
   readonly affected_component_count: number;
+  readonly affected_service_count: number;
   readonly direct_affected_component_count: number;
   readonly dependent_component_count: number;
   readonly affected_flow_count: number;
@@ -812,9 +841,32 @@ interface AffectedFlowData {
   readonly entrypoints: readonly string[];
   readonly changed_files: readonly string[];
   readonly components: readonly string[];
+  readonly services: readonly string[];
   readonly tests: readonly string[];
   readonly configs: readonly string[];
   readonly risks: number;
+  readonly evidence_ids: readonly string[];
+  readonly reasons: readonly string[];
+}
+
+interface ReviewAffectedServiceData {
+  readonly id: string;
+  readonly name: string;
+  readonly runtime: string;
+  readonly framework: string;
+  readonly changed_files: readonly string[];
+  readonly entrypoints: readonly string[];
+  readonly routes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly storage_dependencies: readonly string[];
+  readonly environment_variables: readonly string[];
+  readonly external_services: readonly string[];
+  readonly deployment_configs: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly risks: readonly string[];
+  readonly confidence: Confidence;
   readonly evidence_ids: readonly string[];
   readonly reasons: readonly string[];
 }
@@ -844,6 +896,7 @@ interface ReviewAffectedRelationshipData {
 interface ReviewEvidenceSummaryData {
   readonly changed_files: number;
   readonly direct_components: number;
+  readonly affected_services: number;
   readonly dependent_components: number;
   readonly affected_flows: number;
   readonly architecture_impact_surfaces: number;
@@ -886,6 +939,7 @@ interface ReviewSummaryData {
   readonly generated_at: string;
   readonly changed_files: readonly string[];
   readonly direct_affected_components: readonly ReviewAffectedComponentData[];
+  readonly affected_services: readonly ReviewAffectedServiceData[];
   readonly dependent_components: readonly ReviewAffectedComponentData[];
   readonly affected_components: readonly string[];
   readonly affected_flows: readonly AffectedFlowData[];
@@ -970,6 +1024,21 @@ interface ExplainSummaryData {
       readonly signals?: readonly string[];
     };
   };
+  readonly service?: {
+    readonly runtime: string;
+    readonly framework: string;
+    readonly service_root: string;
+    readonly entrypoints: readonly string[];
+    readonly routes: readonly string[];
+    readonly jobs: readonly string[];
+    readonly storage_dependencies: readonly string[];
+    readonly environment_variables: readonly string[];
+    readonly external_services: readonly string[];
+    readonly deployment_configs: readonly string[];
+    readonly related_flows: readonly string[];
+    readonly related_components: readonly string[];
+    readonly confidence_score: number;
+  };
   readonly flow?: {
     readonly kind: FlowKind;
     readonly framework?: string;
@@ -978,6 +1047,7 @@ interface ExplainSummaryData {
     readonly entrypoints: readonly FlowEntrypoint[];
     readonly steps: readonly FlowStep[];
     readonly components: readonly string[];
+    readonly services: readonly string[];
     readonly files: readonly string[];
     readonly dependencies: readonly string[];
     readonly tests: readonly string[];
@@ -1192,6 +1262,7 @@ const RESEARCH_ARTIFACT_FILES = {
   confidence: 'confidence.json',
   reasoningTraces: 'reasoning_traces.json',
   componentIntelligence: 'component_intelligence.json',
+  serviceIntelligence: 'service_intelligence.json',
   evidenceQuality: 'evidence_quality.json',
   incrementalUpdate: 'incremental_update.json',
   flowUnderstanding: 'flow_understanding.json',
@@ -2709,6 +2780,8 @@ function importSpecifiersFromText(text: string): string[] {
     /import\s+(?:[^'"]+?\s+from\s*)?['"]([^'"]+)['"]/g,
     /import\(\s*['"]([^'"]+)['"]\s*\)/g,
     /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /^\s*from\s+([A-Za-z_][\w.]+)\s+import\s+/gm,
+    /^\s*import\s+([A-Za-z_][\w.]+)/gm,
   ];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
@@ -2726,6 +2799,7 @@ const RESOLVABLE_SOURCE_EXTENSIONS = [
   '.jsx',
   '.mjs',
   '.cjs',
+  '.py',
   '.json',
 ] as const;
 
@@ -3060,6 +3134,11 @@ function resolveAliasImportFiles(
   return filesForPathHint(files, `src/${specifier.slice(2)}`);
 }
 
+function resolveDottedImportFiles(files: readonly FileFact[], specifier: string): FileFact[] {
+  if (!/^[A-Za-z_][\w.]+$/.test(specifier) || !specifier.includes('.')) return [];
+  return filesForPathHint(files, specifier.replace(/\./g, '/'));
+}
+
 function importContextForFiles(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -3094,10 +3173,11 @@ function importContextForFiles(params: {
         specifier,
       );
       const aliasImports = resolveAliasImportFiles(params.files, specifier, aliases);
-      if (relativeImports.length > 0 || aliasImports.length > 0) {
+      const dottedImports = resolveDottedImportFiles(params.files, specifier);
+      if (relativeImports.length > 0 || aliasImports.length > 0 || dottedImports.length > 0) {
         resolvedImportSpecifiers.add(specifier);
       }
-      importedFiles.push(...relativeImports, ...aliasImports);
+      importedFiles.push(...relativeImports, ...aliasImports, ...dottedImports);
     }
   }
   return {
@@ -3644,6 +3724,7 @@ function inferScriptFlow(params: {
   readonly scriptName: string;
   readonly command: string;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
   const ownerPath = packageComponentPath(params.packageFact);
@@ -3702,6 +3783,7 @@ function inferScriptFlow(params: {
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'important_files')),
     ...relatedComponents.flatMap((component) => component.source_files.slice(0, 3)),
   ]).slice(0, 30);
+  const serviceIds = serviceIdsForFiles(files, params.services);
   const configs = unique([
     params.packageFact.relativePath,
     ...deploymentConfigs.map((file) => file.relativePath),
@@ -3878,6 +3960,7 @@ function inferScriptFlow(params: {
     components: unique([...relatedComponentIds]),
     files,
     dependencies,
+    services: serviceIds,
     configs,
     tests,
     risks,
@@ -3925,6 +4008,9 @@ function inferScriptFlow(params: {
       components: unique(relatedComponents.flatMap((component) => component.evidence_ids)),
       files: files.map(evidenceId),
       dependencies: [scriptEvidenceId],
+      services: serviceIds.flatMap(
+        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+      ),
       configs: configs.map(evidenceId),
       tests: tests.map(evidenceId),
       risks: unique(risks.flatMap((risk) => risk.evidence)),
@@ -3955,9 +4041,11 @@ function isRouteLikeFile(file: FileFact): boolean {
     lower.includes('/api/') ||
     lower.includes('/routes/') ||
     lower.includes('/controllers/') ||
+    lower.includes('/routers/') ||
     name === 'route.ts' ||
     name === 'route.js' ||
-    name.includes('controller')
+    name.includes('controller') ||
+    name.includes('router')
   );
 }
 
@@ -4142,6 +4230,7 @@ function inferNextAppRouteFlow(params: {
   readonly routePath: string;
   readonly routeType: NextAppRouteType;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
@@ -4157,6 +4246,10 @@ function inferNextAppRouteFlow(params: {
   );
   const relatedComponents = params.components.filter((component) =>
     componentIds.includes(component.id),
+  );
+  const serviceIds = serviceIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.services,
   );
   const relatedTests = nextRouteTestPaths({
     routeFile: params.file,
@@ -4315,6 +4408,7 @@ function inferNextAppRouteFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    services: serviceIds,
     configs,
     tests: relatedTests,
     risks,
@@ -4348,6 +4442,9 @@ function inferNextAppRouteFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      services: serviceIds.flatMap(
+        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+      ),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -4362,6 +4459,9 @@ const HTTP_ROUTE_DECLARATION_PATTERN =
   /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|del|head|options|all)\s*\(\s*(['"`])([^'"`${}]+)\3/g;
 
 const HONO_APP_DECLARATION_PATTERN = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+Hono\b/g;
+
+const FASTAPI_ROUTE_DECLARATION_PATTERN =
+  /@\s*([A-Za-z_][\w]*)\s*\.\s*(get|post|put|patch|delete|head|options|api_route|route)\s*\(\s*(['"])([^'"]+)\3/g;
 
 function maskCommentsForStaticScan(text: string): string {
   return text
@@ -4396,11 +4496,13 @@ function honoRouteReceivers(text: string): ReadonlySet<string> {
 }
 
 function httpRouteFrameworkLabel(framework: HttpRouteFramework): string {
+  if (framework === 'fastapi') return 'FastAPI';
   if (framework === 'hono') return 'Hono';
   return 'HTTP';
 }
 
 function httpRouteMethod(method: string): HttpRouteMethod {
+  if (method.toLowerCase() === 'api_route' || method.toLowerCase() === 'route') return 'ALL';
   if (method.toLowerCase() === 'del') return 'DELETE';
   return method.toUpperCase() as HttpRouteMethod;
 }
@@ -4413,7 +4515,7 @@ function normalizeHttpRoutePath(routePath: string): string | undefined {
 }
 
 function isHttpRouteSourceFile(file: FileFact): boolean {
-  return /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file.relativePath) && !isTestPath(file.relativePath);
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(file.relativePath) && !isTestPath(file.relativePath);
 }
 
 function httpRouteDeclarationsForFile(params: {
@@ -4424,28 +4526,57 @@ function httpRouteDeclarationsForFile(params: {
   const text = readTextIfAvailable(params.rootDir, params.file.relativePath);
   if (text === undefined) return [];
   const masked = maskCommentsForStaticScan(text);
+  const isFastApiPythonFile =
+    params.file.relativePath.endsWith('.py') && /FastAPI|APIRouter|fastapi/i.test(masked);
   const honoReceivers = honoRouteReceivers(masked);
   const declarations = new Map<string, HttpRouteDeclaration>();
-  for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
-    const receiver = match[1];
-    const rawMethod = match[2];
-    const rawRoutePath = match[4];
-    if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) continue;
-    const framework = honoReceivers.has(receiver) ? 'hono' : 'express-fastify-http';
-    if (framework !== 'hono' && !isHttpRouteReceiver(receiver)) continue;
-    const routePath = normalizeHttpRoutePath(rawRoutePath);
-    if (routePath === undefined) continue;
-    const method = httpRouteMethod(rawMethod);
-    const line = lineNumberAtOffset(masked, match.index ?? 0);
-    const source = `${receiver}.${rawMethod}`;
-    declarations.set(`${framework}:${method}:${routePath}:${line}:${source}`, {
-      framework,
-      receiver,
-      method,
-      routePath,
-      line,
-      source,
-    });
+  if (!isFastApiPythonFile) {
+    for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
+      const receiver = match[1];
+      const rawMethod = match[2];
+      const rawRoutePath = match[4];
+      if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) {
+        continue;
+      }
+      const framework = honoReceivers.has(receiver) ? 'hono' : 'express-fastify-http';
+      if (framework !== 'hono' && !isHttpRouteReceiver(receiver)) continue;
+      const routePath = normalizeHttpRoutePath(rawRoutePath);
+      if (routePath === undefined) continue;
+      const method = httpRouteMethod(rawMethod);
+      const line = lineNumberAtOffset(masked, match.index ?? 0);
+      const source = `${receiver}.${rawMethod}`;
+      declarations.set(`${framework}:${method}:${routePath}:${line}:${source}`, {
+        framework,
+        receiver,
+        method,
+        routePath,
+        line,
+        source,
+      });
+    }
+  }
+  if (isFastApiPythonFile) {
+    for (const match of masked.matchAll(FASTAPI_ROUTE_DECLARATION_PATTERN)) {
+      const receiver = match[1];
+      const rawMethod = match[2];
+      const rawRoutePath = match[4];
+      if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) {
+        continue;
+      }
+      const routePath = normalizeHttpRoutePath(rawRoutePath);
+      if (routePath === undefined) continue;
+      const method = httpRouteMethod(rawMethod);
+      const line = lineNumberAtOffset(masked, match.index ?? 0);
+      const source = `@${receiver}.${rawMethod}`;
+      declarations.set(`fastapi:${method}:${routePath}:${line}:${source}`, {
+        framework: 'fastapi',
+        receiver,
+        method,
+        routePath,
+        line,
+        source,
+      });
+    }
   }
   return sorted(
     [...declarations.values()],
@@ -4555,6 +4686,7 @@ function inferHttpRouteDeclarationFlow(params: {
   readonly file: FileFact;
   readonly declaration: HttpRouteDeclaration;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
@@ -4570,6 +4702,10 @@ function inferHttpRouteDeclarationFlow(params: {
   );
   const relatedComponents = params.components.filter((component) =>
     componentIds.includes(component.id),
+  );
+  const serviceIds = serviceIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.services,
   );
   const relatedTests = httpRouteTestPaths({
     routeFile: params.file,
@@ -4726,6 +4862,7 @@ function inferHttpRouteDeclarationFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    services: serviceIds,
     configs,
     tests: relatedTests,
     risks,
@@ -4751,6 +4888,9 @@ function inferHttpRouteDeclarationFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      services: serviceIds.flatMap(
+        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+      ),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -4766,6 +4906,7 @@ function inferRouteFlow(params: {
   readonly files: readonly FileFact[];
   readonly file: FileFact;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
@@ -4778,6 +4919,10 @@ function inferRouteFlow(params: {
   const componentIds = componentIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.components,
+  );
+  const serviceIds = serviceIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.services,
   );
   const relatedTests = params.tests
     .filter((test) => {
@@ -4876,6 +5021,7 @@ function inferRouteFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    services: serviceIds,
     configs,
     tests: unique(relatedTests),
     risks,
@@ -4909,6 +5055,9 @@ function inferRouteFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      services: serviceIds.flatMap(
+        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+      ),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -4945,6 +5094,7 @@ function buildFlowEntity(
     ]),
     relatedEntityIds: unique([
       ...intelligence.components,
+      ...(intelligence.services ?? []),
       ...intelligence.dependencies,
       ...intelligence.configs.map((config) => entityId('config', config)),
       ...intelligence.tests.map((test) => entityId('test', test)),
@@ -4977,6 +5127,7 @@ function reconstructFlows(params: {
           scriptName,
           command,
           components: params.buckets.components,
+          services: params.buckets.services,
           changedFiles: changedFileSet,
         }),
       );
@@ -4995,6 +5146,7 @@ function reconstructFlows(params: {
         routePath: routeInfo.routePath,
         routeType: routeInfo.routeType,
         components: params.buckets.components,
+        services: params.buckets.services,
         tests: params.buckets.tests,
         changedFiles: changedFileSet,
       }),
@@ -5019,6 +5171,7 @@ function reconstructFlows(params: {
           file,
           declaration,
           components: params.buckets.components,
+          services: params.buckets.services,
           tests: params.buckets.tests,
           changedFiles: changedFileSet,
         }),
@@ -5037,6 +5190,7 @@ function reconstructFlows(params: {
         files: params.files,
         file,
         components: params.buckets.components,
+        services: params.buckets.services,
         tests: params.buckets.tests,
         changedFiles: changedFileSet,
       }),
@@ -5068,6 +5222,17 @@ function reconstructFlows(params: {
         dependencyId,
         flow.field_evidence.dependencies ?? entity.evidence_ids,
         'inferred',
+      );
+    }
+    for (const serviceId of flow.services ?? []) {
+      const service = params.buckets.services.find((item) => item.id === serviceId);
+      addRelation(
+        params.relationships,
+        flow.flow_id,
+        'calls',
+        serviceId,
+        flow.field_evidence.services ?? service?.evidence_ids ?? entity.evidence_ids,
+        entity.confidence,
       );
     }
     for (const configPath of flow.configs) {
@@ -6449,6 +6614,7 @@ function buildComponentIntelligenceArtifact(params: {
     (component) => component.latest_status !== 'stale',
   );
   const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const services = params.buckets.services.filter((service) => service.latest_status !== 'stale');
   const fieldSlots = components.length * COMPONENT_UNDERSTANDING_FIELDS.length;
   const coveredFieldSlots = components.reduce(
     (count, component) =>
@@ -6593,6 +6759,98 @@ function buildComponentIntelligenceArtifact(params: {
       'Component Intelligence measures deterministic static understanding, not runtime behavior.',
       'Scores combine field coverage, evidence-backed fields, and reconstructed flow coverage.',
       'Unknowns are intentional prompts for what a human or future reasoning pass should inspect next.',
+    ],
+  };
+}
+
+function buildServiceIntelligenceArtifact(params: {
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+}): Record<string, unknown> {
+  const services = params.buckets.services.filter((service) => service.latest_status !== 'stale');
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const servicesWithFlows = services.filter(
+    (service) => serviceDataStringArray(service, 'related_flows').length > 0,
+  );
+  const servicesWithRoutes = services.filter(
+    (service) => serviceDataStringArray(service, 'routes').length > 0,
+  );
+  const servicesWithStorage = services.filter(
+    (service) => serviceDataStringArray(service, 'storage_dependencies').length > 0,
+  );
+  const servicesWithExternalApis = services.filter(
+    (service) => serviceDataStringArray(service, 'external_services').length > 0,
+  );
+  const servicesWithEvidence = services.filter((service) => service.evidence_ids.length > 0);
+  const confidenceDistribution = countByConfidence(services.map((service) => service.confidence));
+  const fieldSlots = services.length * 8;
+  const coveredFieldSlots = services.reduce(
+    (count, service) =>
+      count +
+      [
+        'entrypoints',
+        'routes',
+        'jobs',
+        'storage_dependencies',
+        'environment_variables',
+        'external_services',
+        'deployment_configs',
+        'related_flows',
+      ].filter((field) => serviceDataStringArray(service, field).length > 0).length,
+    0,
+  );
+  const serviceUnderstandingScore = boundedScore(
+    scorePercent(coveredFieldSlots, fieldSlots) * 0.45 +
+      scorePercent(servicesWithEvidence.length, services.length) * 0.25 +
+      scorePercent(servicesWithFlows.length, services.length) * 0.3,
+  );
+
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    total_services: services.length,
+    service_understanding_score: serviceUnderstandingScore,
+    services_with_routes: servicesWithRoutes.length,
+    services_with_storage: servicesWithStorage.length,
+    services_with_external_apis: servicesWithExternalApis.length,
+    services_with_related_flows: servicesWithFlows.length,
+    confidence_distribution: confidenceDistribution,
+    flow_links: flows.map((flow) => ({
+      flow_id: flow.id,
+      service_ids: flowStringArray(flow, 'services'),
+      evidence_ids: flow.evidence_ids,
+    })),
+    services: services.map((service) => ({
+      id: service.id,
+      name: service.name,
+      runtime: stringData(service, 'runtime') ?? 'unknown',
+      framework: stringData(service, 'framework') ?? 'unknown',
+      service_root: stringData(service, 'service_root') ?? service.name,
+      entrypoints: serviceDataStringArray(service, 'entrypoints'),
+      routes: serviceDataStringArray(service, 'routes'),
+      jobs: serviceDataStringArray(service, 'jobs'),
+      storage_dependencies: serviceDataStringArray(service, 'storage_dependencies'),
+      environment_variables: serviceDataStringArray(service, 'environment_variables'),
+      external_services: serviceDataStringArray(service, 'external_services'),
+      deployment_configs: serviceDataStringArray(service, 'deployment_configs'),
+      related_flows: serviceDataStringArray(service, 'related_flows'),
+      related_components: serviceDataStringArray(service, 'related_components'),
+      risks: serviceDataStringArray(service, 'risks'),
+      unknowns: serviceDataStringArray(service, 'unknowns'),
+      confidence: service.confidence,
+      confidence_score:
+        numberData(service, 'confidence_score') ?? confidenceScoreForValue(service.confidence),
+      evidence_ids: service.evidence_ids,
+      field_evidence: recordStringArrayData(service, 'field_evidence'),
+    })),
+    unknowns: unique(
+      services.flatMap((service) =>
+        serviceDataStringArray(service, 'unknowns').map((unknown) => `${service.id}: ${unknown}`),
+      ),
+    ).slice(0, 12),
+    scoring_notes: [
+      'Service Intelligence is deterministic static inference from service-like files, routes, jobs, storage/API/env evidence, deployment configs, and flow links.',
+      'Runtime reachability is not executed; weak or missing evidence remains visible as unknowns.',
     ],
   };
 }
@@ -7875,10 +8133,480 @@ function buildDeploymentIntelligence(flows: readonly BrainEntity[]): Record<stri
   };
 }
 
+function buildServiceArchitectureIntelligence(
+  services: readonly BrainEntity[],
+): Record<string, unknown> {
+  const entries = services.map((service) => {
+    const risks = serviceDataStringArray(service, 'risks');
+    const relatedFlows = serviceDataStringArray(service, 'related_flows');
+    const storage = serviceDataStringArray(service, 'storage_dependencies');
+    const envVars = serviceDataStringArray(service, 'environment_variables');
+    const externalServices = serviceDataStringArray(service, 'external_services');
+    const deploymentConfigs = serviceDataStringArray(service, 'deployment_configs');
+    return {
+      service_id: safeText(service.id),
+      name: safeText(service.name),
+      runtime: stringData(service, 'runtime') ?? 'unknown',
+      framework: stringData(service, 'framework') ?? 'unknown',
+      related_flows: relatedFlows,
+      related_components: serviceDataStringArray(service, 'related_components'),
+      route_count: serviceDataStringArray(service, 'routes').length,
+      job_count: serviceDataStringArray(service, 'jobs').length,
+      storage_dependencies: storage,
+      environment_variables: envVars,
+      external_services: externalServices,
+      deployment_configs: deploymentConfigs,
+      risk_count: risks.length,
+      risks,
+      confidence: service.confidence,
+      confidence_score:
+        numberData(service, 'confidence_score') ?? confidenceScoreForValue(service.confidence),
+      evidence_ids: service.evidence_ids.map(safeText),
+      unknowns: serviceDataStringArray(service, 'unknowns'),
+    };
+  });
+  const riskyServices = entries.filter(
+    (entry) =>
+      entry.risk_count > 0 ||
+      entry.storage_dependencies.length > 0 ||
+      entry.deployment_configs.length > 0,
+  );
+  return {
+    summary: {
+      service_count: entries.length,
+      services_with_flows: entries.filter((entry) => entry.related_flows.length > 0).length,
+      services_with_storage: entries.filter((entry) => entry.storage_dependencies.length > 0)
+        .length,
+      services_with_external_apis: entries.filter((entry) => entry.external_services.length > 0)
+        .length,
+      risky_service_count: riskyServices.length,
+    },
+    services: entries,
+    unknowns: unique(
+      services.flatMap((service) =>
+        serviceDataStringArray(service, 'unknowns').map((unknown) => `${service.id}: ${unknown}`),
+      ),
+    ).slice(0, 12),
+    calibration_rule:
+      'Service architecture intelligence is deterministic static inference from first-class service entities, flow links, storage/API/env evidence, deployment configs, and known unknowns.',
+  };
+}
+
 function deploymentPosture(deploymentFlowCount: number, productionRiskCount: number): string {
   if (deploymentFlowCount === 0) return 'no deployment evidence';
   if (productionRiskCount > 0) return 'risky until verified';
   return 'needs smoke evidence';
+}
+
+function isServiceLikeSourceFile(file: FileFact): boolean {
+  if (!isSourceFile(file.relativePath)) return false;
+  const lower = file.relativePath.toLowerCase();
+  const name = basename(lower);
+  return (
+    /(^|\/)(services?|adapters?|repositories?|workers?|jobs?|integrations?)\//i.test(lower) ||
+    /(^|[-_.])(service|adapter|repository|worker|job|ingest|processor|client)([-_.]|$)/i.test(name)
+  );
+}
+
+function serviceRootForFile(path: string): string {
+  const parts = path.split('/');
+  const serviceIndex = parts.findIndex((part) =>
+    /^(services?|adapters?|repositories?|workers?|jobs?|integrations?)$/i.test(part),
+  );
+  if (serviceIndex >= 0) return parts.slice(0, serviceIndex + 1).join('/');
+  return dirname(path).split(sep).join('/');
+}
+
+function runtimeForService(files: readonly FileFact[]): ServiceRuntime {
+  if (files.some((file) => file.relativePath.endsWith('.py'))) return 'python';
+  if (files.some((file) => /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file.relativePath))) return 'node';
+  return 'unknown';
+}
+
+function frameworkForService(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): string {
+  const text = params.files
+    .map((file) => readTextIfAvailable(params.rootDir, file.relativePath) ?? '')
+    .join('\n');
+  const manifestText = params.packageFacts
+    .map((pkg) => JSON.stringify({ ...pkg.dependencies, ...pkg.devDependencies }))
+    .join('\n');
+  if (/FastAPI|APIRouter|fastapi/i.test(text)) return 'fastapi';
+  if (/Flask|flask/i.test(text)) return 'flask';
+  if (/Django|django/i.test(text)) return 'django';
+  if (/new\s+Hono\b|from\s+['"]hono['"]|hono/i.test(`${text}\n${manifestText}`)) return 'hono';
+  if (/express|fastify/i.test(`${text}\n${manifestText}`)) return 'express-fastify-http';
+  if (/next/i.test(manifestText)) return 'nextjs';
+  return 'unknown';
+}
+
+function envVarsFromText(text: string): string[] {
+  const vars = new Set<string>();
+  const patterns = [
+    /process\.env\.([A-Z][A-Z0-9_]*)/g,
+    /process\.env\[['"]([A-Z][A-Z0-9_]*)['"]\]/g,
+    /os\.getenv\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g,
+    /getenv\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const name = match[1];
+      if (name !== undefined) vars.add(safeText(name));
+    }
+  }
+  return [...vars].sort((a, b) => a.localeCompare(b));
+}
+
+function storageDependenciesFromText(text: string): string[] {
+  const storage = new Set<string>();
+  const checks: ReadonlyArray<readonly [RegExp, string]> = [
+    [/sqlite|\.db\b|SQLAlchemy|create_engine/i, 'sqlite/database'],
+    [/postgres|pg\.|psycopg|DATABASE_URL/i, 'postgres/database'],
+    [/redis|ioredis/i, 'redis/cache'],
+    [/prisma|typeorm|mongoose|sequelize/i, 'orm/database'],
+    [/chroma|pinecone|qdrant|weaviate|vector/i, 'vector/search store'],
+    [/\/tmp\b|tmp\/|tempfile|NamedTemporaryFile/i, 'temporary filesystem'],
+    [/writeFile|appendFile|fs\.|open\(|Path\(|pathlib/i, 'filesystem'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(text)) storage.add(label);
+  }
+  return [...storage].sort((a, b) => a.localeCompare(b));
+}
+
+function externalServicesFromText(text: string, imports: readonly string[]): string[] {
+  const services = new Set<string>();
+  for (const item of imports) {
+    if (!item.startsWith('.') && !/^[A-Za-z_][\w.]+$/.test(item)) services.add(safeText(item));
+  }
+  const checks: ReadonlyArray<readonly [RegExp, string]> = [
+    [/youtube|yt-dlp|pytube/i, 'youtube'],
+    [/openai|anthropic|cohere/i, 'llm/api'],
+    [/stripe/i, 'stripe'],
+    [/yfinance|alpaca|polygon|binance/i, 'market-data-api'],
+    [/requests\.|httpx|fetch\(|axios/i, 'http-client'],
+    [/s3|boto3|blob/i, 'object-storage'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(text)) services.add(label);
+  }
+  return [...services].sort((a, b) => a.localeCompare(b)).slice(0, 12);
+}
+
+function serviceRoutesForFiles(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+}): string[] {
+  return unique(
+    params.files.flatMap((file) =>
+      httpRouteDeclarationsForFile({ rootDir: params.rootDir, file }).map(
+        (route) => `${route.method} ${route.routePath} (${file.relativePath})`,
+      ),
+    ),
+  );
+}
+
+function serviceJobsForRoot(params: {
+  readonly root: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): string[] {
+  const rootFiles = new Set(params.files.map((file) => file.relativePath));
+  const fileJobs = params.files
+    .filter((file) => /(^|\/)(jobs?|workers?|scripts?)\//i.test(file.relativePath))
+    .map((file) => file.relativePath);
+  const scriptJobs = params.packageFacts.flatMap((pkg) => {
+    const pkgDir = packageComponentPath(pkg) ?? '.';
+    return Object.entries(pkg.scripts)
+      .filter(([name, command]) =>
+        /job|worker|cron|ingest|sync|generate|build|deploy/i.test(`${name} ${command}`),
+      )
+      .flatMap(([name, command]) => {
+        const referenced = filesReferencedByCommand(
+          params.files,
+          command,
+          pkgDir === '.' ? undefined : pkgDir,
+        );
+        return referenced.some((file) => rootFiles.has(file.relativePath))
+          ? [`${pkg.relativePath}:${name}`]
+          : [];
+      });
+  });
+  return unique([...fileJobs, ...scriptJobs]).slice(0, 12);
+}
+
+function serviceDeploymentConfigs(params: {
+  readonly root: string;
+  readonly files: readonly FileFact[];
+}): string[] {
+  return unique(
+    params.files
+      .filter((file) => {
+        if (!isDeploymentConfigPath(file.relativePath)) return false;
+        return (
+          file.relativePath.startsWith(`${params.root}/`) ||
+          !file.relativePath.includes('/') ||
+          file.relativePath.startsWith('.github/')
+        );
+      })
+      .map((file) => file.relativePath),
+  ).slice(0, 12);
+}
+
+function serviceConfidence(params: {
+  readonly entrypoints: readonly string[];
+  readonly routes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly storageDependencies: readonly string[];
+  readonly externalServices: readonly string[];
+  readonly unknowns: readonly string[];
+}): { readonly confidence: Confidence; readonly score: number } {
+  let score = 0.35;
+  if (params.entrypoints.length > 0) score += 0.2;
+  if (params.routes.length > 0) score += 0.15;
+  if (params.jobs.length > 0) score += 0.1;
+  if (params.storageDependencies.length > 0) score += 0.1;
+  if (params.externalServices.length > 0) score += 0.05;
+  if (params.unknowns.length > 0) score -= 0.1;
+  const bounded = Math.max(0.1, Math.min(0.9, Number(score.toFixed(2))));
+  if (bounded >= 0.8 && params.unknowns.length === 0) {
+    return { confidence: 'verified', score: bounded };
+  }
+  if (bounded >= 0.5) return { confidence: 'inferred', score: bounded };
+  return { confidence: 'uncertain', score: bounded };
+}
+
+function inferServices(params: {
+  readonly rootDir: string;
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly components: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly configs: readonly BrainEntity[];
+}): BrainEntity[] {
+  const serviceFilesByRoot = new Map<string, FileFact[]>();
+  for (const file of params.files.filter(isServiceLikeSourceFile)) {
+    const root = serviceRootForFile(file.relativePath);
+    serviceFilesByRoot.set(root, [...(serviceFilesByRoot.get(root) ?? []), file]);
+  }
+  const services: BrainEntity[] = [];
+  for (const [root, rawFiles] of serviceFilesByRoot.entries()) {
+    const files = uniqueFileFacts(rawFiles);
+    const textByFile = new Map(
+      files.map((file) => [
+        file.relativePath,
+        readTextIfAvailable(params.rootDir, file.relativePath) ?? '',
+      ]),
+    );
+    const allText = [...textByFile.values()].join('\n');
+    const importContext = importContextForFiles({
+      rootDir: params.rootDir,
+      files: params.files,
+      entryFiles: files,
+    });
+    const componentIds = componentIdsForFiles(
+      files.map((file) => file.relativePath),
+      params.components,
+    );
+    const testPaths = params.tests
+      .filter((test) =>
+        test.source_files.some(
+          (file) => file.startsWith(`${root}/`) || basename(file).includes(basename(root)),
+        ),
+      )
+      .flatMap((test) => test.source_files);
+    const configPaths = params.configs
+      .filter((config) => config.source_files.some((file) => file.startsWith(`${root}/`)))
+      .flatMap((config) => config.source_files);
+    const entrypoints = unique([
+      ...files
+        .filter((file) =>
+          /(^|\/)(index|main|app|server|worker|job|ingest|processor)\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(
+            file.relativePath,
+          ),
+        )
+        .map((file) => file.relativePath),
+      ...files.slice(0, 3).map((file) => file.relativePath),
+    ]).slice(0, 8);
+    const routes = serviceRoutesForFiles({ rootDir: params.rootDir, files });
+    const jobs = serviceJobsForRoot({
+      root,
+      files,
+      packageFacts: params.packageFacts,
+    });
+    const envVars = envVarsFromText(allText);
+    const storageDependencies = storageDependenciesFromText(allText);
+    const externalServices = externalServicesFromText(allText, importContext.importedSpecifiers);
+    const deploymentConfigs = serviceDeploymentConfigs({ root, files: params.files });
+    const risks = unique([
+      ...(testPaths.length === 0
+        ? ['No directly linked test artifact was detected for this service.']
+        : []),
+      ...(storageDependencies.some((item) => /temporary|sqlite|filesystem/i.test(item))
+        ? [
+            'Storage depends on local filesystem, temporary files, or SQLite-like evidence; verify production durability.',
+          ]
+        : []),
+      ...(envVars.length > 0 && configPaths.length === 0
+        ? ['Environment variables are read but no service-local config artifact was linked.']
+        : []),
+    ]);
+    const unknowns = unique([
+      ...(routes.length === 0
+        ? ['No API route evidence was linked directly to this service.']
+        : []),
+      ...(jobs.length === 0
+        ? ['No background job or script evidence was linked directly to this service.']
+        : []),
+      ...(storageDependencies.length === 0
+        ? ['No storage dependency was detected from static source evidence.']
+        : []),
+    ]);
+    const confidence = serviceConfidence({
+      entrypoints,
+      routes,
+      jobs,
+      storageDependencies,
+      externalServices,
+      unknowns,
+    });
+    const evidenceIds = unique(files.map((file) => evidenceId(file.relativePath)));
+    const serviceId = entityId('service', root);
+    const fieldEvidence = {
+      entrypoints: entrypoints.map(evidenceId),
+      routes: files
+        .filter(
+          (file) => httpRouteDeclarationsForFile({ rootDir: params.rootDir, file }).length > 0,
+        )
+        .map((file) => evidenceId(file.relativePath)),
+      jobs: jobs.flatMap((job) => {
+        const manifest = job.split(':')[0] ?? '';
+        return manifest.endsWith('package.json') ? [evidenceId(manifest)] : [];
+      }),
+      storage_dependencies: files
+        .filter(
+          (file) => storageDependenciesFromText(textByFile.get(file.relativePath) ?? '').length > 0,
+        )
+        .map((file) => evidenceId(file.relativePath)),
+      environment_variables: files
+        .filter((file) => envVarsFromText(textByFile.get(file.relativePath) ?? '').length > 0)
+        .map((file) => evidenceId(file.relativePath)),
+      external_services: unique([
+        ...files
+          .filter(
+            (file) =>
+              externalServicesFromText(
+                textByFile.get(file.relativePath) ?? '',
+                importSpecifiersFromText(textByFile.get(file.relativePath) ?? ''),
+              ).length > 0,
+          )
+          .map((file) => evidenceId(file.relativePath)),
+        ...importContext.importEvidence.map((evidence) => evidenceId(evidence.path)),
+      ]),
+      deployment_configs: deploymentConfigs.map(evidenceId),
+      risks: evidenceIds,
+      unknowns: evidenceIds,
+    };
+    const intelligence: ServiceIntelligence = {
+      service_id: serviceId,
+      name: safeText(root),
+      runtime: runtimeForService(files),
+      framework: frameworkForService({
+        rootDir: params.rootDir,
+        files,
+        packageFacts: params.packageFacts,
+      }),
+      service_root: safeText(root),
+      files: files.map((file) => safeText(file.relativePath)),
+      entrypoints: entrypoints.map(safeText),
+      routes: routes.map(safeText),
+      jobs: jobs.map(safeText),
+      storage_dependencies: storageDependencies.map(safeText),
+      environment_variables: envVars.map(safeText),
+      external_services: externalServices.map(safeText),
+      deployment_configs: deploymentConfigs.map(safeText),
+      related_flows: [],
+      related_components: componentIds.map(safeText),
+      risks: risks.map(safeText),
+      confidence: confidence.confidence,
+      confidence_score: confidence.score,
+      evidence_ids: evidenceIds.map(safeText),
+      field_evidence: fieldEvidence,
+      unknowns: unknowns.map(safeText),
+      signals: unique([
+        'service-like path',
+        ...(routes.length > 0 ? ['route evidence'] : []),
+        ...(jobs.length > 0 ? ['job evidence'] : []),
+        ...(storageDependencies.length > 0 ? ['storage evidence'] : []),
+        ...(envVars.length > 0 ? ['environment evidence'] : []),
+        ...(externalServices.length > 0 ? ['external API evidence'] : []),
+      ]),
+    };
+    services.push(
+      makeEntity({
+        id: serviceId,
+        type: 'service',
+        name: safeText(root),
+        description: `${safeText(root)} service inferred from local source evidence.`,
+        now: params.now,
+        confidence: confidence.confidence,
+        evidenceIds,
+        relatedEntityIds: componentIds,
+        sourceFiles: files.map((file) => file.relativePath),
+        data: intelligence as unknown as Record<string, unknown>,
+      }),
+    );
+  }
+  return sorted(services, (service) => service.id);
+}
+
+function serviceIdsForFiles(files: readonly string[], services: readonly BrainEntity[]): string[] {
+  return unique(
+    services
+      .filter((service) =>
+        service.source_files.some((source) =>
+          files.some((file) => file === source || source.startsWith(`${file}/`)),
+        ),
+      )
+      .map((service) => service.id),
+  );
+}
+
+function enrichServicesWithFlows(
+  services: readonly BrainEntity[],
+  flows: readonly BrainEntity[],
+): BrainEntity[] {
+  return services.map((service) => {
+    const relatedFlows = flows.filter((flow) =>
+      flowStringArray(flow, 'services').includes(service.id),
+    );
+    const relatedFlowIds = relatedFlows.map((flow) => flow.id);
+    const relatedComponentIds = unique([
+      ...stringArrayData(service, 'related_components'),
+      ...relatedFlows.flatMap((flow) => flowStringArray(flow, 'components')),
+    ]);
+    return {
+      ...service,
+      related_entity_ids: unique([
+        ...service.related_entity_ids,
+        ...relatedFlowIds,
+        ...relatedComponentIds,
+      ]),
+      data: {
+        ...(service.data ?? {}),
+        related_flows: relatedFlowIds.map(safeText),
+        related_components: relatedComponentIds.map(safeText),
+      },
+    };
+  });
+}
+
+function serviceDataStringArray(service: BrainEntity, key: string): string[] {
+  return stringArrayData(service, key).map(safeText);
 }
 
 function buildArchitectureReasoningArtifact(params: {
@@ -7893,6 +8621,7 @@ function buildArchitectureReasoningArtifact(params: {
   const components = params.buckets.components.filter(
     (component) => component.latest_status !== 'stale',
   );
+  const services = params.buckets.services.filter((service) => service.latest_status !== 'stale');
   const changedFileSet = new Set(params.changedFiles);
   const flowsByComponent = new Map<string, BrainEntity[]>();
   for (const flow of flows) {
@@ -8124,6 +8853,7 @@ function buildArchitectureReasoningArtifact(params: {
   const routeArchitecture = routeArchitectureRecords(flows);
   const routeWhatBreaks = routeArchitectureWhatBreaks(flows);
   const deploymentIntelligence = buildDeploymentIntelligence(flows);
+  const serviceIntelligence = buildServiceArchitectureIntelligence(services);
   const deploymentFlowIds = recordArray(deploymentIntelligence, 'flows')
     .filter(isRecord)
     .map((flow) => String(flow.flow_id ?? ''))
@@ -8144,6 +8874,25 @@ function buildArchitectureReasoningArtifact(params: {
       affected_routes: routeArchitecture.map((route) => String(route.route_path ?? '')),
       suggested_tests: unique(
         flows.filter(isNextAppRouterFlow).flatMap((flow) => flowStringArray(flow, 'tests')),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
+  if (services.length > 0) {
+    reviewHints.push({
+      reason:
+        'Service-level changes should be reviewed with routes, flows, storage, env vars, external APIs, deployment configs, and smoke checks.',
+      affected_services: services.map((service) => safeText(service.id)),
+      affected_flows: unique(
+        services.flatMap((service) => serviceDataStringArray(service, 'related_flows')),
+      ),
+      suggested_tests: unique(
+        services
+          .flatMap((service) => serviceDataStringArray(service, 'related_flows'))
+          .flatMap((flowId) => {
+            const flow = flows.find((item) => item.id === flowId);
+            return flow === undefined ? [] : flowStringArray(flow, 'tests');
+          }),
       ).map(safeText),
       confidence: 'inferred',
     });
@@ -8233,6 +8982,7 @@ function buildArchitectureReasoningArtifact(params: {
     route_architecture: routeArchitecture,
     route_what_breaks: routeWhatBreaks,
     deployment_intelligence: deploymentIntelligence,
+    service_intelligence: serviceIntelligence,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
     risk_concentrations: riskConcentrations,
@@ -10038,6 +10788,7 @@ function buildUnderstandingScoreArtifact(params: {
   readonly relationships: readonly BrainRelationship[];
   readonly incrementalMetrics: IncrementalUnderstandingMetrics;
   readonly componentIntelligence: unknown;
+  readonly serviceIntelligence: unknown;
   readonly evidenceQuality: unknown;
   readonly architectureReasoning: unknown;
   readonly benchmarkReady: unknown;
@@ -10090,6 +10841,7 @@ function buildUnderstandingScoreArtifact(params: {
     params.componentIntelligence,
     'component_understanding_score',
   );
+  const serviceScore = recordNumber(params.serviceIntelligence, 'service_understanding_score');
   const evidenceScore = recordNumber(params.evidenceQuality, 'overall_score');
   const reviewReadinessScore = readinessScore(params.benchmarkReady);
   const dimensions = {
@@ -10123,6 +10875,21 @@ function buildUnderstandingScoreArtifact(params: {
         .filter((flow) => flow.confidence !== 'verified')
         .slice(0, 6)
         .map((flow) => flow.id),
+    }),
+    services: dimensionRecord({
+      score: serviceScore,
+      summary: `${params.buckets.services.length} service(s), ${recordNumber(
+        params.serviceIntelligence,
+        'services_with_related_flows',
+      )} linked to flows.`,
+      signals: [
+        `${recordNumber(params.serviceIntelligence, 'services_with_routes')} service(s) with routes`,
+        `${recordNumber(params.serviceIntelligence, 'services_with_storage')} service(s) with storage evidence`,
+        `${recordNumber(params.serviceIntelligence, 'services_with_external_apis')} service(s) with external API evidence`,
+      ],
+      weakSpots: recordArray(params.serviceIntelligence, 'unknowns')
+        .filter((item): item is string => typeof item === 'string')
+        .slice(0, 6),
     }),
     architecture: dimensionRecord({
       score: architectureScore,
@@ -10183,8 +10950,9 @@ function buildUnderstandingScoreArtifact(params: {
   );
   const overallScore = boundedScore(
     recordNumber(dimensions.components, 'score') * 0.2 +
-      recordNumber(dimensions.flows, 'score') * 0.16 +
-      recordNumber(dimensions.architecture, 'score') * 0.16 +
+      recordNumber(dimensions.flows, 'score') * 0.14 +
+      recordNumber(dimensions.services, 'score') * 0.1 +
+      recordNumber(dimensions.architecture, 'score') * 0.14 +
       recordNumber(dimensions.evidence, 'score') * 0.18 +
       recordNumber(dimensions.incremental_status, 'score') * 0.1 +
       recordNumber(dimensions.review_readiness, 'score') * 0.12 +
@@ -10763,6 +11531,10 @@ function buildResearchArtifacts(params: {
     buckets: params.buckets,
     relationships: params.relationships,
   });
+  const serviceIntelligence = buildServiceIntelligenceArtifact({
+    now: params.now,
+    buckets: params.buckets,
+  });
   const evidenceQuality = buildEvidenceQualityArtifact({
     now: params.now,
     buckets: params.buckets,
@@ -10800,6 +11572,7 @@ function buildResearchArtifacts(params: {
     relationships: params.relationships,
     incrementalMetrics: params.incrementalMetrics,
     componentIntelligence,
+    serviceIntelligence,
     evidenceQuality,
     architectureReasoning,
     benchmarkReady,
@@ -11036,6 +11809,7 @@ function buildResearchArtifacts(params: {
         })),
     },
     componentIntelligence,
+    serviceIntelligence,
     evidenceQuality,
     reasoningTraces,
     incrementalUpdate: params.incrementalMetrics,
@@ -11049,6 +11823,7 @@ function buildResearchArtifacts(params: {
       flow_steps: flowStepCount,
       mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
         .length,
+      mapped_services: unique(flows.flatMap((flow) => flowStringArray(flow, 'services'))).length,
       mapped_files: flowCoveredFiles.size,
       entrypoints: entrypoints.length,
       entrypoints_mapped_to_components: entrypointsWithComponents.length,
@@ -11074,6 +11849,7 @@ function buildResearchArtifacts(params: {
         state_transitions: flowStringArray(flow, 'state_transitions'),
         failure_modes: flowStringArray(flow, 'failure_modes'),
         required_tests: flowStringArray(flow, 'required_tests'),
+        services: flowStringArray(flow, 'services'),
         confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
       })),
       orphan_entrypoints: flows
@@ -11128,6 +11904,7 @@ function buildResearchArtifacts(params: {
         kind: stringData(flow, 'kind') ?? 'unknown',
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
+        services: flowStringArray(flow, 'services').length,
         tests: flowStringArray(flow, 'tests').length,
         configs: flowStringArray(flow, 'configs').length,
         entry_contract: flowStringArray(flow, 'entry_contract').length,
@@ -11208,6 +11985,7 @@ async function writeFlowMirrors(
       file: `.rizz/brain/flows/${flowMirrorFileName(flow)}`,
       entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
       components: flowStringArray(flow, 'components').length,
+      services: flowStringArray(flow, 'services').length,
       files: flowStringArray(flow, 'files').length,
       tests: flowStringArray(flow, 'tests').length,
       risks: flowRisks(flow).length,
@@ -11280,6 +12058,7 @@ function buildLatest(params: {
     route_type: stringData(flow, 'route_type'),
     entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
     component_count: flowStringArray(flow, 'components').length,
+    service_count: flowStringArray(flow, 'services').length,
     file_count: flowStringArray(flow, 'files').length,
     test_count: flowStringArray(flow, 'tests').length,
     risk_count: flowRisks(flow).length,
@@ -11292,9 +12071,30 @@ function buildLatest(params: {
     failure_modes: flowStringArray(flow, 'failure_modes'),
     required_tests: flowStringArray(flow, 'required_tests'),
     confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
+    services: flowStringArray(flow, 'services'),
     confidence: flow.confidence,
     score: asFlowConfidenceScore(flow),
     evidence_ids: flow.evidence_ids,
+  }));
+  const serviceMap = params.buckets.services.map((service) => ({
+    id: service.id,
+    name: service.name,
+    runtime: stringData(service, 'runtime') ?? 'unknown',
+    framework: stringData(service, 'framework') ?? 'unknown',
+    service_root: stringData(service, 'service_root') ?? service.name,
+    entrypoints: serviceDataStringArray(service, 'entrypoints'),
+    routes: serviceDataStringArray(service, 'routes'),
+    jobs: serviceDataStringArray(service, 'jobs'),
+    storage_dependencies: serviceDataStringArray(service, 'storage_dependencies'),
+    environment_variables: serviceDataStringArray(service, 'environment_variables'),
+    external_services: serviceDataStringArray(service, 'external_services'),
+    deployment_configs: serviceDataStringArray(service, 'deployment_configs'),
+    related_flows: serviceDataStringArray(service, 'related_flows'),
+    related_components: serviceDataStringArray(service, 'related_components'),
+    risks: serviceDataStringArray(service, 'risks'),
+    confidence: service.confidence,
+    confidence_score: numberData(service, 'confidence_score'),
+    evidence_ids: service.evidence_ids,
   }));
   const risks = params.buckets.risks.map((risk) => ({
     id: risk.id,
@@ -11320,6 +12120,10 @@ function buildLatest(params: {
     buckets: params.buckets,
     relationships: params.relationships,
   });
+  const serviceIntelligence = buildServiceIntelligenceArtifact({
+    now: params.now,
+    buckets: params.buckets,
+  });
   const benchmarkReady = buildBenchmarkReadyArtifact({
     projectName: params.projectName,
     now: params.now,
@@ -11338,6 +12142,7 @@ function buildLatest(params: {
     relationships: params.relationships,
     incrementalMetrics: params.incrementalMetrics,
     componentIntelligence,
+    serviceIntelligence,
     evidenceQuality,
     architectureReasoning,
     benchmarkReady,
@@ -11375,8 +12180,10 @@ function buildLatest(params: {
         : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.flows.length} reconstructed flow(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
     latest_architecture_impact_summary: architectureImpactSummary(architectureReasoning),
     latest_component_map: componentMap,
+    latest_service_map: serviceMap,
     latest_flow_map: flowMap,
     latest_architecture_reasoning: architectureReasoning,
+    latest_service_intelligence: serviceIntelligence,
     latest_evidence_quality: evidenceQuality,
     latest_understanding_score: understandingScore,
     latest_pie_acceptance: {
@@ -11826,10 +12633,17 @@ function renderFlowCards(
         <h4>Coverage</h4>
         ${renderList([
           `${flowStringArray(flow, 'components').length} component(s)`,
+          `${flowStringArray(flow, 'services').length} service(s)`,
           `${flowStringArray(flow, 'files').length} file(s)`,
           `${flowStringArray(flow, 'tests').length} test artifact(s)`,
           `${risks.length} risk(s)`,
         ])}
+        <h4>Services</h4>
+        ${renderListWithEvidence(
+          flowStringArray(flow, 'services'),
+          fieldEvidence.services ?? flow.evidence_ids,
+          evidenceById,
+        )}
         <h4>Risks</h4>
         ${renderListWithEvidence(
           risks.map((risk) => `${risk.kind}: ${risk.description}`),
@@ -11846,6 +12660,80 @@ function renderFlowCards(
         ${renderListWithEvidence(
           stringArrayData(flow, 'confidence_reasons'),
           fieldEvidence.confidence_reasons ?? flow.evidence_ids,
+          evidenceById,
+        )}
+      </article>`;
+    })
+    .join('');
+}
+
+function renderServiceCards(
+  services: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  if (services.length === 0) {
+    return '<p class="muted">No service intelligence detected yet.</p>';
+  }
+  return services
+    .map((service) => {
+      const runtime = stringData(service, 'runtime') ?? 'unknown';
+      const framework = stringData(service, 'framework') ?? 'unknown';
+      const fieldEvidence = recordStringArrayData(service, 'field_evidence');
+      const relatedFlows = serviceDataStringArray(service, 'related_flows');
+      const risks = serviceDataStringArray(service, 'risks');
+      return `<article class="card" data-search="${htmlEscape(
+        `${service.id} ${service.name} ${runtime} ${framework} ${service.source_files.join(' ')}`,
+      )}" data-kind="service" data-confidence="${htmlEscape(service.confidence)}">
+        <div class="badge">${htmlEscape(service.confidence)} · ${htmlEscape(runtime)} · ${htmlEscape(
+          framework,
+        )}</div>
+        <h3>${htmlEscape(service.name)}</h3>
+        <p class="muted">Explain this: <code>rizz explain service ${htmlEscape(service.name)}</code></p>
+        <p>${htmlEscape(service.description)}</p>
+        <h4>Routes</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'routes'),
+          fieldEvidence.routes ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Jobs</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'jobs'),
+          fieldEvidence.jobs ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Storage</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'storage_dependencies'),
+          fieldEvidence.storage_dependencies ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Environment</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'environment_variables'),
+          fieldEvidence.environment_variables ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>External APIs</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'external_services'),
+          fieldEvidence.external_services ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Deployment Configs</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'deployment_configs'),
+          fieldEvidence.deployment_configs ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Related Flows</h4>
+        ${renderListWithEvidence(relatedFlows, service.evidence_ids, evidenceById)}
+        <h4>Risks</h4>
+        ${renderListWithEvidence(risks, fieldEvidence.risks ?? service.evidence_ids, evidenceById)}
+        <h4>Unknowns</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'unknowns'),
+          fieldEvidence.unknowns ?? service.evidence_ids,
           evidenceById,
         )}
       </article>`;
@@ -12648,10 +13536,12 @@ function renderArtifactLinks(artifactPaths?: readonly string[]): string {
     '.rizz/brain/index.json',
     '.rizz/brain/graph.json',
     '.rizz/brain/entities/components.json',
+    '.rizz/brain/entities/services.json',
     '.rizz/brain/entities/flows.json',
     '.rizz/brain/entities/evidence.json',
     '.rizz/research/evidence_quality.json',
     '.rizz/research/understanding_score.json',
+    '.rizz/research/service_intelligence.json',
     '.rizz/research/architecture_reasoning.json',
     '.rizz/research/benchmark_tasks.json',
     '.rizz/research/pie_acceptance.json',
@@ -12694,6 +13584,7 @@ function renderDimensionCards(score: unknown): string {
   const dimensions = score.dimensions;
   const labels: ReadonlyArray<readonly [string, string]> = [
     ['components', 'Components'],
+    ['services', 'Services'],
     ['flows', 'Flows'],
     ['architecture', 'Architecture'],
     ['evidence', 'Evidence'],
@@ -12900,6 +13791,7 @@ function renderFlagshipSummary(params: {
           '.rizz/brain/latest.json',
           '.rizz/brain/index.json',
           '.rizz/research/understanding_score.json',
+          '.rizz/research/service_intelligence.json',
           '.rizz/research/evidence_quality.json',
           '.rizz/research/flow_coverage.json',
           '.rizz/research/architecture_reasoning.json',
@@ -13030,6 +13922,7 @@ function renderBenchmarkTasks(value: unknown): string {
         '.rizz/research/benchmark_ready.json',
         '.rizz/research/pie_acceptance.json',
         '.rizz/research/understanding_score.json',
+        '.rizz/research/service_intelligence.json',
         '.rizz/brain/latest.json',
         '.rizz/brain/index.json',
         missionControl,
@@ -13133,6 +14026,14 @@ function renderReport(params: {
     count: params.buckets.flows.length,
     posture: params.buckets.flows.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderFlowCards(params.buckets.flows, evidenceById)}</div>`,
+  });
+  const serviceObject = renderObjectDetails({
+    title: 'Service Intelligence',
+    summary:
+      'Runtime services reconstructed from service-like files, routes, jobs, storage, env vars, external APIs, deployment configs, and related flows.',
+    count: params.buckets.services.length,
+    posture: params.buckets.services.length === 0 ? 'weak' : 'usable',
+    body: `<div class="grid">${renderServiceCards(params.buckets.services, evidenceById)}</div>`,
   });
   const architectureObject = renderObjectDetails({
     title: 'Architecture',
@@ -13309,6 +14210,7 @@ function renderReport(params: {
       ${renderAskReadinessLine(askReadiness)}
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
+        <span class="badge">${params.buckets.services.length} services</span>
         <span class="badge">${params.buckets.flows.length} flows</span>
         <span class="badge warn">${params.buckets.risks.length} risks</span>
         <span class="badge warn">${unknownCount} unknowns</span>
@@ -13321,6 +14223,7 @@ function renderReport(params: {
     <section class="objects" aria-label="Mission Control objects">
       ${understandingObject}
       ${componentObject}
+      ${serviceObject}
       ${flowObject}
       ${architectureObject}
       ${evidenceObject}
@@ -13670,6 +14573,46 @@ function buildBrain(params: {
     addRelation(relationships, testId, 'tests', projectId, [evidenceId(test.relativePath)]);
   }
 
+  buckets.services.push(
+    ...inferServices({
+      rootDir: params.rootDir,
+      now: params.now,
+      files: params.files,
+      packageFacts: params.packageFacts,
+      components: buckets.components,
+      tests: buckets.tests,
+      configs: buckets.configs,
+    }),
+  );
+  for (const service of buckets.services) {
+    addRelation(
+      relationships,
+      projectId,
+      'owns',
+      service.id,
+      service.evidence_ids,
+      service.confidence,
+    );
+    for (const file of service.source_files.slice(0, 20)) {
+      addRelation(relationships, service.id, 'owns', entityId('file', file), [evidenceId(file)]);
+    }
+    for (const componentId of serviceDataStringArray(service, 'related_components')) {
+      addRelation(
+        relationships,
+        service.id,
+        'depends_on',
+        componentId,
+        service.evidence_ids,
+        'inferred',
+      );
+    }
+    for (const config of serviceDataStringArray(service, 'deployment_configs')) {
+      addRelation(relationships, service.id, 'configures', entityId('config', config), [
+        evidenceId(config),
+      ]);
+    }
+  }
+
   reconstructFlows({
     rootDir: params.rootDir,
     now: params.now,
@@ -13680,6 +14623,11 @@ function buildBrain(params: {
     changedFiles,
     previousFlows: params.previousFlows,
   });
+  buckets.services.splice(
+    0,
+    buckets.services.length,
+    ...enrichServicesWithFlows(buckets.services, buckets.flows),
+  );
 
   if (!buckets.commands.some((command) => command.name.includes('test'))) {
     buckets.risks.push(
@@ -13837,6 +14785,7 @@ export async function generateProjectBrain(
         confidence: '.rizz/research/confidence.json',
         reasoning_traces: '.rizz/research/reasoning_traces.json',
         component_intelligence: '.rizz/research/component_intelligence.json',
+        service_intelligence: '.rizz/research/service_intelligence.json',
         evidence_quality: '.rizz/research/evidence_quality.json',
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
@@ -14126,6 +15075,7 @@ export async function reviewProjectChanges(
           (component) => component.id,
         ),
         dependent_components: review.dependent_components.map((component) => component.id),
+        affected_services: review.affected_services.map((service) => service.id),
         affected_flows: review.affected_flows.map((flow) => flow.id),
         architecture_impact_surfaces: review.architecture_impact_map.map(
           (entry) => entry.impact_id,
@@ -14155,6 +15105,7 @@ export async function reviewProjectChanges(
       project_state: {
         ...(isRecord(latest.project_state) ? latest.project_state : {}),
         last_reviewed_files: review.changed_files,
+        last_reviewed_services: review.affected_services.map((service) => service.id),
         last_reviewed_flows: review.affected_flows.map((flow) => flow.id),
         last_review_risk: review.overall_risk,
       },
@@ -14253,6 +15204,7 @@ export async function explainProjectTarget(
     const research = await readExplainResearchArtifacts(rootDir);
     const explainableEntities = [
       ...entitySets.components,
+      ...entitySets.services,
       ...entitySets.flows,
       ...entitySets.files,
       ...entitySets.folders,
@@ -14598,6 +15550,7 @@ function buildAskAnswer(params: {
 
   const explainableEntities = [
     ...params.entitySets.components,
+    ...params.entitySets.services,
     ...params.entitySets.flows,
     ...params.entitySets.files,
     ...params.entitySets.folders,
@@ -14917,6 +15870,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly folders: readonly BrainEntity[];
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly flows: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
   readonly commands: readonly BrainEntity[];
@@ -14929,6 +15883,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     files,
     folders,
     components,
+    services,
     flows,
     configs,
     commands,
@@ -14940,6 +15895,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     readEntityFile(entitiesDir, 'files.json'),
     readEntityFile(entitiesDir, 'folders.json'),
     readEntityFile(entitiesDir, 'components.json'),
+    readEntityFile(entitiesDir, 'services.json'),
     readEntityFile(entitiesDir, 'flows.json'),
     readEntityFile(entitiesDir, 'configs.json'),
     readEntityFile(entitiesDir, 'commands.json'),
@@ -14952,6 +15908,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     files,
     folders,
     components,
+    services,
     flows,
     configs,
     commands,
@@ -14987,7 +15944,8 @@ function resolveExplainTarget(
 ):
   | { readonly ok: true; readonly value: BrainEntity }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
-  const query = normalizeExplainQuery(target);
+  const hint = explainTypeHint(target);
+  const query = normalizeExplainQuery(hint.query);
   if (query === '') {
     return {
       ok: false,
@@ -14999,7 +15957,7 @@ function resolveExplainTarget(
   }
 
   const scored = entities
-    .map((entity) => ({ entity, score: explainMatchScore(query, entity) }))
+    .map((entity) => ({ entity, score: explainMatchScore(query, entity, hint.preferredType) }))
     .filter((match) => match.score > 0)
     .sort((a, b) => b.score - a.score || a.entity.id.localeCompare(b.entity.id));
   if (scored.length === 0) {
@@ -15038,19 +15996,42 @@ function resolveExplainTarget(
   return { ok: true, value: resolved.entity };
 }
 
+function explainTypeHint(target: string): {
+  readonly query: string;
+  readonly preferredType?: EntityType;
+} {
+  const trimmed = target.trim();
+  const match = /^(component|flow|file|folder|service)\s+(.+)$/i.exec(trimmed);
+  if (match === null) return { query: trimmed };
+  const preferredType = match[1]?.toLowerCase() as EntityType | undefined;
+  const query = match[2] ?? '';
+  return preferredType === undefined ? { query } : { query, preferredType };
+}
+
 function normalizeExplainQuery(value: string): string {
   const cleaned = value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/g, '');
   const classification = classifySensitivePath(cleaned);
   return (classification.isSensitive ? classification.redactedId : cleaned).toLowerCase();
 }
 
-function explainMatchScore(query: string, entity: BrainEntity): number {
+function explainTypeBonus(entityType: EntityType, preferredType: EntityType | undefined): number {
+  if (preferredType !== undefined) return entityType === preferredType ? 20 : 0;
+  if (entityType === 'component') return 5;
+  if (entityType === 'folder') return 4;
+  return 3;
+}
+
+function explainMatchScore(
+  query: string,
+  entity: BrainEntity,
+  preferredType: EntityType | undefined,
+): number {
   const name = normalizeExplainQuery(entity.name);
   const id = normalizeExplainQuery(entity.id);
   const relativePath = normalizeExplainQuery(stringData(entity, 'relativePath') ?? '');
   const sources = entity.source_files.map(normalizeExplainQuery);
   const slug = stableSlug(query);
-  const typeBonus = entity.type === 'component' ? 5 : entity.type === 'folder' ? 4 : 3;
+  const typeBonus = explainTypeBonus(entity.type, preferredType);
 
   if (id === query || id === `${entity.type}:${slug}`) return 100 + typeBonus;
   if (name === query || relativePath === query) return 90 + typeBonus;
@@ -15085,25 +16066,62 @@ function buildExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const componentData = primaryComponent?.data ?? {};
   const targetData = target.data ?? {};
+  const primaryService = target.type === 'service' ? target : undefined;
   const relatedFlows = relatedFlowContext(target, params.entitySets.flows);
   const relatedComponentIds = unique([
     ...relatedComponents.map((component) => component.id),
+    ...(primaryService === undefined
+      ? []
+      : serviceDataStringArray(primaryService, 'related_components')),
     ...relationshipContext.dependsOnEntityIds.filter((id) => id.startsWith('component:')),
     ...relationshipContext.dependedOnByEntityIds.filter((id) => id.startsWith('component:')),
   ]);
   const purpose =
+    (primaryService === undefined
+      ? undefined
+      : `${safeText(primaryService.name)} is a ${stringData(primaryService, 'framework') ?? 'unknown'} service inferred from local source evidence. It participates in ${serviceDataStringArray(primaryService, 'related_flows').length} reconstructed flow(s).`) ??
     stringData(target, 'purpose') ??
     (typeof componentData.purpose === 'string' ? componentData.purpose : undefined) ??
     target.description;
+  const serviceResponsibilities =
+    primaryService === undefined
+      ? []
+      : unique([
+          ...serviceDataStringArray(primaryService, 'routes').map(
+            (route) => `Handle route ${route}.`,
+          ),
+          ...serviceDataStringArray(primaryService, 'jobs').map((job) => `Run job/script ${job}.`),
+          ...serviceDataStringArray(primaryService, 'storage_dependencies').map(
+            (storage) => `Use storage dependency ${storage}.`,
+          ),
+          ...serviceDataStringArray(primaryService, 'external_services').map(
+            (api) => `Call external service/API ${api}.`,
+          ),
+        ]);
   const responsibilities = explainArray(
     targetData.responsibilities,
     componentData.responsibilities,
+    serviceResponsibilities,
   );
   const dependencies = unique([
     ...explainArray(targetData.dependencies, componentData.dependencies),
     ...relationshipContext.dependsOn,
   ]);
   const dependencyRoles = explainArray(targetData.dependency_roles, componentData.dependency_roles);
+  const serviceDependencyRoles =
+    primaryService === undefined
+      ? []
+      : unique([
+          ...serviceDataStringArray(primaryService, 'storage_dependencies').map(
+            (storage) => `${storage}: storage/state dependency`,
+          ),
+          ...serviceDataStringArray(primaryService, 'environment_variables').map(
+            (envVar) => `${envVar}: environment configuration`,
+          ),
+          ...serviceDataStringArray(primaryService, 'external_services').map(
+            (api) => `${api}: external API dependency`,
+          ),
+        ]);
   const consumers = unique([
     ...explainArray(targetData.consumers, componentData.consumers),
     ...relationshipContext.dependedOnBy,
@@ -15112,10 +16130,10 @@ function buildExplanation(params: {
     ...explainArray(targetData.important_files, componentData.important_files),
     ...target.source_files,
   ]).slice(0, 12);
-  const entryPoints = explainArray(targetData.entry_points, componentData.entry_points).slice(
-    0,
-    12,
-  );
+  const entryPoints = unique([
+    ...explainArray(targetData.entry_points, componentData.entry_points),
+    ...(primaryService === undefined ? [] : serviceDataStringArray(primaryService, 'entrypoints')),
+  ]).slice(0, 12);
   const tests = unique([
     ...explainArray(targetData.tests, componentData.tests),
     ...relatedTestPaths(target, params.entitySets.tests),
@@ -15123,6 +16141,9 @@ function buildExplanation(params: {
   const configs = unique([
     ...explainArray(targetData.configs, componentData.configs),
     ...relatedConfigPaths(target, params.entitySets.configs),
+    ...(primaryService === undefined
+      ? []
+      : serviceDataStringArray(primaryService, 'deployment_configs')),
   ]);
   const breaksIfChanged = unique([
     ...explainArray(targetData.what_breaks_if_removed, componentData.what_breaks_if_removed),
@@ -15132,6 +16153,7 @@ function buildExplanation(params: {
   const failureModes = explainArray(targetData.failure_modes, componentData.failure_modes);
   const risks = unique([
     ...explainArray(targetData.known_risks, componentData.known_risks),
+    ...(primaryService === undefined ? [] : serviceDataStringArray(primaryService, 'risks')),
     ...failureModes,
     ...relatedRisks(target, relatedComponents, params.entitySets.risks),
   ]);
@@ -15181,7 +16203,7 @@ function buildExplanation(params: {
     purpose: safeText(purpose),
     responsibilities: responsibilities.map(safeText),
     dependencies: dependencies.map(safeText),
-    dependency_roles: dependencyRoles.map(safeText),
+    dependency_roles: unique([...dependencyRoles, ...serviceDependencyRoles]).map(safeText),
     consumers: consumers.map(safeText),
     important_files: importantFiles.map(safeText),
     entry_points: entryPoints.map(safeText),
@@ -15242,6 +16264,29 @@ function buildExplanation(params: {
           },
         }
       : {}),
+    ...(primaryService !== undefined
+      ? {
+          service: {
+            runtime: safeText(stringData(primaryService, 'runtime') ?? 'unknown'),
+            framework: safeText(stringData(primaryService, 'framework') ?? 'unknown'),
+            service_root: safeText(
+              stringData(primaryService, 'service_root') ?? primaryService.name,
+            ),
+            entrypoints: serviceDataStringArray(primaryService, 'entrypoints'),
+            routes: serviceDataStringArray(primaryService, 'routes'),
+            jobs: serviceDataStringArray(primaryService, 'jobs'),
+            storage_dependencies: serviceDataStringArray(primaryService, 'storage_dependencies'),
+            environment_variables: serviceDataStringArray(primaryService, 'environment_variables'),
+            external_services: serviceDataStringArray(primaryService, 'external_services'),
+            deployment_configs: serviceDataStringArray(primaryService, 'deployment_configs'),
+            related_flows: serviceDataStringArray(primaryService, 'related_flows'),
+            related_components: serviceDataStringArray(primaryService, 'related_components'),
+            confidence_score:
+              numberData(primaryService, 'confidence_score') ??
+              confidenceScoreForValue(primaryService.confidence),
+          },
+        }
+      : {}),
   };
 }
 
@@ -15260,6 +16305,7 @@ function buildFlowExplanation(params: {
   const steps = safeFlowSteps(target);
   const flowRisksForTarget = safeFlowRisks(target);
   const components = flowStringArray(target, 'components').map(safeText);
+  const services = flowStringArray(target, 'services').map(safeText);
   const files = unique([...flowStringArray(target, 'files'), ...target.source_files]).map(safeText);
   const dependencies = flowStringArray(target, 'dependencies').map(safeText);
   const configs = flowStringArray(target, 'configs').map(safeText);
@@ -15337,7 +16383,7 @@ function buildFlowExplanation(params: {
     )} flow reconstructed from local static evidence. It is not a runtime trace.`,
     responsibilities: unique([
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
-      `Covers ${components.length} component(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      `Covers ${components.length} component(s), ${services.length} service(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
       ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
     ]).map(safeText),
@@ -15403,6 +16449,7 @@ function buildFlowExplanation(params: {
       entrypoints,
       steps,
       components,
+      services,
       files,
       dependencies,
       tests,
@@ -15491,6 +16538,16 @@ function relatedFlowContext(
   flows: readonly BrainEntity[],
 ): readonly BrainEntity[] {
   if (target.type === 'flow') return [target];
+  if (target.type === 'service') {
+    const relatedFlowIds = new Set(serviceDataStringArray(target, 'related_flows'));
+    return sorted(
+      flows.filter(
+        (flow) =>
+          relatedFlowIds.has(flow.id) || flowStringArray(flow, 'services').includes(target.id),
+      ),
+      (flow) => flow.id,
+    );
+  }
   const relatedSourceFiles = new Set([stringData(target, 'relativePath') ?? target.name]);
   for (const file of target.source_files) relatedSourceFiles.add(file);
   return sorted(
@@ -15645,6 +16702,9 @@ function explainResearchArtifactsForTarget(params: {
     proving.add('.rizz/research/flow_understanding.json');
     proving.add('.rizz/research/flow_coverage.json');
     proving.add('.rizz/research/flow_confidence.json');
+  } else if (params.entityType === 'service') {
+    proving.add('.rizz/research/service_intelligence.json');
+    proving.add('.rizz/research/flow_understanding.json');
   } else {
     proving.add('.rizz/research/component_intelligence.json');
   }
@@ -15793,6 +16853,7 @@ function renderExplainReport(
           ...explanation.research_artifacts.limiting.map((path) => `Limits: ${path}`),
         ])}</article>
 	      ${renderComponentExplanationCards(explanation)}
+	      ${renderServiceExplanationCards(explanation)}
 	      ${renderFlowExplanationCards(explanation)}
 	      <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>
 	      <article class="card"><h2>Dependencies</h2>${renderList(explanation.dependencies)}</article>
@@ -15835,6 +16896,32 @@ function renderComponentExplanationCards(explanation: ExplainSummaryData): strin
   return `<article class="card"><h2>Component Boundary</h2>${renderList(details)}</article>`;
 }
 
+function renderServiceExplanationCards(explanation: ExplainSummaryData): string {
+  if (explanation.service === undefined) return '';
+  return `<article class="card"><h2>Service Runtime</h2>${renderList([
+    `Runtime: ${explanation.service.runtime}`,
+    `Framework: ${explanation.service.framework}`,
+    `Root: ${explanation.service.service_root}`,
+    `Confidence score: ${explanation.service.confidence_score}`,
+  ])}</article>
+      <article class="card"><h2>Service Routes</h2>${renderList(
+        explanation.service.routes,
+      )}</article>
+      <article class="card"><h2>Service Jobs</h2>${renderList(explanation.service.jobs)}</article>
+      <article class="card"><h2>Service Storage</h2>${renderList(
+        explanation.service.storage_dependencies,
+      )}</article>
+      <article class="card"><h2>Service Environment</h2>${renderList(
+        explanation.service.environment_variables,
+      )}</article>
+      <article class="card"><h2>External APIs</h2>${renderList(
+        explanation.service.external_services,
+      )}</article>
+      <article class="card"><h2>Deployment Configs</h2>${renderList(
+        explanation.service.deployment_configs,
+      )}</article>`;
+}
+
 function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
   if (explanation.flow === undefined) return '';
   return `<article class="card"><h2>Entry Contract</h2>${renderList(
@@ -15863,6 +16950,7 @@ function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
       <article class="card"><h2>Flow Components</h2>${renderList(
         explanation.flow.components,
       )}</article>
+      <article class="card"><h2>Flow Services</h2>${renderList(explanation.flow.services)}</article>
       <article class="card"><h2>Flow Confidence</h2>${renderList([
         `${explanation.flow.confidence_score}: ${explanation.flow.confidence_reason}`,
       ])}</article>`;
@@ -15923,6 +17011,7 @@ async function readBrainBuckets(entitiesDir: string): Promise<BrainBuckets> {
 async function readReviewEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly flows: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
   readonly commands: readonly BrainEntity[];
@@ -15930,10 +17019,11 @@ async function readReviewEntitySets(entitiesDir: string): Promise<{
   readonly dependencies: readonly BrainEntity[];
   readonly risks: readonly BrainEntity[];
 }> {
-  const [files, components, flows, configs, commands, tests, dependencies, risks] =
+  const [files, components, services, flows, configs, commands, tests, dependencies, risks] =
     await Promise.all([
       readEntityFile(entitiesDir, 'files.json'),
       readEntityFile(entitiesDir, 'components.json'),
+      readEntityFile(entitiesDir, 'services.json'),
       readEntityFile(entitiesDir, 'flows.json'),
       readEntityFile(entitiesDir, 'configs.json'),
       readEntityFile(entitiesDir, 'commands.json'),
@@ -15941,7 +17031,7 @@ async function readReviewEntitySets(entitiesDir: string): Promise<{
       readEntityFile(entitiesDir, 'dependencies.json'),
       readEntityFile(entitiesDir, 'risks.json'),
     ]);
-  return { files, components, flows, configs, commands, tests, dependencies, risks };
+  return { files, components, services, flows, configs, commands, tests, dependencies, risks };
 }
 
 function dropEntityById(entities: readonly BrainEntity[], id: string): BrainEntity[] {
@@ -16205,7 +17295,13 @@ function buildReview(params: {
     allAffectedComponents,
     params.entitySets.flows,
   );
+  const affectedServices = affectedServiceEntities({
+    changedFiles,
+    services: params.entitySets.services,
+    affectedFlows,
+  });
   const affectedFlowIds = affectedFlows.map((flow) => flow.id);
+  const affectedServiceIds = affectedServices.map((service) => service.id);
   const architectureImpactMap = reviewArchitectureImpactMap({
     latest: params.latest,
     changedFiles,
@@ -16226,6 +17322,7 @@ function buildReview(params: {
     ...changedFiles.map((file) => entityId('file', file)),
     ...affectedComponentIds,
     ...affectedFlowIds,
+    ...affectedServiceIds,
     ...params.entitySets.configs
       .filter((config) => config.source_files.some((file) => changedFileSet.has(file)))
       .map((config) => config.id),
@@ -16237,6 +17334,7 @@ function buildReview(params: {
     ...directlyAffectedEntities,
     ...dependentComponentIds,
     ...affectedFlowIds,
+    ...affectedServiceIds,
     ...architectureImpactComponentIds,
     ...architectureImpactFlowIds,
   ]);
@@ -16289,6 +17387,7 @@ function buildReview(params: {
   ).map(safeText);
   const reviewEvidenceIds = unique([
     ...allAffectedComponents.flatMap((component) => component.evidence_ids),
+    ...affectedServices.flatMap((service) => service.evidence_ids),
     ...affectedFlows.flatMap((flow) => flow.evidence_ids),
     ...affectedRelationships.flatMap((relationship) => relationship.evidence_ids),
     ...architectureImpactMap.flatMap((entry) => entry.evidence_ids),
@@ -16311,6 +17410,7 @@ function buildReview(params: {
     directComponents: affectedComponents,
     dependentComponents,
     affectedFlows,
+    affectedServices,
     affectedRelationships,
     architectureImpactMap,
     affectedTests,
@@ -16499,6 +17599,29 @@ function buildReview(params: {
     });
   }
 
+  if (affectedServices.length > 0) {
+    addFinding({
+      slug: 'affected-services',
+      severity: affectedServices.some((service) => service.risks.length > 0) ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'Service intelligence overlaps the diff',
+      description: safeText(
+        `${affectedServices.length} service(s) are affected: ${affectedServices
+          .map((service) => service.name)
+          .slice(0, 5)
+          .join(
+            ', ',
+          )}. Review routes, flows, storage, env vars, external APIs, deployment configs, and smoke checks before merge.`,
+      ),
+      affected_files: unique(affectedServices.flatMap((service) => service.changed_files)),
+      affected_entities: unique([...graphAffectedEntities, ...affectedServiceIds]),
+      evidenceIds: unique(affectedServices.flatMap((service) => service.evidence_ids)),
+      confidence: 'inferred',
+      recommendation:
+        'Open the service explanation and verify affected flows plus storage/auth/CORS/deployment checks when relevant.',
+    });
+  }
+
   if (architectureImpactMap.length > 0) {
     addFinding({
       slug: 'architecture-impact-map',
@@ -16590,6 +17713,7 @@ function buildReview(params: {
     generated_at: params.now,
     changed_files: publicChangedFiles,
     direct_affected_components: directAffectedComponentData,
+    affected_services: affectedServices,
     dependent_components: dependentComponentData,
     affected_components: unique([...affectedComponentIds, ...dependentComponentIds]),
     affected_flows: affectedFlows,
@@ -16600,6 +17724,7 @@ function buildReview(params: {
     review_evidence_summary: {
       changed_files: changedFiles.length,
       direct_components: affectedComponents.length,
+      affected_services: affectedServices.length,
       dependent_components: dependentComponents.length,
       affected_flows: affectedFlows.length,
       architecture_impact_surfaces: architectureImpactMap.length,
@@ -16702,6 +17827,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     findings_by_severity: countReviewFindingsBySeverity(review.findings),
     findings_by_category: countReviewFindingsByCategory(review.findings),
     affected_component_count: review.affected_components.length,
+    affected_service_count: review.affected_services.length,
     direct_affected_component_count: review.direct_affected_components.length,
     dependent_component_count: review.dependent_components.length,
     affected_flow_count: review.affected_flows.length,
@@ -16949,6 +18075,71 @@ function reviewAffectedComponents(params: {
   });
 }
 
+function affectedServiceEntities(params: {
+  readonly changedFiles: readonly string[];
+  readonly services: readonly BrainEntity[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+}): ReviewAffectedServiceData[] {
+  const changedFileSet = new Set(params.changedFiles);
+  const flowServiceIds = new Set(params.affectedFlows.flatMap((flow) => flow.services));
+  return params.services
+    .filter((service) => {
+      if (service.latest_status === 'stale') return false;
+      if (flowServiceIds.has(service.id)) return true;
+      return service.source_files.some((file) => changedFileSet.has(file));
+    })
+    .map((service) => {
+      const changedFiles = service.source_files.filter((file) => changedFileSet.has(file));
+      const affectedFlows = unique([
+        ...serviceDataStringArray(service, 'related_flows'),
+        ...params.affectedFlows
+          .filter((flow) => flow.services.includes(service.id))
+          .map((flow) => flow.id),
+      ]);
+      const flowMatches = params.affectedFlows.filter((flow) => affectedFlows.includes(flow.id));
+      const tests = unique(flowMatches.flatMap((flow) => flow.tests));
+      const configs = unique([
+        ...flowMatches.flatMap((flow) => flow.configs),
+        ...serviceDataStringArray(service, 'deployment_configs'),
+      ]);
+      return {
+        id: safeText(service.id),
+        name: safeText(service.name),
+        runtime: safeText(stringData(service, 'runtime') ?? 'unknown'),
+        framework: safeText(stringData(service, 'framework') ?? 'unknown'),
+        changed_files: changedFiles.map(safeText),
+        entrypoints: serviceDataStringArray(service, 'entrypoints'),
+        routes: serviceDataStringArray(service, 'routes'),
+        jobs: serviceDataStringArray(service, 'jobs'),
+        storage_dependencies: serviceDataStringArray(service, 'storage_dependencies'),
+        environment_variables: serviceDataStringArray(service, 'environment_variables'),
+        external_services: serviceDataStringArray(service, 'external_services'),
+        deployment_configs: serviceDataStringArray(service, 'deployment_configs'),
+        affected_flows: affectedFlows.map(safeText),
+        tests: tests.map(safeText),
+        configs: configs.map(safeText),
+        risks: serviceDataStringArray(service, 'risks'),
+        confidence: service.confidence,
+        evidence_ids: service.evidence_ids.map(safeText),
+        reasons: unique([
+          ...(changedFiles.length > 0
+            ? [`${changedFiles.length} changed file(s) are owned by this service.`]
+            : []),
+          ...(affectedFlows.length > 0
+            ? [`${affectedFlows.length} affected flow(s) link to this service.`]
+            : []),
+          ...(serviceDataStringArray(service, 'deployment_configs').length > 0
+            ? ['Deployment config evidence is linked to this service.']
+            : []),
+          ...(serviceDataStringArray(service, 'storage_dependencies').length > 0
+            ? ['Storage dependency evidence is linked to this service.']
+            : []),
+        ]).map(safeText),
+      };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 function affectedFlowEntities(
   changedFiles: readonly string[],
   affectedComponents: readonly BrainEntity[],
@@ -16967,6 +18158,7 @@ function affectedFlowEntities(
       ...flow.source_files,
     ]);
     const flowComponents = flowStringArray(flow, 'components');
+    const flowServices = flowStringArray(flow, 'services');
     const directChangedFiles = changedFiles.filter((file) => flowFiles.includes(file));
     const componentChangedFiles = flowComponents.some((componentId) =>
       affectedComponentIds.has(componentId),
@@ -16991,6 +18183,7 @@ function affectedFlowEntities(
         entrypoints: reviewFlowEntrypointLabels(flow),
         changed_files: matchedChangedFiles.map(safeText),
         components: flowComponents.map(safeText),
+        services: flowServices.map(safeText),
         tests: flowStringArray(flow, 'tests').map(safeText),
         configs: flowStringArray(flow, 'configs').map(safeText),
         risks: flowRisks(flow).length,
@@ -17026,6 +18219,7 @@ function affectedFlowReasons(params: {
     entrypoints: reviewFlowEntrypointLabels(params.flow),
     changed_files: [],
     components: flowStringArray(params.flow, 'components'),
+    services: flowStringArray(params.flow, 'services'),
     tests: flowStringArray(params.flow, 'tests'),
     configs: flowStringArray(params.flow, 'configs'),
     risks: flowRisks(params.flow).length,
@@ -17169,6 +18363,7 @@ function blastRadiusReasonLines(params: {
   readonly directComponents: readonly BrainEntity[];
   readonly dependentComponents: readonly BrainEntity[];
   readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
   readonly affectedRelationships: readonly ReviewAffectedRelationshipData[];
   readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
   readonly affectedTests: readonly string[];
@@ -17184,6 +18379,7 @@ function blastRadiusReasonLines(params: {
       ? 'No dependent consumer components were found from import/call/dependency graph edges.'
       : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
     `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
+    `${params.affectedServices.length} affected service(s) link the change to routes, jobs, storage, external API, env, or deployment evidence.`,
     ...routeFlowReasons,
     ...impactMapReasons,
     `${params.affectedRelationships.length} graph relationship(s) touch the review blast radius.`,
@@ -17389,16 +18585,44 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
         <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
         <td>${renderList(flow.entrypoints)}</td>
         <td>${renderList(flow.changed_files)}</td>
         <td>${renderList(flow.components)}</td>
+        <td>${renderList(flow.services)}</td>
         <td>${renderList(flow.tests)}</td>
         <td>${renderList(flow.configs)}</td>
         <td>${htmlEscape(flow.confidence)} · ${flow.score}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
+function renderAffectedServiceRows(services: readonly ReviewAffectedServiceData[]): string {
+  if (services.length === 0) {
+    return '<p class="muted">No service intelligence overlaps this diff.</p>';
+  }
+  return `<table><thead><tr><th>Service</th><th>Reasons</th><th>Changed Files</th><th>Flows</th><th>Tests / Configs</th><th>Routes / Jobs</th><th>Storage / Env / External / Deploy</th><th>Risks</th></tr></thead><tbody>${services
+    .map(
+      (service) => `<tr>
+        <td><strong>${htmlEscape(service.name)}</strong><br><span class="muted">${htmlEscape(
+          service.id,
+        )} · ${htmlEscape(service.framework)} · ${htmlEscape(service.confidence)}</span></td>
+        <td>${renderList(service.reasons)}</td>
+        <td>${renderList(service.changed_files)}</td>
+        <td>${renderList(service.affected_flows)}</td>
+        <td>${renderList([...service.tests, ...service.configs])}</td>
+        <td>${renderList([...service.routes, ...service.jobs])}</td>
+        <td>${renderList([
+          ...service.storage_dependencies,
+          ...service.environment_variables,
+          ...service.external_services,
+          ...service.deployment_configs,
+        ])}</td>
+        <td>${renderList(service.risks)}</td>
       </tr>`,
     )
     .join('')}</tbody></table>`;
@@ -17491,6 +18715,7 @@ function renderReviewReport(review: ReviewSummaryData): string {
       <article class="card"><h2>Action</h2><p>${htmlEscape(review.recommended_action)}</p></article>
       <article class="card"><h2>Surgicality</h2><p>${review.surgicality_score}/10</p></article>
       <article class="card"><h2>Files</h2><p>${review.changed_files.length}</p></article>
+      <article class="card"><h2>Affected Services</h2><p>${review.affected_services.length}</p></article>
       <article class="card"><h2>Affected Flows</h2><p>${review.affected_flows.length}</p></article>
       <article class="card"><h2>Findings</h2><p>${review.findings.length}</p></article>
     </section>
@@ -17525,6 +18750,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
     <section>
       <h2>Dependent Components</h2>
       ${renderAffectedComponentRows(review.dependent_components, 'No dependent consumer components were found.')}
+    </section>
+    <section>
+      <h2>Affected Services</h2>
+      ${renderAffectedServiceRows(review.affected_services)}
     </section>
     <section>
       <h2>Affected Flows</h2>
