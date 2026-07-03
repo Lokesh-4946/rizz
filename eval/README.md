@@ -77,6 +77,10 @@ dependencies, affected data dependency labels, affected state operations, review
 Control drilldown output, and `review_eval` state/data count fields. These seeds measure whether
 Rizz can explain what user-visible journey may break when a schema, repository, cache/session, or
 other state surface changes.
+Targeted-verification review tasks additionally assert `verification_plan` items, priority counts,
+verification types, and report/portal rendering. These checks measure whether review intelligence
+turns blast-radius evidence into concrete local verification work without running commands or
+calling providers.
 Route-aware review tasks can additionally assert affected flow metadata with
 `route_flows_include`: flow id, framework, route path, route type, entrypoints, changed files,
 linked tests, linked configs, and nested `service_causality_include` entries. Service-causality

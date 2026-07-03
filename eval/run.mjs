@@ -261,6 +261,9 @@ function validateReviewAssertions(assertions) {
     'dependency_runtime_affected_configs_include',
     'affected_data_dependencies_include',
     'affected_state_operations_include',
+    'verification_plan_types_include',
+    'verification_plan_priorities_include',
+    'verification_plan_reasons_include',
     'architecture_impact_surfaces_include',
     'architecture_what_breaks_include',
     'architecture_evidence_gaps_include',
@@ -282,6 +285,9 @@ function validateReviewAssertions(assertions) {
     'minimum_dependency_runtime_verification_focus',
     'minimum_affected_data_dependencies',
     'minimum_affected_state_operations',
+    'minimum_verification_plan_items',
+    'minimum_verification_plan_required',
+    'minimum_verification_plan_recommended',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
   ]) {
@@ -1321,6 +1327,16 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const architectureConfidenceGaps = Array.isArray(evidenceSummary.architecture_confidence_gaps)
     ? evidenceSummary.architecture_confidence_gaps
     : [];
+  const verificationPlan = reviewArray(review, 'verification_plan').filter(isRecord);
+  const verificationPlanTypes = verificationPlan
+    .map((item) => item.verification_type)
+    .filter(isNonEmptyString);
+  const verificationPlanPriorities = verificationPlan
+    .map((item) => item.priority)
+    .filter(isNonEmptyString);
+  const verificationPlanReasons = verificationPlan
+    .map((item) => item.reason)
+    .filter(isNonEmptyString);
   const affectedDataDependencies = Array.isArray(evidenceSummary.affected_data_dependencies)
     ? evidenceSummary.affected_data_dependencies
     : [];
@@ -1452,6 +1468,21 @@ function assertReviewContract(task, repoDir, review, stdout) {
       assertions.affected_state_operations_include,
       'affected_state_operations',
     ),
+    ...assertIncludesAll(
+      verificationPlanTypes,
+      assertions.verification_plan_types_include,
+      'verification_plan.verification_type',
+    ),
+    ...assertIncludesAll(
+      verificationPlanPriorities,
+      assertions.verification_plan_priorities_include,
+      'verification_plan.priority',
+    ),
+    ...assertSubstringMatches(
+      verificationPlanReasons,
+      assertions.verification_plan_reasons_include,
+      'verification_plan.reason',
+    ),
     ...assertSubstringMatches(
       architectureWhatBreaks,
       assertions.architecture_what_breaks_include,
@@ -1561,6 +1592,36 @@ function assertReviewContract(task, repoDir, review, stdout) {
   ) {
     errors.push(
       `affected_state_operations ${affectedStateOperations.length} below ${assertions.minimum_affected_state_operations}`,
+    );
+  }
+  if (
+    assertions.minimum_verification_plan_items !== undefined &&
+    verificationPlan.length < assertions.minimum_verification_plan_items
+  ) {
+    errors.push(
+      `verification_plan ${verificationPlan.length} below ${assertions.minimum_verification_plan_items}`,
+    );
+  }
+  const verificationPlanRequired = verificationPlanPriorities.filter(
+    (priority) => priority === 'required',
+  ).length;
+  const verificationPlanRecommended = verificationPlanPriorities.filter(
+    (priority) => priority === 'recommended',
+  ).length;
+  if (
+    assertions.minimum_verification_plan_required !== undefined &&
+    verificationPlanRequired < assertions.minimum_verification_plan_required
+  ) {
+    errors.push(
+      `verification_plan required ${verificationPlanRequired} below ${assertions.minimum_verification_plan_required}`,
+    );
+  }
+  if (
+    assertions.minimum_verification_plan_recommended !== undefined &&
+    verificationPlanRecommended < assertions.minimum_verification_plan_recommended
+  ) {
+    errors.push(
+      `verification_plan recommended ${verificationPlanRecommended} below ${assertions.minimum_verification_plan_recommended}`,
     );
   }
   if (

@@ -967,6 +967,33 @@ interface ReviewVerificationStatusData {
   readonly calibration_note: string;
 }
 
+type ReviewVerificationPriority = 'required' | 'recommended' | 'optional';
+
+type ReviewVerificationType =
+  | 'test'
+  | 'smoke'
+  | 'contract'
+  | 'data'
+  | 'state'
+  | 'dependency'
+  | 'service-causality'
+  | 'manual';
+
+interface ReviewVerificationPlanItemData {
+  readonly id: string;
+  readonly priority: ReviewVerificationPriority;
+  readonly verification_type: ReviewVerificationType;
+  readonly reason: string;
+  readonly commands: readonly string[];
+  readonly manual_checks: readonly string[];
+  readonly linked_findings: readonly string[];
+  readonly linked_flows: readonly string[];
+  readonly linked_components: readonly string[];
+  readonly linked_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+}
+
 interface ReviewEvalArtifactData {
   readonly schema_version: number;
   readonly generated_at: string;
@@ -1005,6 +1032,10 @@ interface ReviewEvalArtifactData {
   readonly verification_evidence_count: number;
   readonly verification_passed_count: number;
   readonly verification_failed_count: number;
+  readonly verification_plan_count: number;
+  readonly verification_plan_required_count: number;
+  readonly verification_plan_recommended_count: number;
+  readonly verification_plan_optional_count: number;
   readonly architecture_affected_test_count: number;
   readonly architecture_affected_config_count: number;
   readonly required_test_count: number;
@@ -1220,6 +1251,7 @@ interface ReviewSummaryData {
   readonly blast_radius_reasons: readonly string[];
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
   readonly verification_status: ReviewVerificationStatusData;
+  readonly verification_plan: readonly ReviewVerificationPlanItemData[];
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
@@ -15548,6 +15580,7 @@ function renderReviewStatusValue(value: unknown): string {
         return undefined;
       })
       .filter((item): item is string => item !== undefined);
+    if (labels.length === 0 && value.length > 0) return renderList([`${value.length} item(s)`]);
     return renderList(labels);
   }
   if (isRecord(value)) {
@@ -15558,6 +15591,42 @@ function renderReviewStatusValue(value: unknown): string {
     return renderList(labels);
   }
   return htmlEscape(String(value));
+}
+
+function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+  }
+  const plan = recordArray(status, 'verification_plan').filter(isRecord);
+  if (plan.length === 0) {
+    return '<p class="muted">No targeted verification plan was recorded by the latest review.</p>';
+  }
+  const required = plan.filter((item) => recordString(item, 'priority', '') === 'required');
+  const recommended = plan.filter((item) => recordString(item, 'priority', '') === 'recommended');
+  const topItems = [...required, ...recommended, ...plan].slice(0, 5);
+  return `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${required.length} required</div>
+      <h3>Verification Summary</h3>
+      ${renderList([
+        `${plan.length} targeted check(s)`,
+        `${required.length} required`,
+        `${recommended.length} recommended`,
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Top Checks</h3>
+      ${renderList(
+        topItems.map((item) => {
+          const priority = recordString(item, 'priority', 'recommended');
+          const type = recordString(item, 'verification_type', 'manual');
+          const reason = recordString(item, 'reason', 'Verify affected behavior.');
+          return `${priority} ${type}: ${reason}`;
+        }),
+      )}
+    </article>
+  </div>`;
 }
 
 function renderLatestReviewRouteFlows(
@@ -17189,6 +17258,8 @@ function renderReport(params: {
     posture: reviewReadiness.posture,
     body: `<h3><span>Review Blast Radius</span></h3>
       ${renderLatestReview(params.latest)}
+      <h3>Targeted Verification</h3>
+      ${renderLatestVerificationPlan(params.latest)}
       <h3>Affected Route Flows</h3>
       ${renderLatestReviewRouteFlows(params.latest, params.buckets.flows, evidenceById)}
       <h3>Risk Areas</h3>
@@ -18229,6 +18300,8 @@ export async function reviewProjectChanges(
         dependency_runtime_impact: review.dependency_runtime_impact,
         review_evidence_summary: review.review_evidence_summary,
         verification_status: review.verification_status,
+        verification_plan: review.verification_plan,
+        verification_plan_summary: verificationPlanSummary(review.verification_plan),
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
           verification_evidence: '.rizz/research/verification_evidence.json',
@@ -21095,6 +21168,22 @@ function buildReview(params: {
   }
 
   const requiredTests = requiredTestCommands(params.entitySets.commands, changedFiles);
+  const verificationPlan = reviewVerificationPlan({
+    changedSourceFiles,
+    changedTestFiles,
+    changedConfigFiles,
+    changedDependencyFiles,
+    affectedFlows,
+    affectedServices,
+    affectedComponents: unique([...affectedComponentIds, ...dependentComponentIds]),
+    affectedDataDependencies,
+    affectedStateOperations,
+    dependencyRuntimeImpact,
+    architectureImpactMap,
+    findings,
+    requiredTests,
+    verificationStatus,
+  });
   const surgicalityScore = scoreSurgicality(
     changedFiles.length,
     affectedComponents.length + dependentComponents.length,
@@ -21146,6 +21235,7 @@ function buildReview(params: {
       evidence_ids: reviewEvidenceIds.slice(0, 40),
     },
     verification_status: verificationStatus,
+    verification_plan: verificationPlan,
     findings,
     overall_risk: overallRisk,
     surgicality_score: surgicalityScore,
@@ -21205,6 +21295,9 @@ function scoreReviewReadiness(
 ): number {
   const evidenceBonus = Math.min(12, review.review_evidence_summary.evidence_ids.length);
   const testBonus = Math.min(8, review.required_tests.length * 2);
+  const verificationPlanBonus = Math.min(8, review.verification_plan.length * 2);
+  const requiredVerificationPenalty =
+    review.verification_plan.filter((item) => item.priority === 'required').length * 2;
   const findingPenalty = review.findings.length * 4;
   const secretPenalty = unsafeSensitiveReferenceCount * 25;
   return Math.max(
@@ -21213,7 +21306,9 @@ function scoreReviewReadiness(
       100,
       review.surgicality_score * 10 +
         evidenceBonus +
-        testBonus -
+        testBonus +
+        verificationPlanBonus -
+        requiredVerificationPenalty -
         findingPenalty -
         riskPenalty(review.overall_risk) -
         blastRadiusPenalty(review.blast_radius) -
@@ -21279,6 +21374,16 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     verification_evidence_count: review.verification_status.total_checks,
     verification_passed_count: review.verification_status.passed_checks.length,
     verification_failed_count: review.verification_status.failed_checks.length,
+    verification_plan_count: review.verification_plan.length,
+    verification_plan_required_count: review.verification_plan.filter(
+      (item) => item.priority === 'required',
+    ).length,
+    verification_plan_recommended_count: review.verification_plan.filter(
+      (item) => item.priority === 'recommended',
+    ).length,
+    verification_plan_optional_count: review.verification_plan.filter(
+      (item) => item.priority === 'optional',
+    ).length,
     architecture_affected_test_count: unique(
       review.architecture_impact_map.flatMap((entry) => entry.affected_tests),
     ).length,
@@ -21729,6 +21834,260 @@ function reviewDependencyVerificationFocus(params: {
   ])
     .map(safeText)
     .slice(0, 12);
+}
+
+function reviewVerificationPlan(params: {
+  readonly changedSourceFiles: readonly string[];
+  readonly changedTestFiles: readonly string[];
+  readonly changedConfigFiles: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+  readonly affectedComponents: readonly string[];
+  readonly affectedDataDependencies: readonly FlowDataDependency[];
+  readonly affectedStateOperations: readonly string[];
+  readonly dependencyRuntimeImpact: ReviewDependencyRuntimeImpactData | null;
+  readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
+  readonly findings: readonly ReviewFindingData[];
+  readonly requiredTests: readonly string[];
+  readonly verificationStatus: ReviewVerificationStatusData;
+}): ReviewVerificationPlanItemData[] {
+  const items: ReviewVerificationPlanItemData[] = [];
+  const addItem = (
+    item: Omit<ReviewVerificationPlanItemData, 'id'> & { readonly slug: string },
+  ): void => {
+    items.push({
+      id: entityId('task', `review-verification-${item.slug}-${items.length + 1}`),
+      priority: item.priority,
+      verification_type: item.verification_type,
+      reason: safeText(item.reason),
+      commands: unique(item.commands.map(safeText)).slice(0, 8),
+      manual_checks: unique(item.manual_checks.map(safeText)).slice(0, 10),
+      linked_findings: unique(item.linked_findings.map(safeText)),
+      linked_flows: unique(item.linked_flows.map(safeText)).slice(0, 12),
+      linked_components: unique(item.linked_components.map(safeText)).slice(0, 12),
+      linked_files: unique(item.linked_files.map(safeText)).slice(0, 16),
+      evidence_ids: unique(item.evidence_ids.map(safeText)).slice(0, 20),
+      confidence: item.confidence,
+    });
+  };
+  const findingIds = (predicate: (finding: ReviewFindingData) => boolean): string[] =>
+    params.findings.filter(predicate).map((finding) => finding.id);
+  const hasRecordedLocalChecks = params.verificationStatus.local_checks_passed.length > 0;
+
+  if (params.changedSourceFiles.length > 0) {
+    const linkedTests = unique(params.affectedFlows.flatMap((flow) => flow.tests));
+    addItem({
+      slug: 'runtime-tests',
+      priority:
+        params.changedTestFiles.length === 0 && !hasRecordedLocalChecks
+          ? 'required'
+          : 'recommended',
+      verification_type: 'test',
+      reason:
+        params.changedTestFiles.length === 0
+          ? 'Runtime/source files changed without a matching test file in the diff.'
+          : 'Runtime/source files changed and should be verified through the linked test surface.',
+      commands: params.requiredTests,
+      manual_checks: [
+        ...(linkedTests.length === 0
+          ? ['Add or identify focused tests for the changed runtime behavior.']
+          : linkedTests.map((test) => `Run or inspect linked test artifact ${test}.`)),
+        ...params.affectedFlows
+          .slice(0, 5)
+          .map((flow) => `Exercise affected journey ${reviewFlowDescriptionLabel(flow)}.`),
+      ],
+      linked_findings: findingIds((finding) => finding.category === 'Missing tests'),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: params.changedSourceFiles,
+      evidence_ids: unique(params.affectedFlows.flatMap((flow) => flow.evidence_ids)),
+      confidence:
+        linkedTests.length > 0 || params.requiredTests.length > 0 ? 'inferred' : 'uncertain',
+    });
+  }
+
+  if (params.affectedDataDependencies.length > 0) {
+    const stateWriteImpact = params.affectedStateOperations.some((operation) =>
+      ['schema', 'write', 'update', 'delete', 'cache/session'].includes(operation),
+    );
+    addItem({
+      slug: 'state-data',
+      priority: stateWriteImpact ? 'required' : 'recommended',
+      verification_type: stateWriteImpact ? 'data' : 'state',
+      reason: `Changed files overlap ${params.affectedDataDependencies.length} state/data dependency signal(s) and operation(s): ${params.affectedStateOperations.join(', ') || 'unknown'}.`,
+      commands: params.requiredTests,
+      manual_checks: unique([
+        'Verify data contract compatibility for affected readers and writers.',
+        ...params.affectedDataDependencies.map(formatDataDependencyForReview),
+        ...params.affectedFlows
+          .slice(0, 5)
+          .map(
+            (flow) =>
+              `Confirm ${reviewFlowDescriptionLabel(flow)} still handles persisted state correctly.`,
+          ),
+      ]),
+      linked_findings: findingIds((finding) => finding.title.includes('State/data dependency')),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: unique(
+        params.affectedDataDependencies.flatMap((dependency) => dependency.files),
+      ),
+      evidence_ids: unique(
+        params.affectedDataDependencies.flatMap((dependency) => dependency.evidence_ids),
+      ),
+      confidence: params.affectedDataDependencies.every(
+        (dependency) => dependency.confidence === 'verified',
+      )
+        ? 'verified'
+        : 'inferred',
+    });
+  }
+
+  if (params.dependencyRuntimeImpact !== null) {
+    addItem({
+      slug: 'dependency-runtime',
+      priority: params.changedDependencyFiles.length > 0 ? 'required' : 'recommended',
+      verification_type: 'dependency',
+      reason:
+        'Package, dependency, or runtime configuration changes can alter install, build, route, service, or package behavior.',
+      commands: params.requiredTests,
+      manual_checks: params.dependencyRuntimeImpact.verification_focus,
+      linked_findings: findingIds(
+        (finding) => finding.title === 'Configuration or dependency surface changed',
+      ),
+      linked_flows: params.dependencyRuntimeImpact.affected_flows,
+      linked_components: params.dependencyRuntimeImpact.affected_components,
+      linked_files: params.dependencyRuntimeImpact.changed_files,
+      evidence_ids: unique(params.dependencyRuntimeImpact.changed_files.map(evidenceId)),
+      confidence: params.dependencyRuntimeImpact.confidence,
+    });
+  } else if (params.changedConfigFiles.length > 0 || params.changedDependencyFiles.length > 0) {
+    addItem({
+      slug: 'config-manual',
+      priority: 'recommended',
+      verification_type: 'manual',
+      reason:
+        'Configuration or dependency files changed, but no richer runtime impact model was linked.',
+      commands: params.requiredTests,
+      manual_checks: [
+        'Run install/build/test checks that consume the changed config files.',
+        'Inspect runtime/deployment assumptions affected by the changed config.',
+      ],
+      linked_findings: findingIds(
+        (finding) => finding.title === 'Configuration or dependency surface changed',
+      ),
+      linked_flows: [],
+      linked_components: params.affectedComponents,
+      linked_files: unique([...params.changedConfigFiles, ...params.changedDependencyFiles]),
+      evidence_ids: unique(
+        [...params.changedConfigFiles, ...params.changedDependencyFiles].map(evidenceId),
+      ),
+      confidence: 'uncertain',
+    });
+  }
+
+  const serviceCausality = params.affectedFlows.flatMap((flow) => flow.service_causality);
+  if (serviceCausality.length > 0) {
+    addItem({
+      slug: 'service-causality',
+      priority: 'recommended',
+      verification_type: 'service-causality',
+      reason: `${serviceCausality.length} flow-to-service causality path(s) explain the affected blast radius.`,
+      commands: params.requiredTests,
+      manual_checks: unique([
+        ...serviceCausality.map(
+          (item) =>
+            `Smoke ${item.service_id} through ${item.effects.join(', ') || 'recorded service effects'}.`,
+        ),
+        ...params.affectedServices.map((service) => `Smoke affected service ${service.id}.`),
+      ]),
+      linked_findings: findingIds((finding) => finding.title.includes('Service causality')),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: unique(serviceCausality.flatMap((item) => item.files)),
+      evidence_ids: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
+      confidence: serviceCausality.every((item) => item.confidence === 'verified')
+        ? 'verified'
+        : 'inferred',
+    });
+  }
+
+  if (params.architectureImpactMap.length > 0) {
+    addItem({
+      slug: 'architecture-contract',
+      priority: params.architectureImpactMap.some((entry) => entry.coupling_level === 'high')
+        ? 'required'
+        : 'recommended',
+      verification_type: 'contract',
+      reason: `${params.architectureImpactMap.length} architecture impact-map surface(s) connect this diff to likely breakage.`,
+      commands: params.requiredTests,
+      manual_checks: unique([
+        ...params.architectureImpactMap.flatMap((entry) => entry.what_breaks).slice(0, 6),
+        ...params.architectureImpactMap
+          .flatMap((entry) => entry.risk_reasoning.review_focus)
+          .slice(0, 6),
+      ]),
+      linked_findings: findingIds((finding) => finding.title.includes('Architecture impact map')),
+      linked_flows: unique(params.architectureImpactMap.flatMap((entry) => entry.affected_flows)),
+      linked_components: unique(
+        params.architectureImpactMap.flatMap((entry) => [
+          entry.entity_id,
+          ...entry.dependent_components,
+        ]),
+      ),
+      linked_files: unique(params.architectureImpactMap.flatMap((entry) => entry.affected_files)),
+      evidence_ids: unique(params.architectureImpactMap.flatMap((entry) => entry.evidence_ids)),
+      confidence: params.architectureImpactMap.every((entry) => entry.confidence === 'verified')
+        ? 'verified'
+        : 'inferred',
+    });
+  }
+
+  if (items.length === 0 && params.findings.length > 0) {
+    addItem({
+      slug: 'findings-manual',
+      priority: 'recommended',
+      verification_type: 'manual',
+      reason: 'Review findings exist, but no targeted runnable verification evidence was inferred.',
+      commands: params.requiredTests,
+      manual_checks: params.findings.slice(0, 5).map((finding) => finding.recommendation),
+      linked_findings: params.findings.map((finding) => finding.id),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: unique(params.findings.flatMap((finding) => finding.affected_files)),
+      evidence_ids: unique(params.findings.flatMap((finding) => finding.evidence_ids)),
+      confidence: 'uncertain',
+    });
+  }
+
+  const priorityRank: Record<ReviewVerificationPriority, number> = {
+    required: 0,
+    recommended: 1,
+    optional: 2,
+  };
+  return uniqueBy(items, (item) => `${item.priority}:${item.verification_type}:${item.reason}`)
+    .sort(
+      (a, b) =>
+        priorityRank[a.priority] - priorityRank[b.priority] ||
+        confidenceScoreForValue(b.confidence) - confidenceScoreForValue(a.confidence) ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, 12);
+}
+
+function verificationPlanSummary(plan: readonly ReviewVerificationPlanItemData[]): {
+  readonly total: number;
+  readonly required: number;
+  readonly recommended: number;
+  readonly optional: number;
+} {
+  return {
+    total: plan.length,
+    required: plan.filter((item) => item.priority === 'required').length,
+    recommended: plan.filter((item) => item.priority === 'recommended').length,
+    optional: plan.filter((item) => item.priority === 'optional').length,
+  };
 }
 
 function reviewAffectedComponents(params: {
@@ -22575,6 +22934,30 @@ function renderAffectedRelationshipRows(
     .join('')}</tbody></table>`;
 }
 
+function renderVerificationPlanRows(plan: readonly ReviewVerificationPlanItemData[]): string {
+  if (plan.length === 0) {
+    return '<p class="muted">No targeted verification plan was generated for this review.</p>';
+  }
+  return `<table><thead><tr><th>Priority</th><th>Type</th><th>Reason</th><th>Commands</th><th>Manual Checks</th><th>Linked Evidence</th></tr></thead><tbody>${plan
+    .map(
+      (item) => `<tr>
+        <td>${htmlEscape(item.priority)}</td>
+        <td>${htmlEscape(item.verification_type)}</td>
+        <td>${htmlEscape(item.reason)}</td>
+        <td>${renderList(item.commands)}</td>
+        <td>${renderList(item.manual_checks)}</td>
+        <td>${renderList([
+          ...item.linked_findings,
+          ...item.linked_flows,
+          ...item.linked_components,
+          ...item.linked_files,
+          ...item.evidence_ids,
+        ])}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
 function renderReviewReport(review: ReviewSummaryData): string {
   const findingRows = review.findings
     .map(
@@ -22646,6 +23029,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
       ${renderList(review.verification_status.risks_reduced)}
       <h3>Remaining Unknowns</h3>
       ${renderList(review.verification_status.remaining_unknowns)}
+    </section>
+    <section>
+      <h2>Targeted Verification</h2>
+      ${renderVerificationPlanRows(review.verification_plan)}
     </section>
     <section>
       <h2>Direct Components</h2>

@@ -7862,15 +7862,39 @@ describe('project brain generation', () => {
           category: 'Hidden coupling',
         }),
       );
+      expect(review.value.review.verification_plan).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            priority: 'required',
+            verification_type: 'test',
+            linked_flows: expect.arrayContaining([profileFlow?.id]),
+          }),
+          expect.objectContaining({
+            priority: 'required',
+            verification_type: 'data',
+            linked_files: expect.arrayContaining(['src/db/schema.ts']),
+          }),
+        ]),
+      );
       expect(review.value.reviewEval).toMatchObject({
         affected_data_dependency_count: expect.any(Number),
         affected_state_operation_count: expect.any(Number),
+        verification_plan_count: expect.any(Number),
+        verification_plan_required_count: expect.any(Number),
       });
       expect(review.value.reviewEval.affected_data_dependency_count).toBeGreaterThan(0);
       expect(review.value.reviewEval.affected_state_operation_count).toBeGreaterThan(0);
+      expect(review.value.reviewEval.verification_plan_count).toBe(
+        review.value.review.verification_plan.length,
+      );
+      expect(review.value.reviewEval.verification_plan_required_count).toBeGreaterThan(0);
       const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(reviewReport).toContain('State/Data Impact');
+      expect(reviewReport).toContain('Targeted Verification');
       expect(reviewReport).toContain('data schema/model');
+      expect(missionControl).toContain('Targeted Verification');
+      expect(missionControl).toContain('Verification Summary');
     });
   });
 
