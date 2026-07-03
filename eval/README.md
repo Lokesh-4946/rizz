@@ -69,6 +69,11 @@ claim ledger for blast-radius reasons, findings, affected flows, and targeted ve
 items so review conclusions can be audited back to evidence, confidence, rules, and unknowns.
 The same artifact also includes additive `architecture_impact_claims` so architecture impact-map
 reasoning can be audited without changing the compact generic claim surfaces.
+Artifact assertions can set `validate_architecture_impact_claims: true` to verify architecture
+claim counts, basis metadata, source-file linkage, evidence/unknown shape, and required rules.
+Review assertions can set `require_architecture_impact_claim_coverage: true` to require one
+architecture claim per review impact-map row with mirrored evidence, files, tests, configs, and
+what-breaks fields.
 Precision review seeds can assert absent findings and maximum affected state/data counts; these
 negative checks keep test-only or confidence-only edits from being scored as runtime blast-radius
 changes.

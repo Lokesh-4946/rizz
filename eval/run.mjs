@@ -181,6 +181,14 @@ function validateArtifactAssertions(assertions) {
     ) {
       errors.push(`artifact_assertions[${index}].forbidden_substrings must include strings`);
     }
+    if (
+      assertion.validate_architecture_impact_claims !== undefined &&
+      typeof assertion.validate_architecture_impact_claims !== 'boolean'
+    ) {
+      errors.push(
+        `artifact_assertions[${index}].validate_architecture_impact_claims must be boolean`,
+      );
+    }
   }
   return errors;
 }
@@ -330,6 +338,12 @@ function validateReviewAssertions(assertions) {
     !['narrow', 'moderate', 'broad'].includes(assertions.blast_radius)
   ) {
     errors.push('review.assertions.blast_radius must be narrow, moderate, or broad');
+  }
+  if (
+    assertions.require_architecture_impact_claim_coverage !== undefined &&
+    typeof assertions.require_architecture_impact_claim_coverage !== 'boolean'
+  ) {
+    errors.push('review.assertions.require_architecture_impact_claim_coverage must be boolean');
   }
   for (const field of ['findings_include', 'findings_exclude']) {
     if (assertions[field] === undefined) continue;
@@ -910,6 +924,175 @@ function assertArtifactContracts(task, repoDir) {
           )} but got ${JSON.stringify(actual)}`,
         );
       }
+    }
+    if (assertion.validate_architecture_impact_claims === true) {
+      errors.push(...assertArchitectureImpactClaimEvidence(json, assertion.path));
+    }
+  }
+  return errors;
+}
+
+function assertArchitectureImpactClaimEvidence(json, artifactPath) {
+  const errors = [];
+  const claims = Array.isArray(json.architecture_impact_claims)
+    ? json.architecture_impact_claims
+    : [];
+  const count =
+    typeof json.architecture_impact_claim_count === 'number'
+      ? json.architecture_impact_claim_count
+      : undefined;
+  const claimCounts = isRecord(json.claim_counts) ? json.claim_counts : {};
+  const basis = isRecord(json.basis) ? json.basis : {};
+  const changedFiles = Array.isArray(json.changed_files) ? json.changed_files : [];
+  if (basis.source !== 'pre_change_project_brain_plus_git_diff') {
+    errors.push(`${artifactPath} basis.source must be pre_change_project_brain_plus_git_diff`);
+  }
+  if (
+    !Array.isArray(basis.review_fields) ||
+    !basis.review_fields.includes('architecture_impact_map')
+  ) {
+    errors.push(`${artifactPath} basis.review_fields must include architecture_impact_map`);
+  }
+  if (!Array.isArray(json.changed_files)) {
+    errors.push(`${artifactPath} changed_files must be an array`);
+  }
+  if (count !== claims.length) {
+    errors.push(
+      `${artifactPath} architecture_impact_claim_count ${String(count)} does not match ${claims.length}`,
+    );
+  }
+  if (claimCounts.architecture_impact_claims !== claims.length) {
+    errors.push(
+      `${artifactPath} claim_counts.architecture_impact_claims ${String(
+        claimCounts.architecture_impact_claims,
+      )} does not match ${claims.length}`,
+    );
+  }
+  if (
+    typeof claimCounts.total === 'number' &&
+    typeof json.total_claims === 'number' &&
+    claimCounts.total !== json.total_claims + claims.length
+  ) {
+    errors.push(
+      `${artifactPath} claim_counts.total must equal total_claims plus architecture claims`,
+    );
+  }
+  for (const [index, claim] of claims.entries()) {
+    if (!isRecord(claim)) {
+      errors.push(`${artifactPath} architecture_impact_claims[${index}] must be an object`);
+      continue;
+    }
+    const requiredStringFields = ['claim_id', 'impact_id', 'surface_type', 'claim', 'confidence'];
+    for (const field of requiredStringFields) {
+      if (!isNonEmptyString(claim[field])) {
+        errors.push(`${artifactPath} architecture_impact_claims[${index}].${field} must be string`);
+      }
+    }
+    const requiredArrayFields = [
+      'evidence_ids',
+      'source_files',
+      'affected_entities',
+      'matched_components',
+      'matched_flows',
+      'affected_flows',
+      'affected_tests',
+      'affected_configs',
+      'what_breaks',
+      'review_focus',
+      'rules',
+      'unknowns',
+    ];
+    for (const field of requiredArrayFields) {
+      if (!Array.isArray(claim[field])) {
+        errors.push(`${artifactPath} architecture_impact_claims[${index}].${field} must be array`);
+      }
+    }
+    if (
+      Array.isArray(claim.evidence_ids) &&
+      Array.isArray(claim.unknowns) &&
+      claim.evidence_ids.length === 0 &&
+      !claim.unknowns.some((unknown) => String(unknown).includes('No direct evidence IDs'))
+    ) {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}] without evidence must record an evidence unknown`,
+      );
+    }
+    if (
+      Array.isArray(claim.source_files) &&
+      changedFiles.length > 0 &&
+      !claim.source_files.some((file) => changedFiles.includes(file))
+    ) {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}] must include at least one changed file in source_files`,
+      );
+    }
+    if (!Array.isArray(claim.rules) || !claim.rules.includes('architecture_impact_map')) {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}].rules must include architecture_impact_map`,
+      );
+    }
+    if (typeof claim.redacted_evidence_count !== 'number') {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}].redacted_evidence_count must be number`,
+      );
+    }
+  }
+  return errors;
+}
+
+function assertArchitectureImpactClaimCoverage(review, claimLedger, artifactPath) {
+  const errors = [];
+  const impacts = reviewArray(review, 'architecture_impact_map').filter(isRecord);
+  const claims =
+    isRecord(claimLedger) && Array.isArray(claimLedger.architecture_impact_claims)
+      ? claimLedger.architecture_impact_claims.filter(isRecord)
+      : [];
+  if (claims.length !== impacts.length) {
+    errors.push(
+      `${artifactPath} architecture_impact_claims ${claims.length} does not match architecture_impact_map ${impacts.length}`,
+    );
+  }
+  for (const impact of impacts) {
+    const impactId = String(impact.impact_id ?? '');
+    const matchingClaims = claims.filter((claim) => claim.impact_id === impactId);
+    if (matchingClaims.length !== 1) {
+      errors.push(
+        `${artifactPath} expected exactly one architecture impact claim for ${impactId}, got ${matchingClaims.length}`,
+      );
+      continue;
+    }
+    const claim = matchingClaims[0];
+    if (claim.surface_type !== impact.surface_type) {
+      errors.push(`${artifactPath} ${impactId} surface_type does not match review impact`);
+    }
+    for (const [field, label] of [
+      ['evidence_ids', 'evidence_ids'],
+      ['matched_changed_files', 'source_files'],
+      ['matched_components', 'matched_components'],
+      ['matched_flows', 'matched_flows'],
+      ['affected_flows', 'affected_flows'],
+      ['affected_tests', 'affected_tests'],
+      ['affected_configs', 'affected_configs'],
+      ['what_breaks', 'what_breaks'],
+    ]) {
+      const expected = reviewArray(impact, field);
+      const actual = reviewArray(claim, label);
+      errors.push(...assertIncludesAll(actual, expected, `${artifactPath}.${impactId}.${label}`));
+    }
+    const reviewFocus = isRecord(impact.risk_reasoning)
+      ? reviewArray(impact.risk_reasoning, 'review_focus')
+      : [];
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(claim, 'review_focus'),
+        reviewFocus,
+        `${artifactPath}.${impactId}.review_focus`,
+      ),
+    );
+    const affectedEntities = reviewArray(claim, 'affected_entities');
+    const entityId = typeof impact.entity_id === 'string' ? impact.entity_id : '';
+    if (entityId !== '' && !affectedEntities.includes(entityId)) {
+      errors.push(`${artifactPath}.${impactId}.affected_entities missing ${entityId}`);
     }
   }
   return errors;
@@ -1834,6 +2017,9 @@ function assertReviewContract(task, repoDir, review, stdout) {
         'review_claim_evidence claims must include id, surface, claim, confidence, evidence_ids, and unknowns',
       );
     }
+  }
+  if (assertions.require_architecture_impact_claim_coverage === true) {
+    errors.push(...assertArchitectureImpactClaimCoverage(review, claimLedger, claimLedgerPath));
   }
   if (
     assertions.minimum_architecture_impact_surfaces !== undefined &&
