@@ -53,6 +53,7 @@
       "maximum_direct_components": 0,
       "maximum_affected_services": 0,
       "maximum_affected_flows": 0,
+      "maximum_affected_relationships": 0,
       "maximum_dependency_runtime_impacts": 0,
       "maximum_architecture_impact_surfaces": 0,
       "maximum_affected_data_dependencies": 0,
@@ -89,6 +90,7 @@
       "required_fields": [
         "generated_artifact_count",
         "affected_flow_count",
+        "affected_relationship_count",
         "affected_data_dependency_count",
         "affected_state_operation_count",
         "architecture_impact_surface_count",
@@ -97,6 +99,7 @@
       "expected_json_values": {
         "generated_artifact_count": 2,
         "affected_flow_count": 0,
+        "affected_relationship_count": 0,
         "affected_data_dependency_count": 0,
         "affected_state_operation_count": 0,
         "architecture_impact_surface_count": 0,

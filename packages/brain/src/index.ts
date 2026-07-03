@@ -1043,6 +1043,7 @@ interface ReviewEvalArtifactData {
   readonly findings_by_severity: Record<ReviewSeverity, number>;
   readonly findings_by_category: Record<ReviewCategory, number>;
   readonly generated_artifact_count: number;
+  readonly test_evidence_change_count: number;
   readonly affected_component_count: number;
   readonly affected_service_count: number;
   readonly direct_affected_component_count: number;
@@ -1222,6 +1223,7 @@ interface ReviewDependencyRuntimeImpactData {
 interface ReviewEvidenceSummaryData {
   readonly changed_files: number;
   readonly generated_artifacts: readonly string[];
+  readonly test_evidence_changes: readonly string[];
   readonly direct_components: number;
   readonly affected_services: number;
   readonly dependent_components: number;
@@ -20798,7 +20800,7 @@ function buildReview(params: {
     architectureImpactMap.flatMap((entry) => [...entry.affected_flows, ...entry.matched_flows]),
   );
   const directlyAffectedEntities = unique([
-    ...changedFiles.map((file) => entityId('file', file)),
+    ...reviewableChangedFiles.map((file) => entityId('file', file)),
     ...affectedComponentIds,
     ...affectedFlowIds,
     ...affectedServiceIds,
@@ -20820,6 +20822,7 @@ function buildReview(params: {
   const affectedRelationships = affectedReviewRelationships(
     params.relationships,
     affectedEntitySeed,
+    staleReviewEntityIds(params.entitySets),
   );
   const graphAffectedEntities = unique([
     ...affectedEntitySeed,
@@ -20890,6 +20893,10 @@ function buildReview(params: {
     affectedFlows.flatMap((flow) => (flow.journey_name === undefined ? [] : [flow.journey_name])),
   ).map(safeText);
   const affectedJourneySteps = affectedFlows.flatMap((flow) => flow.affected_steps);
+  const testEvidenceChanges = reviewTestEvidenceChanges({
+    changedTestFiles,
+    affectedFlows,
+  });
   const affectedDataDependencies = uniqueBy(
     affectedFlows.flatMap((flow) => flow.data_dependencies),
     (dependency) => dependency.dependency_id,
@@ -21076,6 +21083,30 @@ function buildReview(params: {
       confidence: 'inferred',
       recommendation:
         'Verify the generator, lockfile, or source artifact that produced this output instead of reviewing generated churn as product logic.',
+    });
+  }
+
+  if (
+    changedTestFiles.length > 0 &&
+    changedSourceFiles.length === 0 &&
+    changedConfigFiles.length === 0 &&
+    changedDependencyFiles.length === 0
+  ) {
+    addFinding({
+      slug: 'test-evidence-only',
+      severity: 'low',
+      category: 'Correctness',
+      title: 'Test evidence changed without runtime surface changes',
+      description: safeText(
+        `The diff updates ${changedTestFiles.length} test artifact(s). Rizz treats this as confidence/evidence movement for affected journeys, not direct runtime behavior change. ${
+          testEvidenceChanges.slice(0, 3).join(' ') || ''
+        }`,
+      ),
+      affected_files: changedTestFiles.map(safeText),
+      affected_entities: graphAffectedEntities,
+      confidence: 'verified',
+      recommendation:
+        'Use the changed tests to calibrate confidence, and only require runtime blast-radius review if source, config, dependency, or generated source inputs changed.',
     });
   }
 
@@ -21367,6 +21398,7 @@ function buildReview(params: {
     review_evidence_summary: {
       changed_files: changedFiles.length,
       generated_artifacts: changedGeneratedArtifactFiles.map(safeText),
+      test_evidence_changes: testEvidenceChanges,
       direct_components: affectedComponents.length,
       affected_services: affectedServices.length,
       dependent_components: dependentComponents.length,
@@ -21645,6 +21677,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     findings_by_severity: countReviewFindingsBySeverity(review.findings),
     findings_by_category: countReviewFindingsByCategory(review.findings),
     generated_artifact_count: review.review_evidence_summary.generated_artifacts.length,
+    test_evidence_change_count: review.review_evidence_summary.test_evidence_changes.length,
     affected_component_count: review.affected_components.length,
     affected_service_count: review.affected_services.length,
     direct_affected_component_count: review.direct_affected_components.length,
@@ -21903,6 +21936,7 @@ function affectedComponentEntities(
   components: readonly BrainEntity[],
 ): BrainEntity[] {
   return components.filter((component) => {
+    if (component.latest_status === 'stale') return false;
     const componentPath =
       typeof component.data?.purpose === 'string' ? component.name : component.name;
     return changedFiles.some(
@@ -21925,7 +21959,11 @@ function dependentComponentEntities(
   components: readonly BrainEntity[],
 ): BrainEntity[] {
   const directIds = new Set(directComponentIds);
-  const componentsById = new Map(components.map((component) => [component.id, component]));
+  const componentsById = new Map(
+    components
+      .filter((component) => component.latest_status !== 'stale')
+      .map((component) => [component.id, component]),
+  );
   const dependentIds = new Set<string>();
   for (const rel of relationships) {
     if (rel.relation === 'imports' || rel.relation === 'calls' || rel.relation === 'depends_on') {
@@ -21970,10 +22008,16 @@ function dependentComponentReason(
 function affectedReviewRelationships(
   relationships: readonly BrainRelationship[],
   affectedEntityIds: readonly string[],
+  staleEntityIds: ReadonlySet<string>,
 ): ReviewAffectedRelationshipData[] {
   const affectedIds = new Set(affectedEntityIds);
   return relationships
-    .filter((rel) => affectedIds.has(rel.from) || affectedIds.has(rel.to))
+    .filter(
+      (rel) =>
+        (affectedIds.has(rel.from) || affectedIds.has(rel.to)) &&
+        !staleEntityIds.has(rel.from) &&
+        !staleEntityIds.has(rel.to),
+    )
     .slice(0, 80)
     .map((rel) => ({
       from: safeText(rel.from),
@@ -21985,6 +22029,26 @@ function affectedReviewRelationships(
     .sort((a, b) =>
       `${a.from}:${a.relation}:${a.to}`.localeCompare(`${b.from}:${b.relation}:${b.to}`),
     );
+}
+
+function staleReviewEntityIds(
+  entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>,
+): Set<string> {
+  return new Set(
+    [
+      ...entitySets.files,
+      ...entitySets.components,
+      ...entitySets.services,
+      ...entitySets.flows,
+      ...entitySets.configs,
+      ...entitySets.commands,
+      ...entitySets.tests,
+      ...entitySets.dependencies,
+      ...entitySets.risks,
+    ]
+      .filter((entity) => entity.latest_status === 'stale')
+      .map((entity) => entity.id),
+  );
 }
 
 function reviewDependencyRuntimeImpact(params: {
@@ -22704,6 +22768,25 @@ function affectedFlowEntities(
     ];
   });
   return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function reviewTestEvidenceChanges(params: {
+  readonly changedTestFiles: readonly string[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+}): string[] {
+  return params.changedTestFiles
+    .map((file) => {
+      const linkedFlows = params.affectedFlows
+        .filter((flow) => flow.tests.includes(file))
+        .map(reviewFlowDescriptionLabel)
+        .slice(0, 4);
+      return safeText(
+        `${file} updates test evidence for ${
+          linkedFlows.length > 0 ? linkedFlows.join(', ') : 'an unmapped test surface'
+        }.`,
+      );
+    })
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function affectedDataDependenciesForChangedFiles(

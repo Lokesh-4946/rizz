@@ -50,6 +50,12 @@
         { "category": "Missing tests" },
         { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" }
       ],
+      "findings_include": [
+        {
+          "category": "Correctness",
+          "title_includes": "Test evidence changed without runtime surface changes"
+        }
+      ],
       "claim_surfaces_include": ["blast_radius_reason", "affected_flow"],
       "minimum_review_claims": 1,
       "require_review_claim_coverage": true,
@@ -68,11 +74,13 @@
       "type": "json",
       "required_fields": [
         "affected_flow_count",
+        "test_evidence_change_count",
         "affected_data_dependency_count",
         "affected_state_operation_count",
         "secret_safety.output_secret_safe"
       ],
       "expected_json_values": {
+        "test_evidence_change_count": 1,
         "affected_data_dependency_count": 0,
         "affected_state_operation_count": 0,
         "secret_safety.output_secret_safe": true
@@ -102,6 +110,7 @@
   "rubric": {
     "pass": [
       "Test-only changes retain affected journey/test context.",
+      "Test-only changes emit confidence/evidence calibration instead of runtime behavior claims.",
       "Review does not report state/data runtime impact when only test evidence changed."
     ],
     "fail": [
