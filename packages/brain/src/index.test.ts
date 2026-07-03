@@ -7928,4 +7928,132 @@ describe('project brain generation', () => {
       expect(flows.entities.flatMap((flow) => flow.data?.data_dependencies ?? [])).toEqual([]);
     });
   });
+
+  it('keeps state/data blast radius when a schema file is renamed', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'accounts'), { recursive: true });
+      await mkdir(join(dir, 'src', 'db'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'rename-state-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        'import express from "express";\nimport { loadProfile } from "./accounts/repository.js";\nconst app = express();\napp.get("/profile", async (_req, res) => res.json(await loadProfile("guest")));\nexport { app };\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'repository.ts'),
+        'import { profileSchema } from "../db/schema.js";\nexport async function loadProfile(id: string) { return { id, table: profileSchema.table }; }\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'db', 'schema.ts'),
+        'export const profileSchema = { table: "profiles", columns: ["id"] };\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:04:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await git(dir, ['mv', 'src/db/schema.ts', 'src/db/profile-schema.ts']);
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:05:00.000Z'),
+      });
+
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toEqual(
+        expect.arrayContaining(['src/db/schema.ts', 'src/db/profile-schema.ts']),
+      );
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toContain(
+        'data schema/model',
+      );
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toContain(
+        'schema',
+      );
+      expect(review.value.review.verification_plan).toContainEqual(
+        expect.objectContaining({
+          priority: 'required',
+          verification_type: 'data',
+          linked_files: expect.arrayContaining(['src/db/schema.ts']),
+        }),
+      );
+    });
+  });
+
+  it('surfaces missing state/data evidence when affected flows have no linked tests', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'accounts'), { recursive: true });
+      await mkdir(join(dir, 'src', 'db'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'untested-state-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { express: '^4.19.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        'import express from "express";\nimport { loadProfile } from "./accounts/repository.js";\nconst app = express();\napp.get("/profile", async (_req, res) => res.json(await loadProfile("guest")));\nexport { app };\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'repository.ts'),
+        'import { profileSchema } from "../db/schema.js";\nexport async function loadProfile(id: string) { return { id, table: profileSchema.table }; }\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'db', 'schema.ts'),
+        'export const profileSchema = { table: "profiles", columns: ["id"] };\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:06:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'src', 'db', 'schema.ts'),
+        'export const profileSchema = { table: "profiles", columns: ["id", "plan"] };\n',
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:07:00.000Z'),
+      });
+
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.review_evidence_summary.journey_missing_evidence).toContain(
+        'No linked test verifies this data/state dependency.',
+      );
+      expect(review.value.review.verification_plan).toContainEqual(
+        expect.objectContaining({
+          priority: 'required',
+          verification_type: 'test',
+          manual_checks: expect.arrayContaining([
+            'Add or identify focused tests for the changed runtime behavior.',
+          ]),
+        }),
+      );
+      const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(reviewReport).toContain('No linked test verifies this data/state dependency.');
+    });
+  });
 });
