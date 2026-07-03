@@ -14182,6 +14182,71 @@ function renderLatestReviewRouteFlows(
     .join('')}</div>`;
 }
 
+function renderMissionControlDependencyRuntimeImpact(latest: Record<string, unknown>): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+  }
+  const impact = status.dependency_runtime_impact;
+  if (!isRecord(impact)) {
+    return '<p class="muted">No dependency or runtime package/config impact was detected by the latest review.</p>';
+  }
+  const changedFiles = asStringArray(impact.changed_files);
+  const runtimeSurfaces = asStringArray(impact.runtime_surfaces);
+  const affected = [
+    ...asStringArray(impact.affected_components),
+    ...asStringArray(impact.affected_services),
+    ...asStringArray(impact.affected_flows),
+  ];
+  const packageScripts = recordArray(impact, 'package_scripts')
+    .filter(isRecord)
+    .slice(0, 12)
+    .map((script) => {
+      const manifest = recordString(script, 'manifest', 'unknown manifest');
+      const name = recordString(script, 'name', 'unknown');
+      const category = recordString(script, 'category', 'unknown');
+      const command = recordString(script, 'command', '');
+      return `${manifest}#${name} (${category}): ${command}`;
+    });
+  const verificationFocus = asStringArray(impact.verification_focus);
+  const reasons = asStringArray(impact.reasons);
+  return `<div class="grid">
+    <article class="card compact">
+      <h3>Changed Package / Config</h3>
+      ${renderList(changedFiles)}
+    </article>
+    <article class="card compact">
+      <h3>Runtime Surfaces</h3>
+      ${renderList(runtimeSurfaces)}
+    </article>
+    <article class="card compact">
+      <h3>Components / Services / Flows</h3>
+      ${renderList(affected)}
+    </article>
+    <article class="card compact">
+      <h3>Package Scripts</h3>
+      ${renderList(packageScripts)}
+    </article>
+    <article class="card compact">
+      <h3>Focused Verification</h3>
+      ${renderList(verificationFocus)}
+    </article>
+    <article class="card compact">
+      <h3>Impact Reasons</h3>
+      ${renderList(reasons)}
+    </article>
+    <article class="card compact">
+      <h3>Review Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/reports/review.html',
+        '.rizz/research/review_eval.json',
+        '.rizz/research/verification_evidence.json',
+        '.rizz/brain/latest.json',
+      ])}
+    </article>
+  </div>`;
+}
+
 function renderArchitectureConfidenceDebt(value: unknown): string {
   if (!isRecord(value)) {
     return renderList(['No confidence debt summary is available yet.']);
@@ -15690,6 +15755,28 @@ function renderReport(params: {
           : [],
       )}`,
   });
+  const evidenceQualityObject = renderObjectDetails({
+    title: 'Evidence Quality',
+    summary: 'Evidence scores, calibration, redaction safety, actionability, and gaps.',
+    posture: evidenceQuality.posture,
+    body: `<h3>Evidence Quality Inspect</h3>
+      ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
+      <h3>Evidence Quality Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/research/evidence_quality.json',
+        '.rizz/research/understanding_score.json',
+        '.rizz/brain/latest.json',
+        '.rizz/brain/entities/evidence.json',
+      ])}`,
+  });
+  const dependencyRuntimeObject = renderObjectDetails({
+    title: 'Review Dependency Runtime Impact',
+    summary: 'Latest review dependency/package/config runtime impact and verification focus.',
+    posture: reviewReadiness.posture,
+    body: `<h3>Review/Dependency Runtime Impact</h3>
+      <h3>Dependency Runtime Inspect</h3>
+      ${renderMissionControlDependencyRuntimeImpact(params.latest)}`,
+  });
   const evidenceObject = renderObjectDetails({
     title: 'Evidence',
     summary: 'Raw local evidence records and artifact paths. Keep these links visible for audit.',
@@ -15833,8 +15920,10 @@ function renderReport(params: {
       ${flowObject}
       ${incrementalHealthObject}
       ${architectureObject}
+      ${evidenceQualityObject}
       ${evidenceObject}
       ${unknownObject}
+      ${dependencyRuntimeObject}
       ${reviewObject}
       ${benchmarkObject}
     </section>
