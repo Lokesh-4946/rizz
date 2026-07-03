@@ -310,6 +310,9 @@ function validateReviewAssertions(assertions) {
     'minimum_review_claims',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
+    'maximum_affected_data_dependencies',
+    'maximum_affected_state_operations',
+    'maximum_user_visible_failure_modes',
   ]) {
     if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
       errors.push(`review.assertions.${field} must be a non-negative number`);
@@ -321,18 +324,19 @@ function validateReviewAssertions(assertions) {
   ) {
     errors.push('review.assertions.blast_radius must be narrow, moderate, or broad');
   }
-  if (assertions.findings_include !== undefined) {
-    if (!Array.isArray(assertions.findings_include) || assertions.findings_include.length === 0) {
-      errors.push('review.assertions.findings_include must include objects');
+  for (const field of ['findings_include', 'findings_exclude']) {
+    if (assertions[field] === undefined) continue;
+    if (!Array.isArray(assertions[field]) || assertions[field].length === 0) {
+      errors.push(`review.assertions.${field} must include objects`);
     } else {
-      for (const [index, finding] of assertions.findings_include.entries()) {
+      for (const [index, finding] of assertions[field].entries()) {
         if (!isRecord(finding)) {
-          errors.push(`review.assertions.findings_include[${index}] must be an object`);
+          errors.push(`review.assertions.${field}[${index}] must be an object`);
           continue;
         }
         if (!isNonEmptyString(finding.category) && !isNonEmptyString(finding.title_includes)) {
           errors.push(
-            `review.assertions.findings_include[${index}] must include category or title_includes`,
+            `review.assertions.${field}[${index}] must include category or title_includes`,
           );
         }
       }
@@ -1127,6 +1131,30 @@ function assertReviewFindings(review, expected) {
   return errors;
 }
 
+function assertReviewFindingsExcluded(review, expected) {
+  const findings = reviewArray(review, 'findings');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matched = findings.some((finding) => {
+      if (!isRecord(finding)) return false;
+      const categoryMatches =
+        item.category === undefined || String(finding.category ?? '') === item.category;
+      const titleMatches =
+        item.title_includes === undefined ||
+        String(finding.title ?? '').includes(item.title_includes);
+      return categoryMatches && titleMatches;
+    });
+    if (matched) {
+      errors.push(
+        `findings unexpectedly included ${
+          item.category ?? '(any category)'
+        } ${item.title_includes ?? ''}`.trim(),
+      );
+    }
+  }
+  return errors;
+}
+
 function assertReviewServiceCausality(flow, expected) {
   const entries = reviewArray(flow, 'service_causality');
   const errors = [];
@@ -1373,6 +1401,9 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const affectedStateOperations = Array.isArray(evidenceSummary.affected_state_operations)
     ? evidenceSummary.affected_state_operations
     : [];
+  const userVisibleFailureModes = Array.isArray(evidenceSummary.user_visible_failure_modes)
+    ? evidenceSummary.user_visible_failure_modes
+    : [];
   const journeyMissingEvidence = Array.isArray(evidenceSummary.journey_missing_evidence)
     ? evidenceSummary.journey_missing_evidence
     : [];
@@ -1561,6 +1592,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
       'blast_radius_reasons',
     ),
     ...assertReviewFindings(review, assertions.findings_include),
+    ...assertReviewFindingsExcluded(review, assertions.findings_exclude),
     ...assertReviewAffectedServices(review, assertions.affected_services_include),
     ...assertReviewRouteFlows(review, assertions.route_flows_include),
   );
@@ -1644,6 +1676,30 @@ function assertReviewContract(task, repoDir, review, stdout) {
   ) {
     errors.push(
       `affected_state_operations ${affectedStateOperations.length} below ${assertions.minimum_affected_state_operations}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_data_dependencies !== undefined &&
+    affectedDataDependencies.length > assertions.maximum_affected_data_dependencies
+  ) {
+    errors.push(
+      `affected_data_dependencies ${affectedDataDependencies.length} above ${assertions.maximum_affected_data_dependencies}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_state_operations !== undefined &&
+    affectedStateOperations.length > assertions.maximum_affected_state_operations
+  ) {
+    errors.push(
+      `affected_state_operations ${affectedStateOperations.length} above ${assertions.maximum_affected_state_operations}`,
+    );
+  }
+  if (
+    assertions.maximum_user_visible_failure_modes !== undefined &&
+    userVisibleFailureModes.length > assertions.maximum_user_visible_failure_modes
+  ) {
+    errors.push(
+      `user_visible_failure_modes ${userVisibleFailureModes.length} above ${assertions.maximum_user_visible_failure_modes}`,
     );
   }
   if (
