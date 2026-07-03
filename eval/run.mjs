@@ -2075,11 +2075,15 @@ function runCliInCwdWithGitSync(cwd, args, input) {
 }
 
 function gitInCwd(cwd, args) {
-  const result = spawnSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    timeout: 5_000,
-  });
+  const result = spawnSync(
+    'git',
+    ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args],
+    {
+      cwd,
+      encoding: 'utf8',
+      timeout: 5_000,
+    },
+  );
   assert(result.status === 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
 }
 
