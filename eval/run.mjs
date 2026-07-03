@@ -282,6 +282,7 @@ function validateReviewAssertions(assertions) {
     'verification_plan_priorities_include',
     'verification_plan_reasons_include',
     'journey_missing_evidence_include',
+    'claim_surfaces_include',
     'architecture_impact_surfaces_include',
     'architecture_what_breaks_include',
     'architecture_evidence_gaps_include',
@@ -306,6 +307,7 @@ function validateReviewAssertions(assertions) {
     'minimum_verification_plan_items',
     'minimum_verification_plan_required',
     'minimum_verification_plan_recommended',
+    'minimum_review_claims',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
   ]) {
@@ -1374,6 +1376,15 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const journeyMissingEvidence = Array.isArray(evidenceSummary.journey_missing_evidence)
     ? evidenceSummary.journey_missing_evidence
     : [];
+  const claimLedgerPath = '.rizz/research/review_claim_evidence.json';
+  const claimLedger = existsSync(safeJoin(repoDir, claimLedgerPath))
+    ? readJsonArtifact(repoDir, claimLedgerPath)
+    : undefined;
+  const claimRows =
+    isRecord(claimLedger) && Array.isArray(claimLedger.claims) ? claimLedger.claims : [];
+  const claimSurfaces = claimRows
+    .map((claim) => (isRecord(claim) && typeof claim.surface === 'string' ? claim.surface : ''))
+    .filter((surface) => surface !== '');
 
   errors.push(
     ...assertIncludesAll(
@@ -1519,6 +1530,11 @@ function assertReviewContract(task, repoDir, review, stdout) {
       assertions.journey_missing_evidence_include,
       'journey_missing_evidence',
     ),
+    ...assertIncludesAll(
+      claimSurfaces,
+      assertions.claim_surfaces_include,
+      'review_claim_evidence.claims.surface',
+    ),
     ...assertSubstringMatches(
       architectureWhatBreaks,
       assertions.architecture_what_breaks_include,
@@ -1659,6 +1675,46 @@ function assertReviewContract(task, repoDir, review, stdout) {
     errors.push(
       `verification_plan recommended ${verificationPlanRecommended} below ${assertions.minimum_verification_plan_recommended}`,
     );
+  }
+  if (
+    assertions.minimum_review_claims !== undefined &&
+    claimRows.length < assertions.minimum_review_claims
+  ) {
+    errors.push(
+      `review_claim_evidence claims ${claimRows.length} below ${assertions.minimum_review_claims}`,
+    );
+  }
+  if (assertions.require_review_claim_coverage === true) {
+    const coverageTargets = [
+      ['blast_radius_reason', reviewArray(review, 'blast_radius_reasons').length],
+      ['finding', reviewArray(review, 'findings').length],
+      ['affected_flow', reviewArray(review, 'affected_flows').length],
+      ['verification_plan', verificationPlan.length],
+    ];
+    for (const [surface, expectedCount] of coverageTargets) {
+      const actualCount = claimSurfaces.filter((value) => value === surface).length;
+      if (actualCount < expectedCount) {
+        errors.push(
+          `review_claim_evidence ${surface} claims ${actualCount} below ${expectedCount}`,
+        );
+      }
+    }
+    const malformedClaim = claimRows.find((claim) => {
+      if (!isRecord(claim)) return true;
+      return (
+        typeof claim.claim_id !== 'string' ||
+        typeof claim.surface !== 'string' ||
+        typeof claim.claim !== 'string' ||
+        typeof claim.confidence !== 'string' ||
+        !Array.isArray(claim.evidence_ids) ||
+        !Array.isArray(claim.unknowns)
+      );
+    });
+    if (malformedClaim !== undefined) {
+      errors.push(
+        'review_claim_evidence claims must include id, surface, claim, confidence, evidence_ids, and unknowns',
+      );
+    }
   }
   if (
     assertions.minimum_architecture_impact_surfaces !== undefined &&

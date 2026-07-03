@@ -97,6 +97,14 @@
       "minimum_affected_flows": 4,
       "minimum_affected_relationships": 8,
       "minimum_architecture_impact_surfaces": 1,
+      "minimum_review_claims": 1,
+      "claim_surfaces_include": [
+        "blast_radius_reason",
+        "finding",
+        "affected_flow",
+        "verification_plan"
+      ],
+      "require_review_claim_coverage": true,
       "architecture_what_breaks_include": [
         "dependent component(s) can break",
         "component:packages--shared changes can affect"
@@ -123,6 +131,7 @@
     ".rizz/brain/entities/reviews.json",
     ".rizz/brain/entities/findings.json",
     ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
     ".rizz/reports/review.html"
   ],
   "artifact_assertions": [
@@ -184,8 +193,49 @@
       ]
     },
     {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "required_fields": [
+        "schema_version",
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "review_id",
+        "total_claims",
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.finding",
+        "claims_by_surface.affected_flow",
+        "claims_by_surface.verification_plan",
+        "claims_by_confidence.inferred",
+        "secret_safety.output_secret_safe",
+        "secret_safety.unsafe_sensitive_reference_count",
+        "claims"
+      ],
+      "required_substrings": [
+        "\"surface\": \"blast_radius_reason\"",
+        "\"surface\": \"finding\"",
+        "\"surface\": \"affected_flow\"",
+        "\"surface\": \"verification_plan\"",
+        "\"output_secret_safe\": true",
+        "redacted:sensitive-file:"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ],
+      "expected_json_values": {
+        "deterministic": true,
+        "provider_calls_required": false,
+        "network_required": false,
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
       "path": ".rizz/reports/review.html",
-      "type": "file"
+      "type": "file",
+      "required_substrings": ["review_claim_evidence.json"]
     }
   ],
   "rubric": {
