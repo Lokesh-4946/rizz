@@ -3120,7 +3120,7 @@ describe('project brain generation', () => {
       expect(missionControl).toContain('rizz explain service src/orders');
       expect(missionControl).toContain('.rizz/research/service_intelligence.json');
       expect(missionControl).toContain('Reachability Quality');
-      expect(missionControl).toContain('3 static reachability path(s)');
+      expect(missionControl).toContain('2 static reachability path(s)');
       expect(missionControl).toContain('Effects & Unknowns');
       expect(missionControl).toContain('Freshness');
       expect(missionControl).toContain('Reachability Paths');

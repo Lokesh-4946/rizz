@@ -34,7 +34,8 @@ Coverage targets are explicit for component, flow, evidence, and unknown surface
 `coverage.evidence.claims_with_evidence`.
 
 Artifact assertions check that required files exist, parse as JSON when requested, contain the
-expected top-level or dotted fields, include required substrings, and omit forbidden substrings.
+expected top-level or dotted fields, match optional `expected_json_values` by dotted JSON path,
+include required substrings, and omit forbidden substrings.
 The benchmark summary reports readiness score plus component, flow, evidence, and unknown coverage
 for each task.
 
@@ -45,9 +46,12 @@ dependencies or contact a provider; it asserts that local research artifacts and
 preserve route/API/render flows, mapped files/components/configs, contracts, confidence gaps, known
 unknowns, object labels, and expandable report details.
 
-The incremental-understanding seed applies a public source change and a sensitive-path change after
-the first scan. It asserts that users can trust what changed between scans without leaking the
-sensitive path or secret-like changed contents into research artifacts or reports.
+The incremental-understanding seed applies a public service source change and a sensitive-path
+change after the first scan. It asserts that users can trust what changed between scans without
+leaking the sensitive path or secret-like changed contents into research artifacts or reports, and
+that `.rizz/research/incremental_update.json` plus latest incremental status expose
+`service_causality_delta` drift, stable/recomputed/stale counts, changed evidence, affected
+services, and freshness.
 
 Review benchmark tasks use category `review-blast-radius` and add a `review` block instead of
 `coverage_targets`. The runner initializes a git fixture, runs `rizz brain`, commits the baseline,
