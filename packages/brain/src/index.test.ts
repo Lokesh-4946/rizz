@@ -310,6 +310,84 @@ describe('project brain generation', () => {
     });
   });
 
+  it('excludes stale components and relationships from current review blast radius', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'core', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'stale-review-app' }));
+      await writeFile(
+        join(dir, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@sample/core' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({ name: '@sample/cli' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function runCore() { return "core"; }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { runCore } from "../../core/src/index.js";\nexport function main() { return runCore(); }\n',
+      );
+
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:32:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      const componentsPath = join(dir, '.rizz', 'brain', 'entities', 'components.json');
+      const components = await readJson<{
+        entities: Array<Record<string, unknown> & { id: string; latest_status: string }>;
+      }>(componentsPath);
+      await writeFile(
+        componentsPath,
+        JSON.stringify(
+          {
+            ...components,
+            entities: components.entities.map((component) =>
+              component.id === 'component:packages--core'
+                ? { ...component, latest_status: 'stale' }
+                : component,
+            ),
+          },
+          null,
+          2,
+        ),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function runCore() { return "changed"; }\n',
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:34:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toContain('packages/core/src/index.ts');
+      expect(review.value.review.direct_affected_components).not.toContainEqual(
+        expect.objectContaining({ id: 'component:packages--core' }),
+      );
+      expect(review.value.review.dependent_components).not.toContainEqual(
+        expect.objectContaining({ id: 'component:packages--core' }),
+      );
+      expect(review.value.review.affected_relationships).not.toContainEqual(
+        expect.objectContaining({ from: 'component:packages--core' }),
+      );
+      expect(review.value.review.affected_relationships).not.toContainEqual(
+        expect.objectContaining({ to: 'component:packages--core' }),
+      );
+    });
+  });
+
   it('writes deterministic research artifacts with metrics, coverage, confidence, evidence quality, and incremental update data', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'packages', 'brain', 'src'), { recursive: true });
@@ -8305,6 +8383,107 @@ describe('project brain generation', () => {
     });
   });
 
+  it('calibrates test-only changes as confidence evidence instead of runtime blast radius', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'auth'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'test-evidence-review-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import { loginHandler } from "./auth/login-handler.js";',
+          'const app = express();',
+          'app.post("/login", loginHandler);',
+          'export { app };',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'auth', 'login-handler.ts'),
+        [
+          'import { saveSession } from "./session-store.js";',
+          'export async function loginHandler(req: { userId?: string }, res: { json: (value: unknown) => void }) {',
+          '  const session = await saveSession(req.userId ?? "guest");',
+          '  res.json({ ok: true, session });',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'auth', 'session-store.ts'),
+        [
+          'const sessions = new Map<string, { id: string; userId: string }>();',
+          'export async function saveSession(userId: string) {',
+          '  const session = { id: `session-${userId}`, userId };',
+          '  sessions.set(session.id, session);',
+          '  return session;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'auth', 'login-handler.test.ts'),
+        'import { it } from "vitest"; it("covers login", () => {});\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:07:30.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'src', 'auth', 'login-handler.test.ts'),
+        'import { expect, it } from "vitest"; it("covers login response", () => expect(true).toBe(true));\n',
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:08:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toEqual(['src/auth/login-handler.test.ts']);
+      expect(review.value.review.affected_flows.length).toBeGreaterThan(0);
+      expect(review.value.review.review_evidence_summary.test_evidence_changes).toContainEqual(
+        expect.stringContaining('src/auth/login-handler.test.ts updates test evidence'),
+      );
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual([]);
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toEqual([]);
+      expect(review.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          category: 'Correctness',
+          title: 'Test evidence changed without runtime surface changes',
+        }),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({
+          category: 'Missing tests',
+          title: expect.stringContaining('Runtime files changed'),
+        }),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({ title: 'State/data dependency overlaps the diff' }),
+      );
+      expect(review.value.reviewEval).toMatchObject({
+        test_evidence_change_count: 1,
+        affected_data_dependency_count: 0,
+        affected_state_operation_count: 0,
+      });
+    });
+  });
+
   it('keeps generated artifact changes visible without treating them as authored blast radius', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
@@ -8378,9 +8557,11 @@ describe('project brain generation', () => {
       expect(review.value.review.changed_files).toEqual(['src/generated/profile-client.ts']);
       expect(review.value.review.direct_affected_components).toEqual([]);
       expect(review.value.review.affected_flows).toEqual([]);
+      expect(review.value.review.affected_relationships).toEqual([]);
       expect(review.value.review.review_evidence_summary.generated_artifacts).toEqual([
         'src/generated/profile-client.ts',
       ]);
+      expect(review.value.review.review_evidence_summary.test_evidence_changes).toEqual([]);
       expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual([]);
       expect(review.value.review.review_evidence_summary.affected_state_operations).toEqual([]);
       expect(review.value.review.findings).toContainEqual(
@@ -8397,7 +8578,9 @@ describe('project brain generation', () => {
       );
       expect(review.value.reviewEval).toMatchObject({
         generated_artifact_count: 1,
+        test_evidence_change_count: 0,
         affected_flow_count: 0,
+        affected_relationship_count: 0,
         affected_data_dependency_count: 0,
         affected_state_operation_count: 0,
       });

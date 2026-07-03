@@ -70,6 +70,8 @@ items so review conclusions can be audited back to evidence, confidence, rules, 
 Precision review seeds can assert absent findings and maximum affected state/data counts; these
 negative checks keep test-only or confidence-only edits from being scored as runtime blast-radius
 changes.
+Test-only precision seeds also assert `test_evidence_change_count`, making confidence/evidence
+movement measurable without pretending runtime behavior changed.
 Config-only precision seeds additionally require dependency/runtime impact while forbidding
 runtime-source missing-test findings and state/data impact for TypeScript config wording.
 Comment/type-only precision seeds keep affected journey context while forbidding state/data impact
