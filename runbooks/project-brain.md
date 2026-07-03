@@ -57,8 +57,9 @@ source of truth in `entities/flows.json`; the mirrors make flow details easier f
 and other tools to consume without inventing a second brain.
 
 Use `rizz explain flow <flow-id>` to inspect one reconstructed flow before editing. The explanation
-includes static entrypoints, ordered steps, mapped files/components, tests, configs, risks,
-confidence, unknowns, and evidence. It does not claim runtime trace coverage.
+includes static entrypoints, ordered steps, journey name, normalized journey steps, mapped
+files/components, tests, configs, risks, confidence, unknowns, and evidence. It does not claim
+runtime trace coverage.
 
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
@@ -77,8 +78,8 @@ Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/res
   evidence-backed entities/relationships, and component field-evidence counts.
 - `incremental_update.json` summarizes changed, current, new, and stale files for the latest scan.
 - `flow_understanding.json`, `flow_coverage.json`, and `flow_confidence.json` summarize flow count,
-  kind distribution, test/config coverage, low-confidence flows, affected flows, and confidence
-  calibration.
+  kind distribution, journey names, normalized journey steps, test/config coverage, low-confidence
+  flows, affected flows, and confidence calibration.
 - `architecture_reasoning.json` summarizes boundary candidates, cross-component flows, risk
   concentrations, review hints, and unknowns from deterministic component, flow, relationship,
   evidence, and confidence data.

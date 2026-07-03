@@ -101,7 +101,7 @@
         "Run package script packages/cli/package.json#build",
         "Run package script packages/cli/package.json#check",
         "Run package script packages/cli/package.json#pack",
-        "Exercise affected flow check test flow",
+        "Exercise affected flow",
         "Run linked test artifact packages/cli/src/index.test.ts",
         "Inspect packed package contents"
       ],

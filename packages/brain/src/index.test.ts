@@ -2513,6 +2513,20 @@ describe('project brain generation', () => {
             runtime_surfaces?: string[];
             confidence_reasons?: string[];
             field_evidence?: Record<string, string[]>;
+            journey?: {
+              name?: string;
+              category?: string;
+              confidence?: string;
+              missing_evidence?: string[];
+            };
+            journey_steps?: Array<{
+              type?: string;
+              label?: string;
+              files?: string[];
+              tests?: string[];
+              configs?: string[];
+              confidence?: string;
+            }>;
           };
         }>;
       }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
@@ -2553,6 +2567,32 @@ describe('project brain generation', () => {
           'Side-effect evidence is recorded.',
           'Linked test artifact is recorded.',
         ]),
+        journey: expect.objectContaining({
+          name: 'User login journey',
+          category: 'auth_login',
+          confidence: 'verified',
+        }),
+        journey_steps: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'trigger',
+            label: 'Trigger',
+            files: expect.arrayContaining(['packages/api/src/routes/createSession.route.ts']),
+          }),
+          expect.objectContaining({
+            type: 'validation_auth',
+            label: 'Validation/auth',
+          }),
+          expect.objectContaining({
+            type: 'read_write_storage',
+            label: 'Read/write storage',
+            files: expect.arrayContaining(['packages/api/src/routes/session-store.ts']),
+          }),
+          expect.objectContaining({
+            type: 'test_coverage',
+            label: 'Test coverage',
+            tests: expect.arrayContaining(['packages/api/src/routes/createSession.route.test.ts']),
+          }),
+        ]),
       });
       expect(routeFlow?.data?.field_evidence).toMatchObject({
         entry_contract: expect.arrayContaining([
@@ -2573,18 +2613,47 @@ describe('project brain generation', () => {
       const flowUnderstanding = await readJson<{
         flows_with_contracts: number;
         flows_with_runtime_surfaces: number;
+        flows_with_journey_names: number;
+        journey_steps: number;
         runtime_surfaces: string[];
+        journeys: Array<{
+          id: string;
+          journey_name: string;
+          category: string;
+          confidence: string;
+          step_count: number;
+        }>;
+        journey_steps_by_type: Record<string, number>;
         contracts: Array<{
           id: string;
+          journey_name?: string;
           entry_contract: string[];
           exit_contract: string[];
           side_effects: string[];
           required_tests: string[];
           runtime_surfaces: string[];
+          journey_steps?: Array<{ type: string; confidence: string }>;
         }>;
       }>(join(result.value.researchDir, 'flow_understanding.json'));
       expect(flowUnderstanding.flows_with_contracts).toBeGreaterThan(0);
       expect(flowUnderstanding.flows_with_runtime_surfaces).toBeGreaterThan(0);
+      expect(flowUnderstanding.flows_with_journey_names).toBeGreaterThan(0);
+      expect(flowUnderstanding.journey_steps).toBeGreaterThan(0);
+      expect(flowUnderstanding.journeys).toContainEqual(
+        expect.objectContaining({
+          id: flowId,
+          journey_name: 'User login journey',
+          category: 'auth_login',
+          confidence: 'verified',
+          step_count: expect.any(Number),
+        }),
+      );
+      expect(flowUnderstanding.journey_steps_by_type).toMatchObject({
+        trigger: expect.any(Number),
+        validation_auth: expect.any(Number),
+        read_write_storage: expect.any(Number),
+        test_coverage: expect.any(Number),
+      });
       expect(flowUnderstanding.runtime_surfaces).toEqual(
         expect.arrayContaining(['config:packages/api/package.json', 'flow kind:api']),
       );
@@ -2596,15 +2665,25 @@ describe('project brain generation', () => {
           ]),
           required_tests: expect.arrayContaining(['validation failure coverage']),
           runtime_surfaces: expect.arrayContaining(['config:packages/api/package.json']),
+          journey_name: 'User login journey',
+          journey_steps: expect.arrayContaining([
+            expect.objectContaining({ type: 'validation_auth', confidence: expect.any(String) }),
+            expect.objectContaining({ type: 'read_write_storage', confidence: expect.any(String) }),
+          ]),
         }),
       );
 
       const flowCoverage = await readJson<{
         contract_backed_flow_ratio: number;
         runtime_surface_coverage_ratio: number;
+        journey_named_flow_ratio: number;
+        journey_step_coverage_ratio: number;
         runtime_surfaces_covered_by_flows: string[];
         flows: Array<{
           id: string;
+          journey_name?: string;
+          journey_confidence?: string;
+          journey_steps?: number;
           entry_contract: number;
           exit_contract: number;
           side_effects: number;
@@ -2614,12 +2693,17 @@ describe('project brain generation', () => {
       }>(join(result.value.researchDir, 'flow_coverage.json'));
       expect(flowCoverage.contract_backed_flow_ratio).toBeGreaterThan(0);
       expect(flowCoverage.runtime_surface_coverage_ratio).toBeGreaterThan(0);
+      expect(flowCoverage.journey_named_flow_ratio).toBeGreaterThan(0);
+      expect(flowCoverage.journey_step_coverage_ratio).toBeGreaterThan(0);
       expect(flowCoverage.runtime_surfaces_covered_by_flows).toEqual(
         expect.arrayContaining(['config:packages/api/package.json', 'flow kind:api']),
       );
       expect(flowCoverage.flows).toContainEqual(
         expect.objectContaining({
           id: flowId,
+          journey_name: 'User login journey',
+          journey_confidence: 'verified',
+          journey_steps: expect.any(Number),
           entry_contract: expect.any(Number),
           exit_contract: expect.any(Number),
           side_effects: expect.any(Number),
@@ -2682,13 +2766,30 @@ describe('project brain generation', () => {
         required_tests: expect.arrayContaining(['validation failure coverage']),
         runtime_surfaces: expect.arrayContaining(['config:packages/api/package.json']),
         confidence_reasons: expect.arrayContaining(['Validation evidence is recorded.']),
+        journey: expect.objectContaining({
+          name: 'User login journey',
+          category: 'auth_login',
+        }),
+        journey_steps: expect.arrayContaining([
+          expect.objectContaining({ type: 'validation_auth' }),
+          expect.objectContaining({ type: 'read_write_storage' }),
+        ]),
       });
       const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const missionControlReport = await readFile(
+        join(dir, '.rizz', 'reports', 'index.html'),
+        'utf8',
+      );
       expect(explainReport).toContain('Entry Contract');
+      expect(explainReport).toContain('Journey Steps');
+      expect(explainReport).toContain('User login journey');
       expect(explainReport).toContain('Runtime Surfaces');
       expect(explainReport).toContain('Side Effects');
       expect(explainReport).toContain('validation failure coverage');
       expect(explainReport).not.toContain(dir);
+      expect(missionControlReport).toContain('data-object="journey-intelligence"');
+      expect(missionControlReport).toContain('User login journey');
+      expect(missionControlReport).toContain('Evidence Health');
     });
   });
 
@@ -4751,11 +4852,11 @@ describe('project brain generation', () => {
         tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
         configs: expect.arrayContaining(['next.config.ts', 'package.json', 'tsconfig.json']),
         reasons: expect.arrayContaining([
-          '/docs/[slug] route flow (page) includes changed component evidence: src/components/DocPage.tsx.',
-          '/docs/[slug] route flow (page) includes changed config evidence: next.config.ts.',
-          '/docs/[slug] route flow (page) includes changed content evidence: src/content/docs.ts.',
-          '/docs/[slug] route flow (page) includes changed entrypoint evidence: src/app/docs/[slug]/page.tsx.',
-          '/docs/[slug] route flow (page) includes changed test evidence: src/app/docs/[slug]/page.test.tsx.',
+          'Docs Slug rendering journey (/docs/[slug] page) includes changed component evidence: src/components/DocPage.tsx.',
+          'Docs Slug rendering journey (/docs/[slug] page) includes changed config evidence: next.config.ts.',
+          'Docs Slug rendering journey (/docs/[slug] page) includes changed content evidence: src/content/docs.ts.',
+          'Docs Slug rendering journey (/docs/[slug] page) includes changed entrypoint evidence: src/app/docs/[slug]/page.tsx.',
+          'Docs Slug rendering journey (/docs/[slug] page) includes changed test evidence: src/app/docs/[slug]/page.test.tsx.',
         ]),
       });
       expect(result.value.review.blast_radius_reasons).toContainEqual(
@@ -4851,7 +4952,7 @@ describe('project brain generation', () => {
       expect(result.value.review.findings).toContainEqual(
         expect.objectContaining({
           title: 'Known flows overlap the diff',
-          description: expect.stringContaining('/docs/[slug] route flow (page)'),
+          description: expect.stringContaining('Docs Slug rendering journey (/docs/[slug] page)'),
         }),
       );
       expect(result.value.review.suggested_reviewer_focus_areas).toContain(
@@ -6997,6 +7098,18 @@ describe('project brain generation', () => {
       expect(result.value.review.affected_flows).toContainEqual(
         expect.objectContaining({
           id: 'flow:http--post--orders--src--server.ts',
+          journey_name: 'Checkout payment journey',
+          journey_confidence: expect.any(String),
+          affected_steps: expect.arrayContaining([
+            expect.objectContaining({
+              type: expect.stringMatching(/business_logic|validation_auth|read_write_storage/),
+              files: expect.arrayContaining(['src/orders/service.ts']),
+            }),
+          ]),
+          user_visible_failure_modes: expect.arrayContaining([
+            expect.stringContaining('Checkout payment journey'),
+          ]),
+          runtime_surfaces: expect.arrayContaining(['flow kind:api']),
           changed_files: ['src/orders/service.ts'],
           services: expect.arrayContaining(['service:src--orders']),
           service_causality: expect.arrayContaining([
@@ -7015,7 +7128,13 @@ describe('project brain generation', () => {
         service_causality_paths: 1,
         service_causality_effects: expect.arrayContaining(['env:ORDER_REGION']),
         affected_tests: expect.arrayContaining(['src/orders/service.test.ts']),
+        affected_journeys: expect.arrayContaining(['Checkout payment journey']),
+        affected_journey_steps: expect.any(Number),
+        user_visible_failure_modes: expect.arrayContaining([
+          expect.stringContaining('Checkout payment journey'),
+        ]),
       });
+      expect(result.value.review.review_evidence_summary.affected_journey_steps).toBeGreaterThan(0);
       expect(result.value.review.blast_radius_reasons).toContainEqual(
         expect.stringContaining('service causality path(s) explain flow-to-service blast radius'),
       );
@@ -7040,6 +7159,11 @@ describe('project brain generation', () => {
       expect(result.value.reviewEval).toMatchObject({
         affected_service_count: 1,
         affected_flow_count: 1,
+        affected_journey_count: 1,
+        affected_journey_step_count:
+          result.value.review.review_evidence_summary.affected_journey_steps,
+        user_visible_failure_mode_count:
+          result.value.review.review_evidence_summary.user_visible_failure_modes.length,
         service_causality_path_count: 1,
         service_causality_effect_count: 1,
       });
@@ -7050,6 +7174,11 @@ describe('project brain generation', () => {
           affected_flows?: string[];
           service_causality_paths?: number;
           service_causality_effects?: string[];
+          review_evidence_summary?: {
+            affected_journeys?: string[];
+            affected_journey_steps?: number;
+            user_visible_failure_modes?: string[];
+          };
         };
         project_state?: { last_reviewed_services?: string[] };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
@@ -7059,11 +7188,20 @@ describe('project brain generation', () => {
       );
       expect(latest.latest_review_status.service_causality_paths).toBe(1);
       expect(latest.latest_review_status.service_causality_effects).toContain('env:ORDER_REGION');
+      expect(latest.latest_review_status.review_evidence_summary).toMatchObject({
+        affected_journeys: ['Checkout payment journey'],
+        affected_journey_steps: expect.any(Number),
+        user_visible_failure_modes: expect.arrayContaining([
+          expect.stringContaining('Checkout payment journey'),
+        ]),
+      });
       expect(latest.project_state?.last_reviewed_services).toEqual(['service:src--orders']);
 
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('Affected Services');
-      expect(report).toContain('Service Causality');
+      expect(report).toContain('service causality path(s)');
+      expect(report).toContain('Checkout payment journey');
+      expect(report).toContain('User-Visible Risk');
       expect(report).toContain('service:src--orders');
       expect(report).toContain('env:ORDER_REGION');
       expect(report).toContain('flow:http--post--orders--src--server.ts');

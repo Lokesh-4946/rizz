@@ -1,0 +1,119 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-journey-deployment-config-risk",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Journey-aware deployment config risk benchmark seed",
+  "prompt": "Review a deployment config change and verify runtime/config journey naming, step extraction, evidence quality, confidence, and dependency/runtime blast radius.",
+  "fixture": {
+    "root": "pi-bench-journey-deployment-config-risk",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-journey-deployment-config-risk\",\"scripts\":{\"build\":\"tsc -b\",\"deploy\":\"vercel deploy --prod\",\"test\":\"vitest run\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "tsconfig.json",
+        "contents": "{\"compilerOptions\":{\"module\":\"NodeNext\",\"target\":\"ES2022\",\"strict\":true}}\n"
+      },
+      {
+        "path": "vercel.json",
+        "contents": "{\"version\":2,\"regions\":[\"iad1\"],\"buildCommand\":\"pnpm build\"}\n"
+      },
+      {
+        "path": "src/runtime.ts",
+        "contents": "export function runtimeRegion(): string { return process.env.VERCEL_REGION ?? \"local\"; }\n"
+      },
+      {
+        "path": "src/runtime.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { runtimeRegion } from \"./runtime.js\";\nit(\"reads runtime region\", () => expect(runtimeRegion()).toBeTruthy());\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "package.json",
+          "contents": "{\"name\":\"pi-bench-journey-deployment-config-risk\",\"scripts\":{\"build\":\"tsc -b --pretty false\",\"deploy\":\"vercel deploy --prod --regions sfo1\",\"test\":\"vitest run\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+        },
+        {
+          "path": "vercel.json",
+          "contents": "{\"version\":2,\"regions\":[\"sfo1\"],\"buildCommand\":\"pnpm build\"}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["package.json", "vercel.json"],
+      "affected_flows_include": ["flow:scripts--deploy"],
+      "affected_configs_include": ["vercel.json", "package.json"],
+      "minimum_affected_flows": 1,
+      "required_tests_include": ["vitest run"],
+      "blast_radius_reasons_include": [
+        "Dependency/runtime impact links changed package/config files",
+        "affected flow(s) link the change"
+      ],
+      "findings_include": [
+        {
+          "category": "Backward compatibility",
+          "title_includes": "Configuration or dependency surface changed"
+        },
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" }
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": ["journeys", "journey_steps_by_type", "contracts"],
+      "required_substrings": [
+        "Deployment and runtime availability flow",
+        "deployment_runtime",
+        "runtime_config",
+        "flow:scripts--deploy",
+        "vercel.json"
+      ]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_journey_count",
+        "affected_journey_step_count",
+        "user_visible_failure_mode_count",
+        "dependency_runtime_impact_count",
+        "review_readiness_score"
+      ],
+      "required_substrings": [
+        "\"dependency_runtime_impact_count\"",
+        "\"affected_journey_count\"",
+        "\"user_visible_failure_mode_count\""
+      ]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Deployment and runtime availability flow",
+        "Runtime config",
+        "Dependency Runtime Impact",
+        "User-Visible Risk",
+        "vercel.json"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Deployment config changes map to runtime/config journey steps and dependency runtime impact.",
+      "Review output warns about user-visible availability/config risk without provider calls."
+    ],
+    "fail": ["Deployment config changes are reported only as generic metadata edits."]
+  }
+}

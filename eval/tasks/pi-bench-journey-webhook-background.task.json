@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-journey-webhook-background",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Journey-aware webhook background job benchmark seed",
+  "prompt": "Review a webhook worker change and verify journey naming, async/background steps, evidence quality, confidence, and blast radius.",
+  "fixture": {
+    "root": "pi-bench-journey-webhook-background",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-journey-webhook-background\",\"scripts\":{\"dev\":\"tsx src/server.ts\",\"test\":\"vitest run\",\"worker\":\"tsx src/jobs/webhook-worker.ts\"},\"dependencies\":{\"express\":\"5.0.0\"},\"devDependencies\":{\"tsx\":\"^4.0.0\",\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { enqueueWebhookEvent } from \"./jobs/webhook-worker.js\";\nconst app = express();\napp.post(\"/webhooks/stripe\", (_req, res) => res.json(enqueueWebhookEvent(\"invoice.paid\")));\n"
+      },
+      {
+        "path": "src/jobs/webhook-worker.ts",
+        "contents": "export function enqueueWebhookEvent(type: string) {\n  if (!type) throw new Error(\"missing event type\");\n  return { queued: true, type };\n}\n"
+      },
+      {
+        "path": "src/jobs/webhook-worker.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { enqueueWebhookEvent } from \"./webhook-worker.js\";\nit(\"queues webhook events\", () => expect(enqueueWebhookEvent(\"invoice.paid\").queued).toBe(true));\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/jobs/webhook-worker.ts",
+          "contents": "export function enqueueWebhookEvent(type: string) {\n  if (!type || type === \"ignored\") throw new Error(\"missing event type\");\n  return { queued: true, type };\n}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/jobs/webhook-worker.ts"],
+      "affected_flows_include": ["flow:http--post--webhooks--stripe--src--server.ts"],
+      "affected_tests_include": ["src/jobs/webhook-worker.test.ts"],
+      "minimum_affected_flows": 1,
+      "required_tests_include": ["vitest run"]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": ["journeys", "journey_steps_by_type", "contracts"],
+      "required_substrings": [
+        "Webhook event processing flow",
+        "webhook_background",
+        "background_job_async",
+        "test_coverage",
+        "flow:http--post--webhooks--stripe--src--server.ts"
+      ]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_journey_count",
+        "affected_journey_step_count",
+        "user_visible_failure_mode_count"
+      ],
+      "required_substrings": ["\"affected_journey_count\"", "\"user_visible_failure_mode_count\""]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Webhook event processing flow",
+        "Background job / async continuation",
+        "User-Visible Risk",
+        "src/jobs/webhook-worker.test.ts"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Webhook route and worker evidence produce a webhook/background journey.",
+      "Worker changes produce async/background user-visible failure modes."
+    ],
+    "fail": ["Webhook evidence is collapsed into a generic API request without async step context."]
+  }
+}

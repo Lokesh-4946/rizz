@@ -51,6 +51,30 @@ function displayLocalPath(path: string): string {
   return local.startsWith('..') ? path : local;
 }
 
+function writeStdout(text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => {
+      process.stdout.off('drain', onDrain);
+      reject(error);
+    };
+    const onDrain = (): void => {
+      process.stdout.off('error', onError);
+      resolve();
+    };
+    process.stdout.once('error', onError);
+    if (process.stdout.write(text)) {
+      process.stdout.off('error', onError);
+      resolve();
+      return;
+    }
+    process.stdout.once('drain', onDrain);
+  });
+}
+
+async function writeJsonStdout(value: unknown): Promise<void> {
+  await writeStdout(`${JSON.stringify(value)}\n`);
+}
+
 type StartTuiOptions = ResolvedProvider & {
   readonly notice?: string;
   readonly persistSession?: boolean;
@@ -112,14 +136,14 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
   const result = await reviewProjectChanges({ rootDir: process.cwd(), json: options.json });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
     return 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value.review)}\n`);
+    await writeJsonStdout(result.value.review);
     return 0;
   }
 
@@ -193,14 +217,14 @@ async function runVerifyAddCommand(options: {
   });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
     return 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value)}\n`);
+    await writeJsonStdout(result.value);
     return 0;
   }
   process.stdout.write(`rizz recorded verification evidence ${result.value.item.id}\n`);
@@ -230,7 +254,7 @@ async function runAskCommand(options: {
   const result = await askProjectQuestion({ rootDir: process.cwd(), question: options.question });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
@@ -241,7 +265,7 @@ async function runAskCommand(options: {
       : 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value.answer)}\n`);
+    await writeJsonStdout(result.value.answer);
     return 0;
   }
 
@@ -272,14 +296,14 @@ async function runExplainCommand(options: {
   const result = await explainProjectTarget({ rootDir: process.cwd(), target: options.target });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
     return result.error.code === 'EXPLAIN_TARGET_REQUIRED' ? 2 : 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value.explanation)}\n`);
+    await writeJsonStdout(result.value.explanation);
     return 0;
   }
 
@@ -467,15 +491,13 @@ async function runJson(select: SelectOpts): Promise<number> {
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const input = Buffer.concat(chunks).toString('utf8').trim();
   if (input === '') {
-    process.stdout.write(
-      `${JSON.stringify({ ok: false, error: { code: 'BAD_REQUEST', message: 'empty input' } })}\n`,
-    );
+    await writeJsonStdout({ ok: false, error: { code: 'BAD_REQUEST', message: 'empty input' } });
     return 2;
   }
   const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
   const result = await runJsonTurn({ resolved, input, cwd: process.cwd() });
-  process.stdout.write(`${JSON.stringify(result)}\n`); // stdout stays pure JSON; notices go to stderr
+  await writeJsonStdout(result); // stdout stays pure JSON; notices go to stderr
   return result.ok ? 0 : 1;
 }
 
@@ -698,7 +720,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: `Unknown ask option '${unknownFlag}'.`,
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
@@ -717,7 +739,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: 'Ask needs a Project Intelligence question.',
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
@@ -739,7 +761,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: `Unknown explain option '${unknownFlag}'.`,
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
@@ -766,7 +788,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: 'Explain needs exactly one component, file, or flow target.',
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,

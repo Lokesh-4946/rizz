@@ -410,6 +410,17 @@ type FlowStepType =
   | 'test'
   | 'external';
 
+type JourneyStepType =
+  | 'trigger'
+  | 'validation_auth'
+  | 'read_write_storage'
+  | 'business_logic'
+  | 'external_service_call'
+  | 'rendering_response'
+  | 'background_job_async'
+  | 'runtime_config'
+  | 'test_coverage';
+
 type FlowRiskKind =
   | 'missing_test'
   | 'missing_config'
@@ -436,6 +447,33 @@ interface FlowStep {
   readonly symbol: string | null;
   readonly description: string;
   readonly evidence: readonly string[];
+}
+
+interface FlowJourneySummary {
+  readonly name: string;
+  readonly category: string;
+  readonly confidence: Confidence;
+  readonly score: number;
+  readonly reasons: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly missing_evidence: readonly string[];
+}
+
+interface FlowJourneyStep {
+  readonly step_id: string;
+  readonly order: number;
+  readonly type: JourneyStepType;
+  readonly label: string;
+  readonly description: string;
+  readonly files: readonly string[];
+  readonly symbols: readonly string[];
+  readonly routes: readonly string[];
+  readonly runtime_surfaces: readonly string[];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly missing_evidence: readonly string[];
 }
 
 interface FlowServiceCausality {
@@ -547,6 +585,8 @@ interface FlowIntelligence {
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
   readonly unknowns: readonly string[];
   readonly signals: readonly string[];
+  readonly journey?: FlowJourneySummary;
+  readonly journey_steps?: readonly FlowJourneyStep[];
 }
 
 type ServiceRuntime = 'node' | 'python' | 'unknown';
@@ -926,6 +966,10 @@ interface ReviewEvalArtifactData {
   readonly dependency_runtime_verification_focus_count: number;
   readonly service_causality_path_count: number;
   readonly service_causality_effect_count: number;
+  readonly affected_journey_count: number;
+  readonly affected_journey_step_count: number;
+  readonly user_visible_failure_mode_count: number;
+  readonly journey_missing_evidence_count: number;
   readonly affected_relationship_count: number;
   readonly architecture_impact_surface_count: number;
   readonly architecture_impact_component_surface_count: number;
@@ -976,6 +1020,8 @@ interface ReviewFindingData {
 interface AffectedFlowData {
   readonly id: string;
   readonly name: string;
+  readonly journey_name?: string;
+  readonly journey_confidence?: Confidence;
   readonly kind: string;
   readonly framework?: string;
   readonly route_path?: string;
@@ -983,6 +1029,10 @@ interface AffectedFlowData {
   readonly confidence: Confidence;
   readonly score: number;
   readonly entrypoints: readonly string[];
+  readonly affected_steps: readonly FlowJourneyStep[];
+  readonly runtime_surfaces: readonly string[];
+  readonly user_visible_failure_modes: readonly string[];
+  readonly missing_evidence: readonly string[];
   readonly changed_files: readonly string[];
   readonly components: readonly string[];
   readonly services: readonly string[];
@@ -1086,6 +1136,10 @@ interface ReviewEvidenceSummaryData {
   readonly dependency_runtime_verification_focus: readonly string[];
   readonly service_causality_paths: number;
   readonly service_causality_effects: readonly string[];
+  readonly affected_journeys: readonly string[];
+  readonly affected_journey_steps: number;
+  readonly user_visible_failure_modes: readonly string[];
+  readonly journey_missing_evidence: readonly string[];
   readonly architecture_impact_surfaces: number;
   readonly architecture_confidence_gaps: readonly string[];
   readonly architecture_evidence_gap_ids: readonly string[];
@@ -1231,6 +1285,8 @@ interface ExplainSummaryData {
   };
   readonly flow?: {
     readonly kind: FlowKind;
+    readonly journey?: FlowJourneySummary;
+    readonly journey_steps: readonly FlowJourneyStep[];
     readonly framework?: string;
     readonly route_path?: string;
     readonly route_type?: string;
@@ -4032,6 +4088,474 @@ function safeFlowSteps(entity: BrainEntity): FlowStep[] {
   }));
 }
 
+function flowJourneySummaryData(entity: BrainEntity): FlowJourneySummary | undefined {
+  const value = entity.data?.journey;
+  if (!isRecord(value)) return undefined;
+  const name = typeof value.name === 'string' ? safeText(value.name) : undefined;
+  if (name === undefined) return undefined;
+  return {
+    name,
+    category: typeof value.category === 'string' ? safeText(value.category) : 'unknown',
+    confidence: parseConfidence(value.confidence),
+    score: typeof value.score === 'number' ? value.score : 0,
+    reasons: asStringArray(value.reasons).map(safeText),
+    evidence_ids: asStringArray(value.evidence_ids).map(safeText),
+    missing_evidence: asStringArray(value.missing_evidence).map(safeText),
+  };
+}
+
+function safeFlowJourneySteps(entity: BrainEntity): FlowJourneyStep[] {
+  const steps = entity.data?.journey_steps;
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .filter((step): step is FlowJourneyStep => {
+      if (!isRecord(step)) return false;
+      return (
+        typeof step.step_id === 'string' &&
+        typeof step.order === 'number' &&
+        typeof step.type === 'string' &&
+        typeof step.label === 'string' &&
+        typeof step.description === 'string'
+      );
+    })
+    .map((step) => ({
+      step_id: safeText(step.step_id),
+      order: step.order,
+      type: journeyStepType(step.type),
+      label: safeText(step.label),
+      description: safeText(step.description),
+      files: asStringArray(step.files).map(safeText),
+      symbols: asStringArray(step.symbols).map(safeText),
+      routes: asStringArray(step.routes).map(safeText),
+      runtime_surfaces: asStringArray(step.runtime_surfaces).map(safeText),
+      configs: asStringArray(step.configs).map(safeText),
+      tests: asStringArray(step.tests).map(safeText),
+      confidence: parseConfidence(step.confidence),
+      evidence_ids: asStringArray(step.evidence_ids).map(safeText),
+      missing_evidence: asStringArray(step.missing_evidence).map(safeText),
+    }));
+}
+
+function journeyStepType(value: unknown): JourneyStepType {
+  if (
+    value === 'trigger' ||
+    value === 'validation_auth' ||
+    value === 'read_write_storage' ||
+    value === 'business_logic' ||
+    value === 'external_service_call' ||
+    value === 'rendering_response' ||
+    value === 'background_job_async' ||
+    value === 'runtime_config' ||
+    value === 'test_coverage'
+  ) {
+    return value;
+  }
+  return 'business_logic';
+}
+
+function textTokens(value: string): string[] {
+  return unique(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 1),
+  );
+}
+
+function titleWords(tokens: readonly string[]): string {
+  return tokens
+    .filter((token) => !['api', 'src', 'app', 'route', 'routes', 'page', 'handler'].includes(token))
+    .slice(0, 3)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+}
+
+function flowJourneyText(intelligence: FlowIntelligence): string {
+  return [
+    intelligence.name,
+    intelligence.kind,
+    intelligence.framework ?? '',
+    intelligence.route_path ?? '',
+    intelligence.route_type ?? '',
+    ...intelligence.entrypoints.flatMap((entrypoint) => [
+      entrypoint.path,
+      entrypoint.symbol ?? '',
+      entrypoint.type,
+    ]),
+    ...intelligence.steps.flatMap((step) => [
+      step.path,
+      step.symbol ?? '',
+      step.description,
+      step.type,
+    ]),
+    ...intelligence.files,
+    ...intelligence.configs,
+    ...intelligence.tests,
+    ...intelligence.runtime_surfaces,
+    ...intelligence.signals,
+  ].join(' ');
+}
+
+function journeyMatch(
+  text: string,
+  patterns: readonly RegExp[],
+): { readonly matched: boolean; readonly matchedTerms: readonly string[] } {
+  const matchedTerms = patterns
+    .filter((pattern) => pattern.test(text))
+    .map((pattern) => pattern.source.replace(/\\b|\(|\)|\||\?/g, ' ').trim())
+    .filter((term) => term.length > 0);
+  return { matched: matchedTerms.length > 0, matchedTerms };
+}
+
+function inferFlowJourneySummary(intelligence: FlowIntelligence): FlowJourneySummary {
+  const text = flowJourneyText(intelligence);
+  const normalized = text.toLowerCase();
+  const evidenceIds = unique([
+    ...intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+    ...intelligence.steps.flatMap((step) => step.evidence),
+    ...intelligence.configs.map(evidenceId),
+    ...intelligence.tests.map(evidenceId),
+  ]).slice(0, 12);
+  const routeOrName =
+    intelligence.route_path !== undefined
+      ? titleWords(textTokens(intelligence.route_path))
+      : titleWords(textTokens(intelligence.name));
+  const cases: readonly {
+    readonly category: string;
+    readonly label: string;
+    readonly noun: string;
+    readonly patterns: readonly RegExp[];
+  }[] = [
+    {
+      category: 'auth_login',
+      label: 'User login journey',
+      noun: 'login',
+      patterns: [/\bauth\b/i, /\blogin\b/i, /\bsignin\b/i, /\bsession\b/i, /\btoken\b/i],
+    },
+    {
+      category: 'checkout_payment',
+      label: 'Checkout payment journey',
+      noun: 'checkout',
+      patterns: [/\bcheckout\b/i, /\bpayment\b/i, /\bbilling\b/i, /\bcart\b/i, /\border(s)?\b/i],
+    },
+    {
+      category: 'upload_ingestion',
+      label: /admin/i.test(normalized)
+        ? 'Admin upload and processing flow'
+        : 'Upload ingestion journey',
+      noun: 'upload',
+      patterns: [/\bupload\b/i, /\bingest/i, /\bingestion\b/i, /\bmultipart\b/i, /\bfileupload\b/i],
+    },
+    {
+      category: 'search_retrieval',
+      label: 'Search query retrieval journey',
+      noun: 'search',
+      patterns: [/\bsearch\b/i, /\bquery\b/i, /\bretriev/i, /\blookup\b/i, /\bfind\b/i],
+    },
+    {
+      category: 'webhook_background',
+      label: /webhook/i.test(normalized)
+        ? 'Webhook event processing flow'
+        : 'Background job processing workflow',
+      noun: 'webhook',
+      patterns: [/\bwebhook\b/i, /\bevent\b/i, /\bqueue\b/i, /\bworker\b/i, /\bjob\b/i],
+    },
+    {
+      category: 'report_generation',
+      label: 'Report generation workflow',
+      noun: 'report',
+      patterns: [/\breport\b/i, /\bexport\b/i, /\bpdf\b/i, /\bgenerate\b/i],
+    },
+    {
+      category: 'deployment_runtime',
+      label: 'Deployment and runtime availability flow',
+      noun: 'deployment',
+      patterns: [/\bdeploy\b/i, /\brelease\b/i, /\bvercel\b/i, /\bdocker\b/i, /\bruntime\b/i],
+    },
+    {
+      category: 'rendering',
+      label: routeOrName.length > 0 ? `${routeOrName} rendering journey` : 'Page rendering journey',
+      noun: 'rendering',
+      patterns: [/\brender\b/i, /\bpage\b/i, /\blayout\b/i, /\bmetadata\b/i],
+    },
+  ];
+  const matched = cases.find((item) => journeyMatch(normalized, item.patterns).matched);
+  const fallbackName =
+    intelligence.kind === 'api'
+      ? routeOrName.length > 0
+        ? `${routeOrName} request journey`
+        : 'API request journey'
+      : intelligence.kind === 'job'
+        ? 'Background job workflow'
+        : intelligence.kind === 'cli'
+          ? `${titleWords(textTokens(intelligence.name)) || 'Command'} execution workflow`
+          : `${titleWords(textTokens(intelligence.name)) || 'Application'} workflow`;
+  const name = matched?.label ?? fallbackName;
+  const matchedTerms =
+    matched === undefined ? [] : journeyMatch(normalized, matched.patterns).matchedTerms;
+  const reasons = unique([
+    ...(intelligence.route_path !== undefined
+      ? [`Route path ${safeText(intelligence.route_path)} contributed to journey naming.`]
+      : []),
+    ...(intelligence.entrypoints.length > 0
+      ? [`${intelligence.entrypoints.length} entrypoint(s) contributed to journey naming.`]
+      : []),
+    ...(matched !== undefined
+      ? [`Matched ${matched.noun} journey signals from local names, paths, commands, or tests.`]
+      : ['No strong product-domain keyword matched; name stays generic and lower confidence.']),
+    ...(matchedTerms.length > 0 ? [`Matched terms: ${matchedTerms.slice(0, 4).join(', ')}.`] : []),
+    ...(intelligence.tests.length > 0 ? ['Linked tests improve journey confidence.'] : []),
+    ...(intelligence.configs.length > 0 ? ['Linked configs improve runtime confidence.'] : []),
+  ]);
+  const missingEvidence = unique([
+    ...(matched === undefined
+      ? ['No strong route, handler, test, or file keyword named a product journey.']
+      : []),
+    ...(intelligence.tests.length === 0
+      ? ['No directly linked test artifact for this journey.']
+      : []),
+    ...(intelligence.configs.length === 0
+      ? ['No directly linked config artifact for this journey.']
+      : []),
+    ...(evidenceIds.length === 0
+      ? ['No direct evidence IDs were recorded for journey naming.']
+      : []),
+  ]);
+  const score = Math.min(
+    1,
+    Number(
+      (
+        0.35 +
+        (matched === undefined ? 0 : 0.25) +
+        Math.min(0.2, evidenceIds.length * 0.025) +
+        (intelligence.tests.length > 0 ? 0.1 : 0) +
+        (intelligence.configs.length > 0 ? 0.1 : 0)
+      ).toFixed(2),
+    ),
+  );
+  return {
+    name: safeText(name),
+    category: matched?.category ?? 'generic_workflow',
+    confidence: score >= 0.75 ? 'verified' : score >= 0.5 ? 'inferred' : 'uncertain',
+    score,
+    reasons: reasons.map(safeText),
+    evidence_ids: evidenceIds.map(safeText),
+    missing_evidence: missingEvidence.map(safeText),
+  };
+}
+
+function inferJourneyStepType(step: FlowStep, journey: FlowJourneySummary): JourneyStepType {
+  const text =
+    `${step.type} ${step.path} ${step.symbol ?? ''} ${step.description} ${journey.category}`.toLowerCase();
+  if (step.type === 'test' || isTestPath(step.path)) return 'test_coverage';
+  if (step.type === 'config' || isConfigPath(step.path)) return 'runtime_config';
+  if (
+    /db|database|repo|repository|model|schema|prisma|sql|store|storage|cache|redis|write|read/.test(
+      text,
+    )
+  ) {
+    return 'read_write_storage';
+  }
+  if (/auth|login|session|token|password|permission|role|guard|middleware/.test(text)) {
+    return 'validation_auth';
+  }
+  if (/webhook|queue|worker|job|event|cron|background|async/.test(text)) {
+    return 'background_job_async';
+  }
+  if (/fetch|axios|stripe|s3|openai|api client|external|email|sendgrid|twilio|slack/.test(text)) {
+    return 'external_service_call';
+  }
+  if (/render|response|json|send|page|layout|metadata|return|view/.test(text)) {
+    return 'rendering_response';
+  }
+  return 'business_logic';
+}
+
+function journeyStepLabel(type: JourneyStepType): string {
+  switch (type) {
+    case 'trigger':
+      return 'Trigger';
+    case 'validation_auth':
+      return 'Validation/auth';
+    case 'read_write_storage':
+      return 'Read/write storage';
+    case 'business_logic':
+      return 'Business logic';
+    case 'external_service_call':
+      return 'External service call';
+    case 'rendering_response':
+      return 'Rendering/response';
+    case 'background_job_async':
+      return 'Background job / async continuation';
+    case 'runtime_config':
+      return 'Runtime config';
+    case 'test_coverage':
+      return 'Test coverage';
+  }
+}
+
+function journeyStepConfidence(params: {
+  readonly evidenceIds: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly type: JourneyStepType;
+}): Confidence {
+  if (params.evidenceIds.length === 0) return 'uncertain';
+  if (params.type === 'test_coverage' || params.type === 'runtime_config') return 'verified';
+  if (params.tests.length > 0 || params.configs.length > 0) return 'verified';
+  return 'inferred';
+}
+
+function inferFlowJourneySteps(
+  intelligence: FlowIntelligence,
+  journey: FlowJourneySummary,
+): FlowJourneyStep[] {
+  const route = intelligence.route_path === undefined ? [] : [safeText(intelligence.route_path)];
+  const steps: FlowJourneyStep[] = [];
+  const addStep = (step: FlowJourneyStep): void => {
+    steps.push({ ...step, order: steps.length + 1 });
+  };
+  const triggerEvidence = unique(
+    intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+  );
+  addStep({
+    step_id: `${intelligence.flow_id}:journey:trigger`,
+    order: 1,
+    type: 'trigger',
+    label: journeyStepLabel('trigger'),
+    description: `${journey.name} starts from ${intelligence.entrypoints.map(formatFlowEntrypoint).slice(0, 3).join(', ') || 'a reconstructed entrypoint'}.`,
+    files: unique(intelligence.entrypoints.map((entrypoint) => entrypoint.path)),
+    symbols: unique(
+      intelligence.entrypoints.flatMap((entrypoint) =>
+        entrypoint.symbol === null ? [] : [entrypoint.symbol],
+      ),
+    ),
+    routes: route,
+    runtime_surfaces: intelligence.runtime_surfaces.slice(0, 8).map(safeText),
+    configs: intelligence.configs.map(safeText),
+    tests: intelligence.tests.map(safeText),
+    confidence: triggerEvidence.length > 0 ? 'verified' : 'uncertain',
+    evidence_ids: triggerEvidence.map(safeText),
+    missing_evidence:
+      triggerEvidence.length === 0 ? ['No direct trigger evidence IDs were recorded.'] : [],
+  });
+  for (const step of intelligence.steps) {
+    const type = inferJourneyStepType(step, journey);
+    const evidenceIds = unique(step.evidence);
+    addStep({
+      step_id: `${step.step_id}:journey`,
+      order: steps.length + 1,
+      type,
+      label: journeyStepLabel(type),
+      description: step.description,
+      files: [safeText(step.path)],
+      symbols: step.symbol === null ? [] : [safeText(step.symbol)],
+      routes: route,
+      runtime_surfaces:
+        type === 'runtime_config' || type === 'trigger'
+          ? intelligence.runtime_surfaces.slice(0, 8).map(safeText)
+          : [],
+      configs:
+        type === 'runtime_config' || step.type === 'config'
+          ? unique([step.path, ...intelligence.configs]).map(safeText)
+          : [],
+      tests:
+        type === 'test_coverage' || step.type === 'test'
+          ? unique([step.path, ...intelligence.tests]).map(safeText)
+          : intelligence.tests.map(safeText),
+      confidence: journeyStepConfidence({
+        evidenceIds,
+        tests: intelligence.tests,
+        configs: intelligence.configs,
+        type,
+      }),
+      evidence_ids: evidenceIds.map(safeText),
+      missing_evidence: unique([
+        ...(evidenceIds.length === 0 ? ['No direct step evidence IDs were recorded.'] : []),
+        ...(type !== 'test_coverage' && intelligence.tests.length === 0
+          ? ['No linked test verifies this journey step.']
+          : []),
+        ...(type === 'runtime_config' && intelligence.configs.length === 0
+          ? ['No linked config artifact explains runtime behavior.']
+          : []),
+      ]).map(safeText),
+    });
+  }
+  if (intelligence.configs.length > 0 && !steps.some((step) => step.type === 'runtime_config')) {
+    addStep({
+      step_id: `${intelligence.flow_id}:journey:runtime-config`,
+      order: steps.length + 1,
+      type: 'runtime_config',
+      label: journeyStepLabel('runtime_config'),
+      description: `${journey.name} depends on local runtime configuration evidence.`,
+      files: intelligence.configs.map(safeText),
+      symbols: [],
+      routes: route,
+      runtime_surfaces: intelligence.runtime_surfaces.slice(0, 8).map(safeText),
+      configs: intelligence.configs.map(safeText),
+      tests: intelligence.tests.map(safeText),
+      confidence: 'verified',
+      evidence_ids: intelligence.configs.map(evidenceId).map(safeText),
+      missing_evidence: [],
+    });
+  }
+  if (intelligence.tests.length > 0 && !steps.some((step) => step.type === 'test_coverage')) {
+    addStep({
+      step_id: `${intelligence.flow_id}:journey:test-coverage`,
+      order: steps.length + 1,
+      type: 'test_coverage',
+      label: journeyStepLabel('test_coverage'),
+      description: `${journey.name} has linked test evidence for confidence calibration.`,
+      files: intelligence.tests.map(safeText),
+      symbols: [],
+      routes: route,
+      runtime_surfaces: [],
+      configs: intelligence.configs.map(safeText),
+      tests: intelligence.tests.map(safeText),
+      confidence: 'verified',
+      evidence_ids: intelligence.tests.map(evidenceId).map(safeText),
+      missing_evidence: [],
+    });
+  }
+  if (
+    !steps.some((step) => step.type === 'rendering_response') &&
+    (intelligence.outputs.length > 0 || intelligence.exit_contract.length > 0)
+  ) {
+    const evidenceIds = unique([
+      ...(intelligence.field_evidence.outputs ?? []),
+      ...(intelligence.field_evidence.exit_contract ?? []),
+    ]);
+    addStep({
+      step_id: `${intelligence.flow_id}:journey:response`,
+      order: steps.length + 1,
+      type: 'rendering_response',
+      label: journeyStepLabel('rendering_response'),
+      description: `${journey.name} returns or renders ${intelligence.outputs.slice(0, 3).join(', ') || 'a response'}.`,
+      files: intelligence.files.slice(0, 4).map(safeText),
+      symbols: [],
+      routes: route,
+      runtime_surfaces: [],
+      configs: [],
+      tests: intelligence.tests.map(safeText),
+      confidence: evidenceIds.length > 0 ? 'inferred' : 'uncertain',
+      evidence_ids: evidenceIds.map(safeText),
+      missing_evidence:
+        evidenceIds.length === 0 ? ['No direct output evidence IDs were recorded.'] : [],
+    });
+  }
+  return steps.slice(0, 16);
+}
+
+function enrichFlowWithJourney(intelligence: FlowIntelligence): FlowIntelligence {
+  const journey = inferFlowJourneySummary(intelligence);
+  return {
+    ...intelligence,
+    journey,
+    journey_steps: inferFlowJourneySteps(intelligence, journey),
+  };
+}
+
 function safeFlowRisks(entity: BrainEntity): FlowRisk[] {
   return flowRisks(entity).map((risk) => ({
     risk_id: safeText(risk.risk_id),
@@ -5706,34 +6230,37 @@ function buildFlowEntity(
   now: string,
   createdAt?: string,
 ): BrainEntity {
+  const enriched = enrichFlowWithJourney(intelligence);
   const confidence = flowConfidenceFor({
-    tests: intelligence.tests,
-    signals: intelligence.signals,
-    unknowns: intelligence.unknowns,
+    tests: enriched.tests,
+    signals: enriched.signals,
+    unknowns: enriched.unknowns,
   });
   return makeEntity({
-    id: intelligence.flow_id,
+    id: enriched.flow_id,
     type: 'flow',
-    name: intelligence.name,
-    description: `${intelligence.kind} flow reconstructed from local evidence.`,
+    name: enriched.name,
+    description: `${enriched.journey?.name ?? enriched.kind} reconstructed from local evidence.`,
     now,
     ...(createdAt !== undefined ? { createdAt } : {}),
     confidence: confidence.confidence,
     evidenceIds: unique([
-      ...intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
-      ...intelligence.steps.flatMap((step) => step.evidence),
-      ...(intelligence.service_causality ?? []).flatMap((item) => item.evidence_ids),
-      ...intelligence.risks.flatMap((risk) => risk.evidence),
+      ...enriched.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+      ...enriched.steps.flatMap((step) => step.evidence),
+      ...(enriched.service_causality ?? []).flatMap((item) => item.evidence_ids),
+      ...enriched.risks.flatMap((risk) => risk.evidence),
+      ...(enriched.journey?.evidence_ids ?? []),
+      ...(enriched.journey_steps ?? []).flatMap((step) => step.evidence_ids),
     ]),
     relatedEntityIds: unique([
-      ...intelligence.components,
-      ...(intelligence.services ?? []),
-      ...intelligence.dependencies,
-      ...intelligence.configs.map((config) => entityId('config', config)),
-      ...intelligence.tests.map((test) => entityId('test', test)),
+      ...enriched.components,
+      ...(enriched.services ?? []),
+      ...enriched.dependencies,
+      ...enriched.configs.map((config) => entityId('config', config)),
+      ...enriched.tests.map((test) => entityId('test', test)),
     ]),
-    sourceFiles: intelligence.files,
-    data: { ...intelligence, confidence: { ...intelligence.confidence, score: confidence.score } },
+    sourceFiles: enriched.files,
+    data: { ...enriched, confidence: { ...enriched.confidence, score: confidence.score } },
   });
 }
 
@@ -13122,6 +13649,13 @@ function buildResearchArtifacts(params: {
   const flowsWithRuntimeSurfaces = flows.filter(
     (flow) => flowStringArray(flow, 'runtime_surfaces').length > 0,
   );
+  const flowJourneySummaries = flows
+    .map((flow) => ({ flow, journey: flowJourneySummaryData(flow) }))
+    .filter(
+      (item): item is { readonly flow: BrainEntity; readonly journey: FlowJourneySummary } =>
+        item.journey !== undefined,
+    );
+  const flowJourneySteps = flows.flatMap(safeFlowJourneySteps);
   const runtimeSurfacesCoveredByFlows = unique(
     flows.flatMap((flow) => flowStringArray(flow, 'runtime_surfaces')),
   );
@@ -13441,6 +13975,8 @@ function buildResearchArtifacts(params: {
       flows_without_tests: flowsWithoutTests.length,
       flows_with_contracts: flowsWithContracts.length,
       flows_with_runtime_surfaces: flowsWithRuntimeSurfaces.length,
+      flows_with_journey_names: flowJourneySummaries.length,
+      journey_steps: flowJourneySteps.length,
       flow_steps: flowStepCount,
       mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
         .length,
@@ -13448,6 +13984,22 @@ function buildResearchArtifacts(params: {
       mapped_files: flowCoveredFiles.size,
       runtime_surface_count: runtimeSurfacesCoveredByFlows.length,
       runtime_surfaces: runtimeSurfacesCoveredByFlows,
+      journeys: flowJourneySummaries.map(({ flow, journey }) => ({
+        id: flow.id,
+        flow_name: flow.name,
+        journey_name: journey.name,
+        category: journey.category,
+        confidence: journey.confidence,
+        score: journey.score,
+        evidence_ids: journey.evidence_ids,
+        missing_evidence: journey.missing_evidence,
+        reasons: journey.reasons,
+        step_count: safeFlowJourneySteps(flow).length,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
+        tests: flowStringArray(flow, 'tests'),
+        configs: flowStringArray(flow, 'configs'),
+      })),
+      journey_steps_by_type: countByValue(flowJourneySteps.map((step) => step.type)),
       entrypoints: entrypoints.length,
       entrypoints_mapped_to_components: entrypointsWithComponents.length,
       average_confidence: averageFlowConfidence,
@@ -13461,6 +14013,7 @@ function buildResearchArtifacts(params: {
       })),
       contracts: flows.map((flow) => ({
         id: flow.id,
+        journey_name: flowJourneySummaryData(flow)?.name,
         framework: stringData(flow, 'framework'),
         route_path: stringData(flow, 'route_path'),
         route_type: stringData(flow, 'route_type'),
@@ -13475,6 +14028,17 @@ function buildResearchArtifacts(params: {
         runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
         services: flowStringArray(flow, 'services'),
         service_causality: safeFlowServiceCausality(flow),
+        journey_steps: safeFlowJourneySteps(flow).map((step) => ({
+          step_id: step.step_id,
+          type: step.type,
+          label: step.label,
+          files: step.files,
+          runtime_surfaces: step.runtime_surfaces,
+          configs: step.configs,
+          tests: step.tests,
+          confidence: step.confidence,
+          missing_evidence: step.missing_evidence,
+        })),
         confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
       })),
       orphan_entrypoints: flows
@@ -13519,6 +14083,11 @@ function buildResearchArtifacts(params: {
       ),
       contract_backed_flow_ratio: ratio(flowsWithContracts.length, flows.length),
       runtime_surface_coverage_ratio: ratio(flowsWithRuntimeSurfaces.length, flows.length),
+      journey_named_flow_ratio: ratio(flowJourneySummaries.length, flows.length),
+      journey_step_coverage_ratio: ratio(
+        flows.filter((flow) => safeFlowJourneySteps(flow).length > 0).length,
+        flows.length,
+      ),
       source_file_coverage_ratio: ratio(
         activeSourceFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
         activeSourceFiles.length,
@@ -13539,6 +14108,9 @@ function buildResearchArtifacts(params: {
       flows: flows.map((flow) => ({
         id: flow.id,
         kind: stringData(flow, 'kind') ?? 'unknown',
+        journey_name: flowJourneySummaryData(flow)?.name,
+        journey_confidence: flowJourneySummaryData(flow)?.confidence,
+        journey_steps: safeFlowJourneySteps(flow).length,
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
         runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').length,
@@ -14351,6 +14923,122 @@ function renderFlowCards(
       </article>`;
     })
     .join('');
+}
+
+function renderJourneyIntelligence(
+  flows: readonly BrainEntity[],
+  latest: Record<string, unknown>,
+): string {
+  const journeys = flows
+    .flatMap((flow) => {
+      const journey = flowJourneySummaryData(flow);
+      if (journey === undefined) return [];
+      return [{ flow, journey, steps: safeFlowJourneySteps(flow) }];
+    })
+    .sort(
+      (a, b) =>
+        b.journey.score - a.journey.score ||
+        confidenceRank(b.journey.confidence) - confidenceRank(a.journey.confidence) ||
+        a.journey.name.localeCompare(b.journey.name),
+    );
+  if (journeys.length === 0) {
+    return '<p class="muted">No journey-aware flows detected yet.</p>';
+  }
+  const highestRisk =
+    [...journeys].sort((a, b) => {
+      const aRisk =
+        flowRisks(a.flow).length + a.journey.missing_evidence.length + weakStepCount(a.steps);
+      const bRisk =
+        flowRisks(b.flow).length + b.journey.missing_evidence.length + weakStepCount(b.steps);
+      return bRisk - aRisk || a.journey.name.localeCompare(b.journey.name);
+    })[0] ?? journeys[0];
+  if (highestRisk === undefined) {
+    return '<p class="muted">No journey-aware flows detected yet.</p>';
+  }
+  const reviewSummary = latestReviewEvidenceSummary(latest);
+  const affectedJourneys = asStringArray(reviewSummary.affected_journeys);
+  const failureModes = asStringArray(reviewSummary.user_visible_failure_modes);
+  const journeyMissingEvidence = asStringArray(reviewSummary.journey_missing_evidence);
+  const affectedStepCount = recordNumber(reviewSummary, 'affected_journey_steps');
+
+  return `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${journeys.length} journey(s)</div>
+      <h3>Top Journeys</h3>
+      ${renderList(
+        journeys.slice(0, 5).map((item) => {
+          const surfaces = flowStringArray(item.flow, 'runtime_surfaces').slice(0, 2).join(', ');
+          const suffix = surfaces.length === 0 ? '' : ` · ${surfaces}`;
+          return `${item.journey.name} (${item.journey.confidence}, ${item.steps.length} step(s))${suffix}`;
+        }),
+      )}
+    </article>
+    <article class="card compact">
+      <div class="badge">${htmlEscape(highestRisk.journey.confidence)}</div>
+      <h3>Highest Risk Journey</h3>
+      <p>${htmlEscape(highestRisk.journey.name)}</p>
+      <h4>Evidence Gaps</h4>
+      ${renderList(highestRisk.journey.missing_evidence.slice(0, 4))}
+      <h4>Runtime Surfaces</h4>
+      ${renderList(flowStringArray(highestRisk.flow, 'runtime_surfaces').slice(0, 5))}
+    </article>
+    <article class="card compact">
+      <div class="badge">${journeyEvidenceHealth(journeys)}/100</div>
+      <h3>Evidence Health</h3>
+      ${renderList([
+        `${journeys.filter((item) => item.journey.confidence === 'verified').length} verified journey name(s)`,
+        `${journeys.filter((item) => item.journey.confidence === 'inferred').length} inferred journey name(s)`,
+        `${journeys.flatMap((item) => item.journey.missing_evidence).length} missing evidence note(s)`,
+        `${journeys.flatMap((item) => item.steps).filter((step) => step.tests.length > 0).length} step(s) with tests`,
+      ])}
+    </article>
+    <article class="card compact">
+      <div class="badge">${affectedJourneys.length} affected</div>
+      <h3>Latest Review Impact</h3>
+      ${renderList([
+        ...(affectedJourneys.length === 0
+          ? ['No affected journeys recorded by the latest review.']
+          : affectedJourneys.slice(0, 4).map((journey) => `Affected: ${journey}`)),
+        `${affectedStepCount} affected journey step(s)`,
+        ...failureModes.slice(0, 3),
+        ...journeyMissingEvidence.slice(0, 3).map((gap) => `Gap: ${gap}`),
+      ])}
+    </article>
+  </div>`;
+}
+
+function confidenceRank(confidence: Confidence): number {
+  if (confidence === 'verified') return 3;
+  if (confidence === 'inferred') return 2;
+  return 1;
+}
+
+function weakStepCount(steps: readonly FlowJourneyStep[]): number {
+  return steps.filter((step) => step.confidence !== 'verified').length;
+}
+
+function journeyEvidenceHealth(
+  journeys: readonly {
+    readonly journey: FlowJourneySummary;
+    readonly steps: readonly FlowJourneyStep[];
+  }[],
+): number {
+  const possible = journeys.length * 3 + journeys.flatMap((item) => item.steps).length;
+  if (possible === 0) return 0;
+  const verifiedNames =
+    journeys.filter((item) => item.journey.confidence === 'verified').length * 3;
+  const inferredNames =
+    journeys.filter((item) => item.journey.confidence === 'inferred').length * 2;
+  const verifiedSteps = journeys
+    .flatMap((item) => item.steps)
+    .filter((step) => step.confidence === 'verified').length;
+  return Math.round(((verifiedNames + inferredNames + verifiedSteps) / possible) * 100);
+}
+
+function latestReviewEvidenceSummary(latest: Record<string, unknown>): Record<string, unknown> {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) return {};
+  return isRecord(status.review_evidence_summary) ? status.review_evidence_summary : {};
 }
 
 function renderServiceCards(
@@ -16123,6 +16811,17 @@ function renderReport(params: {
     posture: serviceCausalityRows.length === 0 ? 'weak' : serviceReachability.posture,
     body: renderServiceCausalityDetails(params.buckets.flows, evidenceById, params.latest),
   });
+  const journeyObject = renderObjectDetails({
+    title: 'Journey Intelligence',
+    summary:
+      'Product and user journeys inferred from routes, handlers, files, configs, tests, commands, runtime surfaces, and review impact.',
+    count: params.buckets.flows.filter((flow) => flowJourneySummaryData(flow) !== undefined).length,
+    posture:
+      params.buckets.flows.filter((flow) => flowJourneySummaryData(flow) !== undefined).length === 0
+        ? 'weak'
+        : 'usable',
+    body: renderJourneyIntelligence(params.buckets.flows, params.latest),
+  });
   const incrementalHealthObject = renderObjectDetails({
     title: 'Incremental Health',
     summary:
@@ -16342,6 +17041,7 @@ function renderReport(params: {
       ${componentObject}
       ${serviceObject}
       ${serviceCausalityObject}
+      ${journeyObject}
       ${flowObject}
       ${incrementalHealthObject}
       ${architectureObject}
@@ -18427,6 +19127,8 @@ function buildFlowExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const entrypoints = safeFlowEntrypoints(target);
   const steps = safeFlowSteps(target);
+  const journey = flowJourneySummaryData(target);
+  const journeySteps = safeFlowJourneySteps(target);
   const serviceCausality = safeFlowServiceCausality(target);
   const flowRisksForTarget = safeFlowRisks(target);
   const components = flowStringArray(target, 'components').map(safeText);
@@ -18507,8 +19209,13 @@ function buildFlowExplanation(params: {
     summary: safeText(target.description),
     purpose: `${safeText(target.name)} is a ${flowKind(
       target,
-    )} flow reconstructed from local static evidence. It is not a runtime trace.`,
+    )} flow reconstructed from local static evidence. ${
+      journey === undefined ? '' : `Journey name: ${journey.name}. `
+    }It is not a runtime trace.`,
     responsibilities: unique([
+      ...(journey === undefined
+        ? []
+        : [`Explains the ${journey.name} with ${journeySteps.length} normalized journey step(s).`]),
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
       `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
       ...serviceCausality.map((item) => item.cause),
@@ -18571,6 +19278,8 @@ function buildFlowExplanation(params: {
     }),
     flow: {
       kind: flowKind(target),
+      ...(journey !== undefined ? { journey } : {}),
+      journey_steps: journeySteps,
       ...(framework !== undefined ? { framework: safeText(framework) } : {}),
       ...(routePath !== undefined ? { route_path: safeText(routePath) } : {}),
       ...(routeType !== undefined ? { route_type: safeText(routeType) } : {}),
@@ -19059,9 +19768,21 @@ function renderServiceExplanationCards(explanation: ExplainSummaryData): string 
 
 function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
   if (explanation.flow === undefined) return '';
-  return `<article class="card"><h2>Entry Contract</h2>${renderList(
-    explanation.flow.entry_contract,
+  return `<article class="card"><h2>Journey</h2>${renderList(
+    explanation.flow.journey === undefined
+      ? ['No semantic journey name was inferred.']
+      : [
+          `${explanation.flow.journey.name} (${explanation.flow.journey.confidence} · ${explanation.flow.journey.score})`,
+          ...explanation.flow.journey.reasons,
+          ...explanation.flow.journey.missing_evidence,
+        ],
   )}</article>
+      <article class="card"><h2>Journey Steps</h2>${renderList(
+        explanation.flow.journey_steps.map(formatJourneyStepForReview),
+      )}</article>
+      <article class="card"><h2>Entry Contract</h2>${renderList(
+        explanation.flow.entry_contract,
+      )}</article>
       <article class="card"><h2>Exit Contract</h2>${renderList(
         explanation.flow.exit_contract,
       )}</article>
@@ -19618,6 +20339,16 @@ function buildReview(params: {
   const serviceCausalityEffects = unique(serviceCausalityPaths.flatMap((item) => item.effects)).map(
     safeText,
   );
+  const affectedJourneyNames = unique(
+    affectedFlows.flatMap((flow) => (flow.journey_name === undefined ? [] : [flow.journey_name])),
+  ).map(safeText);
+  const affectedJourneySteps = affectedFlows.flatMap((flow) => flow.affected_steps);
+  const userVisibleFailureModes = unique(
+    affectedFlows.flatMap((flow) => flow.user_visible_failure_modes),
+  ).map(safeText);
+  const journeyMissingEvidence = unique(affectedFlows.flatMap((flow) => flow.missing_evidence)).map(
+    safeText,
+  );
   const reviewEvidenceIds = unique([
     ...allAffectedComponents.flatMap((component) => component.evidence_ids),
     ...affectedServices.flatMap((service) => service.evidence_ids),
@@ -19842,6 +20573,8 @@ function buildReview(params: {
           ])
             .slice(0, 6)
             .join(', ') || 'none detected'
+        }. User-visible risks: ${
+          userVisibleFailureModes.slice(0, 4).join(' ') || 'none recorded'
         }.`,
       ),
       affected_files: unique(affectedFlows.flatMap((flow) => flow.changed_files)),
@@ -20015,6 +20748,10 @@ function buildReview(params: {
       dependency_runtime_verification_focus: dependencyRuntimeImpact?.verification_focus ?? [],
       service_causality_paths: serviceCausalityPaths.length,
       service_causality_effects: serviceCausalityEffects,
+      affected_journeys: affectedJourneyNames,
+      affected_journey_steps: affectedJourneySteps.length,
+      user_visible_failure_modes: userVisibleFailureModes,
+      journey_missing_evidence: journeyMissingEvidence,
       architecture_impact_surfaces: architectureImpactMap.length,
       architecture_confidence_gaps: architectureConfidenceGaps.map(safeText),
       architecture_evidence_gap_ids: architectureEvidenceGapIds,
@@ -20132,6 +20869,11 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
       review.dependency_runtime_impact?.verification_focus.length ?? 0,
     service_causality_path_count: serviceCausality.length,
     service_causality_effect_count: serviceCausalityEffects.length,
+    affected_journey_count: review.review_evidence_summary.affected_journeys.length,
+    affected_journey_step_count: review.review_evidence_summary.affected_journey_steps,
+    user_visible_failure_mode_count:
+      review.review_evidence_summary.user_visible_failure_modes.length,
+    journey_missing_evidence_count: review.review_evidence_summary.journey_missing_evidence.length,
     affected_relationship_count: review.affected_relationships.length,
     architecture_impact_surface_count: review.architecture_impact_map.length,
     architecture_impact_component_surface_count: review.architecture_impact_map.filter(
@@ -20745,15 +21487,35 @@ function affectedFlowEntities(
       matchedChangedFiles,
       componentChangedFiles,
     });
+    const journey = flowJourneySummaryData(flow);
+    const affectedSteps = affectedJourneyStepsForChangedFiles(flow, matchedChangedFiles);
+    const missingEvidence = unique([
+      ...(journey?.missing_evidence ?? []),
+      ...affectedSteps.flatMap((step) => step.missing_evidence),
+      ...(flowStringArray(flow, 'tests').length === 0
+        ? ['No directly linked tests were detected for this affected journey.']
+        : []),
+    ]).map(safeText);
     return [
       {
         id: safeText(flow.id),
         name: safeText(flow.name),
+        ...(journey !== undefined
+          ? { journey_name: journey.name, journey_confidence: journey.confidence }
+          : {}),
         kind: flowKind(flow),
         ...reviewRouteFlowFields(flow),
         confidence: flow.confidence,
         score: asFlowConfidenceScore(flow),
         entrypoints: reviewFlowEntrypointLabels(flow),
+        affected_steps: affectedSteps,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').map(safeText),
+        user_visible_failure_modes: userVisibleFailureModesForFlow({
+          flow,
+          affectedSteps,
+          matchedChangedFiles,
+        }),
+        missing_evidence: missingEvidence,
         changed_files: matchedChangedFiles.map(safeText),
         components: flowComponents.map(safeText),
         services: flowServices.map(safeText),
@@ -20767,6 +21529,67 @@ function affectedFlowEntities(
     ];
   });
   return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function affectedJourneyStepsForChangedFiles(
+  flow: BrainEntity,
+  changedFiles: readonly string[],
+): FlowJourneyStep[] {
+  const changedFileSet = new Set(changedFiles);
+  const matched = safeFlowJourneySteps(flow).filter((step) =>
+    [...step.files, ...step.configs, ...step.tests].some((file) => changedFileSet.has(file)),
+  );
+  if (matched.length > 0) return matched;
+  return safeFlowJourneySteps(flow)
+    .filter((step) => step.type === 'trigger')
+    .slice(0, 1);
+}
+
+function userVisibleFailureModesForFlow(params: {
+  readonly flow: BrainEntity;
+  readonly affectedSteps: readonly FlowJourneyStep[];
+  readonly matchedChangedFiles: readonly string[];
+}): string[] {
+  const journeyName = flowJourneySummaryData(params.flow)?.name ?? params.flow.name;
+  const stepTypes = new Set(params.affectedSteps.map((step) => step.type));
+  return unique([
+    ...(stepTypes.has('validation_auth')
+      ? [`${journeyName} can reject valid users, admit invalid users, or break protected access.`]
+      : []),
+    ...(stepTypes.has('read_write_storage')
+      ? [`${journeyName} can read stale data, fail writes, or corrupt persisted state.`]
+      : []),
+    ...(stepTypes.has('external_service_call')
+      ? [
+          `${journeyName} can fail when an external provider contract, token, or network surface changes.`,
+        ]
+      : []),
+    ...(stepTypes.has('rendering_response')
+      ? [
+          `${journeyName} can render the wrong UI, return the wrong response, or break route output.`,
+        ]
+      : []),
+    ...(stepTypes.has('background_job_async')
+      ? [`${journeyName} can drop, delay, or duplicate background processing.`]
+      : []),
+    ...(stepTypes.has('business_logic')
+      ? [`${journeyName} can change user-visible decisions, calculations, or state transitions.`]
+      : []),
+    ...(stepTypes.has('runtime_config')
+      ? [
+          `${journeyName} can break through runtime config, routing, environment, build, or deployment drift.`,
+        ]
+      : []),
+    ...(stepTypes.has('test_coverage')
+      ? [`${journeyName} confidence changed because linked test evidence changed.`]
+      : []),
+    ...flowStringArray(params.flow, 'failure_modes').slice(0, 4),
+    ...(params.matchedChangedFiles.length > 0
+      ? [
+          `Review ${params.matchedChangedFiles.slice(0, 4).join(', ')} before relying on this journey.`,
+        ]
+      : []),
+  ]).map(safeText);
 }
 
 type FlowEvidenceCategory =
@@ -20783,14 +21606,25 @@ function affectedFlowReasons(params: {
   readonly matchedChangedFiles: readonly string[];
   readonly componentChangedFiles: readonly string[];
 }): string[] {
+  const journey = flowJourneySummaryData(params.flow);
   const routeLabel = reviewFlowDescriptionLabel({
     id: params.flow.id,
     name: params.flow.name,
+    ...(journey !== undefined
+      ? {
+          journey_name: journey.name,
+          journey_confidence: journey.confidence,
+        }
+      : {}),
     kind: flowKind(params.flow),
     ...reviewRouteFlowFields(params.flow),
     confidence: params.flow.confidence,
     score: asFlowConfidenceScore(params.flow),
     entrypoints: reviewFlowEntrypointLabels(params.flow),
+    affected_steps: [],
+    runtime_surfaces: flowStringArray(params.flow, 'runtime_surfaces'),
+    user_visible_failure_modes: [],
+    missing_evidence: flowJourneySummaryData(params.flow)?.missing_evidence ?? [],
     changed_files: [],
     components: flowStringArray(params.flow, 'components'),
     services: flowStringArray(params.flow, 'services'),
@@ -21155,11 +21989,12 @@ function routeEvidenceCategoryFromReason(reason: string): FlowEvidenceCategory |
 }
 
 function reviewFlowDescriptionLabel(flow: AffectedFlowData): string {
+  const label = flow.journey_name ?? flow.name;
   if (flow.route_path !== undefined) {
     const routeType = flow.route_type ?? flow.kind;
-    return `${flow.route_path} route flow (${routeType})`;
+    return `${label} (${flow.route_path} ${routeType})`;
   }
-  return flow.name;
+  return label;
 }
 
 function mergeStrings(value: unknown, additions: readonly string[]): string[] {
@@ -21189,21 +22024,26 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Service Causality</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Journey</th><th>Affected Steps</th><th>User-Visible Risk</th><th>Runtime Surfaces</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Tests / Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
-        <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
-        <td>${renderList(flow.entrypoints)}</td>
+        <td><strong>${htmlEscape(flow.journey_name ?? flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
+        <td>${renderList(flow.affected_steps.map(formatJourneyStepForReview))}</td>
+        <td>${renderList(flow.user_visible_failure_modes)}</td>
+        <td>${renderList(flow.runtime_surfaces)}</td>
         <td>${renderList(flow.changed_files)}</td>
         <td>${renderList(flow.components)}</td>
         <td>${renderList(flow.services)}</td>
-        <td>${renderList(flow.service_causality.map(formatFlowServiceCausality))}</td>
-        <td>${renderList(flow.tests)}</td>
-        <td>${renderList(flow.configs)}</td>
+        <td>${renderList([...flow.tests, ...flow.configs, ...flow.missing_evidence])}</td>
         <td>${htmlEscape(flow.confidence)} · ${flow.score}</td>
       </tr>`,
     )
     .join('')}</tbody></table>`;
+}
+
+function formatJourneyStepForReview(step: FlowJourneyStep): string {
+  const files = step.files.length === 0 ? 'no files' : step.files.slice(0, 3).join(', ');
+  return `${step.label}: ${files} (${step.confidence})`;
 }
 
 function renderAffectedServiceRows(services: readonly ReviewAffectedServiceData[]): string {
@@ -21258,7 +22098,9 @@ function renderDependencyRuntimeImpact(impact: ReviewDependencyRuntimeImpactData
 function reviewFlowTableMeta(flow: AffectedFlowData): string {
   const route =
     flow.route_path !== undefined ? ` · ${flow.route_path} ${flow.route_type ?? 'route'}` : '';
-  return `${flow.id} · ${flow.kind}${route}`;
+  const journey =
+    flow.journey_confidence === undefined ? '' : ` · journey ${flow.journey_confidence}`;
+  return `${flow.id} · ${flow.kind}${route}${journey}`;
 }
 
 function renderAffectedComponentRows(

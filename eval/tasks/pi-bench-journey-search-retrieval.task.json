@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-journey-search-retrieval",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Journey-aware search retrieval benchmark seed",
+  "prompt": "Review a search repository change and verify that Rizz names the search query retrieval journey and explains affected retrieval/storage steps.",
+  "fixture": {
+    "root": "pi-bench-journey-search-retrieval",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-journey-search-retrieval\",\"scripts\":{\"dev\":\"tsx src/server.ts\",\"test\":\"vitest run\"},\"dependencies\":{\"express\":\"5.0.0\"},\"devDependencies\":{\"tsx\":\"^4.0.0\",\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { searchDocuments } from \"./search/search-repository.js\";\nconst app = express();\napp.get(\"/search\", (_req, res) => res.json(searchDocuments(\"rizz\")));\n"
+      },
+      {
+        "path": "src/search/search-repository.ts",
+        "contents": "const documents = new Map([[\"rizz\", \"Project Intelligence\"]]);\nexport function searchDocuments(query: string) {\n  if (!query) throw new Error(\"missing query\");\n  return documents.get(query) ?? null;\n}\n"
+      },
+      {
+        "path": "src/search/search-repository.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { searchDocuments } from \"./search-repository.js\";\nit(\"retrieves search results\", () => expect(searchDocuments(\"rizz\")).toBe(\"Project Intelligence\"));\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/search/search-repository.ts",
+          "contents": "const documents = new Map([[\"rizz\", \"Project Intelligence Engineering\"]]);\nexport function searchDocuments(query: string) {\n  if (!query.trim()) throw new Error(\"missing query\");\n  return documents.get(query) ?? null;\n}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/search/search-repository.ts"],
+      "affected_flows_include": ["flow:http--get--search--src--server.ts"],
+      "affected_tests_include": ["src/search/search-repository.test.ts"],
+      "minimum_affected_flows": 1,
+      "required_tests_include": ["vitest run"]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": ["journeys", "journey_steps_by_type", "contracts"],
+      "required_substrings": [
+        "Search query retrieval journey",
+        "search_retrieval",
+        "read_write_storage",
+        "test_coverage",
+        "flow:http--get--search--src--server.ts"
+      ]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_journey_count",
+        "affected_journey_step_count",
+        "user_visible_failure_mode_count"
+      ],
+      "required_substrings": ["\"affected_journey_count\"", "\"user_visible_failure_mode_count\""]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Search query retrieval journey",
+        "Read/write storage",
+        "User-Visible Risk",
+        "src/search/search-repository.test.ts"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Search route and repository evidence produce a search retrieval journey.",
+      "Repository changes map to retrieval/storage steps and user-visible failure modes."
+    ],
+    "fail": ["The search change is only reported as generic API or component evidence."]
+  }
+}

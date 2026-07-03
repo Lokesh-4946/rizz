@@ -64,6 +64,11 @@ configs, blast-radius reasons, required tests, findings, and forbidden secret-li
 JSON/report output. Review tasks also require `.rizz/research/review_eval.json`, which makes review
 quality measurable through deterministic finding counts, affected surface counts, evidence/test
 counts, risk, surgicality, review-readiness, and secret-safety/redaction indicators.
+Journey-aware review seeds additionally assert human-readable journey names, normalized journey
+steps, affected journey counts, user-visible failure-mode counts, and review HTML drilldown output
+for auth/login, upload/ingestion, search/retrieval, webhook/background, and deployment/config risk
+fixtures. These tasks measure whether Rizz can connect changed files to product journeys without
+adding provider calls or broad `rizz ask`.
 Dependency/runtime review tasks additionally assert `dependency_runtime_impact` for package/config
 diffs: changed manifests/configs, dependency entities, affected flows/tests/configs, runtime
 surfaces, focused verification, and the corresponding `review_eval` dependency-runtime count fields.
