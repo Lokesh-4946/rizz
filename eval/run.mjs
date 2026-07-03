@@ -247,6 +247,17 @@ function validateReviewAssertions(assertions) {
     'affected_flows_include',
     'affected_tests_include',
     'affected_configs_include',
+    'dependency_runtime_changed_files_include',
+    'dependency_runtime_package_manifests_include',
+    'dependency_runtime_lockfiles_include',
+    'dependency_runtime_config_files_include',
+    'dependency_runtime_dependency_entities_include',
+    'dependency_runtime_runtime_surfaces_include',
+    'dependency_runtime_affected_components_include',
+    'dependency_runtime_affected_services_include',
+    'dependency_runtime_affected_flows_include',
+    'dependency_runtime_affected_tests_include',
+    'dependency_runtime_affected_configs_include',
     'architecture_impact_surfaces_include',
     'architecture_what_breaks_include',
     'architecture_evidence_gaps_include',
@@ -263,6 +274,9 @@ function validateReviewAssertions(assertions) {
     'minimum_affected_services',
     'minimum_affected_flows',
     'minimum_affected_relationships',
+    'minimum_dependency_runtime_impacts',
+    'minimum_dependency_runtime_surfaces',
+    'minimum_dependency_runtime_verification_focus',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
   ]) {
@@ -1201,6 +1215,18 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const affectedConfigs = Array.isArray(evidenceSummary.affected_configs)
     ? evidenceSummary.affected_configs
     : [];
+  const dependencyRuntimeImpact = isRecord(review.dependency_runtime_impact)
+    ? review.dependency_runtime_impact
+    : undefined;
+  const dependencyRuntimeImpactCount = dependencyRuntimeImpact === undefined ? 0 : 1;
+  const dependencyRuntimeRuntimeSurfaces =
+    dependencyRuntimeImpact !== undefined
+      ? reviewArray(dependencyRuntimeImpact, 'runtime_surfaces')
+      : [];
+  const dependencyRuntimeVerificationFocus =
+    dependencyRuntimeImpact !== undefined
+      ? reviewArray(dependencyRuntimeImpact, 'verification_focus')
+      : [];
   const serviceCausalityPaths =
     typeof evidenceSummary.service_causality_paths === 'number'
       ? evidenceSummary.service_causality_paths
@@ -1242,6 +1268,86 @@ function assertReviewContract(task, repoDir, review, stdout) {
       'affected_services',
     ),
     ...assertIncludesAll(affectedFlowIds, assertions.affected_flows_include, 'affected_flows'),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'changed_files'),
+      assertions.dependency_runtime_changed_files_include,
+      'dependency_runtime_impact.changed_files',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'package_manifests'),
+      assertions.dependency_runtime_package_manifests_include,
+      'dependency_runtime_impact.package_manifests',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'lockfiles'),
+      assertions.dependency_runtime_lockfiles_include,
+      'dependency_runtime_impact.lockfiles',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'config_files'),
+      assertions.dependency_runtime_config_files_include,
+      'dependency_runtime_impact.config_files',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'dependency_entities'),
+      assertions.dependency_runtime_dependency_entities_include,
+      'dependency_runtime_impact.dependency_entities',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeRuntimeSurfaces,
+      assertions.dependency_runtime_runtime_surfaces_include,
+      'dependency_runtime_impact.runtime_surfaces',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_components'),
+      assertions.dependency_runtime_affected_components_include,
+      'dependency_runtime_impact.affected_components',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_services'),
+      assertions.dependency_runtime_affected_services_include,
+      'dependency_runtime_impact.affected_services',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_flows'),
+      assertions.dependency_runtime_affected_flows_include,
+      'dependency_runtime_impact.affected_flows',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_tests'),
+      assertions.dependency_runtime_affected_tests_include,
+      'dependency_runtime_impact.affected_tests',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_configs'),
+      assertions.dependency_runtime_affected_configs_include,
+      'dependency_runtime_impact.affected_configs',
+    ),
+    ...assertSubstringMatches(
+      dependencyRuntimeVerificationFocus,
+      assertions.dependency_runtime_verification_focus_include,
+      'dependency_runtime_impact.verification_focus',
+    ),
     ...assertIncludesAll(
       architectureImpactSurfaces,
       assertions.architecture_impact_surfaces_include,
@@ -1320,6 +1426,31 @@ function assertReviewContract(task, repoDir, review, stdout) {
     );
   }
   if (
+    assertions.minimum_dependency_runtime_impacts !== undefined &&
+    dependencyRuntimeImpactCount < assertions.minimum_dependency_runtime_impacts
+  ) {
+    errors.push(
+      `dependency_runtime_impact ${dependencyRuntimeImpactCount} below ${assertions.minimum_dependency_runtime_impacts}`,
+    );
+  }
+  if (
+    assertions.minimum_dependency_runtime_surfaces !== undefined &&
+    dependencyRuntimeRuntimeSurfaces.length < assertions.minimum_dependency_runtime_surfaces
+  ) {
+    errors.push(
+      `dependency_runtime_impact.runtime_surfaces ${dependencyRuntimeRuntimeSurfaces.length} below ${assertions.minimum_dependency_runtime_surfaces}`,
+    );
+  }
+  if (
+    assertions.minimum_dependency_runtime_verification_focus !== undefined &&
+    dependencyRuntimeVerificationFocus.length <
+      assertions.minimum_dependency_runtime_verification_focus
+  ) {
+    errors.push(
+      `dependency_runtime_impact.verification_focus ${dependencyRuntimeVerificationFocus.length} below ${assertions.minimum_dependency_runtime_verification_focus}`,
+    );
+  }
+  if (
     assertions.minimum_architecture_impact_surfaces !== undefined &&
     architectureImpactSurfaces.length < assertions.minimum_architecture_impact_surfaces
   ) {
@@ -1354,6 +1485,8 @@ function assertReviewContract(task, repoDir, review, stdout) {
       dependentComponents: dependentComponentIds.length,
       affectedServices: affectedServiceIds.length,
       affectedFlows: affectedFlowIds.length,
+      dependencyRuntimeImpacts: dependencyRuntimeImpactCount,
+      dependencyRuntimeSurfaces: dependencyRuntimeRuntimeSurfaces.length,
       serviceCausalityPaths,
       affectedRelationships: affectedRelationships.length,
       architectureImpactSurfaces: architectureImpactSurfaces.length,
@@ -1790,7 +1923,7 @@ function runPiBenchTasks(loadedTasks) {
             ? ''
             : ` | understanding tasks ${result.summary.understandingTasks}`;
         console.log(
-          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, services ${result.summary.affectedServices}, flows ${result.summary.affectedFlows}, service causality ${result.summary.serviceCausalityPaths}, relationships ${result.summary.affectedRelationships}${understanding}`,
+          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, services ${result.summary.affectedServices}, flows ${result.summary.affectedFlows}, dependency runtime ${result.summary.dependencyRuntimeImpacts}/${result.summary.dependencyRuntimeSurfaces}, service causality ${result.summary.serviceCausalityPaths}, relationships ${result.summary.affectedRelationships}${understanding}`,
         );
       } else {
         scoreTotal += result.summary.readinessScore;
