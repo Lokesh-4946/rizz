@@ -2227,6 +2227,16 @@ describe('project brain generation', () => {
             affected_tests: string[];
             affected_configs: string[];
             dependent_components: string[];
+            risk_reasoning: {
+              risk_level: string;
+              risk_score: number;
+              criticality: string;
+              coupling_level: string;
+              tradeoffs: string[];
+              risky_surfaces: string[];
+              review_focus: string[];
+              reasons: string[];
+            };
             reasons: string[];
           }>;
         };
@@ -2364,6 +2374,21 @@ describe('project brain generation', () => {
           affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
           affected_configs: expect.arrayContaining(['packages/cli/package.json']),
           dependent_components: [],
+          risk_reasoning: expect.objectContaining({
+            risk_level: 'high',
+            criticality: 'high',
+            coupling_level: 'medium',
+            tradeoffs: expect.arrayContaining([expect.stringContaining('entrypoints')]),
+            risky_surfaces: expect.arrayContaining([
+              'high-criticality surface',
+              'configuration-backed surface',
+            ]),
+            review_focus: expect.arrayContaining([
+              expect.stringContaining('Verify 2 reconstructed flow'),
+              expect.stringContaining('linked test artifact'),
+            ]),
+            reasons: expect.arrayContaining(['criticality:high', 'tests:1']),
+          }),
           reasons: expect.arrayContaining([
             'boundary_type:entrypoint',
             'flow_links:2',
@@ -2396,6 +2421,7 @@ describe('project brain generation', () => {
       expect(report).toContain('Architecture Assumptions');
       expect(report).toContain('Impact Map');
       expect(report).toContain('2 impact surface(s)');
+      expect(report).toContain('high risk (');
       expect(report).toContain('Confidence Debt');
       expect(report).toContain('Design Pressures');
       expect(report).toContain('Coupling Rationale');
@@ -3060,6 +3086,15 @@ describe('project brain generation', () => {
             confidence: string;
             evidence_ids: string[];
             what_breaks: string[];
+            risk_reasoning: {
+              risk_level: string;
+              risk_score: number;
+              criticality: string;
+              tradeoffs: string[];
+              risky_surfaces: string[];
+              review_focus: string[];
+              reasons: string[];
+            };
             reasons: string[];
           }>;
         };
@@ -3123,6 +3158,21 @@ describe('project brain generation', () => {
           what_breaks: expect.arrayContaining([
             expect.stringContaining('Changing route /orders can alter POST request handling'),
           ]),
+          risk_reasoning: expect.objectContaining({
+            risk_level: 'high',
+            criticality: 'high',
+            tradeoffs: expect.arrayContaining([
+              expect.stringContaining('Service causality makes side effects visible'),
+            ]),
+            risky_surfaces: expect.arrayContaining([
+              'configuration-backed surface',
+              'service-side-effect surface',
+            ]),
+            review_focus: expect.arrayContaining([
+              expect.stringContaining('service side-effect signal'),
+            ]),
+            reasons: expect.arrayContaining(['service_effects:1']),
+          }),
           reasons: expect.arrayContaining([
             'framework:express-fastify-http',
             'route_type:POST',
@@ -4758,6 +4808,14 @@ describe('project brain generation', () => {
           what_breaks: expect.arrayContaining([
             expect.stringContaining('Changing route /docs/[slug] can alter page rendering'),
           ]),
+          risk_reasoning: expect.objectContaining({
+            risk_level: expect.stringMatching(/medium|high/),
+            risky_surfaces: expect.arrayContaining(['configuration-backed surface']),
+            review_focus: expect.arrayContaining([
+              expect.stringContaining('linked test artifact'),
+              expect.stringContaining('linked config/dependency artifact'),
+            ]),
+          }),
           reasons: expect.arrayContaining(['changed_files:5', 'matched_flows:1']),
         }),
       );
@@ -4766,6 +4824,12 @@ describe('project brain generation', () => {
         architecture_what_breaks: expect.arrayContaining([
           expect.stringContaining('Changing route /docs/[slug] can alter page rendering'),
         ]),
+        architecture_risk_reasoning: expect.arrayContaining([
+          expect.stringContaining(
+            'impact:flow:nextjs--page--docs---slug---src--app--docs---slug---page.tsx',
+          ),
+          expect.stringContaining('linked config/dependency artifact'),
+        ]),
         affected_tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
         affected_configs: expect.arrayContaining(['next.config.ts', 'package.json']),
       });
@@ -4773,6 +4837,8 @@ describe('project brain generation', () => {
         architecture_impact_route_surface_count: expect.any(Number),
         architecture_what_breaks_note_count:
           result.value.review.review_evidence_summary.architecture_what_breaks.length,
+        architecture_risk_reasoning_count:
+          result.value.review.review_evidence_summary.architecture_risk_reasoning.length,
         architecture_evidence_gap_count:
           result.value.review.review_evidence_summary.architecture_evidence_gap_ids.length,
         architecture_confidence_gap_count:
@@ -5855,8 +5921,8 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'ask.html'), 'utf8');
       expect(report).toContain('rizz ask');
       expect(report).toContain('local Project Intelligence');
-      expect(report).not.toContain('v1');
-      expect(report).not.toContain('v2');
+      expect(report).not.toMatch(/\bv1\b/i);
+      expect(report).not.toMatch(/\bv2\b/i);
     });
   });
 
@@ -6655,6 +6721,17 @@ describe('project brain generation', () => {
           what_breaks: expect.arrayContaining([
             expect.stringContaining('component:packages--cli changes can affect'),
           ]),
+          risk_reasoning: expect.objectContaining({
+            risk_level: 'medium',
+            risky_surfaces: expect.arrayContaining([
+              'high-criticality surface',
+              'configuration-backed surface',
+            ]),
+            review_focus: expect.arrayContaining([
+              expect.stringContaining('Verify 1 reconstructed flow'),
+              expect.stringContaining('linked config/dependency artifact'),
+            ]),
+          }),
           reasons: expect.arrayContaining(['changed_files:1', 'matched_flows:1']),
         }),
       );
@@ -6666,6 +6743,10 @@ describe('project brain generation', () => {
         architecture_impact_surfaces: 1,
         architecture_what_breaks: expect.arrayContaining([
           expect.stringContaining('component:packages--cli changes can affect'),
+        ]),
+        architecture_risk_reasoning: expect.arrayContaining([
+          expect.stringContaining('impact:component:packages--cli:medium'),
+          expect.stringContaining('linked config/dependency artifact'),
         ]),
         affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
         affected_configs: expect.arrayContaining(['packages/cli/package.json']),
@@ -6695,6 +6776,8 @@ describe('project brain generation', () => {
         architecture_impact_route_surface_count: 0,
         architecture_what_breaks_note_count:
           result.value.review.review_evidence_summary.architecture_what_breaks.length,
+        architecture_risk_reasoning_count:
+          result.value.review.review_evidence_summary.architecture_risk_reasoning.length,
         architecture_evidence_gap_count:
           result.value.review.review_evidence_summary.architecture_evidence_gap_ids.length,
         architecture_confidence_gap_count:
@@ -6766,6 +6849,7 @@ describe('project brain generation', () => {
         architecture_impact_component_surface_count: number;
         architecture_impact_route_surface_count: number;
         architecture_what_breaks_note_count: number;
+        architecture_risk_reasoning_count: number;
         architecture_evidence_gap_count: number;
         architecture_confidence_gap_count: number;
         architecture_affected_test_count: number;
@@ -6793,6 +6877,8 @@ describe('project brain generation', () => {
         architecture_impact_route_surface_count: 0,
         architecture_what_breaks_note_count:
           result.value.review.review_evidence_summary.architecture_what_breaks.length,
+        architecture_risk_reasoning_count:
+          result.value.review.review_evidence_summary.architecture_risk_reasoning.length,
         architecture_evidence_gap_count:
           result.value.review.review_evidence_summary.architecture_evidence_gap_ids.length,
         architecture_confidence_gap_count:

@@ -249,6 +249,7 @@ interface ArchitectureConfidenceDebt {
 }
 
 type ArchitectureImpactSurfaceType = 'component' | 'route';
+type ArchitectureImpactRiskLevel = 'low' | 'medium' | 'high';
 
 interface ArchitectureServiceCausalityReasoning {
   readonly total_paths: number;
@@ -296,6 +297,18 @@ interface ArchitectureImpactEntry {
   readonly evidence_ids: readonly string[];
   readonly evidence_gap_ids: readonly string[];
   readonly what_breaks: readonly string[];
+  readonly risk_reasoning: ArchitectureImpactRiskReasoning;
+  readonly reasons: readonly string[];
+}
+
+interface ArchitectureImpactRiskReasoning {
+  readonly risk_level: ArchitectureImpactRiskLevel;
+  readonly risk_score: number;
+  readonly criticality: string;
+  readonly coupling_level: ComponentIntelligence['coupling']['level'];
+  readonly tradeoffs: readonly string[];
+  readonly risky_surfaces: readonly string[];
+  readonly review_focus: readonly string[];
   readonly reasons: readonly string[];
 }
 
@@ -918,6 +931,7 @@ interface ReviewEvalArtifactData {
   readonly architecture_impact_component_surface_count: number;
   readonly architecture_impact_route_surface_count: number;
   readonly architecture_what_breaks_note_count: number;
+  readonly architecture_risk_reasoning_count: number;
   readonly architecture_evidence_gap_count: number;
   readonly architecture_confidence_gap_count: number;
   readonly verification_evidence_count: number;
@@ -1076,6 +1090,7 @@ interface ReviewEvidenceSummaryData {
   readonly architecture_confidence_gaps: readonly string[];
   readonly architecture_evidence_gap_ids: readonly string[];
   readonly architecture_what_breaks: readonly string[];
+  readonly architecture_risk_reasoning: readonly string[];
   readonly affected_tests: readonly string[];
   readonly affected_configs: readonly string[];
   readonly verification_evidence_ids: readonly string[];
@@ -1104,6 +1119,7 @@ interface ReviewArchitectureImpactData {
   readonly evidence_ids: readonly string[];
   readonly evidence_gap_ids: readonly string[];
   readonly what_breaks: readonly string[];
+  readonly risk_reasoning: ArchitectureImpactRiskReasoning;
   readonly reasons: readonly string[];
 }
 
@@ -8789,6 +8805,93 @@ function directDependentComponents(params: {
   ).map(safeText);
 }
 
+function architectureImpactRiskLevel(score: number): ArchitectureImpactRiskLevel {
+  if (score >= 8) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function architectureImpactRiskReasoning(params: {
+  readonly entityId: string;
+  readonly criticality: string;
+  readonly criticalityScore: number;
+  readonly couplingLevel: ComponentIntelligence['coupling']['level'];
+  readonly couplingScore: number;
+  readonly affectedFlows: readonly string[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+  readonly dependentComponents: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidenceGapIds: readonly string[];
+  readonly tradeoffs: readonly string[];
+  readonly riskySeams: readonly string[];
+  readonly serviceCausality: readonly FlowServiceCausality[];
+}): ArchitectureImpactRiskReasoning {
+  const serviceEffectCount = unique(params.serviceCausality.flatMap((item) => item.effects)).length;
+  const rawScore =
+    params.couplingScore +
+    Math.min(3, Math.floor(params.criticalityScore / 3)) +
+    Math.min(2, params.dependentComponents.length) +
+    Math.min(2, params.affectedConfigs.length) +
+    Math.min(2, serviceEffectCount) +
+    (params.affectedTests.length === 0 ? 2 : 0) +
+    (params.confidence !== 'verified' ? 1 : 0) +
+    (params.evidenceGapIds.length > 0 ? 1 : 0);
+  const riskScore = Math.min(10, rawScore);
+  const riskySurfaces = unique([
+    ...(params.criticality === 'high' ? ['high-criticality surface'] : []),
+    ...(params.couplingLevel === 'high' ? ['high-coupling surface'] : []),
+    ...(params.affectedTests.length === 0 ? ['untested surface'] : []),
+    ...(params.affectedConfigs.length > 0 ? ['configuration-backed surface'] : []),
+    ...(params.dependentComponents.length > 0 ? ['consumer-dependent surface'] : []),
+    ...(params.confidence !== 'verified' ? ['confidence-gap surface'] : []),
+    ...(params.evidenceGapIds.length > 0 ? ['evidence-gap surface'] : []),
+    ...(serviceEffectCount > 0 ? ['service-side-effect surface'] : []),
+    ...params.riskySeams,
+  ]).map(safeText);
+  const reviewFocus = unique([
+    ...(params.dependentComponents.length > 0
+      ? [`Review ${params.dependentComponents.length} dependent component(s).`]
+      : []),
+    ...(params.affectedFlows.length > 0
+      ? [`Verify ${params.affectedFlows.length} reconstructed flow(s).`]
+      : []),
+    ...(params.affectedTests.length > 0
+      ? [`Run or inspect ${params.affectedTests.length} linked test artifact(s).`]
+      : ['Add or justify focused test evidence for this surface.']),
+    ...(params.affectedConfigs.length > 0
+      ? [`Inspect ${params.affectedConfigs.length} linked config/dependency artifact(s).`]
+      : []),
+    ...(params.evidenceGapIds.length > 0
+      ? [`Close ${params.evidenceGapIds.length} architecture evidence gap(s).`]
+      : []),
+    ...(serviceEffectCount > 0
+      ? [`Check ${serviceEffectCount} service side-effect signal(s).`]
+      : []),
+  ]).map(safeText);
+  return {
+    risk_level: architectureImpactRiskLevel(riskScore),
+    risk_score: riskScore,
+    criticality: safeText(params.criticality),
+    coupling_level: params.couplingLevel,
+    tradeoffs: params.tradeoffs.map(safeText).slice(0, 8),
+    risky_surfaces: riskySurfaces.slice(0, 10),
+    review_focus: reviewFocus.slice(0, 10),
+    reasons: unique([
+      `entity:${safeText(params.entityId)}`,
+      `criticality:${safeText(params.criticality)}`,
+      `coupling:${params.couplingLevel}`,
+      `flows:${params.affectedFlows.length}`,
+      `tests:${params.affectedTests.length}`,
+      `configs:${params.affectedConfigs.length}`,
+      `dependent_components:${params.dependentComponents.length}`,
+      `confidence:${params.confidence}`,
+      `evidence_gaps:${params.evidenceGapIds.length}`,
+      `service_effects:${serviceEffectCount}`,
+    ]).map(safeText),
+  };
+}
+
 function componentImpactEntry(params: {
   readonly component: BrainEntity;
   readonly components: readonly BrainEntity[];
@@ -8833,6 +8936,10 @@ function componentImpactEntry(params: {
     component: params.component,
     componentFlows: params.componentFlows,
   });
+  const criticality = stringData(params.component, 'criticality') ?? 'unknown';
+  const criticalityScore = numberData(params.component, 'criticality_score') ?? 0;
+  const tradeoffs = stringArrayData(params.component, 'tradeoffs');
+  const riskySeams = stringArrayData(params.component, 'risky_seams');
   const whatBreaks = unique([
     ...stringArrayData(params.component, 'what_breaks_if_removed'),
     ...stringArrayData(params.component, 'failure_modes'),
@@ -8848,6 +8955,22 @@ function componentImpactEntry(params: {
         ]
       : []),
   ]).map(safeText);
+  const riskReasoning = architectureImpactRiskReasoning({
+    entityId: params.component.id,
+    criticality,
+    criticalityScore,
+    couplingLevel: coupling.level,
+    couplingScore: coupling.score,
+    affectedFlows,
+    affectedTests,
+    affectedConfigs,
+    dependentComponents,
+    confidence,
+    evidenceGapIds,
+    tradeoffs,
+    riskySeams,
+    serviceCausality: [],
+  });
   return {
     impact_id: `impact:${safeText(params.component.id)}`,
     surface_type: 'component',
@@ -8866,6 +8989,7 @@ function componentImpactEntry(params: {
     evidence_ids: evidenceIds,
     evidence_gap_ids: evidenceGapIds,
     what_breaks: whatBreaks,
+    risk_reasoning: riskReasoning,
     reasons: unique([
       `boundary_type:${stringData(params.component, 'boundary_type') ?? 'unknown'}`,
       `flow_links:${affectedFlows.length}`,
@@ -8875,6 +8999,28 @@ function componentImpactEntry(params: {
       `coupling:${coupling.level}`,
     ]).map(safeText),
   };
+}
+
+function tradeoffsForRouteImpact(flow: BrainEntity): string[] {
+  const configs = flowStringArray(flow, 'configs');
+  const components = flowStringArray(flow, 'components');
+  const serviceCausality = safeFlowServiceCausality(flow);
+  return unique([
+    'Explicit route mapping makes handler ownership visible, but behavior can still depend on imported components, services, and config.',
+    ...(configs.length > 0
+      ? ['Config-backed routes are easier to audit, but config changes can alter runtime behavior.']
+      : []),
+    ...(components.length > 1
+      ? [
+          'Cross-component routes improve reuse, but widen review scope across component boundaries.',
+        ]
+      : []),
+    ...(serviceCausality.length > 0
+      ? [
+          'Service causality makes side effects visible, but side-effect changes can break route behavior.',
+        ]
+      : []),
+  ]).map(safeText);
 }
 
 function routeCouplingLevel(flow: BrainEntity): ComponentIntelligence['coupling']['level'] {
@@ -8909,6 +9055,25 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
   const serviceCausality = safeFlowServiceCausality(flow);
   const couplingLevel = routeCouplingLevel(flow);
   const couplingScore = routeCouplingScore(flow);
+  const confidence = routeArchitectureConfidence(flow);
+  const confidenceScore = routeArchitectureScore(flow);
+  const evidenceGapIds = routeArchitectureGapIds(flow);
+  const riskReasoning = architectureImpactRiskReasoning({
+    entityId: flow.id,
+    criticality: serviceCausality.length > 0 || couplingLevel === 'high' ? 'high' : 'medium',
+    criticalityScore: serviceCausality.length > 0 || couplingLevel === 'high' ? 8 : 5,
+    couplingLevel,
+    couplingScore,
+    affectedFlows: [safeText(flow.id)],
+    affectedTests: tests,
+    affectedConfigs: configs,
+    dependentComponents: [],
+    confidence,
+    evidenceGapIds,
+    tradeoffs: tradeoffsForRouteImpact(flow),
+    riskySeams: [],
+    serviceCausality,
+  });
   return {
     impact_id: `impact:${safeText(flow.id)}`,
     surface_type: 'route',
@@ -8925,10 +9090,10 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
     dependent_components: [],
     coupling_level: couplingLevel,
     coupling_score: couplingScore,
-    confidence: routeArchitectureConfidence(flow),
-    confidence_score: routeArchitectureScore(flow),
+    confidence,
+    confidence_score: confidenceScore,
     evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
-    evidence_gap_ids: routeArchitectureGapIds(flow),
+    evidence_gap_ids: evidenceGapIds,
     what_breaks: unique([
       routeBreaks,
       ...configs.map(
@@ -8958,6 +9123,7 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
             `${item.service_id} reaches route ${routePath} without a linked flow step; inspect reachability before relying on this impact.`,
         ),
     ]).map(safeText),
+    risk_reasoning: riskReasoning,
     reasons: [
       `framework:${safeText(framework)}`,
       `route_type:${safeText(routeType)}`,
@@ -14709,7 +14875,12 @@ function renderArchitectureReasoning(value: unknown): string {
       : 0;
     const coupling =
       typeof impact.coupling_level === 'string' ? impact.coupling_level : 'unknown coupling';
-    return `${impactId}: ${surfaceType}, ${affectedFlows} flow(s), ${affectedTests} test(s), ${affectedConfigs} config(s), ${coupling} coupling`;
+    const riskReasoning = isRecord(impact.risk_reasoning) ? impact.risk_reasoning : {};
+    const riskLevel =
+      typeof riskReasoning.risk_level === 'string' ? riskReasoning.risk_level : 'unknown';
+    const riskScore =
+      typeof riskReasoning.risk_score === 'number' ? `${riskReasoning.risk_score}/10` : 'n/a';
+    return `${impactId}: ${surfaceType}, ${affectedFlows} flow(s), ${affectedTests} test(s), ${affectedConfigs} config(s), ${coupling} coupling, ${riskLevel} risk (${riskScore})`;
   });
   const deploymentLabels = [
     `flows: ${String(deploymentSummary.deployment_flow_count ?? 0)}`,
@@ -19126,9 +19297,59 @@ function parseArchitectureImpactSurfaceType(value: unknown): ArchitectureImpactS
   return 'component';
 }
 
+function parseArchitectureImpactRiskLevel(value: unknown): ArchitectureImpactRiskLevel {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
+  return 'low';
+}
+
 function numberRecordValue(value: Record<string, unknown>, key: string): number {
   const item = value[key];
   return typeof item === 'number' ? item : 0;
+}
+
+function parseArchitectureImpactRiskReasoning(params: {
+  readonly value: unknown;
+  readonly entityId: string;
+  readonly couplingLevel: ComponentIntelligence['coupling']['level'];
+  readonly couplingScore: number;
+  readonly affectedFlows: readonly string[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+  readonly dependentComponents: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidenceGapIds: readonly string[];
+}): ArchitectureImpactRiskReasoning {
+  if (isRecord(params.value)) {
+    return {
+      risk_level: parseArchitectureImpactRiskLevel(params.value.risk_level),
+      risk_score: numberRecordValue(params.value, 'risk_score'),
+      criticality:
+        typeof params.value.criticality === 'string'
+          ? safeText(params.value.criticality)
+          : 'unknown',
+      coupling_level: parseCouplingLevel(params.value.coupling_level),
+      tradeoffs: asStringArray(params.value.tradeoffs).map(safeText),
+      risky_surfaces: asStringArray(params.value.risky_surfaces).map(safeText),
+      review_focus: asStringArray(params.value.review_focus).map(safeText),
+      reasons: asStringArray(params.value.reasons).map(safeText),
+    };
+  }
+  return architectureImpactRiskReasoning({
+    entityId: params.entityId,
+    criticality: 'unknown',
+    criticalityScore: 0,
+    couplingLevel: params.couplingLevel,
+    couplingScore: params.couplingScore,
+    affectedFlows: params.affectedFlows,
+    affectedTests: params.affectedTests,
+    affectedConfigs: params.affectedConfigs,
+    dependentComponents: params.dependentComponents,
+    confidence: params.confidence,
+    evidenceGapIds: params.evidenceGapIds,
+    tradeoffs: [],
+    riskySeams: [],
+    serviceCausality: [],
+  });
 }
 
 function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactData | undefined {
@@ -19139,6 +19360,14 @@ function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactDa
   if (impactId === undefined || entityId === undefined || name === undefined) return undefined;
   const routePath = typeof entry.route_path === 'string' ? safeText(entry.route_path) : undefined;
   const routeType = typeof entry.route_type === 'string' ? safeText(entry.route_type) : undefined;
+  const affectedFlows = asStringArray(entry.affected_flows).map(safeText);
+  const affectedTests = asStringArray(entry.affected_tests).map(safeText);
+  const affectedConfigs = asStringArray(entry.affected_configs).map(safeText);
+  const dependentComponents = asStringArray(entry.dependent_components).map(safeText);
+  const couplingLevel = parseCouplingLevel(entry.coupling_level);
+  const couplingScore = numberRecordValue(entry, 'coupling_score');
+  const confidence = parseConfidence(entry.confidence);
+  const evidenceGapIds = asStringArray(entry.evidence_gap_ids).map(safeText);
   return {
     impact_id: impactId,
     surface_type: parseArchitectureImpactSurfaceType(entry.surface_type),
@@ -19149,18 +19378,30 @@ function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactDa
     matched_changed_files: [],
     matched_components: [],
     matched_flows: [],
-    affected_flows: asStringArray(entry.affected_flows).map(safeText),
+    affected_flows: affectedFlows,
     affected_files: asStringArray(entry.affected_files).map(safeText),
-    affected_tests: asStringArray(entry.affected_tests).map(safeText),
-    affected_configs: asStringArray(entry.affected_configs).map(safeText),
-    dependent_components: asStringArray(entry.dependent_components).map(safeText),
-    coupling_level: parseCouplingLevel(entry.coupling_level),
-    coupling_score: numberRecordValue(entry, 'coupling_score'),
-    confidence: parseConfidence(entry.confidence),
+    affected_tests: affectedTests,
+    affected_configs: affectedConfigs,
+    dependent_components: dependentComponents,
+    coupling_level: couplingLevel,
+    coupling_score: couplingScore,
+    confidence,
     confidence_score: numberRecordValue(entry, 'confidence_score'),
     evidence_ids: asStringArray(entry.evidence_ids).map(safeText),
-    evidence_gap_ids: asStringArray(entry.evidence_gap_ids).map(safeText),
+    evidence_gap_ids: evidenceGapIds,
     what_breaks: asStringArray(entry.what_breaks).map(safeText),
+    risk_reasoning: parseArchitectureImpactRiskReasoning({
+      value: entry.risk_reasoning,
+      entityId,
+      couplingLevel,
+      couplingScore,
+      affectedFlows,
+      affectedTests,
+      affectedConfigs,
+      dependentComponents,
+      confidence,
+      evidenceGapIds,
+    }),
     reasons: asStringArray(entry.reasons).map(safeText),
   };
 }
@@ -19366,6 +19607,12 @@ function buildReview(params: {
     .map((entry) => `${entry.impact_id}:${entry.confidence}`);
   const architectureWhatBreaks = unique(
     architectureImpactMap.flatMap((entry) => entry.what_breaks),
+  ).map(safeText);
+  const architectureRiskReasoning = unique(
+    architectureImpactMap.flatMap((entry) => [
+      `${entry.impact_id}:${entry.risk_reasoning.risk_level}:${entry.risk_reasoning.risky_surfaces.join(', ') || 'no risky surface flags'}`,
+      ...entry.risk_reasoning.review_focus.map((focus) => `${entry.impact_id}:${focus}`),
+    ]),
   ).map(safeText);
   const serviceCausalityPaths = affectedFlows.flatMap((flow) => flow.service_causality);
   const serviceCausalityEffects = unique(serviceCausalityPaths.flatMap((item) => item.effects)).map(
@@ -19667,6 +19914,8 @@ function buildReview(params: {
       description: safeText(
         `${architectureImpactMap.length} impact-map surface(s) connect the diff to likely breakage: ${
           architectureWhatBreaks.slice(0, 3).join(' ') || 'no what-breaks note recorded'
+        } Risk reasoning: ${
+          architectureRiskReasoning.slice(0, 2).join(' ') || 'no risk reasoning recorded'
         }.`,
       ),
       affected_files: unique(architectureImpactMap.flatMap((entry) => entry.matched_changed_files)),
@@ -19770,6 +20019,7 @@ function buildReview(params: {
       architecture_confidence_gaps: architectureConfidenceGaps.map(safeText),
       architecture_evidence_gap_ids: architectureEvidenceGapIds,
       architecture_what_breaks: architectureWhatBreaks,
+      architecture_risk_reasoning: architectureRiskReasoning,
       affected_tests: affectedTests,
       affected_configs: affectedConfigs,
       verification_evidence_ids: params.verificationEvidence.items.map((item) => item.id),
@@ -19892,6 +20142,8 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     ).length,
     architecture_what_breaks_note_count:
       review.review_evidence_summary.architecture_what_breaks.length,
+    architecture_risk_reasoning_count:
+      review.review_evidence_summary.architecture_risk_reasoning.length,
     architecture_evidence_gap_count:
       review.review_evidence_summary.architecture_evidence_gap_ids.length,
     architecture_confidence_gap_count:
