@@ -514,6 +514,7 @@ interface FlowIntelligence {
   readonly components: readonly string[];
   readonly files: readonly string[];
   readonly dependencies: readonly string[];
+  readonly runtime_surfaces: readonly string[];
   readonly services?: readonly string[];
   readonly service_causality?: readonly FlowServiceCausality[];
   readonly configs: readonly string[];
@@ -1224,6 +1225,7 @@ interface ExplainSummaryData {
     readonly service_causality: readonly FlowServiceCausality[];
     readonly files: readonly string[];
     readonly dependencies: readonly string[];
+    readonly runtime_surfaces: readonly string[];
     readonly tests: readonly string[];
     readonly configs: readonly string[];
     readonly risks: readonly FlowRisk[];
@@ -3550,6 +3552,55 @@ function flowNameForScript(scriptName: string, kind: FlowKind): string {
   return `${safeText(scriptName)} command`;
 }
 
+function commandRuntimeSurfaces(command: string): string[] {
+  const lower = command.toLowerCase();
+  return unique([
+    ...(lower.includes('node ') || lower.startsWith('node') ? ['runtime:node'] : []),
+    ...(lower.includes('tsx ') || lower.startsWith('tsx') || lower.includes('ts-node')
+      ? ['runtime:typescript-node']
+      : []),
+    ...(lower.includes('vitest') || lower.includes('jest') || lower.includes('pytest')
+      ? ['runtime:test-runner']
+      : []),
+    ...(lower.includes('next ') || lower.startsWith('next') ? ['runtime:nextjs'] : []),
+    ...(lower.includes('vite') ? ['runtime:vite'] : []),
+  ]);
+}
+
+function flowRuntimeSurfaces(params: {
+  readonly kind: FlowKind;
+  readonly framework?: string;
+  readonly routePath?: string;
+  readonly routeType?: string;
+  readonly scriptName?: string;
+  readonly command?: string;
+  readonly configs: readonly string[];
+  readonly serviceIds: readonly string[];
+  readonly services: readonly BrainEntity[];
+}): string[] {
+  let routeSurface: string | undefined;
+  if (params.routePath !== undefined) {
+    routeSurface =
+      params.routeType === undefined ? params.routePath : `${params.routeType} ${params.routePath}`;
+  }
+  const serviceSurfaces = params.serviceIds.flatMap((serviceId) => {
+    const service = params.services.find((item) => item.id === serviceId);
+    if (service === undefined) return [];
+    const runtime = stringData(service, 'runtime') ?? 'unknown';
+    const root = stringData(service, 'service_root') ?? service.name;
+    return [`service runtime:${runtime} ${root}`];
+  });
+  return unique([
+    `flow kind:${params.kind}`,
+    ...(params.framework === undefined ? [] : [`framework:${params.framework}`]),
+    ...(routeSurface === undefined ? [] : [`route:${routeSurface}`]),
+    ...(params.scriptName === undefined ? [] : [`package script:${params.scriptName}`]),
+    ...(params.command === undefined ? [] : commandRuntimeSurfaces(params.command)),
+    ...params.configs.map((config) => `config:${config}`),
+    ...serviceSurfaces,
+  ]);
+}
+
 function flowStepId(flowId: string, order: number): string {
   return `flow-step:${stableSlug(flowId)}:${String(order).padStart(3, '0')}`;
 }
@@ -4290,6 +4341,14 @@ function inferScriptFlow(params: {
     signals,
     confidenceReason: baseConfidence.reason,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind,
+    scriptName: params.scriptName,
+    command: params.command,
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   return {
     flow_id: flowId,
     name: flowNameForScript(params.scriptName, kind),
@@ -4299,6 +4358,7 @@ function inferScriptFlow(params: {
     components: unique([...relatedComponentIds]),
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
     services: serviceIds,
     service_causality: serviceCausality,
     configs,
@@ -4348,6 +4408,13 @@ function inferScriptFlow(params: {
       components: unique(relatedComponents.flatMap((component) => component.evidence_ids)),
       files: files.map(evidenceId),
       dependencies: [scriptEvidenceId],
+      runtime_surfaces: unique([
+        scriptEvidenceId,
+        ...configs.map(evidenceId),
+        ...serviceIds.flatMap(
+          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+        ),
+      ]),
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
@@ -4745,6 +4812,15 @@ function inferNextAppRouteFlow(params: {
     confidenceReason: baseConfidence.reason,
     routeContract,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind,
+    framework: 'nextjs-app-router',
+    routePath: params.routePath,
+    routeType: params.routeType,
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   return {
     flow_id: flowId,
     name: `Next.js ${safeText(params.routePath)} ${nextRouteTypeLabel(params.routeType)}`,
@@ -4757,6 +4833,7 @@ function inferNextAppRouteFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
     services: serviceIds,
     service_causality: serviceCausality,
     configs,
@@ -4792,6 +4869,13 @@ function inferNextAppRouteFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      runtime_surfaces: unique([
+        evId,
+        ...configs.map(evidenceId),
+        ...serviceIds.flatMap(
+          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+        ),
+      ]),
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
@@ -5335,6 +5419,15 @@ function inferHttpRouteDeclarationFlow(params: {
     signals,
     confidenceReason: baseConfidence.reason,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind: 'api',
+    framework: params.declaration.framework,
+    routePath: params.declaration.routePath,
+    routeType: params.declaration.method,
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   const routeEvidence = httpRouteDeclarationEvidence({
     file: params.file,
     declaration: params.declaration,
@@ -5351,6 +5444,7 @@ function inferHttpRouteDeclarationFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
     services: serviceIds,
     service_causality: serviceCausality,
     configs,
@@ -5378,6 +5472,13 @@ function inferHttpRouteDeclarationFlow(params: {
       ),
       files: unique([evId, ...reachableImportedFiles.map((file) => evidenceId(file.relativePath))]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      runtime_surfaces: unique([
+        evId,
+        ...configs.map(evidenceId),
+        ...serviceIds.flatMap(
+          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+        ),
+      ]),
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
@@ -5511,6 +5612,12 @@ function inferRouteFlow(params: {
     signals,
     confidenceReason: baseConfidence.reason,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind: 'api',
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   return {
     flow_id: flowId,
     name: `${safeText(basename(params.file.relativePath))} API flow`,
@@ -5520,6 +5627,7 @@ function inferRouteFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
     services: serviceIds,
     service_causality: serviceCausality,
     configs,
@@ -5555,6 +5663,13 @@ function inferRouteFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      runtime_surfaces: unique([
+        evId,
+        ...configs.map(evidenceId),
+        ...serviceIds.flatMap(
+          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
+        ),
+      ]),
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
       ),
@@ -6167,6 +6282,7 @@ const FLOW_UNDERSTANDING_FIELDS = [
   'components',
   'files',
   'dependencies',
+  'runtime_surfaces',
   'service_causality',
   'configs',
   'tests',
@@ -12837,6 +12953,12 @@ function buildResearchArtifacts(params: {
       flowStringArray(flow, 'entry_contract').length > 0 &&
       flowStringArray(flow, 'exit_contract').length > 0,
   );
+  const flowsWithRuntimeSurfaces = flows.filter(
+    (flow) => flowStringArray(flow, 'runtime_surfaces').length > 0,
+  );
+  const runtimeSurfacesCoveredByFlows = unique(
+    flows.flatMap((flow) => flowStringArray(flow, 'runtime_surfaces')),
+  );
   const flowCoveredFiles = new Set(flows.flatMap((flow) => flowStringArray(flow, 'files')));
   const activeSourceFiles = activeFileEntities.filter((file) => isSourceFile(file.name));
   const activeTestFiles = activeFileEntities.filter((file) => isTestPath(file.name));
@@ -13018,6 +13140,7 @@ function buildResearchArtifacts(params: {
         route_type: stringData(flow, 'route_type'),
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
         tests: flowStringArray(flow, 'tests'),
         configs: flowStringArray(flow, 'configs'),
         evidence_ids: flow.evidence_ids.length,
@@ -13151,11 +13274,14 @@ function buildResearchArtifacts(params: {
       flows_with_tests: flowsWithTests.length,
       flows_without_tests: flowsWithoutTests.length,
       flows_with_contracts: flowsWithContracts.length,
+      flows_with_runtime_surfaces: flowsWithRuntimeSurfaces.length,
       flow_steps: flowStepCount,
       mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
         .length,
       mapped_services: unique(flows.flatMap((flow) => flowStringArray(flow, 'services'))).length,
       mapped_files: flowCoveredFiles.size,
+      runtime_surface_count: runtimeSurfacesCoveredByFlows.length,
+      runtime_surfaces: runtimeSurfacesCoveredByFlows,
       entrypoints: entrypoints.length,
       entrypoints_mapped_to_components: entrypointsWithComponents.length,
       average_confidence: averageFlowConfidence,
@@ -13180,6 +13306,7 @@ function buildResearchArtifacts(params: {
         state_transitions: flowStringArray(flow, 'state_transitions'),
         failure_modes: flowStringArray(flow, 'failure_modes'),
         required_tests: flowStringArray(flow, 'required_tests'),
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
         services: flowStringArray(flow, 'services'),
         service_causality: safeFlowServiceCausality(flow),
         confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
@@ -13225,6 +13352,7 @@ function buildResearchArtifacts(params: {
         flows.length,
       ),
       contract_backed_flow_ratio: ratio(flowsWithContracts.length, flows.length),
+      runtime_surface_coverage_ratio: ratio(flowsWithRuntimeSurfaces.length, flows.length),
       source_file_coverage_ratio: ratio(
         activeSourceFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
         activeSourceFiles.length,
@@ -13241,11 +13369,13 @@ function buildResearchArtifacts(params: {
         flows.flatMap((flow) => flowStringArray(flow, 'components')),
       ),
       files_covered_by_flows: unique(flows.flatMap((flow) => flowStringArray(flow, 'files'))),
+      runtime_surfaces_covered_by_flows: runtimeSurfacesCoveredByFlows,
       flows: flows.map((flow) => ({
         id: flow.id,
         kind: stringData(flow, 'kind') ?? 'unknown',
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').length,
         services: flowStringArray(flow, 'services').length,
         service_causality: safeFlowServiceCausality(flow).length,
         tests: flowStringArray(flow, 'tests').length,
@@ -13327,6 +13457,7 @@ async function writeFlowMirrors(
       route_type: stringData(flow, 'route_type'),
       file: `.rizz/brain/flows/${flowMirrorFileName(flow)}`,
       entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
+      runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
       components: flowStringArray(flow, 'components').length,
       services: flowStringArray(flow, 'services').length,
       files: flowStringArray(flow, 'files').length,
@@ -13413,6 +13544,7 @@ function buildLatest(params: {
     state_transitions: flowStringArray(flow, 'state_transitions'),
     failure_modes: flowStringArray(flow, 'failure_modes'),
     required_tests: flowStringArray(flow, 'required_tests'),
+    runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
     confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
     services: flowStringArray(flow, 'services'),
     confidence: flow.confidence,
@@ -18130,6 +18262,7 @@ function buildFlowExplanation(params: {
   const services = flowStringArray(target, 'services').map(safeText);
   const files = unique([...flowStringArray(target, 'files'), ...target.source_files]).map(safeText);
   const dependencies = flowStringArray(target, 'dependencies').map(safeText);
+  const runtimeSurfaces = flowStringArray(target, 'runtime_surfaces').map(safeText);
   const configs = flowStringArray(target, 'configs').map(safeText);
   const tests = flowStringArray(target, 'tests').map(safeText);
   const entryContract = flowStringArray(target, 'entry_contract').map(safeText);
@@ -18206,7 +18339,7 @@ function buildFlowExplanation(params: {
     )} flow reconstructed from local static evidence. It is not a runtime trace.`,
     responsibilities: unique([
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
-      `Covers ${components.length} component(s), ${services.length} service(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
       ...serviceCausality.map((item) => item.cause),
       ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
@@ -18277,6 +18410,7 @@ function buildFlowExplanation(params: {
       service_causality: serviceCausality,
       files,
       dependencies,
+      runtime_surfaces: runtimeSurfaces,
       tests,
       configs,
       risks: flowRisksForTarget,
@@ -18781,6 +18915,9 @@ function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
         explanation.flow.components,
       )}</article>
       <article class="card"><h2>Flow Services</h2>${renderList(explanation.flow.services)}</article>
+      <article class="card"><h2>Runtime Surfaces</h2>${renderList(
+        explanation.flow.runtime_surfaces,
+      )}</article>
       <article class="card"><h2>Service Causality</h2>${renderList(
         explanation.flow.service_causality.map(formatFlowServiceCausality),
       )}</article>

@@ -2056,6 +2056,7 @@ describe('project brain generation', () => {
             entrypoints?: Array<{ component_id?: string }>;
             components?: string[];
             files?: string[];
+            runtime_surfaces?: string[];
             tests?: string[];
             configs?: string[];
             steps?: Array<{ type: string; path: string }>;
@@ -2079,6 +2080,14 @@ describe('project brain generation', () => {
       );
       expect(startFlow?.data?.tests).toEqual(['packages/cli/src/index.test.ts']);
       expect(startFlow?.data?.configs).toContain('packages/cli/package.json');
+      expect(startFlow?.data?.runtime_surfaces).toEqual(
+        expect.arrayContaining([
+          'flow kind:cli',
+          'package script:start',
+          'runtime:node',
+          'config:packages/cli/package.json',
+        ]),
+      );
       expect(startFlow?.data?.steps).toContainEqual(
         expect.objectContaining({ type: 'function', path: 'packages/cli/src/local.ts' }),
       );
@@ -2103,11 +2112,17 @@ describe('project brain generation', () => {
 
       const flowCoverage = await readJson<{
         entrypoint_component_coverage_ratio: number;
+        runtime_surface_coverage_ratio: number;
+        runtime_surfaces_covered_by_flows: string[];
         source_file_coverage_ratio: number;
         test_file_coverage_ratio: number;
         config_file_coverage_ratio: number;
       }>(join(result.value.researchDir, 'flow_coverage.json'));
       expect(flowCoverage.entrypoint_component_coverage_ratio).toBe(1);
+      expect(flowCoverage.runtime_surface_coverage_ratio).toBe(1);
+      expect(flowCoverage.runtime_surfaces_covered_by_flows).toEqual(
+        expect.arrayContaining(['package script:start', 'runtime:node']),
+      );
       expect(flowCoverage.source_file_coverage_ratio).toBe(1);
       expect(flowCoverage.test_file_coverage_ratio).toBe(1);
       expect(flowCoverage.config_file_coverage_ratio).toBe(1);
@@ -2469,6 +2484,7 @@ describe('project brain generation', () => {
             state_transitions?: string[];
             failure_modes?: string[];
             required_tests?: string[];
+            runtime_surfaces?: string[];
             confidence_reasons?: string[];
             field_evidence?: Record<string, string[]>;
           };
@@ -2501,6 +2517,10 @@ describe('project brain generation', () => {
           'state/session/cache/database side-effect coverage',
           'response/output contract coverage',
         ]),
+        runtime_surfaces: expect.arrayContaining([
+          'flow kind:api',
+          'config:packages/api/package.json',
+        ]),
         confidence_reasons: expect.arrayContaining([
           'Entrypoint evidence is recorded.',
           'Validation evidence is recorded.',
@@ -2518,19 +2538,30 @@ describe('project brain generation', () => {
         required_tests: expect.arrayContaining([
           'evidence:file-packages--api--src--routes--createsession.route.test.ts',
         ]),
+        runtime_surfaces: expect.arrayContaining([
+          'evidence:file-packages--api--src--routes--createsession.route.ts',
+          'evidence:file-packages--api--package.json',
+        ]),
       });
 
       const flowUnderstanding = await readJson<{
         flows_with_contracts: number;
+        flows_with_runtime_surfaces: number;
+        runtime_surfaces: string[];
         contracts: Array<{
           id: string;
           entry_contract: string[];
           exit_contract: string[];
           side_effects: string[];
           required_tests: string[];
+          runtime_surfaces: string[];
         }>;
       }>(join(result.value.researchDir, 'flow_understanding.json'));
       expect(flowUnderstanding.flows_with_contracts).toBeGreaterThan(0);
+      expect(flowUnderstanding.flows_with_runtime_surfaces).toBeGreaterThan(0);
+      expect(flowUnderstanding.runtime_surfaces).toEqual(
+        expect.arrayContaining(['config:packages/api/package.json', 'flow kind:api']),
+      );
       expect(flowUnderstanding.contracts).toContainEqual(
         expect.objectContaining({
           id: flowId,
@@ -2538,20 +2569,28 @@ describe('project brain generation', () => {
             'State/session/cache/database or filesystem side effect inferred from source.',
           ]),
           required_tests: expect.arrayContaining(['validation failure coverage']),
+          runtime_surfaces: expect.arrayContaining(['config:packages/api/package.json']),
         }),
       );
 
       const flowCoverage = await readJson<{
         contract_backed_flow_ratio: number;
+        runtime_surface_coverage_ratio: number;
+        runtime_surfaces_covered_by_flows: string[];
         flows: Array<{
           id: string;
           entry_contract: number;
           exit_contract: number;
           side_effects: number;
           required_tests: number;
+          runtime_surfaces: number;
         }>;
       }>(join(result.value.researchDir, 'flow_coverage.json'));
       expect(flowCoverage.contract_backed_flow_ratio).toBeGreaterThan(0);
+      expect(flowCoverage.runtime_surface_coverage_ratio).toBeGreaterThan(0);
+      expect(flowCoverage.runtime_surfaces_covered_by_flows).toEqual(
+        expect.arrayContaining(['config:packages/api/package.json', 'flow kind:api']),
+      );
       expect(flowCoverage.flows).toContainEqual(
         expect.objectContaining({
           id: flowId,
@@ -2559,6 +2598,7 @@ describe('project brain generation', () => {
           exit_contract: expect.any(Number),
           side_effects: expect.any(Number),
           required_tests: expect.any(Number),
+          runtime_surfaces: expect.any(Number),
         }),
       );
 
@@ -2570,6 +2610,7 @@ describe('project brain generation', () => {
             exit_contract?: number;
             side_effects?: number;
             required_tests?: number;
+            runtime_surfaces?: number;
           };
         }>;
         top_evidence_gaps: Array<{ id: string; field?: string }>;
@@ -2582,6 +2623,7 @@ describe('project brain generation', () => {
             exit_contract: expect.any(Number),
             side_effects: expect.any(Number),
             required_tests: expect.any(Number),
+            runtime_surfaces: expect.any(Number),
           }),
         }),
       );
@@ -2612,10 +2654,12 @@ describe('project brain generation', () => {
           'Invalid input transitions into validation failure instead of normal output.',
         ]),
         required_tests: expect.arrayContaining(['validation failure coverage']),
+        runtime_surfaces: expect.arrayContaining(['config:packages/api/package.json']),
         confidence_reasons: expect.arrayContaining(['Validation evidence is recorded.']),
       });
       const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
       expect(explainReport).toContain('Entry Contract');
+      expect(explainReport).toContain('Runtime Surfaces');
       expect(explainReport).toContain('Side Effects');
       expect(explainReport).toContain('validation failure coverage');
       expect(explainReport).not.toContain(dir);
