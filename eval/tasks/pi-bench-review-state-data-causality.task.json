@@ -51,10 +51,18 @@
       "minimum_affected_state_operations": 1,
       "minimum_verification_plan_items": 2,
       "minimum_verification_plan_required": 1,
+      "minimum_review_claims": 1,
       "affected_data_dependencies_include": ["data schema/model"],
       "affected_state_operations_include": ["schema"],
       "verification_plan_types_include": ["data", "test"],
       "verification_plan_priorities_include": ["required"],
+      "claim_surfaces_include": [
+        "blast_radius_reason",
+        "finding",
+        "affected_flow",
+        "verification_plan"
+      ],
+      "require_review_claim_coverage": true,
       "verification_plan_reasons_include": [
         "state/data dependency",
         "Runtime/source files changed"
@@ -73,6 +81,7 @@
   "expected_artifacts": [
     ".rizz/research/flow_understanding.json",
     ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
     ".rizz/reports/index.html",
     ".rizz/reports/review.html"
   ],
@@ -111,6 +120,32 @@
       }
     },
     {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "required_fields": [
+        "review_id",
+        "total_claims",
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.finding",
+        "claims_by_surface.affected_flow",
+        "claims_by_surface.verification_plan",
+        "secret_safety.output_secret_safe",
+        "claims"
+      ],
+      "required_substrings": [
+        "\"surface\": \"blast_radius_reason\"",
+        "\"surface\": \"finding\"",
+        "\"surface\": \"affected_flow\"",
+        "\"surface\": \"verification_plan\"",
+        "data schema/model",
+        "state/data dependency"
+      ],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
       "path": ".rizz/reports/index.html",
       "type": "file",
       "required_substrings": [
@@ -118,7 +153,8 @@
         "Targeted Verification",
         "Verification Summary",
         "State/data",
-        "data schema/model"
+        "data schema/model",
+        "review_claim_evidence.json"
       ]
     },
     {

@@ -6626,6 +6626,30 @@ describe('project brain generation', () => {
       expect(review.value.review.changed_files).toContainEqual(
         expect.stringMatching(/^redacted:sensitive-file:/),
       );
+      const reviewClaimEvidence = await readJson<{
+        redacted_evidence_count: number;
+        claims: Array<{ redacted_evidence_count: number; source_files: string[] }>;
+        secret_safety: {
+          redacted_reference_count: number;
+          unsafe_sensitive_reference_count: number;
+          output_secret_safe: boolean;
+        };
+      }>(join(dir, '.rizz', 'research', 'review_claim_evidence.json'));
+      expect(JSON.stringify(reviewClaimEvidence)).not.toContain('client_secret_handler.ts');
+      expect(JSON.stringify(reviewClaimEvidence)).not.toContain('secret-token-flow.test.ts');
+      expect(reviewClaimEvidence.secret_safety).toMatchObject({
+        unsafe_sensitive_reference_count: 0,
+        output_secret_safe: true,
+      });
+      expect(reviewClaimEvidence.secret_safety.redacted_reference_count).toBeGreaterThan(0);
+      expect(reviewClaimEvidence.redacted_evidence_count).toBeGreaterThan(0);
+      expect(
+        reviewClaimEvidence.claims.some(
+          (claim) =>
+            claim.redacted_evidence_count > 0 ||
+            claim.source_files.some((file) => file.startsWith('redacted:sensitive-file:')),
+        ),
+      ).toBe(true);
       expect(JSON.stringify(explain.value.explanation)).not.toContain('client_secret_handler.ts');
       expect(explain.value.explanation.resolved_entity_id).toContain('redacted:sensitive-file:');
     });
@@ -6862,6 +6886,9 @@ describe('project brain generation', () => {
         }),
       );
       expect(result.value.reviewEvalPath).toBe(join(dir, '.rizz', 'research', 'review_eval.json'));
+      expect(result.value.reviewClaimEvidencePath).toBe(
+        join(dir, '.rizz', 'research', 'review_claim_evidence.json'),
+      );
       expect(result.value.reviewEval).toMatchObject({
         schema_version: 1,
         deterministic: true,
@@ -6899,6 +6926,62 @@ describe('project brain generation', () => {
       expect(result.value.reviewEval.findings_by_category['Missing tests']).toBeGreaterThan(0);
       expect(result.value.reviewEval.review_readiness_score).toBeGreaterThanOrEqual(0);
       expect(result.value.reviewEval.review_readiness_score).toBeLessThanOrEqual(100);
+      expect(result.value.reviewClaimEvidence).toMatchObject({
+        schema_version: 1,
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+        review_id: 'review:2026-06-28t10-39-00.000z-git-diff',
+        total_claims:
+          result.value.review.blast_radius_reasons.length +
+          result.value.review.findings.length +
+          result.value.review.affected_flows.length +
+          result.value.review.verification_plan.length,
+        secret_safety: {
+          unsafe_sensitive_reference_count: 0,
+          output_secret_safe: true,
+        },
+      });
+      expect(result.value.reviewClaimEvidence.claims_by_surface).toMatchObject({
+        blast_radius_reason: result.value.review.blast_radius_reasons.length,
+        finding: result.value.review.findings.length,
+        affected_flow: result.value.review.affected_flows.length,
+        verification_plan: result.value.review.verification_plan.length,
+      });
+      expect(result.value.reviewClaimEvidence.claims).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            surface: 'blast_radius_reason',
+            confidence: expect.any(String),
+            rules: expect.arrayContaining([expect.stringContaining('blast_radius')]),
+          }),
+          expect.objectContaining({
+            surface: 'finding',
+            evidence_ids: expect.any(Array),
+            source_files: expect.any(Array),
+          }),
+          expect.objectContaining({
+            surface: 'affected_flow',
+            affected_entities: expect.arrayContaining(['flow:packages--cli--check']),
+          }),
+          expect.objectContaining({
+            surface: 'verification_plan',
+            rules: expect.arrayContaining([expect.stringContaining('verification_plan')]),
+          }),
+        ]),
+      );
+      for (const claim of result.value.reviewClaimEvidence.claims) {
+        expect(claim.claim_id).toEqual(expect.any(String));
+        expect(claim.surface).toEqual(expect.any(String));
+        expect(claim.claim).toEqual(expect.any(String));
+        expect(claim.confidence).toEqual(expect.any(String));
+        expect(claim.evidence_ids).toEqual(expect.any(Array));
+        expect(claim.source_files).toEqual(expect.any(Array));
+        expect(claim.affected_entities).toEqual(expect.any(Array));
+        expect(claim.rules).toEqual(expect.any(Array));
+        expect(claim.unknowns).toEqual(expect.any(Array));
+        expect(claim.redacted_evidence_count).toEqual(expect.any(Number));
+      }
 
       const reviews = await readJson<{
         entities: Array<{ id: string; data?: { overall_risk?: string } }>;
@@ -6918,9 +7001,15 @@ describe('project brain generation', () => {
           readonly affected_flows?: string[];
           readonly architecture_impact_surfaces?: string[];
           readonly blast_radius_reasons?: string[];
-          readonly research_artifacts?: { readonly review_eval?: string };
+          readonly research_artifacts?: {
+            readonly review_eval?: string;
+            readonly review_claim_evidence?: string;
+          };
         };
-        latest_research_artifacts?: { readonly review_eval?: string };
+        latest_research_artifacts?: {
+          readonly review_eval?: string;
+          readonly review_claim_evidence?: string;
+        };
       }>(join(dir, '.rizz', 'brain', 'latest.json'));
       expect(latest.latest_review_status).toMatchObject({
         status: 'investigate',
@@ -6930,10 +7019,12 @@ describe('project brain generation', () => {
         architecture_impact_surfaces: ['impact:component:packages--cli'],
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
+          review_claim_evidence: '.rizz/research/review_claim_evidence.json',
         },
       });
       expect(latest.latest_research_artifacts).toMatchObject({
         review_eval: '.rizz/research/review_eval.json',
+        review_claim_evidence: '.rizz/research/review_claim_evidence.json',
       });
       expect(latest.latest_review_status.blast_radius_reasons).toContainEqual(
         expect.stringContaining('affected flow(s) link the change'),
@@ -7002,11 +7093,50 @@ describe('project brain generation', () => {
       expect(reviewEval.review_readiness_score).toBe(
         result.value.reviewEval.review_readiness_score,
       );
-      const index = await readJson<{ research_paths?: { review_eval?: string } }>(
-        join(dir, '.rizz', 'brain', 'index.json'),
+      const reviewClaimEvidence = await readJson<{
+        review_id: string;
+        total_claims: number;
+        claims_by_surface: {
+          blast_radius_reason: number;
+          finding: number;
+          affected_flow: number;
+          verification_plan: number;
+        };
+        claims: Array<{
+          claim_id: string;
+          surface: string;
+          claim: string;
+          confidence: string;
+          evidence_ids: string[];
+          source_files: string[];
+          affected_entities: string[];
+          rules: string[];
+          unknowns: string[];
+          redacted_evidence_count: number;
+        }>;
+        secret_safety: {
+          unsafe_sensitive_reference_count: number;
+          output_secret_safe: boolean;
+        };
+      }>(join(dir, '.rizz', 'research', 'review_claim_evidence.json'));
+      expect(reviewClaimEvidence.review_id).toBe(result.value.review.id);
+      expect(reviewClaimEvidence.total_claims).toBe(result.value.reviewClaimEvidence.total_claims);
+      expect(reviewClaimEvidence.claims_by_surface).toMatchObject(
+        result.value.reviewClaimEvidence.claims_by_surface,
       );
+      expect(reviewClaimEvidence.claims.length).toBe(
+        result.value.reviewClaimEvidence.claims.length,
+      );
+      expect(reviewClaimEvidence.secret_safety).toMatchObject({
+        unsafe_sensitive_reference_count: 0,
+        output_secret_safe: true,
+      });
+      const index = await readJson<{
+        research_paths?: { review_eval?: string; review_claim_evidence?: string };
+      }>(join(dir, '.rizz', 'brain', 'index.json'));
       expect(index.research_paths).toMatchObject({
         review_eval: '.rizz/research/review_eval.json',
+        review_claim_evidence: '.rizz/research/review_claim_evidence.json',
       });
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('rizz review');
@@ -7017,6 +7147,7 @@ describe('project brain generation', () => {
       expect(report).toContain('flow:packages--cli--check');
       expect(report).toContain('packages/cli/package.json');
       expect(report).toContain('Missing tests');
+      expect(report).toContain('review_claim_evidence.json');
     });
   });
 

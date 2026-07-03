@@ -994,6 +994,44 @@ interface ReviewVerificationPlanItemData {
   readonly confidence: Confidence;
 }
 
+type ReviewClaimEvidenceSurface =
+  | 'blast_radius_reason'
+  | 'finding'
+  | 'affected_flow'
+  | 'verification_plan';
+
+interface ReviewClaimEvidenceData {
+  readonly claim_id: string;
+  readonly surface: ReviewClaimEvidenceSurface;
+  readonly claim: string;
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly source_files: readonly string[];
+  readonly affected_entities: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly redacted_evidence_count: number;
+}
+
+interface ReviewClaimEvidenceArtifactData {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly review_id: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly total_claims: number;
+  readonly claims_by_surface: Record<ReviewClaimEvidenceSurface, number>;
+  readonly claims_by_confidence: Record<Confidence, number>;
+  readonly redacted_evidence_count: number;
+  readonly secret_safety: {
+    readonly redacted_reference_count: number;
+    readonly unsafe_sensitive_reference_count: number;
+    readonly output_secret_safe: boolean;
+  };
+  readonly claims: readonly ReviewClaimEvidenceData[];
+}
+
 interface ReviewEvalArtifactData {
   readonly schema_version: number;
   readonly generated_at: string;
@@ -1432,6 +1470,7 @@ export interface ReviewProjectChangesSummary {
   readonly rootDir: string;
   readonly reviewPath: string;
   readonly reviewEvalPath: string;
+  readonly reviewClaimEvidencePath: string;
   readonly latestPath: string;
   readonly reportPath: string;
   readonly changedFiles: number;
@@ -1444,6 +1483,7 @@ export interface ReviewProjectChangesSummary {
   readonly recommendedAction: RecommendedAction;
   readonly review: ReviewSummaryData;
   readonly reviewEval: ReviewEvalArtifactData;
+  readonly reviewClaimEvidence: ReviewClaimEvidenceArtifactData;
 }
 
 export type ReviewProjectChangesResult =
@@ -1848,6 +1888,10 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
 
 function verificationEvidenceArtifactPath(rootDir: string): string {
   return join(rootDir, '.rizz', 'research', RESEARCH_ARTIFACT_FILES.verificationEvidence);
+}
+
+function reviewClaimEvidenceArtifactPath(rootDir: string): string {
+  return join(rootDir, '.rizz', 'research', 'review_claim_evidence.json');
 }
 
 function emptyVerificationEvidenceArtifact(
@@ -15726,6 +15770,7 @@ function renderMissionControlDependencyRuntimeImpact(latest: Record<string, unkn
       ${renderArtifactLinks([
         '.rizz/reports/review.html',
         '.rizz/research/review_eval.json',
+        '.rizz/research/review_claim_evidence.json',
         '.rizz/research/verification_evidence.json',
         '.rizz/brain/latest.json',
       ])}
@@ -18233,6 +18278,7 @@ export async function reviewProjectChanges(
       verificationEvidence,
     });
     const reviewEval = buildReviewEvalArtifact(review);
+    const reviewClaimEvidence = buildReviewClaimEvidenceArtifact(review);
 
     const reviewEntity = makeEntity({
       id: review.id,
@@ -18304,12 +18350,14 @@ export async function reviewProjectChanges(
         verification_plan_summary: verificationPlanSummary(review.verification_plan),
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
+          review_claim_evidence: '.rizz/research/review_claim_evidence.json',
           verification_evidence: '.rizz/research/verification_evidence.json',
         },
       },
       latest_research_artifacts: {
         ...(isRecord(latest.latest_research_artifacts) ? latest.latest_research_artifacts : {}),
         review_eval: '.rizz/research/review_eval.json',
+        review_claim_evidence: '.rizz/research/review_claim_evidence.json',
         verification_evidence: '.rizz/research/verification_evidence.json',
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
@@ -18333,10 +18381,14 @@ export async function reviewProjectChanges(
     await writeVerifiedFile(latestPath, jsonString(safeBrainValue(updatedLatest)));
     await writeVerifiedFile(join(researchDir, 'review_eval.json'), jsonString(reviewEval));
     await writeVerifiedFile(
+      reviewClaimEvidenceArtifactPath(rootDir),
+      jsonString(reviewClaimEvidence),
+    );
+    await writeVerifiedFile(
       verificationEvidenceArtifactPath(rootDir),
       jsonString(safeResearchValue(verificationEvidence)),
     );
-    await updateBrainIndexReviewEvalPath(join(brainDir, 'index.json'));
+    await updateBrainIndexReviewArtifactPaths(join(brainDir, 'index.json'));
 
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
@@ -18365,6 +18417,7 @@ export async function reviewProjectChanges(
         rootDir,
         reviewPath: join(entitiesDir, 'reviews.json'),
         reviewEvalPath: join(researchDir, 'review_eval.json'),
+        reviewClaimEvidencePath: reviewClaimEvidenceArtifactPath(rootDir),
         latestPath,
         reportPath,
         changedFiles: review.changed_files.length,
@@ -18377,6 +18430,7 @@ export async function reviewProjectChanges(
         recommendedAction: review.recommended_action,
         review,
         reviewEval,
+        reviewClaimEvidence,
       },
     };
   } catch (error: unknown) {
@@ -21340,6 +21394,156 @@ function scoreReviewReadiness(
   );
 }
 
+function emptyReviewClaimSurfaceCounts(): Record<ReviewClaimEvidenceSurface, number> {
+  return {
+    blast_radius_reason: 0,
+    finding: 0,
+    affected_flow: 0,
+    verification_plan: 0,
+  };
+}
+
+function emptyConfidenceCounts(): Record<Confidence, number> {
+  return { verified: 0, inferred: 0, uncertain: 0 };
+}
+
+function reviewClaimRedactionCount(
+  claim: Omit<ReviewClaimEvidenceData, 'redacted_evidence_count'>,
+): number {
+  return redactedReferenceCount(safeResearchValue(claim));
+}
+
+function buildReviewClaimEvidenceArtifact(
+  review: ReviewSummaryData,
+): ReviewClaimEvidenceArtifactData {
+  const claims: ReviewClaimEvidenceData[] = [];
+  const pushClaim = (
+    surface: ReviewClaimEvidenceSurface,
+    params: {
+      readonly claim: string;
+      readonly confidence: Confidence;
+      readonly evidenceIds: readonly string[];
+      readonly sourceFiles: readonly string[];
+      readonly affectedEntities: readonly string[];
+      readonly rules: readonly string[];
+      readonly unknowns: readonly string[];
+    },
+  ): void => {
+    const claimWithoutRedaction = {
+      claim_id: entityId('evidence', `review-claim-${surface}-${claims.length + 1}`),
+      surface,
+      claim: safeText(params.claim),
+      confidence: params.confidence,
+      evidence_ids: unique(params.evidenceIds.map(safeText)),
+      source_files: unique(params.sourceFiles.map(safeText)),
+      affected_entities: unique(params.affectedEntities.map(safeText)),
+      rules: unique(params.rules.map(safeText)),
+      unknowns: unique(params.unknowns.map(safeText)),
+    };
+    claims.push({
+      ...claimWithoutRedaction,
+      redacted_evidence_count: reviewClaimRedactionCount(claimWithoutRedaction),
+    });
+  };
+
+  for (const reason of review.blast_radius_reasons) {
+    pushClaim('blast_radius_reason', {
+      claim: reason,
+      confidence: review.review_evidence_summary.evidence_ids.length > 0 ? 'inferred' : 'uncertain',
+      evidenceIds: review.review_evidence_summary.evidence_ids,
+      sourceFiles: review.changed_files,
+      affectedEntities: review.affected_entities,
+      rules: ['blast_radius_reason', `blast_radius:${review.blast_radius}`],
+      unknowns:
+        review.review_evidence_summary.evidence_ids.length === 0
+          ? ['No direct evidence IDs were linked to this blast-radius reason.']
+          : [],
+    });
+  }
+
+  for (const finding of review.findings) {
+    pushClaim('finding', {
+      claim: `${finding.title}: ${finding.description}`,
+      confidence: finding.confidence,
+      evidenceIds: finding.evidence_ids,
+      sourceFiles: finding.affected_files,
+      affectedEntities: finding.affected_entities,
+      rules: [`finding:${finding.category}`, `severity:${finding.severity}`],
+      unknowns:
+        finding.evidence_ids.length === 0
+          ? ['No direct evidence IDs were linked to this finding.']
+          : [],
+    });
+  }
+
+  for (const flow of review.affected_flows) {
+    pushClaim('affected_flow', {
+      claim: `${reviewFlowDescriptionLabel(flow)} is affected by changed files ${
+        flow.changed_files.join(', ') || 'none recorded'
+      }.`,
+      confidence: flow.confidence,
+      evidenceIds: flow.evidence_ids,
+      sourceFiles: unique([...flow.changed_files, ...flow.entrypoints]),
+      affectedEntities: unique([flow.id, ...flow.components, ...flow.services]),
+      rules: ['affected_flow_overlap', `flow_kind:${flow.kind}`],
+      unknowns: (() => {
+        if (flow.missing_evidence.length > 0) return flow.missing_evidence;
+        if (flow.evidence_ids.length === 0) {
+          return ['No direct evidence IDs were linked to this affected flow.'];
+        }
+        return [];
+      })(),
+    });
+  }
+
+  for (const item of review.verification_plan) {
+    pushClaim('verification_plan', {
+      claim: `${item.priority} ${item.verification_type} verification: ${item.reason}`,
+      confidence: item.confidence,
+      evidenceIds: item.evidence_ids,
+      sourceFiles: item.linked_files,
+      affectedEntities: unique([
+        ...item.linked_findings,
+        ...item.linked_flows,
+        ...item.linked_components,
+      ]),
+      rules: [`verification_plan:${item.verification_type}`, `priority:${item.priority}`],
+      unknowns:
+        item.evidence_ids.length === 0
+          ? ['No direct evidence IDs were linked to this verification step.']
+          : [],
+    });
+  }
+
+  const claimsBySurface = emptyReviewClaimSurfaceCounts();
+  const claimsByConfidence = emptyConfidenceCounts();
+  for (const claim of claims) {
+    claimsBySurface[claim.surface] += 1;
+    claimsByConfidence[claim.confidence] += 1;
+  }
+  const safeClaims = safeResearchValue(claims);
+  const redactedReferenceCountValue = redactedReferenceCount(safeClaims);
+  const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeClaims);
+  return {
+    schema_version: 1,
+    generated_at: review.generated_at,
+    review_id: review.id,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    total_claims: claims.length,
+    claims_by_surface: claimsBySurface,
+    claims_by_confidence: claimsByConfidence,
+    redacted_evidence_count: redactedReferenceCountValue,
+    secret_safety: {
+      redacted_reference_count: redactedReferenceCountValue,
+      unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+      output_secret_safe: unsafeSensitiveReferenceCount === 0,
+    },
+    claims: safeClaims as ReviewClaimEvidenceData[],
+  };
+}
+
 function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactData {
   const safeReview = safeResearchValue(review);
   const redactedCount = redactedReferenceCount(safeReview);
@@ -21442,7 +21646,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
   };
 }
 
-async function updateBrainIndexReviewEvalPath(indexPath: string): Promise<void> {
+async function updateBrainIndexReviewArtifactPaths(indexPath: string): Promise<void> {
   const index = (await readJsonFile<Record<string, unknown>>(indexPath)) ?? {};
   const researchPaths = isRecord(index.research_paths) ? index.research_paths : {};
   await writeVerifiedFile(
@@ -21453,6 +21657,7 @@ async function updateBrainIndexReviewEvalPath(indexPath: string): Promise<void> 
         research_paths: {
           ...researchPaths,
           review_eval: '.rizz/research/review_eval.json',
+          review_claim_evidence: '.rizz/research/review_claim_evidence.json',
           verification_evidence: '.rizz/research/verification_evidence.json',
         },
       }),
@@ -23088,6 +23293,14 @@ function renderReviewReport(review: ReviewSummaryData): string {
     <section>
       <h2>Reviewer Focus</h2>
       ${renderList(review.suggested_reviewer_focus_areas)}
+    </section>
+    <section>
+      <h2>Research Artifacts</h2>
+      ${renderArtifactLinks([
+        '.rizz/research/review_eval.json',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/verification_evidence.json',
+      ])}
     </section>
     <section>
       <h2>Findings</h2>
