@@ -30,6 +30,7 @@ const PI_BENCH_TASK_SUITE = 'pi-bench-seed';
 const PI_BENCH_TASK_MODE = 'local';
 const COVERAGE_TARGETS = ['component', 'flow', 'evidence', 'unknown'];
 const CLI_SMOKE_TIMEOUT_MS = 15_000;
+const CLI_OUTPUT_MAX_BUFFER = 8 * 1024 * 1024;
 const PI_BENCH_TASK_CATEGORIES = [
   'smoke',
   'research-metrics',
@@ -2156,6 +2157,7 @@ function runCliSync(args, input) {
       encoding: 'utf8',
       env: isolatedEnv(home),
       timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     }),
   );
 }
@@ -2168,6 +2170,7 @@ function runCliInCwdSync(cwd, args, input) {
       encoding: 'utf8',
       env: isolatedEnv(home),
       timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     }),
   );
 }
@@ -2180,6 +2183,7 @@ function runCliInCwdWithGitSync(cwd, args, input) {
       encoding: 'utf8',
       env: isolatedEnvWithGit(home),
       timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     }),
   );
 }

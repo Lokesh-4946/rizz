@@ -19,9 +19,9 @@ The current `0.2.1` product surface is:
 - `rizz review` git-diff review using the local project brain
 - `.rizz/brain/latest.json` structured current-state summary
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
-- `.rizz/brain/flows/*.json` deterministic flow mirrors for entrypoints, steps, evidence, tests, and risks
+- `.rizz/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, evidence, tests, configs, and risks
 - `.rizz/brain/graph.json` relationships with evidence and confidence
-- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, Flow Understanding, Architecture Reasoning, and incremental understanding
+- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
 - `.rizz/reports/index.html` Mission Control local architecture intelligence portal
 - `.rizz/reports/review.html` local risk/blast-radius review report
 - `rizz setup` dependency doctor and provider route picker

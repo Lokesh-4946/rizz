@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-journey-upload-ingestion",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Journey-aware upload ingestion benchmark seed",
+  "prompt": "Review an upload ingestion processor change and verify deterministic journey naming, steps, evidence, confidence, and causal blast radius.",
+  "fixture": {
+    "root": "pi-bench-journey-upload-ingestion",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-journey-upload-ingestion\",\"scripts\":{\"dev\":\"tsx src/server.ts\",\"test\":\"vitest run\"},\"dependencies\":{\"express\":\"5.0.0\"},\"devDependencies\":{\"tsx\":\"^4.0.0\",\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { ingestUpload } from \"./uploads/ingest-upload.js\";\nconst app = express();\napp.post(\"/admin/upload\", (_req, res) => res.json(ingestUpload(\"report.csv\")));\n"
+      },
+      {
+        "path": "src/uploads/ingest-upload.ts",
+        "contents": "export function ingestUpload(fileName: string) {\n  if (!fileName.endsWith(\".csv\")) throw new Error(\"invalid upload\");\n  return { status: \"accepted\", fileName };\n}\n"
+      },
+      {
+        "path": "src/uploads/ingest-upload.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { ingestUpload } from \"./ingest-upload.js\";\nit(\"covers csv upload ingestion\", () => expect(ingestUpload(\"a.csv\").status).toBe(\"accepted\"));\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/uploads/ingest-upload.ts",
+          "contents": "export function ingestUpload(fileName: string) {\n  if (!fileName.endsWith(\".csv\") && !fileName.endsWith(\".tsv\")) throw new Error(\"invalid upload\");\n  return { status: \"accepted\", fileName };\n}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/uploads/ingest-upload.ts"],
+      "affected_flows_include": ["flow:http--post--admin--upload--src--server.ts"],
+      "affected_tests_include": ["src/uploads/ingest-upload.test.ts"],
+      "minimum_affected_flows": 1,
+      "required_tests_include": ["vitest run"],
+      "findings_include": [
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" }
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": ["journeys", "journey_steps_by_type", "contracts"],
+      "required_substrings": [
+        "Admin upload and processing flow",
+        "upload_ingestion",
+        "business_logic",
+        "test_coverage",
+        "flow:http--post--admin--upload--src--server.ts"
+      ]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_journey_count",
+        "affected_journey_step_count",
+        "user_visible_failure_mode_count"
+      ],
+      "required_substrings": ["\"affected_journey_count\"", "\"user_visible_failure_mode_count\""]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Admin upload and processing flow",
+        "User-Visible Risk",
+        "src/uploads/ingest-upload.test.ts"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Upload evidence creates a human-readable ingestion journey with normalized steps.",
+      "Review output links processor changes to user-visible upload risk."
+    ],
+    "fail": [
+      "Upload is named as a generic API request or confused with unrelated import/process text."
+    ]
+  }
+}
