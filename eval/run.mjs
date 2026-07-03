@@ -310,6 +310,13 @@ function validateReviewAssertions(assertions) {
     'minimum_review_claims',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
+    'maximum_direct_components',
+    'maximum_dependent_components',
+    'maximum_affected_services',
+    'maximum_affected_flows',
+    'maximum_affected_relationships',
+    'maximum_dependency_runtime_impacts',
+    'maximum_architecture_impact_surfaces',
     'maximum_affected_data_dependencies',
     'maximum_affected_state_operations',
     'maximum_user_visible_failure_modes',
@@ -1646,6 +1653,54 @@ function assertReviewContract(task, repoDir, review, stdout) {
     );
   }
   if (
+    assertions.maximum_direct_components !== undefined &&
+    directComponentIds.length > assertions.maximum_direct_components
+  ) {
+    errors.push(
+      `direct_affected_components ${directComponentIds.length} above ${assertions.maximum_direct_components}`,
+    );
+  }
+  if (
+    assertions.maximum_dependent_components !== undefined &&
+    dependentComponentIds.length > assertions.maximum_dependent_components
+  ) {
+    errors.push(
+      `dependent_components ${dependentComponentIds.length} above ${assertions.maximum_dependent_components}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_services !== undefined &&
+    affectedServiceIds.length > assertions.maximum_affected_services
+  ) {
+    errors.push(
+      `affected_services ${affectedServiceIds.length} above ${assertions.maximum_affected_services}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_flows !== undefined &&
+    affectedFlowIds.length > assertions.maximum_affected_flows
+  ) {
+    errors.push(
+      `affected_flows ${affectedFlowIds.length} above ${assertions.maximum_affected_flows}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_relationships !== undefined &&
+    affectedRelationships.length > assertions.maximum_affected_relationships
+  ) {
+    errors.push(
+      `affected_relationships ${affectedRelationships.length} above ${assertions.maximum_affected_relationships}`,
+    );
+  }
+  if (
+    assertions.maximum_dependency_runtime_impacts !== undefined &&
+    dependencyRuntimeImpactCount > assertions.maximum_dependency_runtime_impacts
+  ) {
+    errors.push(
+      `dependency_runtime_impact ${dependencyRuntimeImpactCount} above ${assertions.maximum_dependency_runtime_impacts}`,
+    );
+  }
+  if (
     assertions.minimum_dependency_runtime_surfaces !== undefined &&
     dependencyRuntimeRuntimeSurfaces.length < assertions.minimum_dependency_runtime_surfaces
   ) {
@@ -1660,6 +1715,14 @@ function assertReviewContract(task, repoDir, review, stdout) {
   ) {
     errors.push(
       `dependency_runtime_impact.verification_focus ${dependencyRuntimeVerificationFocus.length} below ${assertions.minimum_dependency_runtime_verification_focus}`,
+    );
+  }
+  if (
+    assertions.maximum_architecture_impact_surfaces !== undefined &&
+    architectureImpactSurfaces.length > assertions.maximum_architecture_impact_surfaces
+  ) {
+    errors.push(
+      `architecture_impact_map ${architectureImpactSurfaces.length} above ${assertions.maximum_architecture_impact_surfaces}`,
     );
   }
   if (

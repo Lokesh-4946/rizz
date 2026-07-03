@@ -74,6 +74,9 @@ Config-only precision seeds additionally require dependency/runtime impact while
 runtime-source missing-test findings and state/data impact for TypeScript config wording.
 Comment/type-only precision seeds keep affected journey context while forbidding state/data impact
 or missing-runtime-test findings when the diff only changes comments or type-support files.
+Generated/vendor precision seeds keep artifact churn visible while forbidding authored runtime,
+flow, architecture, or state/data blast-radius claims. Lockfile precision seeds are separate:
+lockfiles remain dependency/runtime impact and must keep install-resolution verification focus.
 Review diff entries normally use `{ "path": "...", "contents": "..." }`; rename and delete review
 seeds can additionally use `{ "path": "...", "rename_from": "...", "contents": "..." }` and
 `{ "path": "...", "delete": true }` so PI-Bench can exercise real git name-status behavior for
