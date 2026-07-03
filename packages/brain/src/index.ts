@@ -15860,6 +15860,95 @@ function renderMissionControlDependencyRuntimeImpact(latest: Record<string, unkn
   </div>`;
 }
 
+function renderMissionControlArchitectureImpactClaims(latest: Record<string, unknown>): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+  }
+  const claimRows = recordArray(status, 'architecture_impact_claims').filter(isRecord).slice(0, 5);
+  const claimCount = recordNumber(status, 'architecture_impact_claim_count');
+  const impactSurfaces = asStringArray(status.architecture_impact_surfaces);
+  const changedFiles = asStringArray(status.changed_files);
+  if (claimRows.length === 0) {
+    return `<div class="grid">
+    <article class="card compact">
+      <h3>Architecture Impact Claims</h3>
+      ${renderList([
+        `${claimCount} claim(s) recorded`,
+        `${impactSurfaces.length} impact surface(s) overlapped the diff`,
+        'No architecture impact claim details were recorded for this diff.',
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Review Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/reports/review.html',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/review_eval.json',
+      ])}
+    </article>
+  </div>`;
+  }
+  const redactedCount = claimRows.reduce(
+    (count, claim) => count + recordNumber(claim, 'redacted_evidence_count'),
+    0,
+  );
+  return `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${claimCount} claim(s)</div>
+      <h3>Architecture Impact Claims</h3>
+      ${renderList([
+        `${impactSurfaces.length} impact surface(s) overlapped the diff`,
+        `${changedFiles.length} changed file(s) linked`,
+        `${redactedCount} redacted evidence reference(s) in visible claim rows`,
+        'Basis: pre-change Project Intelligence Layer plus current git diff; not post-change runtime certainty.',
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Changed Files</h3>
+      ${renderList(changedFiles.slice(0, 8))}
+    </article>
+    <article class="card compact">
+      <h3>Review Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/reports/review.html',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/review_eval.json',
+      ])}
+    </article>
+    ${claimRows
+      .map((claim) => {
+        const impactId = recordString(claim, 'impact_id', 'unknown impact');
+        const surfaceType = recordString(claim, 'surface_type', 'unknown surface');
+        const confidence = recordString(claim, 'confidence', 'uncertain');
+        const claimText = recordString(claim, 'claim', 'Architecture impact claim recorded.');
+        const sourceFiles = asStringArray(claim.source_files).slice(0, 5);
+        const evidenceIds = asStringArray(claim.evidence_ids).slice(0, 5);
+        const whatBreaks = asStringArray(claim.what_breaks).slice(0, 4);
+        const reviewFocus = asStringArray(claim.review_focus).slice(0, 4);
+        const unknowns = asStringArray(claim.unknowns).slice(0, 4);
+        return `<article class="card compact" data-search="${htmlEscape(
+          `${impactId} ${surfaceType} ${confidence} ${claimText} ${sourceFiles.join(' ')}`,
+        )}">
+        <div class="badge">${htmlEscape(confidence)} · ${htmlEscape(surfaceType)}</div>
+        <h3>${htmlEscape(impactId)}</h3>
+        <p>${htmlEscape(claimText)}</p>
+        <h4>Changed Files</h4>
+        ${renderList(sourceFiles)}
+        <h4>Evidence</h4>
+        ${renderList(evidenceIds)}
+        <h4>What Could Break</h4>
+        ${renderList(whatBreaks)}
+        <h4>Review Focus</h4>
+        ${renderList(reviewFocus)}
+        <h4>Unknowns</h4>
+        ${renderList(unknowns)}
+      </article>`;
+      })
+      .join('')}
+  </div>`;
+}
+
 function renderArchitectureConfidenceDebt(value: unknown): string {
   if (!isRecord(value)) {
     return renderList(['No confidence debt summary is available yet.']);
@@ -17389,6 +17478,8 @@ function renderReport(params: {
       ${renderLatestVerificationPlan(params.latest)}
       <h3>Affected Route Flows</h3>
       ${renderLatestReviewRouteFlows(params.latest, params.buckets.flows, evidenceById)}
+      <h3>Architecture Impact Claims</h3>
+      ${renderMissionControlArchitectureImpactClaims(params.latest)}
       <h3>Risk Areas</h3>
       <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>
       <h3>Required Attention</h3>
@@ -18425,6 +18516,21 @@ export async function reviewProjectChanges(
         architecture_impact_surfaces: review.architecture_impact_map.map(
           (entry) => entry.impact_id,
         ),
+        architecture_impact_claim_count: reviewClaimEvidence.architecture_impact_claim_count,
+        architecture_impact_claims: reviewClaimEvidence.architecture_impact_claims
+          .slice(0, 5)
+          .map((claim) => ({
+            impact_id: claim.impact_id,
+            surface_type: claim.surface_type,
+            claim: claim.claim,
+            confidence: claim.confidence,
+            source_files: claim.source_files.slice(0, 8),
+            evidence_ids: claim.evidence_ids.slice(0, 8),
+            what_breaks: claim.what_breaks.slice(0, 5),
+            review_focus: claim.review_focus.slice(0, 5),
+            unknowns: claim.unknowns.slice(0, 5),
+            redacted_evidence_count: claim.redacted_evidence_count,
+          })),
         dependency_runtime_impact: review.dependency_runtime_impact,
         review_evidence_summary: review.review_evidence_summary,
         verification_status: review.verification_status,
@@ -23536,6 +23642,40 @@ function renderDependencyRuntimeImpact(impact: ReviewDependencyRuntimeImpactData
   ${renderList(impact.reasons)}`;
 }
 
+function renderArchitectureImpactClaimEvidenceRows(
+  claims: readonly ReviewArchitectureImpactClaimEvidenceData[],
+): string {
+  if (claims.length === 0) {
+    return '<p class="muted">No architecture impact claims were recorded for this diff.</p>';
+  }
+  return `<div class="grid">
+    <article class="card">
+      <h2>Claim Summary</h2>
+      ${renderList([
+        `${claims.length} architecture impact claim(s)`,
+        `${unique(claims.flatMap((claim) => claim.source_files)).length} changed/source file reference(s)`,
+        `${unique(claims.flatMap((claim) => claim.evidence_ids)).length} evidence record(s)`,
+        `${claims.reduce((count, claim) => count + claim.redacted_evidence_count, 0)} redacted evidence reference(s)`,
+      ])}
+    </article>
+  </div>
+  <p class="muted">Based on the pre-change Project Intelligence Layer plus the current git diff. This is evidence-backed review context, not post-change runtime certainty.</p>
+  <table><thead><tr><th>Impact</th><th>Surface</th><th>Confidence</th><th>Changed Files</th><th>Evidence</th><th>What Could Break</th><th>Review Focus / Unknowns</th></tr></thead><tbody>${claims
+    .slice(0, 5)
+    .map(
+      (claim) => `<tr>
+        <td><strong>${htmlEscape(claim.impact_id)}</strong><br><span class="muted">${htmlEscape(claim.claim)}</span></td>
+        <td>${htmlEscape(claim.surface_type)}</td>
+        <td>${htmlEscape(claim.confidence)}</td>
+        <td>${renderList(claim.source_files.slice(0, 6))}</td>
+        <td>${renderList(claim.evidence_ids.slice(0, 6))}</td>
+        <td>${renderList(claim.what_breaks.slice(0, 5))}</td>
+        <td>${renderList([...claim.review_focus.slice(0, 4), ...claim.unknowns.slice(0, 4)])}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
 function reviewFlowTableMeta(flow: AffectedFlowData): string {
   const route =
     flow.route_path !== undefined ? ` · ${flow.route_path} ${flow.route_type ?? 'route'}` : '';
@@ -23606,6 +23746,7 @@ function renderVerificationPlanRows(plan: readonly ReviewVerificationPlanItemDat
 }
 
 function renderReviewReport(review: ReviewSummaryData): string {
+  const architectureImpactClaims = buildArchitectureImpactClaimEvidence(review);
   const findingRows = review.findings
     .map(
       (finding) => `<tr>
@@ -23662,6 +23803,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
         <article class="card"><h2>Evidence Records</h2><p>${review.review_evidence_summary.evidence_ids.length}</p></article>
       </div>
       ${renderList(review.blast_radius_reasons)}
+    </section>
+    <section>
+      <h2>Architecture Impact Evidence</h2>
+      ${renderArchitectureImpactClaimEvidenceRows(architectureImpactClaims)}
     </section>
     <section>
       <h2>Verification Calibration</h2>
