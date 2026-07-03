@@ -2948,6 +2948,27 @@ function importBindingsFromText(text: string): ImportBinding[] {
       bindings.push({ specifier: safeText(specifier), local_names: localNames });
     }
   }
+  for (const match of text.matchAll(/^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+([^\n#]+)/gm)) {
+    const specifier = match[1]?.trim();
+    const clause = match[2]?.trim();
+    if (specifier === undefined || specifier === '' || clause === undefined) continue;
+    const localNames = pythonImportClauseLocalNames(clause);
+    if (localNames.length > 0) {
+      bindings.push({ specifier: safeText(specifier), local_names: localNames });
+    }
+  }
+  for (const match of text.matchAll(
+    /^\s*import\s+([A-Za-z_][\w.]*)(?:\s+as\s+([A-Za-z_]\w*))?/gm,
+  )) {
+    const specifier = match[1]?.trim();
+    const alias = match[2]?.trim();
+    if (specifier === undefined || specifier === '') continue;
+    const tailName = specifier.split('.').at(-1);
+    const localName = alias === undefined || alias === '' ? tailName : alias;
+    if (localName !== undefined && /^[A-Za-z_]\w*$/.test(localName)) {
+      bindings.push({ specifier: safeText(specifier), local_names: [safeText(localName)] });
+    }
+  }
   return bindings;
 }
 
@@ -2993,6 +3014,21 @@ function requireClauseLocalNames(clause: string): string[] {
         const [, alias] = item.split(':');
         const localName = (alias ?? item).trim();
         return /^[A-Za-z_$][\w$]*$/.test(localName) ? safeText(localName) : undefined;
+      })
+      .filter((item): item is string => item !== undefined),
+  );
+}
+
+function pythonImportClauseLocalNames(clause: string): string[] {
+  return unique(
+    clause
+      .split(',')
+      .map((item) => {
+        const [rawName, alias] = item.trim().split(/\s+as\s+/);
+        const localName = (alias ?? rawName)?.trim();
+        return localName !== undefined && /^[A-Za-z_]\w*$/.test(localName)
+          ? safeText(localName)
+          : undefined;
       })
       .filter((item): item is string => item !== undefined),
   );
@@ -4899,6 +4935,45 @@ function httpRouteHandlerText(params: {
   return params.text.slice(callStart, Math.min(params.text.length, callStart + 2000));
 }
 
+function pythonRouteHandlerText(params: {
+  readonly text: string;
+  readonly declaration: HttpRouteDeclaration;
+}): string | undefined {
+  const start = offsetForLine(params.text, params.declaration.line);
+  const lines = params.text.slice(start).split(/\r?\n/);
+  const defIndex = lines.findIndex((line) =>
+    /^\s*(?:async\s+def|def)\s+[A-Za-z_]\w*\s*\(/.test(line),
+  );
+  if (defIndex < 0) return undefined;
+  const defLine = lines[defIndex];
+  const defIndent = defLine?.match(/^\s*/)?.[0].length ?? 0;
+  const handlerLines: string[] = [];
+  for (let index = defIndex; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined) continue;
+    if (index > defIndex && line.trim() !== '') {
+      const indent = line.match(/^\s*/)?.[0].length ?? 0;
+      const startsNextTopLevelBlock =
+        indent <= defIndent && /^\s*(?:@|async\s+def\b|def\b|class\b)/.test(line);
+      const startsNextPeerStatement = indent <= defIndent && !/^\s/.test(line);
+      if (startsNextTopLevelBlock || startsNextPeerStatement) break;
+    }
+    handlerLines.push(line);
+  }
+  return handlerLines.join('\n');
+}
+
+function routeHandlerTextForDeclaration(params: {
+  readonly text: string;
+  readonly routeFile: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+}): string | undefined {
+  if (params.declaration.framework === 'fastapi' || params.routeFile.relativePath.endsWith('.py')) {
+    return pythonRouteHandlerText(params);
+  }
+  return httpRouteHandlerText(params);
+}
+
 function textContainsIdentifier(text: string, identifier: string): boolean {
   const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}($|[^A-Za-z0-9_$])`).test(text);
@@ -4913,10 +4988,13 @@ function reachableHttpRouteImportedFiles(params: {
     readonly importedFiles: readonly FileFact[];
   };
 }): FileFact[] {
-  if (params.routeFile.relativePath.endsWith('.py')) return [...params.importContext.importedFiles];
   const text = readTextIfAvailable(params.rootDir, params.routeFile.relativePath);
   if (text === undefined) return [...params.importContext.importedFiles];
-  const handlerText = httpRouteHandlerText({ text, declaration: params.declaration });
+  const handlerText = routeHandlerTextForDeclaration({
+    text,
+    routeFile: params.routeFile,
+    declaration: params.declaration,
+  });
   if (handlerText === undefined) return [...params.importContext.importedFiles];
   const aliases = importAliasContextForConfigs({ rootDir: params.rootDir, files: params.files });
   const bindings = importBindingsFromText(text);
@@ -5186,7 +5264,7 @@ function inferHttpRouteDeclarationFlow(params: {
   ];
   const files = unique([
     params.file.relativePath,
-    ...importContext.importedFiles.map((file) => file.relativePath),
+    ...reachableImportedFiles.map((file) => file.relativePath),
   ]);
   const serviceCausality = flowServiceCausality({
     frameworkLabel,
@@ -5239,17 +5317,17 @@ function inferHttpRouteDeclarationFlow(params: {
     required_tests: contracts.required_tests,
     confidence_reasons: contracts.confidence_reasons,
     confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
-    evidence: uniqueFlowEvidence([routeEvidence, ...importContext.importEvidence]),
+    evidence: uniqueFlowEvidence([
+      routeEvidence,
+      ...(reachableImportedFiles.length > 0 ? importContext.importEvidence : []),
+    ]),
     field_evidence: {
       entrypoints: [evId],
       steps: unique(steps.flatMap((step) => step.evidence)),
       components: componentIds.flatMap(
         (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
       ),
-      files: unique([
-        evId,
-        ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
-      ]),
+      files: unique([evId, ...reachableImportedFiles.map((file) => evidenceId(file.relativePath))]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
       services: serviceIds.flatMap(
         (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
