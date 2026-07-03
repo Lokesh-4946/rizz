@@ -7010,11 +7010,26 @@ describe('project brain generation', () => {
         provider_calls_required: false,
         network_required: false,
         review_id: 'review:2026-06-28t10-39-00.000z-git-diff',
+        basis: {
+          source: 'pre_change_project_brain_plus_git_diff',
+          review_fields: expect.arrayContaining(['architecture_impact_map']),
+        },
+        changed_files: ['packages/cli/src/index.ts'],
         total_claims:
           result.value.review.blast_radius_reasons.length +
           result.value.review.findings.length +
           result.value.review.affected_flows.length +
           result.value.review.verification_plan.length,
+        architecture_impact_claim_count: 1,
+        claim_counts: {
+          total:
+            result.value.review.blast_radius_reasons.length +
+            result.value.review.findings.length +
+            result.value.review.affected_flows.length +
+            result.value.review.verification_plan.length +
+            1,
+          architecture_impact_claims: 1,
+        },
         secret_safety: {
           unsafe_sensitive_reference_count: 0,
           output_secret_safe: true,
@@ -7047,6 +7062,34 @@ describe('project brain generation', () => {
             rules: expect.arrayContaining([expect.stringContaining('verification_plan')]),
           }),
         ]),
+      );
+      expect(result.value.reviewClaimEvidence.architecture_impact_claims).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:component:packages--cli',
+          surface_type: 'component',
+          confidence: expect.any(String),
+          source_files: expect.arrayContaining(['packages/cli/src/index.ts']),
+          affected_entities: expect.arrayContaining([
+            'component:packages--cli',
+            'flow:packages--cli--check',
+          ]),
+          matched_flows: expect.arrayContaining(['flow:packages--cli--check']),
+          affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+          affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('component:packages--cli changes can affect'),
+          ]),
+          review_focus: expect.arrayContaining([
+            expect.stringContaining('Verify 1 reconstructed flow'),
+          ]),
+          rules: expect.arrayContaining([
+            'architecture_impact_map',
+            'surface:component',
+            expect.stringContaining('coupling:'),
+            expect.stringContaining('risk:'),
+          ]),
+          redacted_evidence_count: expect.any(Number),
+        }),
       );
       for (const claim of result.value.reviewClaimEvidence.claims) {
         expect(claim.claim_id).toEqual(expect.any(String));
@@ -7173,7 +7216,17 @@ describe('project brain generation', () => {
       );
       const reviewClaimEvidence = await readJson<{
         review_id: string;
+        basis: { source: string; review_fields: string[] };
+        changed_files: string[];
         total_claims: number;
+        architecture_impact_claim_count: number;
+        claim_counts: {
+          total: number;
+          generic_claims: number;
+          architecture_impact_claims: number;
+          with_evidence: number;
+          without_evidence: number;
+        };
         claims_by_surface: {
           blast_radius_reason: number;
           finding: number;
@@ -7192,13 +7245,32 @@ describe('project brain generation', () => {
           unknowns: string[];
           redacted_evidence_count: number;
         }>;
+        architecture_impact_claims: Array<{
+          impact_id: string;
+          source_files: string[];
+          affected_entities: string[];
+          what_breaks: string[];
+          rules: string[];
+        }>;
         secret_safety: {
           unsafe_sensitive_reference_count: number;
           output_secret_safe: boolean;
         };
       }>(join(dir, '.rizz', 'research', 'review_claim_evidence.json'));
       expect(reviewClaimEvidence.review_id).toBe(result.value.review.id);
+      expect(reviewClaimEvidence.basis).toMatchObject({
+        source: 'pre_change_project_brain_plus_git_diff',
+        review_fields: expect.arrayContaining(['architecture_impact_map']),
+      });
+      expect(reviewClaimEvidence.changed_files).toEqual(['packages/cli/src/index.ts']);
       expect(reviewClaimEvidence.total_claims).toBe(result.value.reviewClaimEvidence.total_claims);
+      expect(reviewClaimEvidence.architecture_impact_claim_count).toBe(1);
+      expect(reviewClaimEvidence.claim_counts).toMatchObject({
+        total:
+          reviewClaimEvidence.total_claims + reviewClaimEvidence.architecture_impact_claim_count,
+        generic_claims: reviewClaimEvidence.total_claims,
+        architecture_impact_claims: 1,
+      });
       expect(reviewClaimEvidence.claims_by_surface).toMatchObject(
         result.value.reviewClaimEvidence.claims_by_surface,
       );
@@ -7209,6 +7281,17 @@ describe('project brain generation', () => {
         unsafe_sensitive_reference_count: 0,
         output_secret_safe: true,
       });
+      expect(reviewClaimEvidence.architecture_impact_claims).toContainEqual(
+        expect.objectContaining({
+          impact_id: 'impact:component:packages--cli',
+          source_files: expect.arrayContaining(['packages/cli/src/index.ts']),
+          affected_entities: expect.arrayContaining(['component:packages--cli']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('component:packages--cli changes can affect'),
+          ]),
+          rules: expect.arrayContaining(['architecture_impact_map']),
+        }),
+      );
       const index = await readJson<{
         research_paths?: { review_eval?: string; review_claim_evidence?: string };
       }>(join(dir, '.rizz', 'brain', 'index.json'));

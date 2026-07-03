@@ -1013,14 +1013,49 @@ interface ReviewClaimEvidenceData {
   readonly redacted_evidence_count: number;
 }
 
+interface ReviewArchitectureImpactClaimEvidenceData {
+  readonly claim_id: string;
+  readonly impact_id: string;
+  readonly surface_type: ArchitectureImpactSurfaceType;
+  readonly claim: string;
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly source_files: readonly string[];
+  readonly affected_entities: readonly string[];
+  readonly matched_components: readonly string[];
+  readonly matched_flows: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
+  readonly what_breaks: readonly string[];
+  readonly review_focus: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly redacted_evidence_count: number;
+}
+
 interface ReviewClaimEvidenceArtifactData {
   readonly schema_version: number;
   readonly generated_at: string;
   readonly review_id: string;
+  readonly basis: {
+    readonly source: 'pre_change_project_brain_plus_git_diff';
+    readonly description: string;
+    readonly review_fields: readonly string[];
+  };
+  readonly changed_files: readonly string[];
   readonly deterministic: boolean;
   readonly provider_calls_required: boolean;
   readonly network_required: boolean;
   readonly total_claims: number;
+  readonly architecture_impact_claim_count: number;
+  readonly claim_counts: {
+    readonly total: number;
+    readonly generic_claims: number;
+    readonly architecture_impact_claims: number;
+    readonly with_evidence: number;
+    readonly without_evidence: number;
+  };
   readonly claims_by_surface: Record<ReviewClaimEvidenceSurface, number>;
   readonly claims_by_confidence: Record<Confidence, number>;
   readonly redacted_evidence_count: number;
@@ -1030,6 +1065,7 @@ interface ReviewClaimEvidenceArtifactData {
     readonly output_secret_safe: boolean;
   };
   readonly claims: readonly ReviewClaimEvidenceData[];
+  readonly architecture_impact_claims: readonly ReviewArchitectureImpactClaimEvidenceData[];
 }
 
 interface ReviewEvalArtifactData {
@@ -21529,6 +21565,74 @@ function reviewClaimRedactionCount(
   return redactedReferenceCount(safeResearchValue(claim));
 }
 
+function architectureImpactClaimRedactionCount(
+  claim: Omit<ReviewArchitectureImpactClaimEvidenceData, 'redacted_evidence_count'>,
+): number {
+  return redactedReferenceCount(safeResearchValue(claim));
+}
+
+function buildArchitectureImpactClaimEvidence(
+  review: ReviewSummaryData,
+): ReviewArchitectureImpactClaimEvidenceData[] {
+  return review.architecture_impact_map.map((impact, index) => {
+    const affectedEntities = unique([
+      impact.entity_id,
+      ...impact.matched_components,
+      ...impact.dependent_components,
+      ...impact.matched_flows,
+      ...impact.affected_flows,
+    ]);
+    const unknowns = unique([
+      ...(impact.evidence_gap_ids.length > 0
+        ? [`Architecture evidence gaps remain: ${impact.evidence_gap_ids.slice(0, 6).join(', ')}.`]
+        : []),
+      ...(impact.confidence !== 'verified'
+        ? [`Architecture impact confidence is ${impact.confidence}; confirm source evidence.`]
+        : []),
+      ...(impact.evidence_ids.length === 0
+        ? ['No direct evidence IDs were linked to this architecture impact surface.']
+        : []),
+    ]);
+    const claimWithoutRedaction = {
+      claim_id: entityId('evidence', `review-architecture-impact-claim-${index + 1}`),
+      impact_id: safeText(impact.impact_id),
+      surface_type: impact.surface_type,
+      claim: safeText(
+        `${impact.impact_id} links ${impact.matched_changed_files.join(', ') || 'changed files'} to ${
+          impact.name
+        }; likely breakage: ${impact.what_breaks.slice(0, 3).join(' ') || 'none recorded'}.`,
+      ),
+      confidence: impact.confidence,
+      evidence_ids: unique(impact.evidence_ids.map(safeText)),
+      source_files: unique(
+        [...impact.matched_changed_files, ...impact.affected_files].map(safeText),
+      ),
+      affected_entities: affectedEntities.map(safeText),
+      matched_components: impact.matched_components.map(safeText),
+      matched_flows: impact.matched_flows.map(safeText),
+      affected_flows: impact.affected_flows.map(safeText),
+      affected_tests: impact.affected_tests.map(safeText),
+      affected_configs: impact.affected_configs.map(safeText),
+      what_breaks: impact.what_breaks.map(safeText),
+      review_focus: impact.risk_reasoning.review_focus.map(safeText),
+      rules: unique(
+        [
+          'architecture_impact_map',
+          `surface:${impact.surface_type}`,
+          `coupling:${impact.coupling_level}`,
+          `risk:${impact.risk_reasoning.risk_level}`,
+          ...impact.reasons,
+        ].map(safeText),
+      ),
+      unknowns: unknowns.map(safeText),
+    };
+    return {
+      ...claimWithoutRedaction,
+      redacted_evidence_count: architectureImpactClaimRedactionCount(claimWithoutRedaction),
+    };
+  });
+}
+
 function buildReviewClaimEvidenceArtifact(
   review: ReviewSummaryData,
 ): ReviewClaimEvidenceArtifactData {
@@ -21631,6 +21735,7 @@ function buildReviewClaimEvidenceArtifact(
     });
   }
 
+  const architectureImpactClaims = buildArchitectureImpactClaimEvidence(review);
   const claimsBySurface = emptyReviewClaimSurfaceCounts();
   const claimsByConfidence = emptyConfidenceCounts();
   for (const claim of claims) {
@@ -21638,16 +21743,47 @@ function buildReviewClaimEvidenceArtifact(
     claimsByConfidence[claim.confidence] += 1;
   }
   const safeClaims = safeResearchValue(claims);
-  const redactedReferenceCountValue = redactedReferenceCount(safeClaims);
-  const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeClaims);
+  const safeArchitectureImpactClaims = safeResearchValue(architectureImpactClaims);
+  const claimsWithEvidence =
+    claims.filter((claim) => claim.evidence_ids.length > 0).length +
+    architectureImpactClaims.filter((claim) => claim.evidence_ids.length > 0).length;
+  const totalClaimCount = claims.length + architectureImpactClaims.length;
+  const safeEvidencePayload = {
+    claims: safeClaims,
+    architecture_impact_claims: safeArchitectureImpactClaims,
+  };
+  const redactedReferenceCountValue = redactedReferenceCount(safeEvidencePayload);
+  const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeEvidencePayload);
   return {
     schema_version: 1,
     generated_at: review.generated_at,
     review_id: review.id,
+    basis: {
+      source: 'pre_change_project_brain_plus_git_diff',
+      description:
+        'Review claim evidence is derived from the existing Project Intelligence Layer plus the current git diff; it does not claim post-change runtime certainty.',
+      review_fields: [
+        'changed_files',
+        'blast_radius_reasons',
+        'findings',
+        'affected_flows',
+        'verification_plan',
+        'architecture_impact_map',
+      ],
+    },
+    changed_files: review.changed_files,
     deterministic: true,
     provider_calls_required: false,
     network_required: false,
     total_claims: claims.length,
+    architecture_impact_claim_count: architectureImpactClaims.length,
+    claim_counts: {
+      total: totalClaimCount,
+      generic_claims: claims.length,
+      architecture_impact_claims: architectureImpactClaims.length,
+      with_evidence: claimsWithEvidence,
+      without_evidence: totalClaimCount - claimsWithEvidence,
+    },
     claims_by_surface: claimsBySurface,
     claims_by_confidence: claimsByConfidence,
     redacted_evidence_count: redactedReferenceCountValue,
@@ -21657,6 +21793,8 @@ function buildReviewClaimEvidenceArtifact(
       output_secret_safe: unsafeSensitiveReferenceCount === 0,
     },
     claims: safeClaims as ReviewClaimEvidenceData[],
+    architecture_impact_claims:
+      safeArchitectureImpactClaims as ReviewArchitectureImpactClaimEvidenceData[],
   };
 }
 
