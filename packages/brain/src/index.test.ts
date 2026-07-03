@@ -693,6 +693,16 @@ describe('project brain generation', () => {
             read_first_files: string[];
             inspect_hint: string;
           }>;
+          evidence_confidence_deltas: Array<{
+            priority: number;
+            target_id: string;
+            current_confidence: string;
+            target_confidence: string;
+            confidence_delta: number;
+            verification_actions: string[];
+            read_first_files: string[];
+            evidence_ids: string[];
+          }>;
           calibration_summary: {
             overall_score: number;
             quality_band: string;
@@ -704,6 +714,7 @@ describe('project brain generation', () => {
         low_confidence_claim_areas: Array<{ area: string; claim_count: number }>;
         redaction_hidden_evidence: { hidden_evidence_count: number; impact: string };
         suggested_read_first: Array<{ priority: number; target_id: string }>;
+        evidence_confidence_deltas: Array<{ priority: number; target_id: string }>;
         calibration_summary: { overall_score: number; summary: string };
         top_evidence_gaps: Array<{ kind: string; id: string; field?: string; reason: string }>;
         entity_evidence_coverage_ratio: number;
@@ -804,6 +815,15 @@ describe('project brain generation', () => {
         target_id: expect.any(String),
         inspect_hint: expect.any(String),
       });
+      expect(evidenceQuality.actionability.evidence_confidence_deltas.length).toBeGreaterThan(0);
+      expect(evidenceQuality.actionability.evidence_confidence_deltas[0]).toMatchObject({
+        priority: 1,
+        target_id: expect.any(String),
+        current_confidence: expect.stringMatching(/verified|inferred|uncertain/),
+        target_confidence: expect.stringMatching(/verified|inferred|uncertain/),
+        confidence_delta: expect.any(Number),
+        verification_actions: expect.arrayContaining([expect.any(String)]),
+      });
       expect(evidenceQuality.actionability.calibration_summary).toMatchObject({
         overall_score: evidenceQuality.overall_score,
         quality_band: evidenceQuality.quality_band,
@@ -820,6 +840,9 @@ describe('project brain generation', () => {
       );
       expect(evidenceQuality.suggested_read_first).toEqual(
         evidenceQuality.actionability.suggested_read_first,
+      );
+      expect(evidenceQuality.evidence_confidence_deltas).toEqual(
+        evidenceQuality.actionability.evidence_confidence_deltas,
       );
       expect(evidenceQuality.calibration_summary).toEqual(
         evidenceQuality.actionability.calibration_summary,
@@ -846,6 +869,7 @@ describe('project brain generation', () => {
       expect(missionControlReport).toContain('Evidence Calibration');
       expect(missionControlReport).toContain('Evidence Actionability');
       expect(missionControlReport).toContain('Read First To Improve Confidence');
+      expect(missionControlReport).toContain('Confidence Upgrade Queue');
       expect(missionControlReport).toContain('Unbacked Claim Groups');
       expect(missionControlReport).toContain('Low-Confidence Claim Areas');
       expect(missionControlReport).toContain('Redaction-Hidden Evidence');
