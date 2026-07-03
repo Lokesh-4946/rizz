@@ -7689,4 +7689,219 @@ describe('project brain generation', () => {
       expect(generated).toContain('Security-sensitive surface changed');
     });
   });
+
+  it('links transitive route flows to state/data dependencies and review blast radius', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'accounts'), { recursive: true });
+      await mkdir(join(dir, 'src', 'db'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'stateful-app',
+          scripts: { test: 'vitest run', start: 'node dist/server.js' },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { vitest: '^2.0.0', typescript: '^5.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import { profileHandler } from "./accounts/profile-handler.js";',
+          'const app = express();',
+          'app.get("/profile", profileHandler);',
+          'export { app };',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-handler.ts'),
+        [
+          'import { loadProfile, saveProfile } from "./profile-repository.js";',
+          'export async function profileHandler(req: { userId?: string }, res: { json: (value: unknown) => void }) {',
+          '  const profile = await loadProfile(req.userId ?? "guest");',
+          '  await saveProfile(profile.id, { lastSeen: Date.now() });',
+          '  res.json(profile);',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-repository.ts'),
+        [
+          'import { profileSchema } from "../db/schema.js";',
+          'const profiles = new Map<string, { id: string; lastSeen?: number }>();',
+          'export async function loadProfile(id: string) {',
+          '  const cached = profiles.get(id);',
+          '  return cached ?? { id, schema: profileSchema.table };',
+          '}',
+          'export async function saveProfile(id: string, update: { lastSeen: number }) {',
+          '  profiles.set(id, { id, ...update });',
+          '  return profiles.get(id);',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'db', 'schema.ts'),
+        [
+          'export const profileSchema = {',
+          '  table: "profiles",',
+          '  columns: ["id", "lastSeen"],',
+          '};',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-handler.test.ts'),
+        'import { it } from "vitest"; it("loads profile", () => {});\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:00:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            route_path?: string;
+            files?: string[];
+            data_dependencies?: Array<{
+              label: string;
+              kind: string;
+              operations: string[];
+              files: string[];
+            }>;
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const profileFlow = flows.entities.find((flow) => flow.data?.route_path === '/profile');
+      expect(profileFlow).toBeDefined();
+      expect(profileFlow?.data?.files).toEqual(
+        expect.arrayContaining([
+          'src/server.ts',
+          'src/accounts/profile-handler.ts',
+          'src/accounts/profile-repository.ts',
+          'src/db/schema.ts',
+        ]),
+      );
+      expect(profileFlow?.data?.data_dependencies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: 'data schema/model',
+            kind: 'schema',
+            operations: expect.arrayContaining(['schema']),
+            files: expect.arrayContaining(['src/db/schema.ts']),
+          }),
+          expect.objectContaining({
+            label: 'state repository/module',
+            operations: expect.arrayContaining(['read', 'write']),
+            files: expect.arrayContaining(['src/accounts/profile-repository.ts']),
+          }),
+        ]),
+      );
+
+      const flowUnderstanding = await readJson<{
+        flows_with_data_dependencies: number;
+        data_dependencies: number;
+        state_operations_by_type: Record<string, number>;
+      }>(join(dir, '.rizz', 'research', 'flow_understanding.json'));
+      expect(flowUnderstanding.flows_with_data_dependencies).toBeGreaterThan(0);
+      expect(flowUnderstanding.data_dependencies).toBeGreaterThan(0);
+      expect(flowUnderstanding.state_operations_by_type.schema).toBeGreaterThan(0);
+
+      const explain = await explainProjectTarget({
+        rootDir: dir,
+        target: profileFlow?.id ?? 'flow:http--get--profile',
+        now: new Date('2026-06-28T12:01:00.000Z'),
+      });
+      expect(explain.ok).toBe(true);
+      if (!explain.ok) return;
+      expect(explain.value.explanation.flow?.data_dependencies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'data schema/model', kind: 'schema' }),
+        ]),
+      );
+      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      expect(explainReport).toContain('State/Data Dependencies');
+      expect(explainReport).toContain('data schema/model');
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'src', 'db', 'schema.ts'),
+        [
+          'export const profileSchema = {',
+          '  table: "profiles",',
+          '  columns: ["id", "lastSeen", "plan"],',
+          '};',
+          '',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:02:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toContain(
+        'data schema/model',
+      );
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toContain(
+        'schema',
+      );
+      expect(review.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'State/data dependency overlaps the diff',
+          category: 'Hidden coupling',
+        }),
+      );
+      expect(review.value.reviewEval).toMatchObject({
+        affected_data_dependency_count: expect.any(Number),
+        affected_state_operation_count: expect.any(Number),
+      });
+      expect(review.value.reviewEval.affected_data_dependency_count).toBeGreaterThan(0);
+      expect(review.value.reviewEval.affected_state_operation_count).toBeGreaterThan(0);
+      const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(reviewReport).toContain('State/Data Impact');
+      expect(reviewReport).toContain('data schema/model');
+    });
+  });
+
+  it('does not infer state/data dependencies from plain UI copy alone', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'copy-only-app', scripts: { start: 'vite' } }),
+      );
+      await writeFile(
+        join(dir, 'src', 'home.tsx'),
+        [
+          'export function Home() {',
+          '  return <p>Storefront schema copy mentions cache, update, and delete help text.</p>;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:03:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{ data?: { data_dependencies?: unknown[] } }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      expect(flows.entities.flatMap((flow) => flow.data?.data_dependencies ?? [])).toEqual([]);
+    });
+  });
 });
