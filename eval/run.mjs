@@ -154,6 +154,24 @@ function validateArtifactAssertions(assertions) {
     ) {
       errors.push(`artifact_assertions[${index}].required_substrings must include strings`);
     }
+    if (assertion.expected_json_values !== undefined) {
+      if (assertion.type !== 'json') {
+        errors.push(`artifact_assertions[${index}].expected_json_values requires type json`);
+      } else if (
+        !isRecord(assertion.expected_json_values) ||
+        Object.keys(assertion.expected_json_values).length === 0
+      ) {
+        errors.push(`artifact_assertions[${index}].expected_json_values must map paths to values`);
+      } else {
+        for (const path of Object.keys(assertion.expected_json_values)) {
+          if (!isNonEmptyString(path)) {
+            errors.push(
+              `artifact_assertions[${index}].expected_json_values paths must be non-empty strings`,
+            );
+          }
+        }
+      }
+    }
     if (
       assertion.forbidden_substrings !== undefined &&
       (!isStringArray(assertion.forbidden_substrings) ||
@@ -751,6 +769,23 @@ function getPathValue(value, path) {
   return current;
 }
 
+function jsonValuesEqual(actual, expected) {
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) {
+      return false;
+    }
+    return actual.every((value, index) => jsonValuesEqual(value, expected[index]));
+  }
+  if (isRecord(actual) || isRecord(expected)) {
+    if (!isRecord(actual) || !isRecord(expected)) return false;
+    const actualKeys = Object.keys(actual).sort();
+    const expectedKeys = Object.keys(expected).sort();
+    if (!jsonValuesEqual(actualKeys, expectedKeys)) return false;
+    return expectedKeys.every((key) => jsonValuesEqual(actual[key], expected[key]));
+  }
+  return Object.is(actual, expected);
+}
+
 function assertExpectedArtifacts(task, repoDir) {
   const errors = [];
   for (const artifact of task.expected_artifacts) {
@@ -790,6 +825,16 @@ function assertArtifactContracts(task, repoDir) {
     for (const field of assertion.required_fields ?? []) {
       if (getPathValue(json, field) === undefined) {
         errors.push(`${assertion.path} missing ${field}`);
+      }
+    }
+    for (const [path, expected] of Object.entries(assertion.expected_json_values ?? {})) {
+      const actual = getPathValue(json, path);
+      if (!jsonValuesEqual(actual, expected)) {
+        errors.push(
+          `${assertion.path} expected ${path} to equal ${JSON.stringify(
+            expected,
+          )} but got ${JSON.stringify(actual)}`,
+        );
       }
     }
   }
