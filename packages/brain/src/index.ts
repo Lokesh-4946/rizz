@@ -906,6 +906,10 @@ interface ReviewEvalArtifactData {
   readonly direct_affected_component_count: number;
   readonly dependent_component_count: number;
   readonly affected_flow_count: number;
+  readonly dependency_runtime_impact_count: number;
+  readonly dependency_runtime_changed_file_count: number;
+  readonly dependency_runtime_surface_count: number;
+  readonly dependency_runtime_verification_focus_count: number;
   readonly service_causality_path_count: number;
   readonly service_causality_effect_count: number;
   readonly affected_relationship_count: number;
@@ -1019,12 +1023,52 @@ interface ReviewAffectedRelationshipData {
   readonly evidence_ids: readonly string[];
 }
 
+type ReviewPackageScriptCategory =
+  | 'build'
+  | 'test'
+  | 'typecheck'
+  | 'lint'
+  | 'pack'
+  | 'start'
+  | 'deploy'
+  | 'runtime'
+  | 'other';
+
+interface ReviewPackageScriptData {
+  readonly manifest: string;
+  readonly name: string;
+  readonly command: string;
+  readonly category: ReviewPackageScriptCategory;
+}
+
+interface ReviewDependencyRuntimeImpactData {
+  readonly changed_files: readonly string[];
+  readonly package_manifests: readonly string[];
+  readonly lockfiles: readonly string[];
+  readonly config_files: readonly string[];
+  readonly dependency_entities: readonly string[];
+  readonly package_scripts: readonly ReviewPackageScriptData[];
+  readonly runtime_surfaces: readonly string[];
+  readonly affected_components: readonly string[];
+  readonly affected_services: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
+  readonly verification_focus: readonly string[];
+  readonly reasons: readonly string[];
+  readonly confidence: Confidence;
+}
+
 interface ReviewEvidenceSummaryData {
   readonly changed_files: number;
   readonly direct_components: number;
   readonly affected_services: number;
   readonly dependent_components: number;
   readonly affected_flows: number;
+  readonly dependency_runtime_impacts: number;
+  readonly dependency_runtime_changed_files: readonly string[];
+  readonly dependency_runtime_surfaces: readonly string[];
+  readonly dependency_runtime_verification_focus: readonly string[];
   readonly service_causality_paths: number;
   readonly service_causality_effects: readonly string[];
   readonly architecture_impact_surfaces: number;
@@ -1073,6 +1117,7 @@ interface ReviewSummaryData {
   readonly affected_flows: readonly AffectedFlowData[];
   readonly affected_relationships: readonly ReviewAffectedRelationshipData[];
   readonly architecture_impact_map: readonly ReviewArchitectureImpactData[];
+  readonly dependency_runtime_impact: ReviewDependencyRuntimeImpactData | null;
   readonly affected_entities: readonly string[];
   readonly blast_radius_reasons: readonly string[];
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
@@ -1632,6 +1677,10 @@ function sorted<T>(items: readonly T[], key: (item: T) => string): T[] {
 
 function unique(items: readonly string[]): string[] {
   return [...new Set(items)].sort((a, b) => a.localeCompare(b));
+}
+
+function uniqueInOrder(items: readonly string[]): string[] {
+  return [...new Set(items)];
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -16562,6 +16611,7 @@ export async function reviewProjectChanges(
         architecture_impact_surfaces: review.architecture_impact_map.map(
           (entry) => entry.impact_id,
         ),
+        dependency_runtime_impact: review.dependency_runtime_impact,
         review_evidence_summary: review.review_evidence_summary,
         verification_status: review.verification_status,
         research_artifacts: {
@@ -18870,6 +18920,18 @@ function buildReview(params: {
     ...changedConfigFiles,
     ...changedDependencyFiles,
   ]).map(safeText);
+  const dependencyRuntimeImpact = reviewDependencyRuntimeImpact({
+    changedConfigFiles,
+    changedDependencyFiles,
+    entitySets: params.entitySets,
+    directComponents: affectedComponents,
+    dependentComponents,
+    affectedFlows,
+    affectedServices,
+    affectedTests,
+    affectedConfigs,
+    architectureImpactMap,
+  });
   const architectureEvidenceGapIds = unique(
     architectureImpactMap.flatMap((entry) => entry.evidence_gap_ids),
   ).map(safeText);
@@ -18912,6 +18974,7 @@ function buildReview(params: {
     affectedServices,
     affectedRelationships,
     architectureImpactMap,
+    dependencyRuntimeImpact,
     affectedTests,
     affectedConfigs,
   });
@@ -19034,16 +19097,35 @@ function buildReview(params: {
   }
 
   if (changedConfigFiles.length > 0 || changedDependencyFiles.length > 0) {
+    const impactDescription =
+      dependencyRuntimeImpact === null
+        ? 'No local flow, service, component, script, or dependency evidence was linked to these package/config files.'
+        : `Runtime/dependency impact links ${dependencyRuntimeImpact.changed_files.length} changed package/config file(s) to ${dependencyRuntimeImpact.affected_flows.length} flow(s), ${dependencyRuntimeImpact.affected_services.length} service(s), ${dependencyRuntimeImpact.affected_components.length} component(s), and ${dependencyRuntimeImpact.package_scripts.length} package script(s). Focused verification: ${
+            dependencyRuntimeImpact.verification_focus.slice(0, 4).join('; ') || 'none recorded'
+          }.`;
     addFinding({
       slug: 'config-dependency-change',
       severity: changedDependencyFiles.length > 0 ? 'medium' : 'low',
       category: changedDependencyFiles.length > 0 ? 'Backward compatibility' : 'Architecture drift',
       title: 'Configuration or dependency surface changed',
-      description: 'The diff touches setup, package, build, CI, or dependency metadata.',
+      description: safeText(
+        `The diff touches setup, package, build, CI, or dependency metadata. ${impactDescription}`,
+      ),
       affected_files: unique([...changedConfigFiles, ...changedDependencyFiles]),
-      affected_entities: graphAffectedEntities,
+      affected_entities: unique([
+        ...graphAffectedEntities,
+        ...(dependencyRuntimeImpact?.dependency_entities ?? []),
+        ...(dependencyRuntimeImpact?.affected_components ?? []),
+        ...(dependencyRuntimeImpact?.affected_services ?? []),
+        ...(dependencyRuntimeImpact?.affected_flows ?? []),
+      ]),
       confidence: 'verified',
-      recommendation: 'Verify install, build, and public package contents before merge.',
+      recommendation:
+        dependencyRuntimeImpact === null
+          ? 'Verify install, build, and public package contents before merge.'
+          : `Verify the linked runtime blast radius before merge: ${dependencyRuntimeImpact.verification_focus
+              .slice(0, 5)
+              .join('; ')}.`,
       safer_alternative:
         'Keep package/config movement in a separate PR unless the runtime change depends on it.',
     });
@@ -19243,6 +19325,7 @@ function buildReview(params: {
     affected_flows: affectedFlows,
     affected_relationships: affectedRelationships,
     architecture_impact_map: architectureImpactMap,
+    dependency_runtime_impact: dependencyRuntimeImpact,
     affected_entities: graphAffectedEntities,
     blast_radius_reasons: blastRadiusReasons,
     review_evidence_summary: {
@@ -19251,6 +19334,10 @@ function buildReview(params: {
       affected_services: affectedServices.length,
       dependent_components: dependentComponents.length,
       affected_flows: affectedFlows.length,
+      dependency_runtime_impacts: dependencyRuntimeImpact === null ? 0 : 1,
+      dependency_runtime_changed_files: dependencyRuntimeImpact?.changed_files ?? [],
+      dependency_runtime_surfaces: dependencyRuntimeImpact?.runtime_surfaces ?? [],
+      dependency_runtime_verification_focus: dependencyRuntimeImpact?.verification_focus ?? [],
       service_causality_paths: serviceCausalityPaths.length,
       service_causality_effects: serviceCausalityEffects,
       architecture_impact_surfaces: architectureImpactMap.length,
@@ -19274,6 +19361,7 @@ function buildReview(params: {
       affectedComponents,
       dependentComponents,
       affectedFlows,
+      dependencyRuntimeImpact,
       blastRadiusReasons,
     ),
     recommended_action: recommendAction(overallRisk, findings),
@@ -19359,6 +19447,13 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     direct_affected_component_count: review.direct_affected_components.length,
     dependent_component_count: review.dependent_components.length,
     affected_flow_count: review.affected_flows.length,
+    dependency_runtime_impact_count: review.dependency_runtime_impact === null ? 0 : 1,
+    dependency_runtime_changed_file_count:
+      review.dependency_runtime_impact?.changed_files.length ?? 0,
+    dependency_runtime_surface_count:
+      review.dependency_runtime_impact?.runtime_surfaces.length ?? 0,
+    dependency_runtime_verification_focus_count:
+      review.dependency_runtime_impact?.verification_focus.length ?? 0,
     service_causality_path_count: serviceCausality.length,
     service_causality_effect_count: serviceCausalityEffects.length,
     affected_relationship_count: review.affected_relationships.length,
@@ -19558,6 +19653,276 @@ function affectedReviewRelationships(
     .sort((a, b) =>
       `${a.from}:${a.relation}:${a.to}`.localeCompare(`${b.from}:${b.relation}:${b.to}`),
     );
+}
+
+function reviewDependencyRuntimeImpact(params: {
+  readonly changedConfigFiles: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>;
+  readonly directComponents: readonly BrainEntity[];
+  readonly dependentComponents: readonly BrainEntity[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+  readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
+}): ReviewDependencyRuntimeImpactData | null {
+  const changedFiles = unique([...params.changedDependencyFiles, ...params.changedConfigFiles]);
+  if (changedFiles.length === 0) return null;
+
+  const packageManifests = params.changedDependencyFiles.filter((file) =>
+    /(^|\/)package\.json$/.test(file),
+  );
+  const lockfiles = params.changedDependencyFiles.filter(
+    (file) => !packageManifests.includes(file),
+  );
+  const changedDependencyFileSet = new Set(params.changedDependencyFiles);
+  const packageScripts = reviewPackageScriptsForChangedFiles(
+    params.entitySets.commands,
+    params.changedDependencyFiles,
+  );
+  const dependencyEntities = reviewDependencyEntitiesForChangedFiles({
+    dependencies: params.entitySets.dependencies,
+    changedDependencyFiles: params.changedDependencyFiles,
+    includeAllDependencies: lockfiles.length > 0,
+  });
+  const runtimeSurfaces = reviewDependencyRuntimeSurfaces({
+    changedConfigFiles: params.changedConfigFiles,
+    changedDependencyFiles: params.changedDependencyFiles,
+    packageScripts,
+    affectedFlows: params.affectedFlows,
+    affectedServices: params.affectedServices,
+  });
+  const affectedComponents = unique([
+    ...params.directComponents.map((component) => component.id),
+    ...params.dependentComponents.map((component) => component.id),
+    ...params.architectureImpactMap.flatMap((entry) => [
+      entry.entity_id,
+      ...entry.matched_components,
+      ...entry.dependent_components,
+    ]),
+  ]).map(safeText);
+  const affectedServices = params.affectedServices.map((service) => service.id);
+  const affectedFlows = params.affectedFlows.map((flow) => flow.id);
+  const affectedTests = unique([
+    ...params.affectedTests,
+    ...params.architectureImpactMap.flatMap((entry) => entry.affected_tests),
+  ]).map(safeText);
+  const affectedConfigs = unique([
+    ...params.affectedConfigs,
+    ...params.architectureImpactMap.flatMap((entry) => entry.affected_configs),
+  ]).map(safeText);
+  const verificationFocus = reviewDependencyVerificationFocus({
+    packageScripts,
+    affectedFlows: params.affectedFlows,
+    affectedServices: params.affectedServices,
+    affectedTests,
+    changedDependencyFiles: params.changedDependencyFiles,
+    changedConfigFiles: params.changedConfigFiles,
+  });
+
+  return {
+    changed_files: changedFiles.map(safeText),
+    package_manifests: packageManifests.map(safeText),
+    lockfiles: lockfiles.map(safeText),
+    config_files: params.changedConfigFiles.map(safeText),
+    dependency_entities: dependencyEntities.map((dependency) => dependency.id),
+    package_scripts: packageScripts,
+    runtime_surfaces: runtimeSurfaces,
+    affected_components: affectedComponents,
+    affected_services: affectedServices,
+    affected_flows: affectedFlows,
+    affected_tests: affectedTests,
+    affected_configs: affectedConfigs,
+    verification_focus: verificationFocus,
+    reasons: unique([
+      ...(packageManifests.length > 0
+        ? [`Changed package manifest(s): ${packageManifests.slice(0, 5).join(', ')}.`]
+        : []),
+      ...(lockfiles.length > 0
+        ? [`Changed lockfile(s): ${lockfiles.slice(0, 5).join(', ')}.`]
+        : []),
+      ...(params.changedConfigFiles.length > 0
+        ? [`Changed config file(s): ${params.changedConfigFiles.slice(0, 5).join(', ')}.`]
+        : []),
+      ...(packageScripts.length > 0
+        ? [
+            `${packageScripts.length} package script(s) can change install/build/test/runtime behavior.`,
+          ]
+        : []),
+      ...(dependencyEntities.length > 0
+        ? [
+            `${dependencyEntities.length} declared dependency entity/entities are linked to changed package evidence.`,
+          ]
+        : []),
+      ...(changedDependencyFileSet.size > 0 && affectedFlows.length > 0
+        ? [
+            `Package/dependency evidence is linked to affected flow(s): ${affectedFlows.slice(0, 5).join(', ')}.`,
+          ]
+        : []),
+      ...(params.affectedServices.length > 0
+        ? [
+            `Affected service(s) inherit package/config risk: ${affectedServices.slice(0, 5).join(', ')}.`,
+          ]
+        : []),
+    ]).map(safeText),
+    confidence:
+      affectedComponents.length > 0 ||
+      affectedFlows.length > 0 ||
+      affectedServices.length > 0 ||
+      packageScripts.length > 0
+        ? 'inferred'
+        : 'verified',
+  };
+}
+
+function reviewDependencyEntitiesForChangedFiles(params: {
+  readonly dependencies: readonly BrainEntity[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly includeAllDependencies: boolean;
+}): BrainEntity[] {
+  const changedFileSet = new Set(params.changedDependencyFiles);
+  return params.dependencies
+    .filter((dependency) => {
+      if (dependency.latest_status === 'stale') return false;
+      if (params.includeAllDependencies) return true;
+      return dependency.source_files.some((file) => changedFileSet.has(file));
+    })
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, 20);
+}
+
+function reviewPackageScriptsForChangedFiles(
+  commands: readonly BrainEntity[],
+  changedDependencyFiles: readonly string[],
+): ReviewPackageScriptData[] {
+  const changedFileSet = new Set(changedDependencyFiles);
+  return commands
+    .filter((command) => command.latest_status !== 'stale')
+    .filter((command) => command.source_files.some((file) => changedFileSet.has(file)))
+    .map((command) => {
+      const manifest = stringData(command, 'manifest') ?? command.source_files[0] ?? '';
+      const commandText = stringData(command, 'command') ?? '';
+      return {
+        manifest: safeText(manifest),
+        name: safeText(command.name),
+        command: safeText(commandText),
+        category: reviewPackageScriptCategory(command.name, commandText),
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.manifest.localeCompare(b.manifest) ||
+        reviewPackageScriptCategoryRank(a.category) - reviewPackageScriptCategoryRank(b.category) ||
+        a.name.localeCompare(b.name),
+    )
+    .slice(0, 20);
+}
+
+function reviewPackageScriptCategory(name: string, command: string): ReviewPackageScriptCategory {
+  const scriptName = name.toLowerCase();
+  if (/typecheck|type-check/.test(scriptName)) return 'typecheck';
+  if (/test/.test(scriptName)) return 'test';
+  if (/lint/.test(scriptName)) return 'lint';
+  if (/pack/.test(scriptName)) return 'pack';
+  if (/build|compile|bundle/.test(scriptName)) return 'build';
+  if (/deploy/.test(scriptName)) return 'deploy';
+  if (/start|dev|serve/.test(scriptName)) return 'start';
+  if (/runtime|smoke|e2e/.test(scriptName)) return 'runtime';
+  const text = command.toLowerCase();
+  if (/typecheck|tsc|type-check/.test(text)) return 'typecheck';
+  if (/test|vitest|jest|pytest|playwright|cypress/.test(text)) return 'test';
+  if (/lint|biome|eslint/.test(text)) return 'lint';
+  if (/pack|npm pack|pnpm pack/.test(text)) return 'pack';
+  if (/build|compile|bundle/.test(text)) return 'build';
+  if (/deploy|vercel|netlify|wrangler|sst/.test(text)) return 'deploy';
+  if (/start|dev|serve|node /.test(text)) return 'start';
+  if (/runtime|smoke|e2e/.test(text)) return 'runtime';
+  return 'other';
+}
+
+function reviewPackageScriptCategoryRank(category: ReviewPackageScriptCategory): number {
+  switch (category) {
+    case 'typecheck':
+      return 1;
+    case 'test':
+      return 2;
+    case 'lint':
+      return 3;
+    case 'build':
+      return 4;
+    case 'pack':
+      return 5;
+    case 'start':
+      return 6;
+    case 'deploy':
+      return 7;
+    case 'runtime':
+      return 8;
+    case 'other':
+      return 9;
+  }
+}
+
+function reviewDependencyRuntimeSurfaces(params: {
+  readonly changedConfigFiles: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly packageScripts: readonly ReviewPackageScriptData[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+}): string[] {
+  return unique([
+    ...(params.changedDependencyFiles.length > 0 ? ['install/dependency resolution'] : []),
+    ...(params.changedConfigFiles.length > 0 ? ['configuration/runtime setup'] : []),
+    ...params.packageScripts.map((script) => `package script:${script.category}`),
+    ...(params.affectedFlows.length > 0 ? ['reconstructed flows'] : []),
+    ...(params.affectedServices.length > 0 ? ['service runtime behavior'] : []),
+    ...(params.affectedServices.some((service) => service.deployment_configs.length > 0)
+      ? ['deployment config']
+      : []),
+    ...(params.affectedServices.some((service) => service.environment_variables.length > 0)
+      ? ['environment variables']
+      : []),
+    ...(params.affectedFlows.some((flow) => flow.route_path !== undefined)
+      ? ['route runtime']
+      : []),
+  ]).map(safeText);
+}
+
+function reviewDependencyVerificationFocus(params: {
+  readonly packageScripts: readonly ReviewPackageScriptData[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+  readonly affectedTests: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly changedConfigFiles: readonly string[];
+}): string[] {
+  const priorityScripts = params.packageScripts.filter((script) =>
+    ['typecheck', 'test', 'lint', 'build', 'pack'].includes(script.category),
+  );
+  return uniqueInOrder([
+    ...(params.changedDependencyFiles.length > 0
+      ? ['Validate package install and lockfile resolution for the changed dependency files.']
+      : []),
+    ...(params.changedConfigFiles.length > 0
+      ? ['Run the config-backed build/test path that consumes the changed config files.']
+      : []),
+    ...priorityScripts.map(
+      (script) => `Run package script ${script.manifest}#${script.name}: ${script.command}.`,
+    ),
+    ...params.affectedFlows
+      .slice(0, 6)
+      .map((flow) => `Exercise affected flow ${reviewFlowDescriptionLabel(flow)}.`),
+    ...params.affectedServices
+      .slice(0, 6)
+      .map((service) => `Smoke affected service ${service.id}.`),
+    ...params.affectedTests.slice(0, 6).map((test) => `Run linked test artifact ${test}.`),
+    ...(params.packageScripts.some((script) => script.category === 'pack')
+      ? ['Inspect packed package contents after the dependency/config change.']
+      : []),
+  ])
+    .map(safeText)
+    .slice(0, 12);
 }
 
 function reviewAffectedComponents(params: {
@@ -19898,6 +20263,7 @@ function blastRadiusReasonLines(params: {
   readonly affectedServices: readonly ReviewAffectedServiceData[];
   readonly affectedRelationships: readonly ReviewAffectedRelationshipData[];
   readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
+  readonly dependencyRuntimeImpact: ReviewDependencyRuntimeImpactData | null;
   readonly affectedTests: readonly string[];
   readonly affectedConfigs: readonly string[];
 }): string[] {
@@ -19907,6 +20273,13 @@ function blastRadiusReasonLines(params: {
   const serviceCausality = params.affectedFlows.flatMap((flow) => flow.service_causality);
   const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   const impactMapReasons = architectureImpactReasonLines(params.architectureImpactMap);
+  const dependencyRuntimeReasons =
+    params.dependencyRuntimeImpact === null
+      ? []
+      : [
+          `Dependency/runtime impact links changed package/config files to ${params.dependencyRuntimeImpact.affected_flows.length} flow(s), ${params.dependencyRuntimeImpact.affected_services.length} service(s), ${params.dependencyRuntimeImpact.affected_components.length} component(s), and ${params.dependencyRuntimeImpact.package_scripts.length} package script(s).`,
+          `Focused dependency/runtime verification: ${params.dependencyRuntimeImpact.verification_focus.slice(0, 5).join('; ') || 'none recorded'}.`,
+        ];
   return [
     `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
     params.dependentComponents.length === 0
@@ -19919,6 +20292,7 @@ function blastRadiusReasonLines(params: {
     `${params.affectedServices.length} affected service(s) link the change to routes, jobs, storage, external API, env, or deployment evidence.`,
     ...routeFlowReasons,
     ...impactMapReasons,
+    ...dependencyRuntimeReasons,
     `${params.affectedRelationships.length} graph relationship(s) touch the review blast radius.`,
   ].map(safeText);
 }
@@ -20038,17 +20412,26 @@ function suggestedFocusAreas(
   components: readonly BrainEntity[],
   dependentComponents: readonly BrainEntity[],
   affectedFlows: readonly AffectedFlowData[],
+  dependencyRuntimeImpact: ReviewDependencyRuntimeImpactData | null,
   blastRadiusReasons: readonly string[],
 ): string[] {
   const categories = findings.map((finding) => finding.category);
   const componentNames = components.map((component) => component.name);
   const dependentNames = dependentComponents.map((component) => component.name);
-  return unique([
+  return uniqueInOrder([
     ...categories,
     ...componentNames.map((name) => `component: ${name}`),
     ...dependentNames.map((name) => `dependent component: ${name}`),
     ...affectedFlows.map(reviewFlowFocusLabel),
     ...affectedFlows.flatMap(reviewFlowCausalityFocusLabels),
+    ...(dependencyRuntimeImpact === null
+      ? []
+      : [
+          ...dependencyRuntimeImpact.runtime_surfaces.map(
+            (surface) => `dependency/runtime: ${surface}`,
+          ),
+          ...dependencyRuntimeImpact.verification_focus.slice(0, 4),
+        ]),
     ...blastRadiusReasons.slice(0, 2),
     ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
     ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
@@ -20170,6 +20553,28 @@ function renderAffectedServiceRows(services: readonly ReviewAffectedServiceData[
       </tr>`,
     )
     .join('')}</tbody></table>`;
+}
+
+function renderDependencyRuntimeImpact(impact: ReviewDependencyRuntimeImpactData | null): string {
+  if (impact === null) {
+    return '<p class="muted">No dependency or runtime package/config impact was detected for this diff.</p>';
+  }
+  return `<table><thead><tr><th>Changed Package / Config</th><th>Runtime Surfaces</th><th>Components / Services / Flows</th><th>Scripts</th><th>Focused Verification</th></tr></thead><tbody><tr>
+    <td>${renderList(impact.changed_files)}</td>
+    <td>${renderList(impact.runtime_surfaces)}</td>
+    <td>${renderList([
+      ...impact.affected_components,
+      ...impact.affected_services,
+      ...impact.affected_flows,
+    ])}</td>
+    <td>${renderList(
+      impact.package_scripts.map(
+        (script) => `${script.manifest}#${script.name} (${script.category}): ${script.command}`,
+      ),
+    )}</td>
+    <td>${renderList(impact.verification_focus)}</td>
+  </tr></tbody></table>
+  ${renderList(impact.reasons)}`;
 }
 
 function reviewFlowTableMeta(flow: AffectedFlowData): string {
@@ -20298,6 +20703,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
     <section>
       <h2>Affected Services</h2>
       ${renderAffectedServiceRows(review.affected_services)}
+    </section>
+    <section>
+      <h2>Dependency Runtime Impact</h2>
+      ${renderDependencyRuntimeImpact(review.dependency_runtime_impact)}
     </section>
     <section>
       <h2>Affected Flows</h2>

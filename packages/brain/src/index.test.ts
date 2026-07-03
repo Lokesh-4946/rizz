@@ -3120,7 +3120,7 @@ describe('project brain generation', () => {
       expect(missionControl).toContain('rizz explain service src/orders');
       expect(missionControl).toContain('.rizz/research/service_intelligence.json');
       expect(missionControl).toContain('Reachability Quality');
-      expect(missionControl).toContain('3 static reachability path(s)');
+      expect(missionControl).toContain('2 static reachability path(s)');
       expect(missionControl).toContain('Effects & Unknowns');
       expect(missionControl).toContain('Freshness');
       expect(missionControl).toContain('Reachability Paths');
@@ -6888,6 +6888,147 @@ describe('project brain generation', () => {
       expect(report).toContain('service:src--orders');
       expect(report).toContain('env:ORDER_REGION');
       expect(report).toContain('flow:http--post--orders--src--server.ts');
+    });
+  });
+
+  it('links package and config diffs to dependency/runtime blast radius evidence', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: {
+            build: 'tsc -b packages/cli',
+            check: 'vitest run packages/cli && tsc -b',
+            pack: 'pnpm pack',
+            start: 'node dist/index.js',
+          },
+          dependencies: { zod: '^3.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'export function main(input: unknown): unknown { return input; }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("starts", () => {});\n',
+      );
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:10:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({
+          name: '@sample/cli',
+          scripts: {
+            build: 'tsc -b packages/cli --pretty false',
+            check: 'vitest run packages/cli && tsc -b',
+            pack: 'pnpm pack',
+            start: 'node dist/index.js',
+          },
+          dependencies: { zod: '^4.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:11:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.changed_files).toEqual(['packages/cli/package.json']);
+      expect(result.value.review.dependency_runtime_impact).toMatchObject({
+        changed_files: ['packages/cli/package.json'],
+        package_manifests: ['packages/cli/package.json'],
+        lockfiles: [],
+        config_files: ['packages/cli/package.json'],
+        dependency_entities: expect.arrayContaining(['dependency:zod']),
+        affected_components: expect.arrayContaining(['component:packages--cli']),
+        affected_flows: expect.arrayContaining(['flow:packages--cli--check']),
+        affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+        affected_configs: expect.arrayContaining(['packages/cli/package.json']),
+        runtime_surfaces: expect.arrayContaining([
+          'install/dependency resolution',
+          'package script:build',
+          'package script:typecheck',
+          'package script:pack',
+          'reconstructed flows',
+        ]),
+        verification_focus: expect.arrayContaining([
+          'Validate package install and lockfile resolution for the changed dependency files.',
+          'Run package script packages/cli/package.json#build: tsc -b packages/cli.',
+          'Run package script packages/cli/package.json#check: vitest run packages/cli && tsc -b.',
+          'Run package script packages/cli/package.json#pack: pnpm pack.',
+          'Run linked test artifact packages/cli/src/index.test.ts.',
+        ]),
+        confidence: 'inferred',
+      });
+      expect(result.value.review.dependency_runtime_impact?.package_scripts).toContainEqual(
+        expect.objectContaining({
+          manifest: 'packages/cli/package.json',
+          name: 'build',
+          category: 'build',
+        }),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Configuration or dependency surface changed',
+          description: expect.stringContaining('Runtime/dependency impact links'),
+          affected_entities: expect.arrayContaining([
+            'component:packages--cli',
+            'dependency:zod',
+            'flow:packages--cli--check',
+          ]),
+          recommendation: expect.stringContaining('Validate package install'),
+        }),
+      );
+      expect(result.value.review.review_evidence_summary).toMatchObject({
+        dependency_runtime_impacts: 1,
+        dependency_runtime_changed_files: ['packages/cli/package.json'],
+        dependency_runtime_surfaces: expect.arrayContaining(['package script:build']),
+        dependency_runtime_verification_focus: expect.arrayContaining([
+          'Validate package install and lockfile resolution for the changed dependency files.',
+        ]),
+      });
+      expect(result.value.review.blast_radius_reasons).toContainEqual(
+        expect.stringContaining('Dependency/runtime impact links changed package/config files'),
+      );
+      expect(result.value.review.suggested_reviewer_focus_areas).toContain(
+        'dependency/runtime: package script:build',
+      );
+      expect(result.value.reviewEval).toMatchObject({
+        dependency_runtime_impact_count: 1,
+        dependency_runtime_changed_file_count: 1,
+        dependency_runtime_surface_count:
+          result.value.review.dependency_runtime_impact?.runtime_surfaces.length,
+        dependency_runtime_verification_focus_count:
+          result.value.review.dependency_runtime_impact?.verification_focus.length,
+      });
+
+      const latest = await readJson<{
+        latest_review_status: {
+          dependency_runtime_impact?: { changed_files?: string[]; affected_flows?: string[] };
+        };
+      }>(join(dir, '.rizz', 'brain', 'latest.json'));
+      expect(latest.latest_review_status.dependency_runtime_impact).toMatchObject({
+        changed_files: ['packages/cli/package.json'],
+        affected_flows: expect.arrayContaining(['flow:packages--cli--check']),
+      });
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Dependency Runtime Impact');
+      expect(report).toContain('packages/cli/package.json#build');
+      expect(report).toContain('Validate package install');
     });
   });
 
