@@ -7121,6 +7121,12 @@ describe('project brain generation', () => {
           readonly dependent_components?: string[];
           readonly affected_flows?: string[];
           readonly architecture_impact_surfaces?: string[];
+          readonly architecture_impact_claim_count?: number;
+          readonly architecture_impact_claims?: Array<{
+            readonly impact_id?: string;
+            readonly source_files?: string[];
+            readonly what_breaks?: string[];
+          }>;
           readonly blast_radius_reasons?: string[];
           readonly research_artifacts?: {
             readonly review_eval?: string;
@@ -7138,6 +7144,16 @@ describe('project brain generation', () => {
         dependent_components: [],
         affected_flows: ['flow:packages--cli--check'],
         architecture_impact_surfaces: ['impact:component:packages--cli'],
+        architecture_impact_claim_count: 1,
+        architecture_impact_claims: [
+          expect.objectContaining({
+            impact_id: 'impact:component:packages--cli',
+            source_files: expect.arrayContaining(['packages/cli/src/index.ts']),
+            what_breaks: expect.arrayContaining([
+              expect.stringContaining('component:packages--cli changes can affect'),
+            ]),
+          }),
+        ],
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
           review_claim_evidence: '.rizz/research/review_claim_evidence.json',
@@ -7305,10 +7321,25 @@ describe('project brain generation', () => {
       expect(report).toContain('Direct Components');
       expect(report).toContain('Dependent Components');
       expect(report).toContain('Affected Flows');
+      expect(report).toContain('Architecture Impact Evidence');
+      expect(report).toContain(
+        'Based on the pre-change Project Intelligence Layer plus the current git diff',
+      );
+      expect(report).toContain('impact:component:packages--cli');
+      expect(report).toContain('component:packages--cli changes can affect');
       expect(report).toContain('flow:packages--cli--check');
       expect(report).toContain('packages/cli/package.json');
       expect(report).toContain('Missing tests');
       expect(report).toContain('review_claim_evidence.json');
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(missionControl).toContain('Architecture Impact Claims');
+      expect(missionControl).toContain(
+        'Basis: pre-change Project Intelligence Layer plus current git diff',
+      );
+      expect(missionControl).toContain('impact:component:packages--cli');
+      expect(missionControl).toContain('packages/cli/src/index.ts');
+      expect(missionControl).toContain('component:packages--cli changes can affect');
+      expect(missionControl).toContain('review_claim_evidence.json');
     });
   });
 

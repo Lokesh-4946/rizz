@@ -74,6 +74,9 @@ claim counts, basis metadata, source-file linkage, evidence/unknown shape, and r
 Review assertions can set `require_architecture_impact_claim_coverage: true` to require one
 architecture claim per review impact-map row with mirrored evidence, files, tests, configs, and
 what-breaks fields.
+Mission Control assertions can require the same architecture-impact claim evidence in
+`.rizz/reports/index.html`, keeping the human portal aligned with the machine-readable review
+ledger.
 Precision review seeds can assert absent findings and maximum affected state/data counts; these
 negative checks keep test-only or confidence-only edits from being scored as runtime blast-radius
 changes.

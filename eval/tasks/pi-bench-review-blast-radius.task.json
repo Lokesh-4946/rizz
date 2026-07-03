@@ -133,6 +133,7 @@
     ".rizz/brain/entities/findings.json",
     ".rizz/research/review_eval.json",
     ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/index.html",
     ".rizz/reports/review.html"
   ],
   "artifact_assertions": [
@@ -245,9 +246,34 @@
       }
     },
     {
+      "path": ".rizz/reports/index.html",
+      "type": "file",
+      "required_substrings": [
+        "Architecture Impact Claims",
+        "Basis: pre-change Project Intelligence Layer plus current git diff",
+        "impact:component:packages--shared",
+        "review_claim_evidence.json"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
       "path": ".rizz/reports/review.html",
       "type": "file",
-      "required_substrings": ["review_claim_evidence.json"]
+      "required_substrings": [
+        "Architecture Impact Evidence",
+        "Based on the pre-change Project Intelligence Layer plus the current git diff",
+        "impact:component:packages--shared",
+        "review_claim_evidence.json"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ]
     }
   ],
   "rubric": {
