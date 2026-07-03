@@ -6073,6 +6073,21 @@ interface EvidenceGap {
   readonly to_entity_id?: string;
 }
 
+interface EvidenceConfidenceDelta {
+  readonly priority: number;
+  readonly gap_kind: string;
+  readonly target_id: string;
+  readonly current_confidence: Confidence;
+  readonly target_confidence: Confidence;
+  readonly current_score: number;
+  readonly target_score: number;
+  readonly confidence_delta: number;
+  readonly reason: string;
+  readonly verification_actions: readonly string[];
+  readonly read_first_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+}
+
 interface ServiceCausalityQualitySummary {
   readonly total_claims: number;
   readonly evidence_backed_claims: number;
@@ -6878,6 +6893,12 @@ function readFirstFilesForEntity(entity: BrainEntity): string[] {
     .slice(0, 5);
 }
 
+function uniqueById(entities: readonly BrainEntity[]): BrainEntity[] {
+  const byId = new Map<string, BrainEntity>();
+  for (const entity of entities) byId.set(entity.id, entity);
+  return [...byId.values()];
+}
+
 function suggestedReadFirstForEvidenceGaps(params: {
   readonly topGaps: readonly EvidenceGap[];
   readonly entitiesById: ReadonlyMap<string, BrainEntity>;
@@ -6899,6 +6920,87 @@ function suggestedReadFirstForEvidenceGaps(params: {
       confidence: gap.confidence ?? 'uncertain',
       reason: safeText(gap.reason),
       inspect_hint: evidenceInspectHint(gap),
+    };
+  });
+}
+
+function confidenceDeltaTargetForGap(gap: EvidenceGap): Confidence {
+  if (gap.confidence === 'verified') return 'verified';
+  if (
+    gap.kind === 'missing_reference' ||
+    gap.kind === 'unsupported_relationship' ||
+    gap.kind === 'unsupported_service_causality'
+  ) {
+    return 'verified';
+  }
+  return 'inferred';
+}
+
+function serviceCausalityFlowIdFromGap(gap: EvidenceGap): string | undefined {
+  const marker = ' service_causality ';
+  if (!gap.id.includes(marker)) return undefined;
+  const flowId = gap.id.slice(0, gap.id.indexOf(marker));
+  return flowId === '' ? undefined : flowId;
+}
+
+function evidenceVerificationActionsForGap(params: {
+  readonly gap: EvidenceGap;
+  readonly targetEntities: readonly BrainEntity[];
+}): string[] {
+  const explainTargets = params.targetEntities
+    .map((entity) => {
+      if (entity.type === 'flow') return `rizz explain ${entity.id}`;
+      if (entity.source_files.length > 0) return `rizz explain ${entity.source_files[0]}`;
+      return `rizz explain ${entity.id}`;
+    })
+    .slice(0, 3);
+  return uniqueInOrder([
+    evidenceInspectHint(params.gap),
+    ...explainTargets,
+    ...(params.gap.kind === 'unsupported_relationship'
+      ? ['Confirm the relationship against imports, manifests, tests, or direct source evidence.']
+      : []),
+    ...(params.gap.kind === 'unsupported_field'
+      ? ['Add field-specific evidence_ids before using this field as review guidance.']
+      : []),
+    ...(params.gap.kind.includes('service_causality')
+      ? ['Run or inspect the route/service behavior before upgrading service-causality confidence.']
+      : []),
+  ]).map(safeText);
+}
+
+function evidenceConfidenceDeltasForGaps(params: {
+  readonly topGaps: readonly EvidenceGap[];
+  readonly entitiesById: ReadonlyMap<string, BrainEntity>;
+}): EvidenceConfidenceDelta[] {
+  return params.topGaps.slice(0, 10).map((gap, index) => {
+    const serviceFlowId = serviceCausalityFlowIdFromGap(gap);
+    const directTargets = readFirstEntityTargets({ gap, entitiesById: params.entitiesById });
+    const serviceFlow =
+      serviceFlowId === undefined ? undefined : params.entitiesById.get(serviceFlowId);
+    const targetEntities = uniqueById([
+      ...directTargets,
+      ...(serviceFlow === undefined ? [] : [serviceFlow]),
+    ]);
+    const currentConfidence = gap.confidence ?? 'uncertain';
+    const targetConfidence = confidenceDeltaTargetForGap(gap);
+    const currentScore = confidenceScoreForValue(currentConfidence);
+    const targetScore = confidenceScoreForValue(targetConfidence);
+    return {
+      priority: index + 1,
+      gap_kind: safeText(gap.kind),
+      target_id: safeText(gap.id),
+      current_confidence: currentConfidence,
+      target_confidence: targetConfidence,
+      current_score: Number(currentScore.toFixed(2)),
+      target_score: Number(targetScore.toFixed(2)),
+      confidence_delta: Math.max(0, Math.round((targetScore - currentScore) * 100)),
+      reason: safeText(gap.reason),
+      verification_actions: evidenceVerificationActionsForGap({ gap, targetEntities }),
+      read_first_files: unique(targetEntities.flatMap(readFirstFilesForEntity)).slice(0, 6),
+      evidence_ids: unique(
+        targetEntities.flatMap((entity) => entity.evidence_ids.map(safeText)),
+      ).slice(0, 8),
     };
   });
 }
@@ -7132,6 +7234,10 @@ function buildEvidenceQualityArtifact(params: {
     topGaps,
     entitiesById: entityById(entities),
   });
+  const evidenceConfidenceDeltas = evidenceConfidenceDeltasForGaps({
+    topGaps,
+    entitiesById: entityById(entities),
+  });
   const actionabilitySummary =
     evidenceGapCount === 0
       ? 'No evidence actionability gaps were detected in local research artifacts.'
@@ -7171,12 +7277,14 @@ function buildEvidenceQualityArtifact(params: {
       low_confidence_claim_areas: lowConfidenceAreas,
       redaction_hidden_evidence: redactionHiddenEvidence,
       suggested_read_first: suggestedReadFirst,
+      evidence_confidence_deltas: evidenceConfidenceDeltas,
       calibration_summary: evidenceCalibrationSummary,
     },
     unbacked_claim_groups: unbackedGroups,
     low_confidence_claim_areas: lowConfidenceAreas,
     redaction_hidden_evidence: redactionHiddenEvidence,
     suggested_read_first: suggestedReadFirst,
+    evidence_confidence_deltas: evidenceConfidenceDeltas,
     calibration_summary: evidenceCalibrationSummary,
     confidence_adjustments: {
       redaction_downgrades: confidenceDowngradeCount,
@@ -14541,6 +14649,19 @@ function renderEvidenceActionability(value: unknown): string {
       const fileLabel = files.length === 0 ? 'inspect entity evidence' : files.join(', ');
       return `P${priority} ${target}: ${fileLabel}`;
     });
+  const confidenceDeltas = recordArray(actionability, 'evidence_confidence_deltas')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((item) => {
+      const priority = typeof item.priority === 'number' ? item.priority : 0;
+      const target = typeof item.target_id === 'string' ? item.target_id : 'unknown target';
+      const current =
+        typeof item.current_confidence === 'string' ? item.current_confidence : 'uncertain';
+      const next = typeof item.target_confidence === 'string' ? item.target_confidence : 'inferred';
+      const delta = typeof item.confidence_delta === 'number' ? item.confidence_delta : 0;
+      const actions = asStringArray(item.verification_actions).slice(0, 1);
+      return `P${priority} ${target}: ${current} -> ${next} (+${delta})${actions.length === 0 ? '' : ` - ${actions[0]}`}`;
+    });
   const redactionImpact = typeof redaction.impact === 'string' ? redaction.impact : 'none';
   const hiddenCount =
     typeof redaction.hidden_evidence_count === 'number' ? redaction.hidden_evidence_count : 0;
@@ -14558,6 +14679,7 @@ function renderEvidenceActionability(value: unknown): string {
     `field evidence: ${fieldCoverage}/100`,
   ])}</article>
     <article class="card"><h3>Read First To Improve Confidence</h3>${renderList(readFirst)}</article>
+    <article class="card"><h3>Confidence Upgrade Queue</h3>${renderList(confidenceDeltas)}</article>
     <article class="card"><h3>Unbacked Claim Groups</h3>${renderList(unbackedGroups)}</article>
     <article class="card"><h3>Low-Confidence Claim Areas</h3>${renderList(lowConfidenceAreas)}</article>
     <article class="card"><h3>Redaction-Hidden Evidence</h3>${renderList([
