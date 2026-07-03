@@ -5921,8 +5921,8 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'ask.html'), 'utf8');
       expect(report).toContain('rizz ask');
       expect(report).toContain('local Project Intelligence');
-      expect(report).not.toContain('v1');
-      expect(report).not.toContain('v2');
+      expect(report).not.toMatch(/\bv1\b/i);
+      expect(report).not.toMatch(/\bv2\b/i);
     });
   });
 
