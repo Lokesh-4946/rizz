@@ -49,8 +49,16 @@
       "minimum_affected_flows": 1,
       "minimum_affected_data_dependencies": 1,
       "minimum_affected_state_operations": 1,
+      "minimum_verification_plan_items": 2,
+      "minimum_verification_plan_required": 1,
       "affected_data_dependencies_include": ["data schema/model"],
       "affected_state_operations_include": ["schema"],
+      "verification_plan_types_include": ["data", "test"],
+      "verification_plan_priorities_include": ["required"],
+      "verification_plan_reasons_include": [
+        "state/data dependency",
+        "Runtime/source files changed"
+      ],
       "affected_tests_include": ["src/accounts/profile-handler.test.ts"],
       "blast_radius_reasons_include": [
         "affected flow(s) link the change",
@@ -87,12 +95,16 @@
       "required_fields": [
         "affected_data_dependency_count",
         "affected_state_operation_count",
+        "verification_plan_count",
+        "verification_plan_required_count",
+        "verification_plan_recommended_count",
         "user_visible_failure_mode_count",
         "secret_safety.output_secret_safe"
       ],
       "required_substrings": [
         "\"affected_data_dependency_count\"",
-        "\"affected_state_operation_count\""
+        "\"affected_state_operation_count\"",
+        "\"verification_plan_count\""
       ],
       "expected_json_values": {
         "secret_safety.output_secret_safe": true
@@ -101,13 +113,20 @@
     {
       "path": ".rizz/reports/index.html",
       "type": "file",
-      "required_substrings": ["Journey Intelligence", "State/data", "data schema/model"]
+      "required_substrings": [
+        "Journey Intelligence",
+        "Targeted Verification",
+        "Verification Summary",
+        "State/data",
+        "data schema/model"
+      ]
     },
     {
       "path": ".rizz/reports/review.html",
       "type": "file",
       "required_substrings": [
         "State/Data Impact",
+        "Targeted Verification",
         "State/data dependency overlaps the diff",
         "data schema/model"
       ]
@@ -118,11 +137,13 @@
       "Detects transitive route-to-schema state/data dependency evidence.",
       "Review connects schema diff to affected journey/flow and state operation.",
       "Mission Control and review report expose state/data impact without provider calls.",
+      "Review emits a targeted verification plan for data/state and test checks.",
       "Review eval emits deterministic state/data count fields for research tracking."
     ],
     "fail": [
       "The task requires network access or provider calls.",
       "The schema change is reported only as a generic file change without state/data causality.",
+      "Review output lacks targeted verification plan items for the affected state/data surface.",
       "Review eval omits state/data dependency count fields."
     ]
   }
