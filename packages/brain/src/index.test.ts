@@ -3120,7 +3120,7 @@ describe('project brain generation', () => {
       expect(missionControl).toContain('rizz explain service src/orders');
       expect(missionControl).toContain('.rizz/research/service_intelligence.json');
       expect(missionControl).toContain('Reachability Quality');
-      expect(missionControl).toContain('3 static reachability path(s)');
+      expect(missionControl).toContain('2 static reachability path(s)');
       expect(missionControl).toContain('Effects & Unknowns');
       expect(missionControl).toContain('Freshness');
       expect(missionControl).toContain('Reachability Paths');
@@ -3429,6 +3429,10 @@ describe('project brain generation', () => {
           '',
           'router = APIRouter()',
           '',
+          '@router.get("/health")',
+          'def health() -> dict:',
+          '    return {"ok": True}',
+          '',
           '@router.post("/kb/youtube")',
           'def ingest_youtube(payload: dict):',
           '    return ingest_video(payload["url"])',
@@ -3525,6 +3529,17 @@ describe('project brain generation', () => {
           service_causality: expect.arrayContaining(['evidence:file-app--services--kb_service.py']),
         }),
       });
+      const healthFlow = flows.entities.find(
+        (flow) => flow.id === 'flow:http--get--health--app--routers--kb.py',
+      );
+      expect(healthFlow?.data).toMatchObject({
+        framework: 'fastapi',
+        route_path: '/health',
+        route_type: 'GET',
+        files: ['app/routers/kb.py'],
+      });
+      expect(healthFlow?.data?.services ?? []).not.toContain('service:app--services');
+      expect(healthFlow?.data?.service_causality ?? []).toEqual([]);
 
       const services = await readJson<{
         entities: Array<{
