@@ -65,6 +65,13 @@ evidence IDs, confidence, and known unknowns. The Next.js route review seed uses
 alias-resolved component, content, and config imports support review blast-radius reasoning without
 exposing secret-like fixture paths.
 
+Any PI-Bench seed can also assert generated flow service reachability with
+`flow_service_causality`. Its `include` entries require a matched route flow to carry the named
+service-causality path, while `exclude` entries require the matched route flow not to claim that
+service. Use this for route-handler precision, for example proving `/health` does not inherit an
+orders or knowledge-base service solely because the service is statically imported in the same
+router file.
+
 The understanding-task seed uses `understanding_tasks` to score answers a user would ask while
 orienting in a repo: what to read first, which component has review-impact evidence, which evidence
 gap should limit confidence, whether benchmark review readiness is strong, and whether
