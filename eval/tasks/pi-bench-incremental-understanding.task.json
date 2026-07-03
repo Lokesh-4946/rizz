@@ -75,6 +75,11 @@
       "minimum_reused_understanding_count": 1,
       "minimum_recomputed_understanding_count": 2,
       "minimum_scan_efficiency_score": 1,
+      "minimum_changed_file_coverage_ratio": 1,
+      "minimum_public_changed_file_coverage_ratio": 1,
+      "minimum_recomputed_file_coverage_ratio": 1,
+      "minimum_stale_avoidance_ratio": 1,
+      "minimum_reuse_to_recompute_ratio": 2,
       "require_previous_fingerprint": true,
       "require_fingerprint_changed": true
     }
