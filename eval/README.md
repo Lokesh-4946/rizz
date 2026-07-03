@@ -19,7 +19,10 @@ network access.
   changes; the runner scans once, applies the changes, scans again, and validates
   `.rizz/research/incremental_update.json` changed/stable entity counts, reused/recomputed
   understanding counts, file reuse, scan efficiency, fingerprint continuity, and secret-safe
-  changed-path output.
+  changed-path output. Incremental assertions can also set depth thresholds for changed-file
+  coverage, public changed-file coverage, recomputed-file coverage, stale avoidance, and
+  reuse-to-recompute ratio. The summary prints those values so scan efficiency regressions are
+  visible without adding provider calls.
   Understanding-task seeds may include an `understanding_tasks` block. Each item asks one narrow
   benchmark-ready repo-understanding prompt and validates the answer from an existing JSON artifact
   slice or deterministic `rizz explain --json` output. Supported source types are

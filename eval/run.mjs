@@ -461,6 +461,24 @@ function validateIncrementalAssertions(assertions) {
       errors.push(`incremental.assertions.${field} must be a non-negative number`);
     }
   }
+  for (const field of [
+    'minimum_changed_file_coverage_ratio',
+    'minimum_public_changed_file_coverage_ratio',
+    'minimum_recomputed_file_coverage_ratio',
+    'minimum_stale_avoidance_ratio',
+  ]) {
+    if (assertions[field] !== undefined && !hasRatioNumber(assertions[field])) {
+      errors.push(`incremental.assertions.${field} must be a number between 0 and 1`);
+    }
+  }
+  if (
+    assertions.minimum_reuse_to_recompute_ratio !== undefined &&
+    !hasNonNegativeNumber(assertions.minimum_reuse_to_recompute_ratio)
+  ) {
+    errors.push(
+      'incremental.assertions.minimum_reuse_to_recompute_ratio must be a non-negative number',
+    );
+  }
   if (
     assertions.expected_file_reuse_ratio !== undefined &&
     !hasRatioNumber(assertions.expected_file_reuse_ratio)
@@ -876,11 +894,69 @@ function percent(value) {
   return `${Math.round(value * 100)}%`;
 }
 
+function roundedMetric(value) {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function safeCoverageRatio(covered, total) {
+  if (total === 0) return covered === 0 ? 1 : 0;
+  return roundedMetric(Math.min(1, covered / total));
+}
+
+function nonNegativeMetric(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function formatCoverage(key, component) {
   if (key === 'evidence') {
     return `${component.covered} claims/${component.total} records ${percent(component.ratio)}`;
   }
   return `${component.covered}/${component.total} ${percent(component.ratio)}`;
+}
+
+function formatIncrementalSummary(incremental) {
+  if (incremental === undefined) return '';
+  const depth = incremental.depthMetrics;
+  return [
+    `incremental changed ${incremental.changedFiles}`,
+    `stable entities ${incremental.stableEntities}`,
+    `reused ${incremental.reusedUnderstanding}`,
+    `recomputed ${incremental.recomputedUnderstanding}`,
+    `efficiency ${incremental.scanEfficiency}`,
+    `depth change ${percent(depth.changedFileCoverage)}`,
+    `public ${percent(depth.publicChangedFileCoverage)}`,
+    `recompute ${percent(depth.recomputedFileCoverage)}`,
+    `stale clean ${percent(depth.staleAvoidanceRatio)}`,
+    `reuse/recompute ${depth.reuseToRecomputeRatio}`,
+  ].join(', ');
+}
+
+function buildIncrementalDepthMetrics(task, incremental, changedFiles, assertions) {
+  const diffFileCount = task.incremental.diff.files.length;
+  const changedFileCount = nonNegativeMetric(incremental.changed_file_count);
+  const staleFileCount = nonNegativeMetric(incremental.stale_file_count);
+  const recomputedFiles = nonNegativeMetric(incremental.recomputed_files);
+  const reusedFiles = nonNegativeMetric(incremental.reused_files);
+  const expectedPublicChangedFiles = assertions.changed_files_include ?? [];
+  const publicChangedFilesMatched = expectedPublicChangedFiles.filter((file) =>
+    changedFiles.includes(file),
+  ).length;
+  const staleDenominator = changedFileCount + staleFileCount;
+
+  return {
+    changedFileCoverage: safeCoverageRatio(changedFileCount, diffFileCount),
+    publicChangedFileCoverage: safeCoverageRatio(
+      publicChangedFilesMatched,
+      expectedPublicChangedFiles.length,
+    ),
+    recomputedFileCoverage: safeCoverageRatio(recomputedFiles, diffFileCount),
+    staleAvoidanceRatio:
+      staleDenominator === 0
+        ? 1
+        : roundedMetric(Math.max(0, 1 - staleFileCount / staleDenominator)),
+    reuseToRecomputeRatio:
+      recomputedFiles === 0 ? reusedFiles : roundedMetric(reusedFiles / recomputedFiles),
+  };
 }
 
 function scoreBenchmarkReady(task, benchmarkReady) {
@@ -1574,6 +1650,39 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
     }
   }
 
+  const depthMetrics = buildIncrementalDepthMetrics(task, incremental, changedFiles, assertions);
+  for (const [metricField, assertionField, label] of [
+    ['changedFileCoverage', 'minimum_changed_file_coverage_ratio', 'changed file coverage'],
+    [
+      'publicChangedFileCoverage',
+      'minimum_public_changed_file_coverage_ratio',
+      'public changed file coverage',
+    ],
+    [
+      'recomputedFileCoverage',
+      'minimum_recomputed_file_coverage_ratio',
+      'recomputed file coverage',
+    ],
+    ['staleAvoidanceRatio', 'minimum_stale_avoidance_ratio', 'stale avoidance ratio'],
+  ]) {
+    if (
+      assertions[assertionField] !== undefined &&
+      depthMetrics[metricField] < assertions[assertionField]
+    ) {
+      errors.push(
+        `incremental depth ${label} ${depthMetrics[metricField]} below ${assertions[assertionField]}`,
+      );
+    }
+  }
+  if (
+    assertions.minimum_reuse_to_recompute_ratio !== undefined &&
+    depthMetrics.reuseToRecomputeRatio < assertions.minimum_reuse_to_recompute_ratio
+  ) {
+    errors.push(
+      `incremental depth reuse-to-recompute ratio ${depthMetrics.reuseToRecomputeRatio} below ${assertions.minimum_reuse_to_recompute_ratio}`,
+    );
+  }
+
   if (assertions.expected_redacted_changed_file_count !== undefined) {
     const redactedCount = changedFiles.filter(
       (file) => typeof file === 'string' && file.startsWith('redacted:sensitive-file:'),
@@ -1630,6 +1739,7 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
         typeof incremental.scan_efficiency_score === 'number'
           ? incremental.scan_efficiency_score
           : 0,
+      depthMetrics,
     },
   };
 }
@@ -1932,7 +2042,7 @@ function runPiBenchTasks(loadedTasks) {
         const incremental =
           result.summary.incremental === undefined
             ? ''
-            : ` | incremental changed ${result.summary.incremental.changedFiles}, stable entities ${result.summary.incremental.stableEntities}, reused ${result.summary.incremental.reusedUnderstanding}, recomputed ${result.summary.incremental.recomputedUnderstanding}, efficiency ${result.summary.incremental.scanEfficiency}`;
+            : ` | ${formatIncrementalSummary(result.summary.incremental)}`;
         const understanding =
           result.summary.understandingTasks === 0
             ? ''
