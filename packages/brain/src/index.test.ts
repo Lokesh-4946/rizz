@@ -1696,12 +1696,16 @@ describe('project brain generation', () => {
       expect(report).toContain('data-object="flows"');
       expect(report).toContain('data-object="incremental-health"');
       expect(report).toContain('data-object="architecture"');
+      expect(report).toContain('data-object="evidence-quality"');
       expect(report).toContain('data-object="evidence"');
       expect(report).toContain('data-object="unknowns"');
+      expect(report).toContain('data-object="review-dependency-runtime-impact"');
       expect(report).toContain('data-object="review-readiness"');
       expect(report).toContain('data-object="benchmark-tasks"');
       expect(report).toContain('Understanding Score');
       expect(report).toContain('Evidence Quality');
+      expect(report).toContain('Evidence Quality Inspect');
+      expect(report).toContain('Evidence Quality Artifacts');
       expect(report).toContain('Unknown Risk');
       expect(report).toContain('Mission Control scorecard');
       expect(report).toContain('Components');
@@ -1710,6 +1714,8 @@ describe('project brain generation', () => {
       expect(report).toContain('Confidence Debt');
       expect(report).toContain('Evidence');
       expect(report).toContain('Review Readiness');
+      expect(report).toContain('Review/Dependency Runtime Impact');
+      expect(report).toContain('Dependency Runtime Inspect');
       expect(report).toContain('Unknowns');
       expect(report).toContain('Read First');
       expect(report).toContain('Flagship Summary');
@@ -5249,9 +5255,13 @@ describe('project brain generation', () => {
       expect(report).toContain('Incremental Changed / Stable');
       expect(report).toContain('Read First Pointers');
       expect(report).toContain('Review Blast Radius');
+      expect(report).toContain('Review/Dependency Runtime Impact');
+      expect(report).toContain('Dependency Runtime Inspect');
       expect(report).toContain('Benchmark Tasks');
       expect(report).toContain('Unknown Risk');
       expect(report).toContain('Raw Artifacts');
+      expect(report).toContain('Evidence Quality Inspect');
+      expect(report).toContain('Evidence Quality Artifacts');
       expect(report).toContain('.rizz/research/evidence_quality.json');
       expect(report).toContain('<h2>Start Here</h2>');
       expect(report).toContain('<h3>Entry Points</h3>');
@@ -7068,6 +7078,17 @@ describe('project brain generation', () => {
       expect(report).toContain('Dependency Runtime Impact');
       expect(report).toContain('packages/cli/package.json#build');
       expect(report).toContain('Validate package install');
+
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(missionControl).toContain('data-object="review-dependency-runtime-impact"');
+      expect(missionControl).toContain('Review/Dependency Runtime Impact');
+      expect(missionControl).toContain('Dependency Runtime Inspect');
+      expect(missionControl).toContain('Changed Package / Config');
+      expect(missionControl).toContain('Runtime Surfaces');
+      expect(missionControl).toContain('Package Scripts');
+      expect(missionControl).toContain('Focused Verification');
+      expect(missionControl).toContain('packages/cli/package.json#build');
+      expect(missionControl).toContain('Validate package install');
     });
   });
 
