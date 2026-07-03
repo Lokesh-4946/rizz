@@ -20333,6 +20333,17 @@ function runGit(
   return { ok: false, error: result.stderr.trim() || result.stdout.trim() || 'git command failed' };
 }
 
+function changedPathsFromNameStatusLine(line: string): string[] {
+  const trimmed = line.trim();
+  if (trimmed === '') return [];
+  const parts = trimmed.split(/\t+/).filter((part) => part.trim() !== '');
+  if (parts.length === 1) return [parts[0] ?? ''];
+  const status = parts[0] ?? '';
+  const paths = parts.slice(1);
+  if (/^[RC]/.test(status)) return paths;
+  return paths.slice(-1);
+}
+
 function readGitChanges(rootDir: string):
   | {
       readonly ok: true;
@@ -20347,7 +20358,7 @@ function readGitChanges(rootDir: string):
     };
   }
 
-  const worktreeFiles = runGit(rootDir, ['diff', '--name-only', 'HEAD', '--']);
+  const worktreeFiles = runGit(rootDir, ['diff', '--name-status', '--find-renames', 'HEAD', '--']);
   if (!worktreeFiles.ok) {
     return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: worktreeFiles.error } };
   }
@@ -20356,7 +20367,9 @@ function readGitChanges(rootDir: string):
     [
       ...worktreeFiles.stdout.split(/\r?\n/),
       ...(untrackedFiles.ok ? untrackedFiles.stdout.split(/\r?\n/) : []),
-    ].filter((line) => line.trim() !== ''),
+    ]
+      .flatMap(changedPathsFromNameStatusLine)
+      .filter((line) => line.trim() !== ''),
   );
   if (worktreeChanged.length > 0) {
     const diff = runGit(rootDir, ['diff', '--no-ext-diff', '--find-renames', 'HEAD', '--']);
@@ -20375,12 +20388,22 @@ function readGitChanges(rootDir: string):
   const base = runGit(rootDir, ['merge-base', 'HEAD', 'origin/develop']);
   if (base.ok && base.stdout.trim() !== '') {
     const baseSha = base.stdout.trim();
-    const branchFiles = runGit(rootDir, ['diff', '--name-only', baseSha, 'HEAD', '--']);
+    const branchFiles = runGit(rootDir, [
+      'diff',
+      '--name-status',
+      '--find-renames',
+      baseSha,
+      'HEAD',
+      '--',
+    ]);
     if (!branchFiles.ok) {
       return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: branchFiles.error } };
     }
     const branchChanged = unique(
-      branchFiles.stdout.split(/\r?\n/).filter((line) => line.trim() !== ''),
+      branchFiles.stdout
+        .split(/\r?\n/)
+        .flatMap(changedPathsFromNameStatusLine)
+        .filter((line) => line.trim() !== ''),
     );
     const diff = runGit(rootDir, [
       'diff',
