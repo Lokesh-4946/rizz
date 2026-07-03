@@ -259,6 +259,8 @@ function validateReviewAssertions(assertions) {
     'dependency_runtime_affected_flows_include',
     'dependency_runtime_affected_tests_include',
     'dependency_runtime_affected_configs_include',
+    'affected_data_dependencies_include',
+    'affected_state_operations_include',
     'architecture_impact_surfaces_include',
     'architecture_what_breaks_include',
     'architecture_evidence_gaps_include',
@@ -278,6 +280,8 @@ function validateReviewAssertions(assertions) {
     'minimum_dependency_runtime_impacts',
     'minimum_dependency_runtime_surfaces',
     'minimum_dependency_runtime_verification_focus',
+    'minimum_affected_data_dependencies',
+    'minimum_affected_state_operations',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
   ]) {
@@ -1317,6 +1321,12 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const architectureConfidenceGaps = Array.isArray(evidenceSummary.architecture_confidence_gaps)
     ? evidenceSummary.architecture_confidence_gaps
     : [];
+  const affectedDataDependencies = Array.isArray(evidenceSummary.affected_data_dependencies)
+    ? evidenceSummary.affected_data_dependencies
+    : [];
+  const affectedStateOperations = Array.isArray(evidenceSummary.affected_state_operations)
+    ? evidenceSummary.affected_state_operations
+    : [];
 
   errors.push(
     ...assertIncludesAll(
@@ -1433,6 +1443,16 @@ function assertReviewContract(task, repoDir, review, stdout) {
     ...assertIncludesAll(affectedTests, assertions.affected_tests_include, 'affected_tests'),
     ...assertIncludesAll(affectedConfigs, assertions.affected_configs_include, 'affected_configs'),
     ...assertSubstringMatches(
+      affectedDataDependencies,
+      assertions.affected_data_dependencies_include,
+      'affected_data_dependencies',
+    ),
+    ...assertSubstringMatches(
+      affectedStateOperations,
+      assertions.affected_state_operations_include,
+      'affected_state_operations',
+    ),
+    ...assertSubstringMatches(
       architectureWhatBreaks,
       assertions.architecture_what_breaks_include,
       'architecture_what_breaks',
@@ -1525,6 +1545,22 @@ function assertReviewContract(task, repoDir, review, stdout) {
   ) {
     errors.push(
       `dependency_runtime_impact.verification_focus ${dependencyRuntimeVerificationFocus.length} below ${assertions.minimum_dependency_runtime_verification_focus}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_data_dependencies !== undefined &&
+    affectedDataDependencies.length < assertions.minimum_affected_data_dependencies
+  ) {
+    errors.push(
+      `affected_data_dependencies ${affectedDataDependencies.length} below ${assertions.minimum_affected_data_dependencies}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_state_operations !== undefined &&
+    affectedStateOperations.length < assertions.minimum_affected_state_operations
+  ) {
+    errors.push(
+      `affected_state_operations ${affectedStateOperations.length} below ${assertions.minimum_affected_state_operations}`,
     );
   }
   if (

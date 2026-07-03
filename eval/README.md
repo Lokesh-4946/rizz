@@ -72,6 +72,11 @@ adding provider calls or broad `rizz ask`.
 Dependency/runtime review tasks additionally assert `dependency_runtime_impact` for package/config
 diffs: changed manifests/configs, dependency entities, affected flows/tests/configs, runtime
 surfaces, focused verification, and the corresponding `review_eval` dependency-runtime count fields.
+State/data causality review tasks additionally assert transitive route-to-repository/schema
+dependencies, affected data dependency labels, affected state operations, review findings, Mission
+Control drilldown output, and `review_eval` state/data count fields. These seeds measure whether
+Rizz can explain what user-visible journey may break when a schema, repository, cache/session, or
+other state surface changes.
 Route-aware review tasks can additionally assert affected flow metadata with
 `route_flows_include`: flow id, framework, route path, route type, entrypoints, changed files,
 linked tests, linked configs, and nested `service_causality_include` entries. Service-causality

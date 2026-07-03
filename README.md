@@ -19,11 +19,11 @@ The current `0.2.1` product surface is:
 - `rizz review` git-diff review using the local project brain
 - `.rizz/brain/latest.json` structured current-state summary
 - `.rizz/brain/entities/*.json` relational entity stores with stable IDs
-- `.rizz/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, evidence, tests, configs, and risks
+- `.rizz/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, state/data dependencies, evidence, tests, configs, and risks
 - `.rizz/brain/graph.json` relationships with evidence and confidence
 - `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
 - `.rizz/reports/index.html` Mission Control local architecture intelligence portal
-- `.rizz/reports/review.html` local risk/blast-radius review report
+- `.rizz/reports/review.html` local risk/blast-radius review report with journey and state/data impact
 - `rizz setup` dependency doctor and provider route picker
 - OpenRouter BYOK as the primary fast route
 - Codex subscription route as a secondary local Codex CLI route

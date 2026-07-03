@@ -431,6 +431,16 @@ type FlowRiskKind =
   | 'deployment_auth'
   | 'deployment_cors';
 
+type FlowDataDependencyKind =
+  | 'database'
+  | 'cache'
+  | 'filesystem'
+  | 'object_storage'
+  | 'vector_store'
+  | 'orm'
+  | 'schema'
+  | 'state_module';
+
 interface FlowEntrypoint {
   readonly type: FlowEntrypointType;
   readonly path: string;
@@ -487,6 +497,17 @@ interface FlowServiceCausality {
   readonly evidence_ids: readonly string[];
   readonly confidence: Confidence;
   readonly unknowns: readonly string[];
+}
+
+interface FlowDataDependency {
+  readonly dependency_id: string;
+  readonly kind: FlowDataDependencyKind;
+  readonly label: string;
+  readonly files: readonly string[];
+  readonly operations: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly missing_evidence: readonly string[];
 }
 
 interface FlowRisk {
@@ -568,6 +589,7 @@ interface FlowIntelligence {
   readonly runtime_surfaces: readonly string[];
   readonly services?: readonly string[];
   readonly service_causality?: readonly FlowServiceCausality[];
+  readonly data_dependencies?: readonly FlowDataDependency[];
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly risks: readonly FlowRisk[];
@@ -968,6 +990,8 @@ interface ReviewEvalArtifactData {
   readonly service_causality_effect_count: number;
   readonly affected_journey_count: number;
   readonly affected_journey_step_count: number;
+  readonly affected_data_dependency_count: number;
+  readonly affected_state_operation_count: number;
   readonly user_visible_failure_mode_count: number;
   readonly journey_missing_evidence_count: number;
   readonly affected_relationship_count: number;
@@ -1031,6 +1055,7 @@ interface AffectedFlowData {
   readonly entrypoints: readonly string[];
   readonly affected_steps: readonly FlowJourneyStep[];
   readonly runtime_surfaces: readonly string[];
+  readonly data_dependencies: readonly FlowDataDependency[];
   readonly user_visible_failure_modes: readonly string[];
   readonly missing_evidence: readonly string[];
   readonly changed_files: readonly string[];
@@ -1138,6 +1163,8 @@ interface ReviewEvidenceSummaryData {
   readonly service_causality_effects: readonly string[];
   readonly affected_journeys: readonly string[];
   readonly affected_journey_steps: number;
+  readonly affected_data_dependencies: readonly string[];
+  readonly affected_state_operations: readonly string[];
   readonly user_visible_failure_modes: readonly string[];
   readonly journey_missing_evidence: readonly string[];
   readonly architecture_impact_surfaces: number;
@@ -1295,6 +1322,7 @@ interface ExplainSummaryData {
     readonly components: readonly string[];
     readonly services: readonly string[];
     readonly service_causality: readonly FlowServiceCausality[];
+    readonly data_dependencies: readonly FlowDataDependency[];
     readonly files: readonly string[];
     readonly dependencies: readonly string[];
     readonly runtime_surfaces: readonly string[];
@@ -1751,6 +1779,18 @@ function sorted<T>(items: readonly T[], key: (item: T) => string): T[] {
 
 function unique(items: readonly string[]): string[] {
   return [...new Set(items)].sort((a, b) => a.localeCompare(b));
+}
+
+function uniqueBy<T>(items: readonly T[], keyFor: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = keyFor(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function uniqueInOrder(items: readonly string[]): string[] {
@@ -3519,7 +3559,14 @@ function importContextForFiles(params: {
   const importedFiles: FileFact[] = [];
   const importEvidence: FlowEvidence[] = [];
   const aliases = importAliasContextForConfigs(params);
-  for (const file of params.entryFiles) {
+  const queue = params.entryFiles.map((file) => ({ file, depth: 0 }));
+  const visited = new Set<string>();
+  const maxImportDepth = 4;
+  for (let index = 0; index < queue.length; index += 1) {
+    const { file, depth } = queue[index] ?? { file: undefined, depth: 0 };
+    if (file === undefined) continue;
+    if (visited.has(file.relativePath)) continue;
+    visited.add(file.relativePath);
     const text = readTextIfAvailable(params.rootDir, file.relativePath);
     if (text === undefined) continue;
     for (const specifier of importSpecifiersFromText(text)) {
@@ -3542,7 +3589,18 @@ function importContextForFiles(params: {
       if (relativeImports.length > 0 || aliasImports.length > 0 || dottedImports.length > 0) {
         resolvedImportSpecifiers.add(specifier);
       }
-      importedFiles.push(...relativeImports, ...aliasImports, ...dottedImports);
+      const resolvedFiles = uniqueFileFacts([
+        ...relativeImports,
+        ...aliasImports,
+        ...dottedImports,
+      ]);
+      importedFiles.push(...resolvedFiles);
+      if (depth >= maxImportDepth) continue;
+      for (const importedFile of resolvedFiles) {
+        if (!visited.has(importedFile.relativePath)) {
+          queue.push({ file: importedFile, depth: depth + 1 });
+        }
+      }
     }
   }
   return {
@@ -4603,6 +4661,179 @@ function safeFlowServiceCausality(entity: BrainEntity): FlowServiceCausality[] {
       confidence: entry.confidence,
       unknowns: entry.unknowns.map(safeText),
     }));
+}
+
+function safeFlowDataDependencies(entity: BrainEntity): FlowDataDependency[] {
+  const entries = entity.data?.data_dependencies;
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry): entry is FlowDataDependency => {
+      if (!isRecord(entry)) return false;
+      return (
+        typeof entry.dependency_id === 'string' &&
+        typeof entry.kind === 'string' &&
+        typeof entry.label === 'string' &&
+        Array.isArray(entry.files) &&
+        entry.files.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.operations) &&
+        entry.operations.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.evidence_ids) &&
+        entry.evidence_ids.every((item) => typeof item === 'string') &&
+        (entry.confidence === 'verified' ||
+          entry.confidence === 'inferred' ||
+          entry.confidence === 'uncertain') &&
+        Array.isArray(entry.missing_evidence) &&
+        entry.missing_evidence.every((item) => typeof item === 'string')
+      );
+    })
+    .map((entry) => ({
+      dependency_id: safeText(entry.dependency_id),
+      kind: dataDependencyKind(entry.kind),
+      label: safeText(entry.label),
+      files: entry.files.map(safeText),
+      operations: entry.operations.map(safeText),
+      confidence: entry.confidence,
+      evidence_ids: entry.evidence_ids.map(safeText),
+      missing_evidence: entry.missing_evidence.map(safeText),
+    }));
+}
+
+function dataDependencyKind(value: unknown): FlowDataDependencyKind {
+  if (
+    value === 'database' ||
+    value === 'cache' ||
+    value === 'filesystem' ||
+    value === 'object_storage' ||
+    value === 'vector_store' ||
+    value === 'orm' ||
+    value === 'schema' ||
+    value === 'state_module'
+  ) {
+    return value;
+  }
+  return 'state_module';
+}
+
+function dataDependencyKindForLabel(label: string): FlowDataDependencyKind {
+  const lower = label.toLowerCase();
+  if (/redis|cache|session/.test(lower)) return 'cache';
+  if (/filesystem|file|temporary/.test(lower)) return 'filesystem';
+  if (/object-storage|s3|blob/.test(lower)) return 'object_storage';
+  if (/vector/.test(lower)) return 'vector_store';
+  if (/orm|prisma|typeorm|mongoose|sequelize/.test(lower)) return 'orm';
+  if (/schema|migration|model|table/.test(lower)) return 'schema';
+  if (/database|postgres|sqlite|sql/.test(lower)) return 'database';
+  return 'state_module';
+}
+
+function stateOperationsFromText(text: string): string[] {
+  const operations = new Set<string>();
+  const checks: ReadonlyArray<readonly [RegExp, string]> = [
+    [/select|findMany|findUnique|findFirst|\bfind\b|\bget\b|read|query|search|lookup/i, 'read'],
+    [/insert|create|save|write|setItem|set\(|append|push/i, 'write'],
+    [/update|upsert|mutate|patch|replace/i, 'update'],
+    [/delete|remove|destroy|drop|truncate/i, 'delete'],
+    [/schema|model|table|migration|migrate|prisma|zod|interface|type\s+\w+/i, 'schema'],
+    [/redis|cache|ttl|expire|session/i, 'cache/session'],
+    [/transaction|commit|rollback/i, 'transaction'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(text)) operations.add(label);
+  }
+  return [...operations].sort((a, b) => a.localeCompare(b));
+}
+
+function pathStateDependencyLabels(path: string): string[] {
+  const lower = path.toLowerCase();
+  const name = basename(lower);
+  return unique([
+    ...(lower.endsWith('schema.prisma') ? ['prisma schema'] : []),
+    ...(lower.includes('/migrations/') || lower.endsWith('.sql')
+      ? ['database migration/schema']
+      : []),
+    ...(/(^|\/)(models?|schema|schemas)\//i.test(path) ||
+    /schema|model|table/.test(name) ||
+    /(^|\/)db\//i.test(path)
+      ? ['data schema/model']
+      : []),
+    ...(/(^|\/)(repositories?|repos?|store|stores|dao|db)\//i.test(path) ||
+    /repository|repo|store|dao/.test(name)
+      ? ['state repository/module']
+      : []),
+    ...(/(^|\/)(cache|redis|session|sessions)\//i.test(path) ? ['cache/session state'] : []),
+  ]);
+}
+
+function inferFlowDataDependencies(params: {
+  readonly rootDir: string;
+  readonly intelligence: FlowIntelligence;
+}): FlowDataDependency[] {
+  const grouped = new Map<
+    string,
+    {
+      readonly label: string;
+      readonly files: Set<string>;
+      readonly operations: Set<string>;
+      readonly evidenceIds: Set<string>;
+    }
+  >();
+  const add = (label: string, file: string, operations: readonly string[]): void => {
+    const key = stableSlug(label);
+    const existing = grouped.get(key) ?? {
+      label,
+      files: new Set<string>(),
+      operations: new Set<string>(),
+      evidenceIds: new Set<string>(),
+    };
+    existing.files.add(safeText(file));
+    existing.evidenceIds.add(evidenceId(file));
+    for (const operation of operations) existing.operations.add(safeText(operation));
+    grouped.set(key, existing);
+  };
+
+  for (const file of params.intelligence.files) {
+    const text = readTextIfAvailable(params.rootDir, file) ?? '';
+    const operations = stateOperationsFromText(`${file}\n${text}`);
+    const labels = unique([
+      ...storageDependenciesFromText(text),
+      ...pathStateDependencyLabels(file),
+    ]);
+    for (const label of labels) {
+      add(label, file, operations.length > 0 ? operations : ['state dependency']);
+    }
+  }
+
+  return [...grouped.values()]
+    .map((entry) => {
+      const files = [...entry.files].sort((a, b) => a.localeCompare(b));
+      const operations = [...entry.operations].sort((a, b) => a.localeCompare(b));
+      const evidenceIds = [...entry.evidenceIds].sort((a, b) => a.localeCompare(b));
+      const confidence: Confidence =
+        evidenceIds.length > 0 && operations.length > 0
+          ? 'verified'
+          : evidenceIds.length > 0
+            ? 'inferred'
+            : 'uncertain';
+      return {
+        dependency_id: `${params.intelligence.flow_id}:data:${stableSlug(entry.label)}`,
+        kind: dataDependencyKindForLabel(entry.label),
+        label: safeText(entry.label),
+        files,
+        operations,
+        confidence,
+        evidence_ids: evidenceIds,
+        missing_evidence: unique([
+          ...(operations.length === 0
+            ? ['No read/write/update/delete/schema operation was detected for this data surface.']
+            : []),
+          ...(params.intelligence.tests.length === 0
+            ? ['No linked test verifies this data/state dependency.']
+            : []),
+        ]).map(safeText),
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .slice(0, 12);
 }
 
 function flowRisks(entity: BrainEntity): FlowRisk[] {
@@ -5800,7 +6031,24 @@ function inferHttpRouteDeclarationFlow(params: {
     declaration: params.declaration,
     importContext,
   });
-  const allScannedFiles = [params.file, ...reachableImportedFiles];
+  const reachableImportContext = importContextForFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    entryFiles: reachableImportedFiles,
+  });
+  const flowImportedFiles = uniqueFileFacts([
+    ...reachableImportedFiles,
+    ...reachableImportContext.importedFiles,
+  ]);
+  const flowImportedSpecifiers = unique([
+    ...importContext.importedSpecifiers,
+    ...reachableImportContext.importedSpecifiers,
+  ]);
+  const flowResolvedImportSpecifiers = unique([
+    ...importContext.resolvedImportSpecifiers,
+    ...reachableImportContext.resolvedImportSpecifiers,
+  ]);
+  const allScannedFiles = [params.file, ...flowImportedFiles];
   const componentIds = componentIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.components,
@@ -5825,7 +6073,10 @@ function inferHttpRouteDeclarationFlow(params: {
     relatedComponents,
   });
   const dependencies = unique(
-    externalImportSpecifiers(importContext).map((dependency) => entityId('dependency', dependency)),
+    externalImportSpecifiers({
+      importedSpecifiers: flowImportedSpecifiers,
+      resolvedImportSpecifiers: flowResolvedImportSpecifiers,
+    }).map((dependency) => entityId('dependency', dependency)),
   );
   const flowId = entityId(
     'flow',
@@ -5872,7 +6123,7 @@ function inferHttpRouteDeclarationFlow(params: {
       )}().`,
       evidence: [evId],
     },
-    ...reachableImportedFiles.slice(0, 8).map((file, index) => ({
+    ...flowImportedFiles.slice(0, 8).map((file, index) => ({
       step_id: flowStepId(flowId, index + 2),
       order: index + 2,
       type: 'service' as const,
@@ -5912,8 +6163,8 @@ function inferHttpRouteDeclarationFlow(params: {
     'http route declaration',
     'route file',
     `${params.declaration.method.toLowerCase()} route`,
-    ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
-    ...(reachableImportedFiles.length > 0 ? ['reachable relative import'] : []),
+    ...(flowImportedSpecifiers.length > 0 ? ['static import'] : []),
+    ...(flowImportedFiles.length > 0 ? ['reachable relative import'] : []),
     ...(relatedTests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
@@ -5937,7 +6188,7 @@ function inferHttpRouteDeclarationFlow(params: {
   ];
   const files = unique([
     params.file.relativePath,
-    ...reachableImportedFiles.map((file) => file.relativePath),
+    ...flowImportedFiles.map((file) => file.relativePath),
   ]);
   const serviceCausality = flowServiceCausality({
     frameworkLabel,
@@ -6002,7 +6253,9 @@ function inferHttpRouteDeclarationFlow(params: {
     confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
     evidence: uniqueFlowEvidence([
       routeEvidence,
-      ...(reachableImportedFiles.length > 0 ? importContext.importEvidence : []),
+      ...(flowImportedFiles.length > 0
+        ? [...importContext.importEvidence, ...reachableImportContext.importEvidence]
+        : []),
     ]),
     field_evidence: {
       entrypoints: [evId],
@@ -6010,8 +6263,8 @@ function inferHttpRouteDeclarationFlow(params: {
       components: componentIds.flatMap(
         (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
       ),
-      files: unique([evId, ...reachableImportedFiles.map((file) => evidenceId(file.relativePath))]),
-      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      files: unique([evId, ...flowImportedFiles.map((file) => evidenceId(file.relativePath))]),
+      dependencies: flowImportedSpecifiers.length > 0 ? [evId] : [],
       runtime_surfaces: unique([
         evId,
         ...configs.map(evidenceId),
@@ -6227,10 +6480,15 @@ function inferRouteFlow(params: {
 
 function buildFlowEntity(
   intelligence: FlowIntelligence,
+  rootDir: string,
   now: string,
   createdAt?: string,
 ): BrainEntity {
-  const enriched = enrichFlowWithJourney(intelligence);
+  const withDataDependencies: FlowIntelligence = {
+    ...intelligence,
+    data_dependencies: inferFlowDataDependencies({ rootDir, intelligence }),
+  };
+  const enriched = enrichFlowWithJourney(withDataDependencies);
   const confidence = flowConfidenceFor({
     tests: enriched.tests,
     signals: enriched.signals,
@@ -6248,6 +6506,7 @@ function buildFlowEntity(
       ...enriched.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
       ...enriched.steps.flatMap((step) => step.evidence),
       ...(enriched.service_causality ?? []).flatMap((item) => item.evidence_ids),
+      ...(enriched.data_dependencies ?? []).flatMap((item) => item.evidence_ids),
       ...enriched.risks.flatMap((risk) => risk.evidence),
       ...(enriched.journey?.evidence_ids ?? []),
       ...(enriched.journey_steps ?? []).flatMap((step) => step.evidence_ids),
@@ -6362,7 +6621,7 @@ function reconstructFlows(params: {
 
   for (const flow of sorted([...byId.values()], (item) => item.flow_id)) {
     const previous = params.previousFlows.get(flow.flow_id);
-    const entity = buildFlowEntity(flow, params.now, previous?.created_at);
+    const entity = buildFlowEntity(flow, params.rootDir, params.now, previous?.created_at);
     params.buckets.flows.push(entity);
     for (const componentId of flow.components) {
       addRelation(
@@ -13656,6 +13915,11 @@ function buildResearchArtifacts(params: {
         item.journey !== undefined,
     );
   const flowJourneySteps = flows.flatMap(safeFlowJourneySteps);
+  const flowDataDependencies = flows.flatMap(safeFlowDataDependencies);
+  const flowsWithDataDependencies = flows.filter(
+    (flow) => safeFlowDataDependencies(flow).length > 0,
+  );
+  const statefulFlowFiles = new Set(flowDataDependencies.flatMap((item) => item.files));
   const runtimeSurfacesCoveredByFlows = unique(
     flows.flatMap((flow) => flowStringArray(flow, 'runtime_surfaces')),
   );
@@ -13779,6 +14043,8 @@ function buildResearchArtifacts(params: {
       flows: flows.length,
       flow_steps: flowStepCount,
       flow_risks: flowRiskCount,
+      flow_data_dependencies: flowDataDependencies.length,
+      stateful_flows: flowsWithDataDependencies.length,
       commands: params.buckets.commands.length,
       tests: params.buckets.tests.length,
       evidence_records: params.buckets.evidence.length,
@@ -13819,6 +14085,11 @@ function buildResearchArtifacts(params: {
       flows_with_configs: flows.filter((flow) => flowStringArray(flow, 'configs').length > 0)
         .length,
       flows_with_evidence: flows.filter((flow) => flow.evidence_ids.length > 0).length,
+      flows_with_data_dependencies: flowsWithDataDependencies.length,
+      stateful_files_covered_by_flows: activeSourceFiles.filter((file) =>
+        statefulFlowFiles.has(file.name),
+      ).length,
+      stateful_flow_coverage_ratio: ratio(flowsWithDataDependencies.length, flows.length),
       source_files_covered_by_flows: activeSourceFiles.filter((file) =>
         flowCoveredFiles.has(file.name),
       ).length,
@@ -13841,6 +14112,12 @@ function buildResearchArtifacts(params: {
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
         runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
+        data_dependencies: safeFlowDataDependencies(flow).map((dependency) => ({
+          label: dependency.label,
+          kind: dependency.kind,
+          operations: dependency.operations,
+          confidence: dependency.confidence,
+        })),
         tests: flowStringArray(flow, 'tests'),
         configs: flowStringArray(flow, 'configs'),
         evidence_ids: flow.evidence_ids.length,
@@ -13976,6 +14253,8 @@ function buildResearchArtifacts(params: {
       flows_with_contracts: flowsWithContracts.length,
       flows_with_runtime_surfaces: flowsWithRuntimeSurfaces.length,
       flows_with_journey_names: flowJourneySummaries.length,
+      flows_with_data_dependencies: flowsWithDataDependencies.length,
+      data_dependencies: flowDataDependencies.length,
       journey_steps: flowJourneySteps.length,
       flow_steps: flowStepCount,
       mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
@@ -13984,6 +14263,22 @@ function buildResearchArtifacts(params: {
       mapped_files: flowCoveredFiles.size,
       runtime_surface_count: runtimeSurfacesCoveredByFlows.length,
       runtime_surfaces: runtimeSurfacesCoveredByFlows,
+      data_dependencies_by_kind: countByValue(flowDataDependencies.map((item) => item.kind)),
+      state_operations_by_type: countByValue(
+        flowDataDependencies.flatMap((item) => item.operations),
+      ),
+      data_dependency_flows: flowsWithDataDependencies.map((flow) => ({
+        id: flow.id,
+        journey_name: flowJourneySummaryData(flow)?.name,
+        dependencies: safeFlowDataDependencies(flow).map((dependency) => ({
+          label: dependency.label,
+          kind: dependency.kind,
+          operations: dependency.operations,
+          files: dependency.files,
+          confidence: dependency.confidence,
+          missing_evidence: dependency.missing_evidence,
+        })),
+      })),
       journeys: flowJourneySummaries.map(({ flow, journey }) => ({
         id: flow.id,
         flow_name: flow.name,
@@ -14026,6 +14321,12 @@ function buildResearchArtifacts(params: {
         failure_modes: flowStringArray(flow, 'failure_modes'),
         required_tests: flowStringArray(flow, 'required_tests'),
         runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
+        data_dependencies: safeFlowDataDependencies(flow).map((dependency) => ({
+          label: dependency.label,
+          kind: dependency.kind,
+          operations: dependency.operations,
+          confidence: dependency.confidence,
+        })),
         services: flowStringArray(flow, 'services'),
         service_causality: safeFlowServiceCausality(flow),
         journey_steps: safeFlowJourneySteps(flow).map((step) => ({
@@ -14083,6 +14384,7 @@ function buildResearchArtifacts(params: {
       ),
       contract_backed_flow_ratio: ratio(flowsWithContracts.length, flows.length),
       runtime_surface_coverage_ratio: ratio(flowsWithRuntimeSurfaces.length, flows.length),
+      data_dependency_coverage_ratio: ratio(flowsWithDataDependencies.length, flows.length),
       journey_named_flow_ratio: ratio(flowJourneySummaries.length, flows.length),
       journey_step_coverage_ratio: ratio(
         flows.filter((flow) => safeFlowJourneySteps(flow).length > 0).length,
@@ -14114,6 +14416,10 @@ function buildResearchArtifacts(params: {
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
         runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').length,
+        data_dependencies: safeFlowDataDependencies(flow).length,
+        state_operations: unique(
+          safeFlowDataDependencies(flow).flatMap((dependency) => dependency.operations),
+        ).length,
         services: flowStringArray(flow, 'services').length,
         service_causality: safeFlowServiceCausality(flow).length,
         tests: flowStringArray(flow, 'tests').length,
@@ -14957,9 +15263,12 @@ function renderJourneyIntelligence(
   }
   const reviewSummary = latestReviewEvidenceSummary(latest);
   const affectedJourneys = asStringArray(reviewSummary.affected_journeys);
+  const affectedDataDependencies = asStringArray(reviewSummary.affected_data_dependencies);
+  const affectedStateOperations = asStringArray(reviewSummary.affected_state_operations);
   const failureModes = asStringArray(reviewSummary.user_visible_failure_modes);
   const journeyMissingEvidence = asStringArray(reviewSummary.journey_missing_evidence);
   const affectedStepCount = recordNumber(reviewSummary, 'affected_journey_steps');
+  const journeyDataDependencies = journeys.flatMap((item) => safeFlowDataDependencies(item.flow));
 
   return `<div class="grid">
     <article class="card compact">
@@ -14968,7 +15277,14 @@ function renderJourneyIntelligence(
       ${renderList(
         journeys.slice(0, 5).map((item) => {
           const surfaces = flowStringArray(item.flow, 'runtime_surfaces').slice(0, 2).join(', ');
-          const suffix = surfaces.length === 0 ? '' : ` · ${surfaces}`;
+          const dataSignals = safeFlowDataDependencies(item.flow)
+            .map((dependency) => dependency.label)
+            .slice(0, 2)
+            .join(', ');
+          const suffix = [surfaces, dataSignals]
+            .filter((value) => value.length > 0)
+            .map((value) => ` · ${value}`)
+            .join('');
           return `${item.journey.name} (${item.journey.confidence}, ${item.steps.length} step(s))${suffix}`;
         }),
       )}
@@ -14981,6 +15297,10 @@ function renderJourneyIntelligence(
       ${renderList(highestRisk.journey.missing_evidence.slice(0, 4))}
       <h4>Runtime Surfaces</h4>
       ${renderList(flowStringArray(highestRisk.flow, 'runtime_surfaces').slice(0, 5))}
+      <h4>State/Data</h4>
+      ${renderList(
+        safeFlowDataDependencies(highestRisk.flow).slice(0, 4).map(formatDataDependencyForReview),
+      )}
     </article>
     <article class="card compact">
       <div class="badge">${journeyEvidenceHealth(journeys)}/100</div>
@@ -14988,6 +15308,7 @@ function renderJourneyIntelligence(
       ${renderList([
         `${journeys.filter((item) => item.journey.confidence === 'verified').length} verified journey name(s)`,
         `${journeys.filter((item) => item.journey.confidence === 'inferred').length} inferred journey name(s)`,
+        `${journeyDataDependencies.length} state/data dependency signal(s)`,
         `${journeys.flatMap((item) => item.journey.missing_evidence).length} missing evidence note(s)`,
         `${journeys.flatMap((item) => item.steps).filter((step) => step.tests.length > 0).length} step(s) with tests`,
       ])}
@@ -15000,6 +15321,8 @@ function renderJourneyIntelligence(
           ? ['No affected journeys recorded by the latest review.']
           : affectedJourneys.slice(0, 4).map((journey) => `Affected: ${journey}`)),
         `${affectedStepCount} affected journey step(s)`,
+        ...affectedDataDependencies.slice(0, 3).map((item) => `State/data: ${item}`),
+        ...affectedStateOperations.slice(0, 3).map((item) => `Operation: ${item}`),
         ...failureModes.slice(0, 3),
         ...journeyMissingEvidence.slice(0, 3).map((gap) => `Gap: ${gap}`),
       ])}
@@ -19130,6 +19453,7 @@ function buildFlowExplanation(params: {
   const journey = flowJourneySummaryData(target);
   const journeySteps = safeFlowJourneySteps(target);
   const serviceCausality = safeFlowServiceCausality(target);
+  const dataDependencies = safeFlowDataDependencies(target);
   const flowRisksForTarget = safeFlowRisks(target);
   const components = flowStringArray(target, 'components').map(safeText);
   const services = flowStringArray(target, 'services').map(safeText);
@@ -19166,6 +19490,7 @@ function buildFlowExplanation(params: {
     ...entrypoints.flatMap((entrypoint) => entrypoint.evidence),
     ...steps.flatMap((step) => step.evidence),
     ...serviceCausality.flatMap((item) => item.evidence_ids),
+    ...dataDependencies.flatMap((dependency) => dependency.evidence_ids),
     ...flowRisksForTarget.flatMap((risk) => risk.evidence),
     ...relationshipContext.evidenceIds,
   ]).map(safeText);
@@ -19217,8 +19542,12 @@ function buildFlowExplanation(params: {
         ? []
         : [`Explains the ${journey.name} with ${journeySteps.length} normalized journey step(s).`]),
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
-      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${dataDependencies.length} state/data dependency signal(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
       ...serviceCausality.map((item) => item.cause),
+      ...dataDependencies.map(
+        (dependency) =>
+          `Tracks ${dependency.label} as ${dependency.kind} evidence with ${dependency.operations.join(', ') || 'unknown'} operation signal(s).`,
+      ),
       ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
     ]).map(safeText),
@@ -19243,6 +19572,11 @@ function buildFlowExplanation(params: {
       ...(tests.length === 0 ? ['No directly linked tests were detected for this flow.'] : []),
       ...(configs.length === 0 ? ['No directly linked configs were detected for this flow.'] : []),
       ...contractFailureModes,
+      ...dataDependencies.flatMap((dependency) =>
+        dependency.operations.map(
+          (operation) => `${dependency.label} ${operation} behavior may affect this flow.`,
+        ),
+      ),
       ...riskLabels,
     ]).map(safeText),
     breaks_if_changed: [
@@ -19288,6 +19622,7 @@ function buildFlowExplanation(params: {
       components,
       services,
       service_causality: serviceCausality,
+      data_dependencies: dataDependencies,
       files,
       dependencies,
       runtime_surfaces: runtimeSurfaces,
@@ -19793,6 +20128,11 @@ function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
       )}</article>
       <article class="card"><h2>State Transitions</h2>${renderList(
         explanation.flow.state_transitions,
+      )}</article>
+      <article class="card"><h2>State/Data Dependencies</h2>${renderList(
+        explanation.flow.data_dependencies.length === 0
+          ? ['No state/data dependency signal was linked to this flow.']
+          : explanation.flow.data_dependencies.map(formatDataDependencyForReview),
       )}</article>
       <article class="card"><h2>Required Tests</h2>${renderList(
         explanation.flow.required_tests,
@@ -20343,6 +20683,13 @@ function buildReview(params: {
     affectedFlows.flatMap((flow) => (flow.journey_name === undefined ? [] : [flow.journey_name])),
   ).map(safeText);
   const affectedJourneySteps = affectedFlows.flatMap((flow) => flow.affected_steps);
+  const affectedDataDependencies = uniqueBy(
+    affectedFlows.flatMap((flow) => flow.data_dependencies),
+    (dependency) => dependency.dependency_id,
+  );
+  const affectedStateOperations = unique(
+    affectedDataDependencies.flatMap((dependency) => dependency.operations),
+  ).map(safeText);
   const userVisibleFailureModes = unique(
     affectedFlows.flatMap((flow) => flow.user_visible_failure_modes),
   ).map(safeText);
@@ -20586,6 +20933,38 @@ function buildReview(params: {
     });
   }
 
+  if (affectedDataDependencies.length > 0) {
+    const stateWriteImpact = affectedStateOperations.some((operation) =>
+      ['schema', 'write', 'update', 'delete', 'cache', 'session'].includes(operation),
+    );
+    addFinding({
+      slug: 'state-data-impact',
+      severity: stateWriteImpact ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'State/data dependency overlaps the diff',
+      description: safeText(
+        `The diff touches ${affectedDataDependencies.length} state/data dependency signal(s): ${affectedDataDependencies
+          .map(formatDataDependencyForReview)
+          .slice(0, 5)
+          .join(' ')} Affected operation(s): ${
+          affectedStateOperations.slice(0, 6).join(', ') || 'unknown'
+        }.`,
+      ),
+      affected_files: unique(affectedDataDependencies.flatMap((dependency) => dependency.files)),
+      affected_entities: unique([...graphAffectedEntities, ...affectedFlowIds]),
+      evidenceIds: unique(
+        affectedDataDependencies.flatMap((dependency) => dependency.evidence_ids),
+      ),
+      confidence: affectedDataDependencies.every(
+        (dependency) => dependency.confidence === 'verified',
+      )
+        ? 'verified'
+        : 'inferred',
+      recommendation:
+        'Verify migrations, repositories, cache/session behavior, and linked journey tests before treating the change as isolated.',
+    });
+  }
+
   if (affectedServices.length > 0) {
     addFinding({
       slug: 'affected-services',
@@ -20750,6 +21129,10 @@ function buildReview(params: {
       service_causality_effects: serviceCausalityEffects,
       affected_journeys: affectedJourneyNames,
       affected_journey_steps: affectedJourneySteps.length,
+      affected_data_dependencies: affectedDataDependencies.map((dependency) =>
+        safeText(dependency.label),
+      ),
+      affected_state_operations: affectedStateOperations,
       user_visible_failure_modes: userVisibleFailureModes,
       journey_missing_evidence: journeyMissingEvidence,
       architecture_impact_surfaces: architectureImpactMap.length,
@@ -20871,6 +21254,9 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     service_causality_effect_count: serviceCausalityEffects.length,
     affected_journey_count: review.review_evidence_summary.affected_journeys.length,
     affected_journey_step_count: review.review_evidence_summary.affected_journey_steps,
+    affected_data_dependency_count:
+      review.review_evidence_summary.affected_data_dependencies.length,
+    affected_state_operation_count: review.review_evidence_summary.affected_state_operations.length,
     user_visible_failure_mode_count:
       review.review_evidence_summary.user_visible_failure_modes.length,
     journey_missing_evidence_count: review.review_evidence_summary.journey_missing_evidence.length,
@@ -21489,9 +21875,14 @@ function affectedFlowEntities(
     });
     const journey = flowJourneySummaryData(flow);
     const affectedSteps = affectedJourneyStepsForChangedFiles(flow, matchedChangedFiles);
+    const affectedDataDependencies = affectedDataDependenciesForChangedFiles(
+      flow,
+      matchedChangedFiles,
+    );
     const missingEvidence = unique([
       ...(journey?.missing_evidence ?? []),
       ...affectedSteps.flatMap((step) => step.missing_evidence),
+      ...affectedDataDependencies.flatMap((dependency) => dependency.missing_evidence),
       ...(flowStringArray(flow, 'tests').length === 0
         ? ['No directly linked tests were detected for this affected journey.']
         : []),
@@ -21510,9 +21901,11 @@ function affectedFlowEntities(
         entrypoints: reviewFlowEntrypointLabels(flow),
         affected_steps: affectedSteps,
         runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').map(safeText),
+        data_dependencies: affectedDataDependencies,
         user_visible_failure_modes: userVisibleFailureModesForFlow({
           flow,
           affectedSteps,
+          affectedDataDependencies,
           matchedChangedFiles,
         }),
         missing_evidence: missingEvidence,
@@ -21529,6 +21922,16 @@ function affectedFlowEntities(
     ];
   });
   return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function affectedDataDependenciesForChangedFiles(
+  flow: BrainEntity,
+  changedFiles: readonly string[],
+): FlowDataDependency[] {
+  const changedFileSet = new Set(changedFiles);
+  return safeFlowDataDependencies(flow).filter((dependency) =>
+    dependency.files.some((file) => changedFileSet.has(file)),
+  );
 }
 
 function affectedJourneyStepsForChangedFiles(
@@ -21548,10 +21951,14 @@ function affectedJourneyStepsForChangedFiles(
 function userVisibleFailureModesForFlow(params: {
   readonly flow: BrainEntity;
   readonly affectedSteps: readonly FlowJourneyStep[];
+  readonly affectedDataDependencies: readonly FlowDataDependency[];
   readonly matchedChangedFiles: readonly string[];
 }): string[] {
   const journeyName = flowJourneySummaryData(params.flow)?.name ?? params.flow.name;
   const stepTypes = new Set(params.affectedSteps.map((step) => step.type));
+  const stateOperations = new Set(
+    params.affectedDataDependencies.flatMap((dependency) => dependency.operations),
+  );
   return unique([
     ...(stepTypes.has('validation_auth')
       ? [`${journeyName} can reject valid users, admit invalid users, or break protected access.`]
@@ -21583,6 +21990,24 @@ function userVisibleFailureModesForFlow(params: {
     ...(stepTypes.has('test_coverage')
       ? [`${journeyName} confidence changed because linked test evidence changed.`]
       : []),
+    ...(stateOperations.has('schema')
+      ? [`${journeyName} can break when a schema/model/table contract drifts from callers.`]
+      : []),
+    ...(stateOperations.has('read')
+      ? [`${journeyName} can read stale, missing, or mis-shaped data.`]
+      : []),
+    ...(stateOperations.has('write') ||
+    stateOperations.has('update') ||
+    stateOperations.has('delete')
+      ? [`${journeyName} can fail to persist, mutate, or delete state correctly.`]
+      : []),
+    ...(stateOperations.has('cache/session')
+      ? [`${journeyName} can serve stale cache/session data or lose session continuity.`]
+      : []),
+    ...params.affectedDataDependencies.map(
+      (dependency) =>
+        `${journeyName} depends on ${dependency.label} (${dependency.operations.join(', ') || 'state dependency'}).`,
+    ),
     ...flowStringArray(params.flow, 'failure_modes').slice(0, 4),
     ...(params.matchedChangedFiles.length > 0
       ? [
@@ -21623,6 +22048,7 @@ function affectedFlowReasons(params: {
     entrypoints: reviewFlowEntrypointLabels(params.flow),
     affected_steps: [],
     runtime_surfaces: flowStringArray(params.flow, 'runtime_surfaces'),
+    data_dependencies: [],
     user_visible_failure_modes: [],
     missing_evidence: flowJourneySummaryData(params.flow)?.missing_evidence ?? [],
     changed_files: [],
@@ -22024,11 +22450,12 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Journey</th><th>Affected Steps</th><th>User-Visible Risk</th><th>Runtime Surfaces</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Tests / Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Journey</th><th>Affected Steps</th><th>State/Data Impact</th><th>User-Visible Risk</th><th>Runtime Surfaces</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Tests / Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
         <td><strong>${htmlEscape(flow.journey_name ?? flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
         <td>${renderList(flow.affected_steps.map(formatJourneyStepForReview))}</td>
+        <td>${renderList(flow.data_dependencies.map(formatDataDependencyForReview))}</td>
         <td>${renderList(flow.user_visible_failure_modes)}</td>
         <td>${renderList(flow.runtime_surfaces)}</td>
         <td>${renderList(flow.changed_files)}</td>
@@ -22044,6 +22471,14 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
 function formatJourneyStepForReview(step: FlowJourneyStep): string {
   const files = step.files.length === 0 ? 'no files' : step.files.slice(0, 3).join(', ');
   return `${step.label}: ${files} (${step.confidence})`;
+}
+
+function formatDataDependencyForReview(dependency: FlowDataDependency): string {
+  const files =
+    dependency.files.length === 0 ? 'no files' : dependency.files.slice(0, 3).join(', ');
+  const operations =
+    dependency.operations.length === 0 ? 'state dependency' : dependency.operations.join(', ');
+  return `${dependency.label}: ${operations}; ${files} (${dependency.confidence})`;
 }
 
 function renderAffectedServiceRows(services: readonly ReviewAffectedServiceData[]): string {
