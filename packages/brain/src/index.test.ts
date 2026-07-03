@@ -8060,6 +8060,251 @@ describe('project brain generation', () => {
     });
   });
 
+  it('does not infer state/data dependencies from config or test wording alone', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'config-copy-app',
+          scripts: { build: 'next build', test: 'vitest run' },
+          dependencies: { next: '^15.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'next.config.mjs'),
+        [
+          '// Operator note: update Redis cache TTL and delete stale sessions in the runbook.',
+          'const nextConfig = { output: "standalone" };',
+          'export default nextConfig;',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'runtime.test.ts'),
+        [
+          'import { it } from "vitest";',
+          'it("mentions Redis cache update and delete coverage in test copy", () => {});',
+          '',
+        ].join('\n'),
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:03:30.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      const flows = await readJson<{
+        entities: Array<{ data?: { data_dependencies?: unknown[] } }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      expect(flows.entities.flatMap((flow) => flow.data?.data_dependencies ?? [])).toEqual([]);
+    });
+  });
+
+  it('does not report config-only TypeScript changes as runtime source or state/data impact', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'next-config-review-app',
+          scripts: { build: 'next build', test: 'vitest run' },
+          dependencies: { next: '^15.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'next.config.ts'),
+        [
+          'const nextConfig = {',
+          '  output: "standalone",',
+          '};',
+          'export default nextConfig;',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'page.tsx'),
+        'export function Page() { return <main>Ready</main>; }\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'page.test.tsx'),
+        'import { it } from "vitest"; it("renders", () => {});\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:03:45.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'next.config.ts'),
+        [
+          '// Operator note: update Redis cache TTL and delete stale sessions in the runbook.',
+          'const nextConfig = {',
+          '  output: "standalone",',
+          '  poweredByHeader: false,',
+          '};',
+          'export default nextConfig;',
+          '',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:04:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toEqual(['next.config.ts']);
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({
+          category: 'Missing tests',
+          title: expect.stringContaining('Runtime files changed'),
+        }),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({ title: 'State/data dependency overlaps the diff' }),
+      );
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual([]);
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toEqual([]);
+      expect(review.value.review.verification_plan).not.toContainEqual(
+        expect.objectContaining({ verification_type: 'data' }),
+      );
+      expect(review.value.review.findings).toContainEqual(
+        expect.objectContaining({ title: 'Configuration or dependency surface changed' }),
+      );
+    });
+  });
+
+  it('does not report comment-only or type-support changes as state/data impact', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'accounts'), { recursive: true });
+      await mkdir(join(dir, 'src', 'db'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'comment-type-review-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import { profileHandler } from "./accounts/profile-handler.js";',
+          'const app = express();',
+          'app.get("/profile", profileHandler);',
+          'export { app };',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-handler.ts'),
+        [
+          'import { loadProfile } from "./profile-repository.js";',
+          'export async function profileHandler(req: { userId?: string }, res: { json: (value: unknown) => void }) {',
+          '  res.json(await loadProfile(req.userId ?? "guest"));',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-repository.ts'),
+        [
+          'import type { Profile } from "../db/profile-types.js";',
+          'const profiles = new Map<string, Profile>();',
+          'export async function loadProfile(id: string) {',
+          '  return profiles.get(id) ?? { id, name: "Guest" };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'db', 'profile-types.ts'),
+        ['export type Profile = {', '  id: string;', '  name: string;', '};', ''].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-handler.test.ts'),
+        'import { it } from "vitest"; it("loads profile", () => {});\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:04:30.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'src', 'accounts', 'profile-repository.ts'),
+        [
+          'import type { Profile } from "../db/profile-types.js";',
+          '// Operator note: delete stale cache/session entries in the runbook.',
+          'const profiles = new Map<string, Profile>();',
+          'export async function loadProfile(id: string) {',
+          '  return profiles.get(id) ?? { id, name: "Guest" };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'db', 'profile-types.ts'),
+        [
+          'export type Profile = {',
+          '  id: string;',
+          '  name: string;',
+          '  displayName?: string;',
+          '};',
+          '',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:05:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toEqual(
+        expect.arrayContaining(['src/accounts/profile-repository.ts', 'src/db/profile-types.ts']),
+      );
+      expect(review.value.review.affected_flows.length).toBeGreaterThan(0);
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual([]);
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toEqual([]);
+      expect(review.value.review.review_evidence_summary.user_visible_failure_modes).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('persisted state correctly')]),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({
+          category: 'Missing tests',
+          title: expect.stringContaining('Runtime files changed'),
+        }),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({ title: 'State/data dependency overlaps the diff' }),
+      );
+      expect(review.value.review.verification_plan).not.toContainEqual(
+        expect.objectContaining({ verification_type: 'data' }),
+      );
+      expect(review.value.reviewEval).toMatchObject({
+        affected_data_dependency_count: 0,
+        affected_state_operation_count: 0,
+      });
+    });
+  });
+
   it('keeps state/data blast radius when a schema file is renamed', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);

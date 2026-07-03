@@ -1,0 +1,132 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-comment-type-only-precision",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Comment/type-only review precision benchmark seed",
+  "prompt": "Review comment-only and type-support changes near a real stateful journey and verify that Rizz keeps affected journey context without inventing state/data impact or missing-runtime-test findings.",
+  "fixture": {
+    "root": "pi-bench-review-comment-type-only-precision",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-comment-type-only-precision\",\"scripts\":{\"test\":\"vitest run\"},\"dependencies\":{\"express\":\"^4.19.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\",\"typescript\":\"^5.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { profileHandler } from \"./accounts/profile-handler.js\";\n\nconst app = express();\napp.get(\"/profile\", profileHandler);\nexport { app };\n"
+      },
+      {
+        "path": "src/accounts/profile-handler.ts",
+        "contents": "import { loadProfile } from \"./profile-repository.js\";\n\nexport async function profileHandler(req: { userId?: string }, res: { json: (value: unknown) => void }) {\n  res.json(await loadProfile(req.userId ?? \"guest\"));\n}\n"
+      },
+      {
+        "path": "src/accounts/profile-repository.ts",
+        "contents": "import type { Profile } from \"../db/profile-types.js\";\nconst profiles = new Map<string, Profile>();\n\nexport async function loadProfile(id: string) {\n  return profiles.get(id) ?? { id, name: \"Guest\" };\n}\n"
+      },
+      {
+        "path": "src/db/profile-types.ts",
+        "contents": "export type Profile = {\n  id: string;\n  name: string;\n};\n"
+      },
+      {
+        "path": "src/accounts/profile-handler.test.ts",
+        "contents": "import { it } from \"vitest\";\n\nit(\"loads profile\", () => {});\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/accounts/profile-repository.ts",
+          "contents": "import type { Profile } from \"../db/profile-types.js\";\n// Operator note: delete stale cache/session entries in the runbook.\nconst profiles = new Map<string, Profile>();\n\nexport async function loadProfile(id: string) {\n  return profiles.get(id) ?? { id, name: \"Guest\" };\n}\n"
+        },
+        {
+          "path": "src/db/profile-types.ts",
+          "contents": "export type Profile = {\n  id: string;\n  name: string;\n  displayName?: string;\n};\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/accounts/profile-repository.ts", "src/db/profile-types.ts"],
+      "minimum_affected_flows": 1,
+      "maximum_affected_data_dependencies": 0,
+      "maximum_affected_state_operations": 0,
+      "findings_exclude": [
+        { "category": "Missing tests", "title_includes": "Runtime files changed" },
+        { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" }
+      ],
+      "claim_surfaces_include": ["blast_radius_reason", "affected_flow"],
+      "minimum_review_claims": 1,
+      "require_review_claim_coverage": true,
+      "required_tests_include": ["vitest run"],
+      "forbidden_output_substrings": [
+        "State/data dependency overlaps the diff",
+        "Runtime files changed without test artifacts",
+        "persisted state correctly"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_flow_count",
+        "affected_data_dependency_count",
+        "affected_state_operation_count",
+        "secret_safety.output_secret_safe"
+      ],
+      "expected_json_values": {
+        "affected_data_dependency_count": 0,
+        "affected_state_operation_count": 0,
+        "secret_safety.output_secret_safe": true
+      },
+      "forbidden_substrings": ["State/data dependency overlaps the diff"]
+    },
+    {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "required_fields": [
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.affected_flow",
+        "secret_safety.output_secret_safe",
+        "claims"
+      ],
+      "required_substrings": [
+        "src/accounts/profile-repository.ts",
+        "\"surface\": \"affected_flow\""
+      ],
+      "forbidden_substrings": [
+        "State/data dependency overlaps the diff",
+        "Runtime files changed without test artifacts"
+      ],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": ["Affected Flows", "src/accounts/profile-repository.ts"],
+      "forbidden_substrings": ["State/data dependency overlaps the diff"]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Comment-only source changes keep journey context without state/data blast-radius findings.",
+      "Type-support changes do not become runtime state/data impact."
+    ],
+    "fail": [
+      "Comment wording that mentions delete/cache/session is treated like runtime state mutation.",
+      "Type-only support edits trigger missing-runtime-test or state/data findings."
+    ]
+  }
+}

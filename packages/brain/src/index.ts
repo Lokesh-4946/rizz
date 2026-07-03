@@ -4819,6 +4819,17 @@ function stateOperationsFromText(text: string): string[] {
   return [...operations].sort((a, b) => a.localeCompare(b));
 }
 
+function isDataDependencySourceFile(path: string): boolean {
+  if (isTestPath(path) || isConfigPath(path) || isTypeOnlySupportFile(path)) return false;
+  const lower = path.toLowerCase();
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|cs|php|sql|prisma)$/i.test(lower);
+}
+
+function isTypeOnlySupportFile(path: string): boolean {
+  const name = basename(path).toLowerCase();
+  return name.endsWith('.d.ts') || /(^|[-_.])(types?|interfaces?)(\.[cm]?[jt]sx?)?$/.test(name);
+}
+
 function pathStateDependencyLabels(path: string): string[] {
   const lower = path.toLowerCase();
   const name = basename(lower);
@@ -4868,6 +4879,7 @@ function inferFlowDataDependencies(params: {
   };
 
   for (const file of params.intelligence.files) {
+    if (!isDataDependencySourceFile(file)) continue;
     const text = readTextIfAvailable(params.rootDir, file) ?? '';
     const operations = stateOperationsFromText(`${file}\n${text}`);
     const labels = unique([
@@ -20699,10 +20711,16 @@ function buildReview(params: {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
   const changedFileSet = new Set(changedFiles);
   const publicChangedFiles = changedFiles.map(safeText);
-  const changedSourceFiles = changedFiles.filter((file) => isSourceFile(file));
   const changedTestFiles = changedFiles.filter((file) => isTestPath(file));
   const changedConfigFiles = changedFiles.filter((file) => isConfigPath(file));
   const changedDependencyFiles = changedFiles.filter((file) => isDependencyPath(file));
+  const changedSourceFiles = changedFiles.filter(
+    (file) =>
+      isSourceFile(file) &&
+      !isConfigPath(file) &&
+      !isDependencyPath(file) &&
+      hasRuntimeRelevantSourceDiff(file, params.diffText),
+  );
   const affectedComponents = affectedComponentEntities(changedFiles, params.entitySets.components);
   const affectedComponentIds = affectedComponents.map((component) => component.id);
   const dependentComponents = dependentComponentEntities(
@@ -20716,6 +20734,7 @@ function buildReview(params: {
     changedFiles,
     allAffectedComponents,
     params.entitySets.flows,
+    params.diffText,
   );
   const affectedServices = affectedServiceEntities({
     changedFiles,
@@ -21686,6 +21705,114 @@ function isSourceFile(path: string): boolean {
   return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php)$/.test(path) && !isTestPath(path);
 }
 
+type DiffFileChange = {
+  readonly addedLines: readonly string[];
+  readonly deletedLines: readonly string[];
+  readonly isDeleted: boolean;
+  readonly isRenamed: boolean;
+  readonly isNew: boolean;
+};
+
+function hasRuntimeRelevantSourceDiff(path: string, diffText: string): boolean {
+  if (isTypeOnlySupportFile(path)) return false;
+  const change = diffChangeForFile(diffText, path);
+  if (change === undefined) return true;
+  if (change.isDeleted || change.isRenamed || change.isNew) return true;
+  return changedCodeLines(change).length > 0;
+}
+
+function hasStateDataRelevantDiff(path: string, diffText: string): boolean {
+  if (isTypeOnlySupportFile(path)) return false;
+  const change = diffChangeForFile(diffText, path);
+  if (change === undefined) return true;
+  if (change.isDeleted || change.isRenamed || change.isNew) return true;
+  return changedCodeLines(change).length > 0;
+}
+
+function changedCodeLines(change: DiffFileChange): string[] {
+  return [...change.addedLines, ...change.deletedLines].filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed === '') return false;
+    if (
+      trimmed.startsWith('//') ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('/*') ||
+      trimmed.startsWith('*') ||
+      trimmed.startsWith('*/') ||
+      trimmed.startsWith('<!--') ||
+      trimmed.startsWith('--')
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function diffChangeForFile(diffText: string, path: string): DiffFileChange | undefined {
+  return parseDiffFileChanges(diffText).get(path);
+}
+
+function parseDiffFileChanges(diffText: string): Map<string, DiffFileChange> {
+  const changes = new Map<string, DiffFileChange>();
+  let current:
+    | {
+        oldPath: string;
+        newPath: string;
+        addedLines: string[];
+        deletedLines: string[];
+        isDeleted: boolean;
+        isRenamed: boolean;
+        isNew: boolean;
+      }
+    | undefined;
+  const commitCurrent = (): void => {
+    if (current === undefined) return;
+    const value: DiffFileChange = {
+      addedLines: current.addedLines,
+      deletedLines: current.deletedLines,
+      isDeleted: current.isDeleted,
+      isRenamed: current.isRenamed,
+      isNew: current.isNew,
+    };
+    changes.set(current.newPath, value);
+    changes.set(current.oldPath, value);
+  };
+  for (const line of diffText.split(/\r?\n/)) {
+    const header = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+    if (header !== null) {
+      commitCurrent();
+      current = {
+        oldPath: header[1] ?? '',
+        newPath: header[2] ?? '',
+        addedLines: [],
+        deletedLines: [],
+        isDeleted: false,
+        isRenamed: false,
+        isNew: false,
+      };
+      continue;
+    }
+    if (current === undefined) continue;
+    if (line.startsWith('deleted file mode')) {
+      current.isDeleted = true;
+      continue;
+    }
+    if (line.startsWith('new file mode')) {
+      current.isNew = true;
+      continue;
+    }
+    if (line.startsWith('rename from ') || line.startsWith('rename to ')) {
+      current.isRenamed = true;
+      continue;
+    }
+    if (line.startsWith('+++ ') || line.startsWith('--- ')) continue;
+    if (line.startsWith('+')) current.addedLines.push(line.slice(1));
+    if (line.startsWith('-')) current.deletedLines.push(line.slice(1));
+  }
+  commitCurrent();
+  return changes;
+}
+
 function isTestPath(path: string): boolean {
   return /(__tests__|\.test\.|\.spec\.)/.test(path);
 }
@@ -22432,6 +22559,7 @@ function affectedFlowEntities(
   changedFiles: readonly string[],
   affectedComponents: readonly BrainEntity[],
   flows: readonly BrainEntity[],
+  diffText: string,
 ): AffectedFlowData[] {
   const affectedComponentIds = new Set(affectedComponents.map((component) => component.id));
   const affectedComponentFiles = new Set(
@@ -22465,6 +22593,7 @@ function affectedFlowEntities(
     const affectedDataDependencies = affectedDataDependenciesForChangedFiles(
       flow,
       matchedChangedFiles,
+      diffText,
     );
     const missingEvidence = unique([
       ...(journey?.missing_evidence ?? []),
@@ -22514,10 +22643,13 @@ function affectedFlowEntities(
 function affectedDataDependenciesForChangedFiles(
   flow: BrainEntity,
   changedFiles: readonly string[],
+  diffText: string,
 ): FlowDataDependency[] {
   const changedFileSet = new Set(changedFiles);
   return safeFlowDataDependencies(flow).filter((dependency) =>
-    dependency.files.some((file) => changedFileSet.has(file)),
+    dependency.files.some(
+      (file) => changedFileSet.has(file) && hasStateDataRelevantDiff(file, diffText),
+    ),
   );
 }
 

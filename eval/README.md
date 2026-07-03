@@ -70,6 +70,10 @@ items so review conclusions can be audited back to evidence, confidence, rules, 
 Precision review seeds can assert absent findings and maximum affected state/data counts; these
 negative checks keep test-only or confidence-only edits from being scored as runtime blast-radius
 changes.
+Config-only precision seeds additionally require dependency/runtime impact while forbidding
+runtime-source missing-test findings and state/data impact for TypeScript config wording.
+Comment/type-only precision seeds keep affected journey context while forbidding state/data impact
+or missing-runtime-test findings when the diff only changes comments or type-support files.
 Review diff entries normally use `{ "path": "...", "contents": "..." }`; rename and delete review
 seeds can additionally use `{ "path": "...", "rename_from": "...", "contents": "..." }` and
 `{ "path": "...", "delete": true }` so PI-Bench can exercise real git name-status behavior for
