@@ -67,6 +67,9 @@ counts, risk, surgicality, review-readiness, and secret-safety/redaction indicat
 Review tasks may also require `.rizz/research/review_claim_evidence.json`, which records a compact
 claim ledger for blast-radius reasons, findings, affected flows, and targeted verification plan
 items so review conclusions can be audited back to evidence, confidence, rules, and unknowns.
+Precision review seeds can assert absent findings and maximum affected state/data counts; these
+negative checks keep test-only or confidence-only edits from being scored as runtime blast-radius
+changes.
 Review diff entries normally use `{ "path": "...", "contents": "..." }`; rename and delete review
 seeds can additionally use `{ "path": "...", "rename_from": "...", "contents": "..." }` and
 `{ "path": "...", "delete": true }` so PI-Bench can exercise real git name-status behavior for
