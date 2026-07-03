@@ -2191,10 +2191,13 @@ function gitInCwd(cwd, args) {
     {
       cwd,
       encoding: 'utf8',
-      timeout: 5_000,
+      timeout: 20_000,
     },
   );
-  assert(result.status === 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  assert(
+    result.status === 0,
+    `git ${args.join(' ')} failed: ${result.error?.message || result.stderr || result.stdout}`,
+  );
 }
 
 function setupSmokeEnv(home, secret) {
