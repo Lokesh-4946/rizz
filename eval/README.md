@@ -64,6 +64,10 @@ configs, blast-radius reasons, required tests, findings, and forbidden secret-li
 JSON/report output. Review tasks also require `.rizz/research/review_eval.json`, which makes review
 quality measurable through deterministic finding counts, affected surface counts, evidence/test
 counts, risk, surgicality, review-readiness, and secret-safety/redaction indicators.
+Review diff entries normally use `{ "path": "...", "contents": "..." }`; rename and delete review
+seeds can additionally use `{ "path": "...", "rename_from": "...", "contents": "..." }` and
+`{ "path": "...", "delete": true }` so PI-Bench can exercise real git name-status behavior for
+blast-radius preservation.
 Journey-aware review seeds additionally assert human-readable journey names, normalized journey
 steps, affected journey counts, user-visible failure-mode counts, and review HTML drilldown output
 for auth/login, upload/ingestion, search/retrieval, webhook/background, and deployment/config risk
