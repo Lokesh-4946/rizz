@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -198,8 +199,24 @@ function validateReviewDiff(diff) {
       if (!isSafeRelativePath(file.path)) {
         errors.push(`review.diff.files[${index}].path must be a safe relative path`);
       }
-      if (typeof file.contents !== 'string') {
+      if (
+        file.rename_from !== undefined &&
+        (typeof file.rename_from !== 'string' || !isSafeRelativePath(file.rename_from))
+      ) {
+        errors.push(`review.diff.files[${index}].rename_from must be a safe relative path`);
+      }
+      if (file.delete !== undefined && typeof file.delete !== 'boolean') {
+        errors.push(`review.diff.files[${index}].delete must be a boolean`);
+      }
+      if (
+        file.delete !== true &&
+        file.rename_from === undefined &&
+        typeof file.contents !== 'string'
+      ) {
         errors.push(`review.diff.files[${index}].contents must be a string`);
+      }
+      if (file.contents !== undefined && typeof file.contents !== 'string') {
+        errors.push(`review.diff.files[${index}].contents must be a string when provided`);
       }
     }
   }
@@ -264,6 +281,7 @@ function validateReviewAssertions(assertions) {
     'verification_plan_types_include',
     'verification_plan_priorities_include',
     'verification_plan_reasons_include',
+    'journey_missing_evidence_include',
     'architecture_impact_surfaces_include',
     'architecture_what_breaks_include',
     'architecture_evidence_gaps_include',
@@ -1016,6 +1034,16 @@ function scoreBenchmarkReady(task, benchmarkReady) {
 function applyReviewDiff(task, repoDir) {
   for (const file of task.review.diff.files) {
     const filePath = safeJoin(repoDir, file.path);
+    if (file.delete === true) {
+      rmSync(filePath, { force: true });
+      continue;
+    }
+    if (typeof file.rename_from === 'string') {
+      const fromPath = safeJoin(repoDir, file.rename_from);
+      mkdirSync(dirname(filePath), { recursive: true });
+      renameSync(fromPath, filePath);
+      if (typeof file.contents !== 'string') continue;
+    }
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, file.contents);
   }
@@ -1343,6 +1371,9 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const affectedStateOperations = Array.isArray(evidenceSummary.affected_state_operations)
     ? evidenceSummary.affected_state_operations
     : [];
+  const journeyMissingEvidence = Array.isArray(evidenceSummary.journey_missing_evidence)
+    ? evidenceSummary.journey_missing_evidence
+    : [];
 
   errors.push(
     ...assertIncludesAll(
@@ -1482,6 +1513,11 @@ function assertReviewContract(task, repoDir, review, stdout) {
       verificationPlanReasons,
       assertions.verification_plan_reasons_include,
       'verification_plan.reason',
+    ),
+    ...assertSubstringMatches(
+      journeyMissingEvidence,
+      assertions.journey_missing_evidence_include,
+      'journey_missing_evidence',
     ),
     ...assertSubstringMatches(
       architectureWhatBreaks,
