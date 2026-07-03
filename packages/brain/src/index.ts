@@ -1042,6 +1042,7 @@ interface ReviewEvalArtifactData {
   readonly total_findings: number;
   readonly findings_by_severity: Record<ReviewSeverity, number>;
   readonly findings_by_category: Record<ReviewCategory, number>;
+  readonly generated_artifact_count: number;
   readonly affected_component_count: number;
   readonly affected_service_count: number;
   readonly direct_affected_component_count: number;
@@ -1220,6 +1221,7 @@ interface ReviewDependencyRuntimeImpactData {
 
 interface ReviewEvidenceSummaryData {
   readonly changed_files: number;
+  readonly generated_artifacts: readonly string[];
   readonly direct_components: number;
   readonly affected_services: number;
   readonly dependent_components: number;
@@ -4828,6 +4830,36 @@ function isDataDependencySourceFile(path: string): boolean {
 function isTypeOnlySupportFile(path: string): boolean {
   const name = basename(path).toLowerCase();
   return name.endsWith('.d.ts') || /(^|[-_.])(types?|interfaces?)(\.[cm]?[jt]sx?)?$/.test(name);
+}
+
+function isGeneratedArtifactPath(path: string): boolean {
+  if (isDependencyPath(path) || isConfigPath(path)) return false;
+  const lower = path.toLowerCase();
+  const parts = lower.split('/');
+  if (
+    parts.some((part) =>
+      [
+        '__generated__',
+        '__snapshots__',
+        'generated',
+        'gen',
+        'vendor',
+        'vendors',
+        'third_party',
+        'third-party',
+      ].includes(part),
+    )
+  ) {
+    return true;
+  }
+  const name = basename(lower);
+  return (
+    /\.generated\.[cm]?[jt]sx?$/.test(name) ||
+    /\.gen\.[cm]?[jt]sx?$/.test(name) ||
+    /\.snap$/.test(name) ||
+    /^generated[-_.]/.test(name) ||
+    /[-_.]generated\./.test(name)
+  );
 }
 
 function pathStateDependencyLabels(path: string): string[] {
@@ -20709,19 +20741,25 @@ function buildReview(params: {
   readonly verificationEvidence: VerificationEvidenceArtifactData;
 }): ReviewSummaryData {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
-  const changedFileSet = new Set(changedFiles);
+  const reviewableChangedFiles = changedFiles.filter((file) => !isGeneratedArtifactPath(file));
+  const reviewableChangedFileSet = new Set(reviewableChangedFiles);
   const publicChangedFiles = changedFiles.map(safeText);
+  const changedGeneratedArtifactFiles = changedFiles.filter(isGeneratedArtifactPath);
   const changedTestFiles = changedFiles.filter((file) => isTestPath(file));
   const changedConfigFiles = changedFiles.filter((file) => isConfigPath(file));
   const changedDependencyFiles = changedFiles.filter((file) => isDependencyPath(file));
   const changedSourceFiles = changedFiles.filter(
     (file) =>
       isSourceFile(file) &&
+      !isGeneratedArtifactPath(file) &&
       !isConfigPath(file) &&
       !isDependencyPath(file) &&
       hasRuntimeRelevantSourceDiff(file, params.diffText),
   );
-  const affectedComponents = affectedComponentEntities(changedFiles, params.entitySets.components);
+  const affectedComponents = affectedComponentEntities(
+    reviewableChangedFiles,
+    params.entitySets.components,
+  );
   const affectedComponentIds = affectedComponents.map((component) => component.id);
   const dependentComponents = dependentComponentEntities(
     affectedComponentIds,
@@ -20731,13 +20769,13 @@ function buildReview(params: {
   const dependentComponentIds = dependentComponents.map((component) => component.id);
   const allAffectedComponents = uniqueEntities([...affectedComponents, ...dependentComponents]);
   const affectedFlows = affectedFlowEntities(
-    changedFiles,
+    reviewableChangedFiles,
     allAffectedComponents,
     params.entitySets.flows,
     params.diffText,
   );
   const affectedServices = affectedServiceEntities({
-    changedFiles,
+    changedFiles: reviewableChangedFiles,
     services: params.entitySets.services,
     affectedFlows,
   });
@@ -20745,7 +20783,7 @@ function buildReview(params: {
   const affectedServiceIds = affectedServices.map((service) => service.id);
   const architectureImpactMap = reviewArchitectureImpactMap({
     latest: params.latest,
-    changedFiles,
+    changedFiles: reviewableChangedFiles,
     componentIds: allAffectedComponents.map((component) => component.id),
     flowIds: affectedFlowIds,
   });
@@ -20765,10 +20803,10 @@ function buildReview(params: {
     ...affectedFlowIds,
     ...affectedServiceIds,
     ...params.entitySets.configs
-      .filter((config) => config.source_files.some((file) => changedFileSet.has(file)))
+      .filter((config) => config.source_files.some((file) => reviewableChangedFileSet.has(file)))
       .map((config) => config.id),
     ...params.entitySets.tests
-      .filter((test) => test.source_files.some((file) => changedFileSet.has(file)))
+      .filter((test) => test.source_files.some((file) => reviewableChangedFileSet.has(file)))
       .map((test) => test.id),
   ]);
   const affectedEntitySeed = unique([
@@ -20875,7 +20913,7 @@ function buildReview(params: {
     ...changedFiles.map(evidenceId),
   ]).map(safeText);
   const blastRadius = classifyReviewBlastRadius({
-    fileCount: changedFiles.length,
+    fileCount: reviewableChangedFiles.length,
     directComponentCount: affectedComponents.length,
     dependentComponentCount: dependentComponents.length,
     flowCount: affectedFlows.length,
@@ -20941,12 +20979,14 @@ function buildReview(params: {
     });
   }
 
-  const isBroad = changedFiles.length > 8 || affectedComponents.length > 3;
+  const isBroad = reviewableChangedFiles.length > 8 || affectedComponents.length > 3;
   if (isBroad || blastRadius === 'broad') {
     addFinding({
       slug: 'broad-change',
       severity:
-        changedFiles.length > 20 || affectedComponents.length > 5 || dependentComponents.length > 3
+        reviewableChangedFiles.length > 20 ||
+        affectedComponents.length > 5 ||
+        dependentComponents.length > 3
           ? 'high'
           : 'medium',
       category: 'Regression risk',
@@ -21013,6 +21053,29 @@ function buildReview(params: {
       recommendation: hasLocalVerification
         ? 'Use the recorded checks as local regression evidence, then add focused tests if the behavior changed.'
         : 'Run the existing quality gate and add focused tests for the changed behavior or document why existing coverage is sufficient.',
+    });
+  }
+
+  if (changedGeneratedArtifactFiles.length > 0) {
+    addFinding({
+      slug: 'generated-artifacts',
+      severity: 'low',
+      category: 'Maintainability',
+      title: 'Generated or vendor artifacts changed',
+      description: safeText(
+        `The diff includes ${changedGeneratedArtifactFiles.length} generated/vendor-like artifact(s): ${changedGeneratedArtifactFiles
+          .slice(0, 6)
+          .join(
+            ', ',
+          )}. Rizz keeps them visible but does not treat them as authored runtime source or state/data blast radius.`,
+      ),
+      affected_files: changedGeneratedArtifactFiles.map(safeText),
+      affected_entities: unique(
+        changedGeneratedArtifactFiles.map((file) => entityId('file', file)),
+      ),
+      confidence: 'inferred',
+      recommendation:
+        'Verify the generator, lockfile, or source artifact that produced this output instead of reviewing generated churn as product logic.',
     });
   }
 
@@ -21245,8 +21308,9 @@ function buildReview(params: {
     });
   }
 
-  const overengineeringRisk = changedFiles.length > 12 && changedTestFiles.length < 2;
-  if (overengineeringRisk) {
+  const reviewableOverengineeringRisk =
+    reviewableChangedFiles.length > 12 && changedTestFiles.length < 2;
+  if (reviewableOverengineeringRisk) {
     addFinding({
       slug: 'large-low-test-diff',
       severity: 'medium',
@@ -21263,7 +21327,7 @@ function buildReview(params: {
     });
   }
 
-  const requiredTests = requiredTestCommands(params.entitySets.commands, changedFiles);
+  const requiredTests = requiredTestCommands(params.entitySets.commands, reviewableChangedFiles);
   const verificationPlan = reviewVerificationPlan({
     changedSourceFiles,
     changedTestFiles,
@@ -21281,7 +21345,7 @@ function buildReview(params: {
     verificationStatus,
   });
   const surgicalityScore = scoreSurgicality(
-    changedFiles.length,
+    reviewableChangedFiles.length,
     affectedComponents.length + dependentComponents.length,
     findings,
   );
@@ -21302,6 +21366,7 @@ function buildReview(params: {
     blast_radius_reasons: blastRadiusReasons,
     review_evidence_summary: {
       changed_files: changedFiles.length,
+      generated_artifacts: changedGeneratedArtifactFiles.map(safeText),
       direct_components: affectedComponents.length,
       affected_services: affectedServices.length,
       dependent_components: dependentComponents.length,
@@ -21579,6 +21644,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     total_findings: review.findings.length,
     findings_by_severity: countReviewFindingsBySeverity(review.findings),
     findings_by_category: countReviewFindingsByCategory(review.findings),
+    generated_artifact_count: review.review_evidence_summary.generated_artifacts.length,
     affected_component_count: review.affected_components.length,
     affected_service_count: review.affected_services.length,
     direct_affected_component_count: review.direct_affected_components.length,

@@ -8305,6 +8305,183 @@ describe('project brain generation', () => {
     });
   });
 
+  it('keeps generated artifact changes visible without treating them as authored blast radius', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src', 'generated'), { recursive: true });
+      await mkdir(join(dir, 'src', 'routes'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'generated-review-app',
+          scripts: { test: 'vitest run' },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        [
+          'import express from "express";',
+          'import { profileHandler } from "./routes/profile.js";',
+          'const app = express();',
+          'app.get("/profile", profileHandler);',
+          'export { app };',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'routes', 'profile.ts'),
+        [
+          'import { getProfileClient } from "../generated/profile-client.js";',
+          'export async function profileHandler(_req: unknown, res: { json: (value: unknown) => void }) {',
+          '  res.json(getProfileClient());',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'src', 'generated', 'profile-client.ts'),
+        ['export function getProfileClient() {', '  return { status: "ready" };', '}', ''].join(
+          '\n',
+        ),
+      );
+      await writeFile(
+        join(dir, 'src', 'routes', 'profile.test.ts'),
+        'import { it } from "vitest"; it("profiles", () => {});\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:05:30.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'src', 'generated', 'profile-client.ts'),
+        [
+          'export function getProfileClient() {',
+          '  return { status: "ready", schemaVersion: 2 };',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:06:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toEqual(['src/generated/profile-client.ts']);
+      expect(review.value.review.direct_affected_components).toEqual([]);
+      expect(review.value.review.affected_flows).toEqual([]);
+      expect(review.value.review.review_evidence_summary.generated_artifacts).toEqual([
+        'src/generated/profile-client.ts',
+      ]);
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual([]);
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toEqual([]);
+      expect(review.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          category: 'Maintainability',
+          title: 'Generated or vendor artifacts changed',
+        }),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({
+          category: 'Missing tests',
+          title: expect.stringContaining('Runtime files changed'),
+        }),
+      );
+      expect(review.value.reviewEval).toMatchObject({
+        generated_artifact_count: 1,
+        affected_flow_count: 0,
+        affected_data_dependency_count: 0,
+        affected_state_operation_count: 0,
+      });
+    });
+  });
+
+  it('keeps lockfile changes in dependency runtime impact instead of generated artifact treatment', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'lockfile-review-app',
+          scripts: { test: 'vitest run', build: 'tsc -b' },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'pnpm-lock.yaml'),
+        ['lockfileVersion: 9.0', 'packages:', '  express@4.19.0:', '    resolution: {}', ''].join(
+          '\n',
+        ),
+      );
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const ready = true;\n');
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:06:30.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'pnpm-lock.yaml'),
+        [
+          'lockfileVersion: 9.0',
+          'packages:',
+          '  express@4.19.0:',
+          '    resolution: {}',
+          '  vitest@2.1.0:',
+          '    resolution: {}',
+          '',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:07:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.changed_files).toEqual(['pnpm-lock.yaml']);
+      expect(review.value.review.review_evidence_summary.generated_artifacts).toEqual([]);
+      expect(review.value.review.dependency_runtime_impact).toMatchObject({
+        changed_files: ['pnpm-lock.yaml'],
+        lockfiles: ['pnpm-lock.yaml'],
+      });
+      expect(review.value.review.review_evidence_summary.dependency_runtime_impacts).toBe(1);
+      expect(
+        review.value.review.review_evidence_summary.dependency_runtime_verification_focus,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Validate package install and lockfile resolution'),
+        ]),
+      );
+      expect(review.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          category: 'Backward compatibility',
+          title: 'Configuration or dependency surface changed',
+        }),
+      );
+      expect(review.value.review.findings).not.toContainEqual(
+        expect.objectContaining({ title: 'Generated or vendor artifacts changed' }),
+      );
+      expect(review.value.reviewEval).toMatchObject({
+        generated_artifact_count: 0,
+        dependency_runtime_impact_count: 1,
+      });
+    });
+  });
+
   it('keeps state/data blast radius when a schema file is renamed', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
