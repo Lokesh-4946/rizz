@@ -97,7 +97,9 @@ Journey-aware review seeds additionally assert human-readable journey names, nor
 steps, affected journey counts, user-visible failure-mode counts, and review HTML drilldown output
 for auth/login, upload/ingestion, search/retrieval, webhook/background, and deployment/config risk
 fixtures. These tasks measure whether Rizz can connect changed files to product journeys without
-adding provider calls or broad `rizz ask`.
+adding provider calls or broad `rizz ask`. They also require blast-radius actionability calibration:
+score/status, actionable signals, evidence gaps, user-visible failure modes, affected tests, and
+architecture what-breaks evidence must be present where the review claims a causal blast radius.
 Dependency/runtime review tasks additionally assert `dependency_runtime_impact` for package/config
 diffs: changed manifests/configs, dependency entities, affected flows/tests/configs, runtime
 surfaces, focused verification, and the corresponding `review_eval` dependency-runtime count fields.

@@ -7215,6 +7215,16 @@ describe('project brain generation', () => {
         blast_radius: 'moderate',
         overall_risk: 'medium',
         surgicality_score: result.value.review.surgicality_score,
+        blast_radius_actionability_status: expect.stringMatching(/^(strong|partial|weak)$/),
+        blast_radius_actionability: {
+          changed_file_count: 1,
+          affected_journey_count: expect.any(Number),
+          affected_journey_step_count: expect.any(Number),
+          user_visible_failure_mode_count: expect.any(Number),
+          architecture_what_breaks_note_count:
+            result.value.review.review_evidence_summary.architecture_what_breaks.length,
+          affected_test_count: 1,
+        },
         secret_safety: {
           unsafe_sensitive_reference_count: 0,
           output_secret_safe: true,
@@ -7224,6 +7234,16 @@ describe('project brain generation', () => {
       expect(result.value.reviewEval.findings_by_category['Missing tests']).toBeGreaterThan(0);
       expect(result.value.reviewEval.review_readiness_score).toBeGreaterThanOrEqual(0);
       expect(result.value.reviewEval.review_readiness_score).toBeLessThanOrEqual(100);
+      expect(result.value.reviewEval.blast_radius_actionability_score).toBeGreaterThanOrEqual(0);
+      expect(result.value.reviewEval.blast_radius_actionability_score).toBeLessThanOrEqual(100);
+      expect(result.value.reviewEval.actionable_signal_count).toBeGreaterThan(0);
+      expect(result.value.reviewEval.actionability_gap_count).toBeGreaterThanOrEqual(0);
+      expect(result.value.reviewEval.blast_radius_actionability.signals).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('architecture what-breaks note'),
+          expect.stringContaining('affected test artifact'),
+        ]),
+      );
       expect(result.value.reviewClaimEvidence).toMatchObject({
         schema_version: 1,
         deterministic: true,
@@ -7253,6 +7273,10 @@ describe('project brain generation', () => {
         secret_safety: {
           unsafe_sensitive_reference_count: 0,
           output_secret_safe: true,
+        },
+        blast_radius_actionability: {
+          score: result.value.reviewEval.blast_radius_actionability_score,
+          status: result.value.reviewEval.blast_radius_actionability_status,
         },
       });
       expect(result.value.reviewClaimEvidence.claims_by_surface).toMatchObject({
