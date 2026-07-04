@@ -134,6 +134,7 @@ describe('project brain generation', () => {
       );
       const progressEvents: Array<{
         readonly phase: string;
+        readonly detail?: string;
         readonly message: string;
         readonly scannedFiles?: number;
       }> = [];
@@ -162,6 +163,14 @@ describe('project brain generation', () => {
       expect(paths.some((path) => path.startsWith('.github/workflows/'))).toBe(false);
       expect(progressEvents.map((event) => event.phase)).toEqual(
         expect.arrayContaining(['prepare', 'scan', 'analyze', 'write', 'done']),
+      );
+      expect(progressEvents.map((event) => `${event.phase}/${event.detail ?? 'summary'}`)).toEqual(
+        expect.arrayContaining([
+          'analyze/research-artifacts',
+          'analyze/mission-control',
+          'write/research-artifacts',
+          'write/mission-control',
+        ]),
       );
       expect(progressEvents.some((event) => event.scannedFiles === 4)).toBe(true);
     });

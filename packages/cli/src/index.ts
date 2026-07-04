@@ -122,7 +122,10 @@ async function runBrainCommand(): Promise<number> {
     ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
     onProgress: (progress) => {
       const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
-      process.stderr.write(`[rizz brain] ${progress.phase}: ${progress.message}${elapsed}\n`);
+      const detail = progress.detail === undefined ? '' : `/${progress.detail}`;
+      process.stderr.write(
+        `[rizz brain] ${progress.phase}${detail}: ${progress.message}${elapsed}\n`,
+      );
     },
   });
   if (!result.ok) {

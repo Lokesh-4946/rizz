@@ -1509,6 +1509,7 @@ export interface GenerateProjectBrainOptions {
 
 export interface GenerateProjectBrainProgress {
   readonly phase: 'prepare' | 'scan' | 'analyze' | 'write' | 'done';
+  readonly detail?: string;
   readonly message: string;
   readonly scannedFiles?: number;
   readonly maxFiles?: number;
@@ -2181,16 +2182,16 @@ async function scanFiles(
   maxFiles: number,
   ignorePatterns: readonly IgnorePattern[],
   onProgress?: (progress: GenerateProjectBrainProgress) => void,
+  progressStartedAt: number = Date.now(),
 ): Promise<FileFact[]> {
   const facts: FileFact[] = [];
-  const startedAt = Date.now();
 
   onProgress?.({
     phase: 'scan',
     message: `Scanning files with a ${maxFiles} file cap`,
     scannedFiles: 0,
     maxFiles,
-    elapsedMs: 0,
+    elapsedMs: Date.now() - progressStartedAt,
   });
 
   async function walk(dir: string): Promise<void> {
@@ -2226,7 +2227,7 @@ async function scanFiles(
           message: `Scanned ${facts.length} file(s)`,
           scannedFiles: facts.length,
           maxFiles,
-          elapsedMs: Date.now() - startedAt,
+          elapsedMs: Date.now() - progressStartedAt,
         });
       }
     }
@@ -2241,7 +2242,7 @@ async function scanFiles(
         : `Completed scan after ${facts.length} file(s)`,
     scannedFiles: facts.length,
     maxFiles,
-    elapsedMs: Date.now() - startedAt,
+    elapsedMs: Date.now() - progressStartedAt,
   });
   return sorted(facts, (fact) => fact.relativePath);
 }
@@ -19656,6 +19657,22 @@ export async function generateProjectBrain(
     const startedAt = Date.now();
     const rootDir = options.rootDir;
     const reportProgress = options.onProgress;
+    const maxFiles = options.maxFiles ?? 5_000;
+    const reportStep = (
+      phase: GenerateProjectBrainProgress['phase'],
+      detail: string,
+      message: string,
+      scannedFiles?: number,
+    ): void => {
+      reportProgress?.({
+        phase,
+        detail,
+        message,
+        ...(scannedFiles !== undefined ? { scannedFiles } : {}),
+        maxFiles,
+        elapsedMs: Date.now() - startedAt,
+      });
+    };
     const now = (options.now ?? new Date()).toISOString();
     const projectName = basename(rootDir);
     const brainDir = join(rootDir, '.rizz', 'brain');
@@ -19668,12 +19685,9 @@ export async function generateProjectBrain(
     await mkdir(snapshotsDir, { recursive: true });
     await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
-    reportProgress?.({
-      phase: 'prepare',
-      message: `Prepared .rizz workspace for ${projectName}`,
-      elapsedMs: Date.now() - startedAt,
-    });
+    reportStep('prepare', 'workspace', `Prepared .rizz workspace for ${projectName}`);
 
+    reportStep('prepare', 'previous-state', 'Reading previous brain state');
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'files.json'),
     );
@@ -19685,25 +19699,21 @@ export async function generateProjectBrain(
       join(brainDir, 'graph.json'),
     );
     const ignorePatterns = await readRizzIgnore(rootDir);
+    reportStep('prepare', 'previous-state', 'Loaded previous brain state');
     const previousFiles = previousFileFacts(previous?.entities);
     const previousFlows = previousEntityMap(previousFlowFile?.entities);
     for (const relativePath of previousFiles.keys()) {
       if (shouldSkipRelativePath(relativePath, ignorePatterns)) previousFiles.delete(relativePath);
     }
-    const files = await scanFiles(
-      rootDir,
-      options.maxFiles ?? 5_000,
-      ignorePatterns,
-      reportProgress,
+    const files = await scanFiles(rootDir, maxFiles, ignorePatterns, reportProgress, startedAt);
+    reportStep(
+      'analyze',
+      'package-facts',
+      `Reading package facts from ${files.length} file(s)`,
+      files.length,
     );
-    reportProgress?.({
-      phase: 'analyze',
-      message: `Analyzing ${files.length} scanned file(s)`,
-      scannedFiles: files.length,
-      maxFiles: options.maxFiles ?? 5_000,
-      elapsedMs: Date.now() - startedAt,
-    });
     const packageFacts = await readPackageJsonFacts(rootDir, files);
+    reportStep('analyze', 'entity-graph', 'Building entity graph and relationships', files.length);
     const built = buildBrain({
       rootDir,
       projectName,
@@ -19717,6 +19727,12 @@ export async function generateProjectBrain(
       generated_at: now,
       relationships: sorted(built.relationships, (rel) => `${rel.from}:${rel.relation}:${rel.to}`),
     };
+    reportStep(
+      'analyze',
+      'incremental-metrics',
+      'Calculating incremental understanding metrics',
+      files.length,
+    );
     const incrementalMetrics = buildIncrementalUnderstandingMetrics({
       now,
       files,
@@ -19726,6 +19742,7 @@ export async function generateProjectBrain(
       staleFiles: built.staleFiles,
       previous: previousUnderstanding,
     });
+    reportStep('analyze', 'latest-index', 'Building latest state and index metadata', files.length);
     const latest = buildLatest({
       projectName,
       now,
@@ -19774,6 +19791,12 @@ export async function generateProjectBrain(
         verification_evidence: '.rizz/research/verification_evidence.json',
       },
     };
+    reportStep(
+      'analyze',
+      'research-artifacts',
+      'Building deterministic research artifacts',
+      files.length,
+    );
     const researchArtifacts = buildResearchArtifacts({
       projectName,
       now,
@@ -19787,6 +19810,7 @@ export async function generateProjectBrain(
       staleFiles: built.staleFiles,
       incrementalMetrics,
     });
+    reportStep('analyze', 'mission-control', 'Rendering Mission Control report', files.length);
     const report = renderReport({
       projectName,
       latest,
@@ -19814,32 +19838,29 @@ export async function generateProjectBrain(
     const snapshotName = `${now.replace(/:/g, '-')}.json`;
     const snapshot = { index, latest, graph };
 
-    reportProgress?.({
-      phase: 'write',
-      message: 'Writing brain, research, and Mission Control artifacts',
-      scannedFiles: files.length,
-      maxFiles: options.maxFiles ?? 5_000,
-      elapsedMs: Date.now() - startedAt,
-    });
+    reportStep('write', 'brain-core', 'Writing core brain artifacts', files.length);
     await writeVerifiedFile(join(brainDir, 'index.json'), jsonString(safeBrainValue(index)));
     await writeVerifiedFile(join(brainDir, 'graph.json'), jsonString(safeBrainValue(graph)));
     await writeVerifiedFile(join(brainDir, 'latest.json'), jsonString(safeBrainValue(latest)));
     await writeVerifiedFile(changelogPath, jsonString(safeBrainValue(changelog)));
     await writeVerifiedFile(join(snapshotsDir, snapshotName), jsonString(safeBrainValue(snapshot)));
+    reportStep('write', 'entity-stores', 'Writing entity stores', files.length);
     for (const [bucket, fileName, entityType] of ENTITY_FILES) {
       await writeEntityFile(entitiesDir, fileName, entityType, now, built.buckets[bucket]);
     }
+    reportStep('write', 'flow-mirrors', 'Writing flow mirrors', files.length);
     await writeFlowMirrors(flowDir, now, built.buckets.flows);
+    reportStep('write', 'research-artifacts', 'Writing research artifacts', files.length);
     await writeResearchArtifacts(researchDir, researchArtifacts);
     await clearReviewDerivedArtifacts({ researchDir, reportsDir });
+    reportStep('write', 'mission-control', 'Writing Mission Control report', files.length);
     await writeVerifiedFile(join(reportsDir, 'index.html'), report);
-    reportProgress?.({
-      phase: 'done',
-      message: `Generated project brain with ${files.length} file(s)`,
-      scannedFiles: files.length,
-      maxFiles: options.maxFiles ?? 5_000,
-      elapsedMs: Date.now() - startedAt,
-    });
+    reportStep(
+      'done',
+      'summary',
+      `Generated project brain with ${files.length} file(s)`,
+      files.length,
+    );
 
     return {
       ok: true,
