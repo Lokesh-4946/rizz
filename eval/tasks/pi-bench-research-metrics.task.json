@@ -69,6 +69,8 @@
         "actionability.low_confidence_claim_areas",
         "actionability.redaction_hidden_evidence.hidden_evidence_count",
         "actionability.suggested_read_first",
+        "actionability.confidence_inspection_queue.items",
+        "confidence_inspection_queue.items",
         "actionability.calibration_summary.summary"
       ]
     },

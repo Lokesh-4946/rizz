@@ -872,6 +872,19 @@ describe('project brain generation', () => {
             read_first_files: string[];
             evidence_ids: string[];
           }>;
+          confidence_inspection_queue: {
+            item_count: number;
+            high_priority_count: number;
+            sources: { evidence: number; architecture: number; incremental: number };
+            items: Array<{
+              priority: number;
+              source: string;
+              severity: string;
+              target_id: string;
+              artifacts: string[];
+              evidence_gap_ids: string[];
+            }>;
+          };
           calibration_summary: {
             overall_score: number;
             quality_band: string;
@@ -884,6 +897,12 @@ describe('project brain generation', () => {
         redaction_hidden_evidence: { hidden_evidence_count: number; impact: string };
         suggested_read_first: Array<{ priority: number; target_id: string }>;
         evidence_confidence_deltas: Array<{ priority: number; target_id: string }>;
+        confidence_inspection_queue: {
+          item_count: number;
+          high_priority_count: number;
+          sources: { evidence: number; architecture: number; incremental: number };
+          items: Array<{ priority: number; source: string; target_id: string }>;
+        };
         calibration_summary: { overall_score: number; summary: string };
         top_evidence_gaps: Array<{ kind: string; id: string; field?: string; reason: string }>;
         entity_evidence_coverage_ratio: number;
@@ -993,6 +1012,26 @@ describe('project brain generation', () => {
         confidence_delta: expect.any(Number),
         verification_actions: expect.arrayContaining([expect.any(String)]),
       });
+      expect(evidenceQuality.actionability.confidence_inspection_queue).toMatchObject({
+        item_count: expect.any(Number),
+        high_priority_count: expect.any(Number),
+        sources: expect.objectContaining({
+          evidence: expect.any(Number),
+          architecture: expect.any(Number),
+          incremental: expect.any(Number),
+        }),
+      });
+      expect(
+        evidenceQuality.actionability.confidence_inspection_queue.items.length,
+      ).toBeGreaterThan(0);
+      expect(evidenceQuality.actionability.confidence_inspection_queue.items[0]).toMatchObject({
+        priority: 1,
+        source: expect.stringMatching(/evidence|architecture|incremental/),
+        severity: expect.stringMatching(/high|medium|low/),
+        target_id: expect.any(String),
+        artifacts: expect.arrayContaining([expect.any(String)]),
+        evidence_gap_ids: expect.any(Array),
+      });
       expect(evidenceQuality.actionability.calibration_summary).toMatchObject({
         overall_score: evidenceQuality.overall_score,
         quality_band: evidenceQuality.quality_band,
@@ -1012,6 +1051,9 @@ describe('project brain generation', () => {
       );
       expect(evidenceQuality.evidence_confidence_deltas).toEqual(
         evidenceQuality.actionability.evidence_confidence_deltas,
+      );
+      expect(evidenceQuality.confidence_inspection_queue).toEqual(
+        evidenceQuality.actionability.confidence_inspection_queue,
       );
       expect(evidenceQuality.calibration_summary).toEqual(
         evidenceQuality.actionability.calibration_summary,
@@ -1144,6 +1186,13 @@ describe('project brain generation', () => {
           }>;
           inferred_tradeoffs: Array<{ entity_id: string; tradeoff: string; confidence: string }>;
           low_confidence_areas: Array<{ area_id: string; reason: string; confidence: string }>;
+          inspection_queue: Array<{
+            priority: number;
+            source: string;
+            target_id: string;
+            reason: string;
+            evidence_gap_ids: string[];
+          }>;
           blocking_unknowns: string[];
           calibration_rule: string;
         };
@@ -1217,6 +1266,14 @@ describe('project brain generation', () => {
         calibration_rule: expect.stringContaining('local architecture assumptions'),
       });
       expect(architectureReasoning.confidence_debt.low_confidence_areas.length).toBeGreaterThan(0);
+      expect(architectureReasoning.confidence_debt.inspection_queue.length).toBeGreaterThan(0);
+      expect(architectureReasoning.confidence_debt.inspection_queue[0]).toMatchObject({
+        priority: expect.any(Number),
+        source: 'architecture',
+        target_id: expect.any(String),
+        reason: expect.any(String),
+        evidence_gap_ids: expect.any(Array),
+      });
       expect(architectureReasoning.confidence_debt.blocking_unknowns).toContain(
         '2 reconstructed flow(s) are not verified yet.',
       );
