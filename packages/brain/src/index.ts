@@ -1087,6 +1087,23 @@ interface ReviewBlastRadiusActionabilityData {
   readonly gaps: readonly string[];
 }
 
+interface ReviewPrecisionCalibrationData {
+  readonly score: number;
+  readonly status: 'strong' | 'partial' | 'weak';
+  readonly changed_file_count: number;
+  readonly runtime_source_change_count: number;
+  readonly test_only_change: boolean;
+  readonly generated_artifact_only_change: boolean;
+  readonly dependency_or_config_only_change: boolean;
+  readonly lockfile_only_change: boolean;
+  readonly false_positive_guard_count: number;
+  readonly false_negative_signal_count: number;
+  readonly precision_gap_count: number;
+  readonly false_positive_guards: readonly string[];
+  readonly false_negative_signals: readonly string[];
+  readonly precision_gaps: readonly string[];
+}
+
 interface ReviewEvalArtifactData {
   readonly schema_version: number;
   readonly generated_at: string;
@@ -1144,6 +1161,12 @@ interface ReviewEvalArtifactData {
   readonly actionable_signal_count: number;
   readonly actionability_gap_count: number;
   readonly blast_radius_actionability: ReviewBlastRadiusActionabilityData;
+  readonly review_precision_score: number;
+  readonly review_precision_status: ReviewPrecisionCalibrationData['status'];
+  readonly false_positive_guard_count: number;
+  readonly false_negative_signal_count: number;
+  readonly precision_gap_count: number;
+  readonly precision_calibration: ReviewPrecisionCalibrationData;
   readonly secret_safety: {
     readonly redaction_applied: boolean;
     readonly redacted_reference_count: number;
@@ -22138,6 +22161,133 @@ function buildReviewBlastRadiusActionability(
   };
 }
 
+function reviewPrecisionStatus(score: number): ReviewPrecisionCalibrationData['status'] {
+  if (score >= 85) return 'strong';
+  if (score >= 65) return 'partial';
+  return 'weak';
+}
+
+function hasReviewFinding(
+  review: ReviewSummaryData,
+  params: { readonly category: ReviewCategory; readonly titleIncludes?: string },
+): boolean {
+  return review.findings.some(
+    (finding) =>
+      finding.category === params.category &&
+      (params.titleIncludes === undefined || finding.title.includes(params.titleIncludes)),
+  );
+}
+
+function buildReviewPrecisionCalibration(
+  review: ReviewSummaryData,
+): ReviewPrecisionCalibrationData {
+  const changedFiles = review.changed_files;
+  const generatedArtifacts = review.review_evidence_summary.generated_artifacts;
+  const runtimeSourceFiles = changedFiles.filter(
+    (file) =>
+      isSourceFile(file) &&
+      !isTestPath(file) &&
+      !isGeneratedArtifactPath(file) &&
+      !isConfigPath(file) &&
+      !isDependencyPath(file),
+  );
+  const testOnlyChange = changedFiles.length > 0 && changedFiles.every(isTestPath);
+  const generatedArtifactOnlyChange =
+    changedFiles.length > 0 && changedFiles.every((file) => generatedArtifacts.includes(file));
+  const dependencyOrConfigOnlyChange =
+    changedFiles.length > 0 &&
+    changedFiles.every((file) => isConfigPath(file) || isDependencyPath(file));
+  const lockfileOnlyChange =
+    changedFiles.length > 0 &&
+    changedFiles.every(
+      (file) =>
+        isDependencyPath(file) &&
+        /(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?)$/i.test(file),
+    );
+  const hasMissingTestsFinding = hasReviewFinding(review, {
+    category: 'Missing tests',
+    titleIncludes: 'Runtime files changed',
+  });
+  const hasStateDataFinding = hasReviewFinding(review, {
+    category: 'Hidden coupling',
+    titleIncludes: 'State/data dependency overlaps',
+  });
+  const hasArchitectureImpactFinding = hasReviewFinding(review, {
+    category: 'Architecture drift',
+    titleIncludes: 'Architecture impact map overlaps',
+  });
+  const falsePositiveGuards = unique([
+    ...(testOnlyChange ? ['test_only_confidence_guard'] : []),
+    ...(generatedArtifactOnlyChange ? ['generated_artifact_visibility_guard'] : []),
+    ...(dependencyOrConfigOnlyChange ? ['dependency_config_runtime_guard'] : []),
+    ...(lockfileOnlyChange ? ['lockfile_install_resolution_guard'] : []),
+    ...(review.review_evidence_summary.affected_data_dependencies.length === 0 &&
+    review.review_evidence_summary.affected_state_operations.length === 0 &&
+    !hasStateDataFinding
+      ? ['state_data_overstatement_guard']
+      : []),
+    ...(review.architecture_impact_map.length === 0 && !hasArchitectureImpactFinding
+      ? ['architecture_overstatement_guard']
+      : []),
+    ...(!hasMissingTestsFinding ? ['missing_tests_overstatement_guard'] : []),
+    ...(review.review_evidence_summary.user_visible_failure_modes.length === 0
+      ? ['user_visible_failure_overstatement_guard']
+      : []),
+  ]);
+  const falseNegativeSignals = unique([
+    ...(review.affected_flows.length > 0 ? ['affected_flow_context_preserved'] : []),
+    ...(review.review_evidence_summary.affected_tests.length > 0
+      ? ['test_evidence_preserved']
+      : []),
+    ...(review.dependency_runtime_impact !== null ? ['dependency_runtime_context_preserved'] : []),
+    ...(generatedArtifacts.length > 0 ? ['generated_artifact_change_visible'] : []),
+    ...(review.review_evidence_summary.user_visible_failure_modes.length > 0
+      ? ['user_visible_failure_context_preserved']
+      : []),
+    ...(review.review_evidence_summary.architecture_what_breaks.length > 0
+      ? ['architecture_what_breaks_context_preserved']
+      : []),
+    ...(review.review_evidence_summary.evidence_ids.length > 0 ? ['evidence_links_preserved'] : []),
+  ]);
+  const precisionGaps = unique([
+    ...(runtimeSourceFiles.length > 0 && review.affected_flows.length === 0
+      ? ['runtime_source_change_without_flow_context']
+      : []),
+    ...(changedFiles.some(isDependencyPath) && review.dependency_runtime_impact === null
+      ? ['dependency_change_without_runtime_context']
+      : []),
+    ...(review.affected_flows.length > 0 &&
+    review.review_evidence_summary.user_visible_failure_modes.length === 0
+      ? ['affected_flow_without_user_visible_failure_mode']
+      : []),
+    ...(review.review_evidence_summary.evidence_ids.length === 0
+      ? ['review_claims_without_evidence_links']
+      : []),
+  ]);
+  const score = boundedScore(
+    50 +
+      Math.min(28, falsePositiveGuards.length * 4) +
+      Math.min(22, falseNegativeSignals.length * 4) -
+      Math.min(35, precisionGaps.length * 9),
+  );
+  return {
+    score,
+    status: reviewPrecisionStatus(score),
+    changed_file_count: changedFiles.length,
+    runtime_source_change_count: runtimeSourceFiles.length,
+    test_only_change: testOnlyChange,
+    generated_artifact_only_change: generatedArtifactOnlyChange,
+    dependency_or_config_only_change: dependencyOrConfigOnlyChange,
+    lockfile_only_change: lockfileOnlyChange,
+    false_positive_guard_count: falsePositiveGuards.length,
+    false_negative_signal_count: falseNegativeSignals.length,
+    precision_gap_count: precisionGaps.length,
+    false_positive_guards: falsePositiveGuards.map(safeText),
+    false_negative_signals: falseNegativeSignals.map(safeText),
+    precision_gaps: precisionGaps.map(safeText),
+  };
+}
+
 function emptyReviewClaimSurfaceCounts(): Record<ReviewClaimEvidenceSurface, number> {
   return {
     blast_radius_reason: 0,
@@ -22399,6 +22549,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
   const serviceCausality = review.affected_flows.flatMap((flow) => flow.service_causality);
   const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
+  const precisionCalibration = buildReviewPrecisionCalibration(review);
   return {
     schema_version: 1,
     generated_at: review.generated_at,
@@ -22479,6 +22630,12 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     actionable_signal_count: blastRadiusActionability.signals.length,
     actionability_gap_count: blastRadiusActionability.gaps.length,
     blast_radius_actionability: blastRadiusActionability,
+    review_precision_score: precisionCalibration.score,
+    review_precision_status: precisionCalibration.status,
+    false_positive_guard_count: precisionCalibration.false_positive_guard_count,
+    false_negative_signal_count: precisionCalibration.false_negative_signal_count,
+    precision_gap_count: precisionCalibration.precision_gap_count,
+    precision_calibration: precisionCalibration,
     secret_safety: {
       redaction_applied: redactedCount > 0,
       redacted_reference_count: redactedCount,
@@ -24153,6 +24310,25 @@ function renderBlastRadiusActionability(actionability: ReviewBlastRadiusActionab
   )}`;
 }
 
+function renderReviewPrecisionCalibration(calibration: ReviewPrecisionCalibrationData): string {
+  return `<div class="grid">
+    <article class="card"><h2>Precision</h2><p>${calibration.score}/100 · ${htmlEscape(calibration.status)}</p></article>
+    <article class="card"><h2>False-Positive Guards</h2><p>${calibration.false_positive_guard_count}</p></article>
+    <article class="card"><h2>False-Negative Signals</h2><p>${calibration.false_negative_signal_count}</p></article>
+    <article class="card"><h2>Precision Gaps</h2><p>${calibration.precision_gap_count}</p></article>
+  </div>
+  <h3>False-Positive Guards</h3>
+  ${renderList(calibration.false_positive_guards)}
+  <h3>False-Negative Signals</h3>
+  ${renderList(calibration.false_negative_signals)}
+  <h3>Precision Gaps</h3>
+  ${renderList(
+    calibration.precision_gaps.length === 0
+      ? ['No review precision gaps were detected for this diff.']
+      : calibration.precision_gaps,
+  )}`;
+}
+
 function renderArchitectureImpactClaimEvidenceRows(
   claims: readonly ReviewArchitectureImpactClaimEvidenceData[],
 ): string {
@@ -24259,6 +24435,7 @@ function renderVerificationPlanRows(plan: readonly ReviewVerificationPlanItemDat
 function renderReviewReport(review: ReviewSummaryData): string {
   const architectureImpactClaims = buildArchitectureImpactClaimEvidence(review);
   const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
+  const precisionCalibration = buildReviewPrecisionCalibration(review);
   const findingRows = review.findings
     .map(
       (finding) => `<tr>
@@ -24319,6 +24496,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
     <section>
       <h2>Blast Radius Actionability</h2>
       ${renderBlastRadiusActionability(blastRadiusActionability)}
+    </section>
+    <section>
+      <h2>Review Precision Calibration</h2>
+      ${renderReviewPrecisionCalibration(precisionCalibration)}
     </section>
     <section>
       <h2>Architecture Impact Evidence</h2>

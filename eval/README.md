@@ -89,6 +89,10 @@ or missing-runtime-test findings when the diff only changes comments or type-sup
 Generated/vendor precision seeds keep artifact churn visible while forbidding authored runtime,
 flow, architecture, or state/data blast-radius claims. Lockfile precision seeds are separate:
 lockfiles remain dependency/runtime impact and must keep install-resolution verification focus.
+Precision seeds also assert `review_eval.precision_calibration`: false-positive guards, preserved
+false-negative signals, precision gaps, and change classification booleans. This makes PI-Bench
+verify why Rizz avoided an overstated blast radius instead of only checking that a bad finding is
+absent.
 Review diff entries normally use `{ "path": "...", "contents": "..." }`; rename and delete review
 seeds can additionally use `{ "path": "...", "rename_from": "...", "contents": "..." }` and
 `{ "path": "...", "delete": true }` so PI-Bench can exercise real git name-status behavior for

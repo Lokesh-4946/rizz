@@ -77,12 +77,29 @@
         "test_evidence_change_count",
         "affected_data_dependency_count",
         "affected_state_operation_count",
+        "review_precision_score",
+        "review_precision_status",
+        "false_positive_guard_count",
+        "false_negative_signal_count",
+        "precision_calibration.test_only_change",
+        "precision_calibration.runtime_source_change_count",
+        "precision_calibration.false_positive_guards",
+        "precision_calibration.false_negative_signals",
         "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": [
+        "\"test_only_confidence_guard\"",
+        "\"state_data_overstatement_guard\"",
+        "\"missing_tests_overstatement_guard\"",
+        "\"affected_flow_context_preserved\"",
+        "\"test_evidence_preserved\""
       ],
       "expected_json_values": {
         "test_evidence_change_count": 1,
         "affected_data_dependency_count": 0,
         "affected_state_operation_count": 0,
+        "precision_calibration.test_only_change": true,
+        "precision_calibration.runtime_source_change_count": 0,
         "secret_safety.output_secret_safe": true
       }
     },
@@ -104,7 +121,12 @@
     {
       "path": ".rizz/reports/review.html",
       "type": "file",
-      "required_substrings": ["Affected Flows", "src/auth/login-handler.test.ts"]
+      "required_substrings": [
+        "Affected Flows",
+        "Review Precision Calibration",
+        "test_only_confidence_guard",
+        "src/auth/login-handler.test.ts"
+      ]
     }
   ],
   "rubric": {
