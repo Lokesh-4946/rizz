@@ -29,6 +29,8 @@
     ".rizz/research/component_intelligence.json",
     ".rizz/research/flow_coverage.json",
     ".rizz/research/evidence_quality.json",
+    ".rizz/research/security_scan.json",
+    ".rizz/research/tool_inventory.json",
     ".rizz/research/understanding_score.json",
     ".rizz/research/benchmark_ready.json",
     ".rizz/research/benchmark_tasks.json",
@@ -70,8 +72,39 @@
         "actionability.redaction_hidden_evidence.hidden_evidence_count",
         "actionability.suggested_read_first",
         "actionability.confidence_inspection_queue.items",
+        "actionability.confidence_inspection_queue.sources.security",
+        "actionability.confidence_inspection_queue.sources.tools",
         "confidence_inspection_queue.items",
         "actionability.calibration_summary.summary"
+      ]
+    },
+    {
+      "path": ".rizz/research/security_scan.json",
+      "type": "json",
+      "required_fields": [
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "scan_mode",
+        "posture_score",
+        "finding_count",
+        "findings",
+        "calibration_rule"
+      ]
+    },
+    {
+      "path": ".rizz/research/tool_inventory.json",
+      "type": "json",
+      "required_fields": [
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "scan_mode",
+        "surface_count",
+        "mcp_config_count",
+        "package_script_count",
+        "surfaces",
+        "calibration_rule"
       ]
     },
     {

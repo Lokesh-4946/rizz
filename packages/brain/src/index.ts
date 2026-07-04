@@ -1704,6 +1704,8 @@ const RESEARCH_ARTIFACT_FILES = {
   flowCoverage: 'flow_coverage.json',
   flowConfidence: 'flow_confidence.json',
   architectureReasoning: 'architecture_reasoning.json',
+  securityScan: 'security_scan.json',
+  toolInventory: 'tool_inventory.json',
   benchmarkReady: 'benchmark_ready.json',
   benchmarkTasks: 'benchmark_tasks.json',
   understandingScore: 'understanding_score.json',
@@ -7221,7 +7223,86 @@ interface EvidenceConfidenceDelta {
   readonly evidence_ids: readonly string[];
 }
 
-type ConfidenceInspectionSource = 'evidence' | 'architecture' | 'incremental';
+type ConfidenceInspectionSource =
+  | 'evidence'
+  | 'architecture'
+  | 'incremental'
+  | 'security'
+  | 'tools';
+
+type SecurityScanFindingCategory =
+  | 'private_surface'
+  | 'install_lifecycle'
+  | 'networked_script'
+  | 'destructive_script'
+  | 'sensitive_dependency';
+
+interface SecurityScanFinding {
+  readonly finding_id: string;
+  readonly severity: EvidenceGap['severity'];
+  readonly category: SecurityScanFindingCategory;
+  readonly target_id: string;
+  readonly target_type: 'file' | 'package_script' | 'dependency';
+  readonly path?: string;
+  readonly package_path?: string;
+  readonly script_name?: string;
+  readonly dependency_name?: string;
+  readonly reason: string;
+  readonly inspect_hint: string;
+  readonly evidence_ids: readonly string[];
+}
+
+interface SecurityScanArtifact {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly scan_mode: string;
+  readonly scanned_files: number;
+  readonly scanned_manifests: number;
+  readonly posture_score: number;
+  readonly finding_count: number;
+  readonly high_risk_count: number;
+  readonly private_surface_count: number;
+  readonly risky_script_count: number;
+  readonly dependency_attention_count: number;
+  readonly findings: readonly SecurityScanFinding[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
+type ToolInventorySurfaceKind = 'mcp_config' | 'agent_config' | 'ci_workflow' | 'package_script';
+
+interface ToolInventorySurface {
+  readonly surface_id: string;
+  readonly kind: ToolInventorySurfaceKind;
+  readonly path: string;
+  readonly name: string;
+  readonly risk_level: EvidenceGap['severity'];
+  readonly reason: string;
+  readonly inspect_hint: string;
+  readonly evidence_ids: readonly string[];
+}
+
+interface ToolInventoryArtifact {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly scan_mode: string;
+  readonly surface_count: number;
+  readonly mcp_config_count: number;
+  readonly agent_config_count: number;
+  readonly ci_workflow_count: number;
+  readonly package_script_count: number;
+  readonly high_risk_count: number;
+  readonly tool_risk_score: number;
+  readonly surfaces: readonly ToolInventorySurface[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
 
 interface ConfidenceInspectionQueueItem {
   readonly priority: number;
@@ -8171,6 +8252,326 @@ function evidenceConfidenceDeltasForGaps(params: {
   });
 }
 
+function fileEvidenceIds(path: string): string[] {
+  return [evidenceId(path)];
+}
+
+function scriptTargetId(packagePath: string, scriptName: string): string {
+  return `${safeText(packagePath)}#scripts.${safeText(scriptName)}`;
+}
+
+function isSecretSurfacePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.env.example')) return false;
+  if (classifySensitivePath(path).isSensitive) return true;
+  return /(^|\/)\.env(\.|$)/.test(lower) || /(^|\/)(secrets?|credentials?|tokens?)\//.test(lower);
+}
+
+function isMcpConfigPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const leaf = lower.split('/').at(-1) ?? lower;
+  return (
+    leaf === 'mcp.json' ||
+    leaf === '.mcp.json' ||
+    lower.includes('/mcp/') ||
+    lower.endsWith('/mcp_config.json') ||
+    lower.endsWith('/claude_desktop_config.json')
+  );
+}
+
+function isAgentConfigPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const leaf = lower.split('/').at(-1) ?? lower;
+  return (
+    leaf === 'agents.md' ||
+    leaf === 'claude.md' ||
+    lower.startsWith('.cursor/') ||
+    lower.startsWith('.windsurf/') ||
+    lower.endsWith('/agent.yaml') ||
+    lower.endsWith('/agent.yml') ||
+    lower.endsWith('/agent.json')
+  );
+}
+
+function isCiWorkflowPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.startsWith('.github/workflows/') || lower.startsWith('.gitlab-ci');
+}
+
+function scriptHasNetworkedInstaller(command: string): boolean {
+  return /\b(curl|wget)\b/i.test(command) && /(\|\s*(sh|bash)|\bsh\b|\bbash\b)/i.test(command);
+}
+
+function scriptIsDestructive(command: string): boolean {
+  return /\brm\s+-[a-z-]*r[a-z-]*f\b/i.test(command) || /\bchmod\s+777\b/i.test(command);
+}
+
+function securitySensitiveDependency(name: string): boolean {
+  return /(^|[-/@])(auth|oauth|jwt|passport|keychain|credential|secret|crypto|stripe|firebase|supabase|aws-sdk|gcp|azure|openai|anthropic)([-/]|$)/i.test(
+    name,
+  );
+}
+
+function buildSecurityScanArtifact(params: {
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): SecurityScanArtifact {
+  const secretSurfaceFindings = params.files
+    .filter((file) => isSecretSurfacePath(file.relativePath))
+    .slice(0, 20)
+    .map(
+      (file): SecurityScanFinding => ({
+        finding_id: `security:${stableSlug(file.relativePath)}:private-surface`,
+        severity: 'high',
+        category: 'private_surface',
+        target_id: safeText(file.relativePath),
+        target_type: 'file',
+        path: safeText(file.relativePath),
+        reason: 'Repository contains a path that looks like a private credential surface.',
+        inspect_hint:
+          'Confirm this file is ignored, redacted, or fixture-only before sharing artifacts or running agent tools.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      }),
+    );
+  const scriptFindings = params.packageFacts.flatMap((pkg) =>
+    Object.entries(pkg.scripts).flatMap(([scriptName, command]) => {
+      const findings: SecurityScanFinding[] = [];
+      if (/^(preinstall|install|postinstall|prepare)$/.test(scriptName)) {
+        findings.push({
+          finding_id: `security:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:install-lifecycle`,
+          severity: 'medium',
+          category: 'install_lifecycle',
+          target_id: scriptTargetId(pkg.relativePath, scriptName),
+          target_type: 'package_script',
+          package_path: safeText(pkg.relativePath),
+          script_name: safeText(scriptName),
+          reason: 'Package lifecycle script can execute during dependency installation.',
+          inspect_hint:
+            'Review this script before letting an agent install dependencies or repair the workspace.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        });
+      }
+      if (scriptHasNetworkedInstaller(command)) {
+        findings.push({
+          finding_id: `security:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:networked-script`,
+          severity: 'high',
+          category: 'networked_script',
+          target_id: scriptTargetId(pkg.relativePath, scriptName),
+          target_type: 'package_script',
+          package_path: safeText(pkg.relativePath),
+          script_name: safeText(scriptName),
+          reason: 'Package script appears to pipe a network fetch into a shell.',
+          inspect_hint:
+            'Require human approval before running this command; inspect the source URL out of band.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        });
+      }
+      if (scriptIsDestructive(command)) {
+        findings.push({
+          finding_id: `security:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:destructive-script`,
+          severity: 'high',
+          category: 'destructive_script',
+          target_id: scriptTargetId(pkg.relativePath, scriptName),
+          target_type: 'package_script',
+          package_path: safeText(pkg.relativePath),
+          script_name: safeText(scriptName),
+          reason: 'Package script includes a destructive shell pattern.',
+          inspect_hint:
+            'Do not run this script from an agent loop without explicit approval and a clean worktree.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        });
+      }
+      return findings;
+    }),
+  );
+  const dependencyFindings = params.packageFacts.flatMap((pkg) =>
+    unique([
+      ...Object.keys(pkg.dependencies).filter(securitySensitiveDependency),
+      ...Object.keys(pkg.devDependencies).filter(securitySensitiveDependency),
+    ])
+      .slice(0, 12)
+      .map(
+        (dependency): SecurityScanFinding => ({
+          finding_id: `security:${stableSlug(`${pkg.relativePath}:${dependency}`)}:sensitive-dependency`,
+          severity: 'low',
+          category: 'sensitive_dependency',
+          target_id: `${safeText(pkg.relativePath)}#${safeText(dependency)}`,
+          target_type: 'dependency',
+          package_path: safeText(pkg.relativePath),
+          dependency_name: safeText(dependency),
+          reason:
+            'Dependency name suggests auth, cloud, payments, model, or credential-sensitive behavior.',
+          inspect_hint:
+            'Inspect related flows before trusting blast radius or letting agent tools modify this package.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        }),
+      ),
+  );
+  const findings = [...secretSurfaceFindings, ...scriptFindings, ...dependencyFindings]
+    .sort(
+      (a, b) =>
+        confidenceInspectionSeverityRank(a.severity) -
+          confidenceInspectionSeverityRank(b.severity) ||
+        a.category.localeCompare(b.category) ||
+        a.target_id.localeCompare(b.target_id),
+    )
+    .slice(0, 40);
+  const highRiskCount = findings.filter((finding) => finding.severity === 'high').length;
+  const mediumRiskCount = findings.filter((finding) => finding.severity === 'medium').length;
+  const postureScore = Math.max(0, 100 - highRiskCount * 18 - mediumRiskCount * 9);
+  const riskyScriptCount = findings.filter(
+    (finding) =>
+      finding.category === 'install_lifecycle' ||
+      finding.category === 'networked_script' ||
+      finding.category === 'destructive_script',
+  ).length;
+  const dependencyAttentionCount = findings.filter(
+    (finding) => finding.category === 'sensitive_dependency',
+  ).length;
+  const secretSurfaceCount = findings.filter(
+    (finding) => finding.category === 'private_surface',
+  ).length;
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    scan_mode: 'metadata_and_manifest_only',
+    scanned_files: params.files.length,
+    scanned_manifests: params.packageFacts.length,
+    posture_score: postureScore,
+    finding_count: findings.length,
+    high_risk_count: highRiskCount,
+    private_surface_count: secretSurfaceCount,
+    risky_script_count: riskyScriptCount,
+    dependency_attention_count: dependencyAttentionCount,
+    findings,
+    summary:
+      findings.length === 0
+        ? 'No deterministic security scanner findings were detected.'
+        : `${findings.length} security scanner finding(s), including ${highRiskCount} high-risk item(s), need inspection before broad agent execution.`,
+    calibration_rule:
+      'Security scan is deterministic and metadata-only; it flags private credential paths, risky package scripts, and sensitive dependency surfaces without reading or exposing private values.',
+  };
+}
+
+function toolRiskLevel(surface: ToolInventorySurface): EvidenceGap['severity'] {
+  if (surface.kind === 'mcp_config') return 'high';
+  if (surface.kind === 'ci_workflow') return 'medium';
+  if (surface.kind === 'package_script' && /deploy|release|publish|start|dev/i.test(surface.name)) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function buildToolInventoryArtifact(params: {
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): ToolInventoryArtifact {
+  const fileSurfaces: ToolInventorySurface[] = [];
+  for (const file of params.files) {
+    const path = safeText(file.relativePath);
+    if (isMcpConfigPath(file.relativePath)) {
+      fileSurfaces.push({
+        surface_id: `tool:${stableSlug(file.relativePath)}:mcp-config`,
+        kind: 'mcp_config',
+        path,
+        name: basename(file.relativePath),
+        risk_level: 'high',
+        reason: 'MCP configuration can grant an agent new tools or external capabilities.',
+        inspect_hint:
+          'Review tool servers, command arguments, and trust boundaries before using this workspace with agents.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      });
+      continue;
+    }
+    if (isAgentConfigPath(file.relativePath)) {
+      fileSurfaces.push({
+        surface_id: `tool:${stableSlug(file.relativePath)}:agent-config`,
+        kind: 'agent_config',
+        path,
+        name: basename(file.relativePath),
+        risk_level: 'medium',
+        reason: 'Agent instructions can change tool behavior, review scope, or safety posture.',
+        inspect_hint:
+          'Inspect this file before accepting repo-local agent behavior or orchestration rules.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      });
+      continue;
+    }
+    if (isCiWorkflowPath(file.relativePath)) {
+      fileSurfaces.push({
+        surface_id: `tool:${stableSlug(file.relativePath)}:ci-workflow`,
+        kind: 'ci_workflow',
+        path,
+        name: basename(file.relativePath),
+        risk_level: 'medium',
+        reason: 'CI workflow defines executable automation and release gates.',
+        inspect_hint:
+          'Inspect workflow triggers, permissions, private value usage, and publish/deploy steps.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      });
+    }
+    if (fileSurfaces.length >= 40) break;
+  }
+  const scriptSurfaces = params.packageFacts.flatMap((pkg) =>
+    Object.keys(pkg.scripts)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 16)
+      .map((scriptName) => {
+        const base: ToolInventorySurface = {
+          surface_id: `tool:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:package-script`,
+          kind: 'package_script',
+          path: safeText(pkg.relativePath),
+          name: safeText(scriptName),
+          risk_level: 'low',
+          reason: 'Package script is an executable tool surface available to agents.',
+          inspect_hint:
+            'Inspect script intent before using it as an automated repair or verification command.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        };
+        return { ...base, risk_level: toolRiskLevel(base) };
+      }),
+  );
+  const surfaces = [...fileSurfaces, ...scriptSurfaces]
+    .sort(
+      (a, b) =>
+        confidenceInspectionSeverityRank(a.risk_level) -
+          confidenceInspectionSeverityRank(b.risk_level) ||
+        a.kind.localeCompare(b.kind) ||
+        a.surface_id.localeCompare(b.surface_id),
+    )
+    .slice(0, 60);
+  const highRiskCount = surfaces.filter((surface) => surface.risk_level === 'high').length;
+  const mediumRiskCount = surfaces.filter((surface) => surface.risk_level === 'medium').length;
+  const toolRiskScore = Math.max(0, 100 - highRiskCount * 16 - mediumRiskCount * 7);
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    scan_mode: 'metadata_and_manifest_only',
+    surface_count: surfaces.length,
+    mcp_config_count: surfaces.filter((surface) => surface.kind === 'mcp_config').length,
+    agent_config_count: surfaces.filter((surface) => surface.kind === 'agent_config').length,
+    ci_workflow_count: surfaces.filter((surface) => surface.kind === 'ci_workflow').length,
+    package_script_count: surfaces.filter((surface) => surface.kind === 'package_script').length,
+    high_risk_count: highRiskCount,
+    tool_risk_score: toolRiskScore,
+    surfaces,
+    summary:
+      surfaces.length === 0
+        ? 'No tool inventory surfaces were detected.'
+        : `${surfaces.length} tool surface(s), including ${highRiskCount} high-risk item(s), are available for agent inspection.`,
+    calibration_rule:
+      'Tool inventory is deterministic and metadata-only; it inventories MCP configs, agent configs, CI workflows, and package scripts without loading tools by default.',
+  };
+}
+
 function parseInspectionSeverity(value: unknown): EvidenceGap['severity'] {
   if (value === 'high' || value === 'medium' || value === 'low') return value;
   return 'medium';
@@ -8185,7 +8586,9 @@ function confidenceInspectionSeverityRank(severity: EvidenceGap['severity']): nu
 function confidenceInspectionSourceRank(source: ConfidenceInspectionSource): number {
   if (source === 'evidence') return 0;
   if (source === 'architecture') return 1;
-  return 2;
+  if (source === 'security') return 2;
+  if (source === 'tools') return 3;
+  return 4;
 }
 
 function confidenceInspectionSources(
@@ -8195,6 +8598,8 @@ function confidenceInspectionSources(
     evidence: items.filter((item) => item.source === 'evidence').length,
     architecture: items.filter((item) => item.source === 'architecture').length,
     incremental: items.filter((item) => item.source === 'incremental').length,
+    security: items.filter((item) => item.source === 'security').length,
+    tools: items.filter((item) => item.source === 'tools').length,
   };
 }
 
@@ -8381,14 +8786,63 @@ function incrementalQueueItems(
   return [...staleSurfaces, ...staleFacts];
 }
 
+function securityQueueItems(value: SecurityScanArtifact): ConfidenceInspectionQueueCandidate[] {
+  return value.findings.slice(0, 8).map((finding) => ({
+    source: 'security' as const,
+    severity: finding.severity,
+    target_type: finding.target_type,
+    target_id: finding.target_id,
+    reason: finding.reason,
+    current_confidence: 'verified' as const,
+    confidence_delta: finding.severity === 'high' ? 80 : finding.severity === 'medium' ? 55 : 25,
+    inspect_hint: finding.inspect_hint,
+    verification_actions: [
+      'Open .rizz/research/security_scan.json.',
+      'Inspect the referenced file, package script, or dependency before running agent automation.',
+    ],
+    read_first_files: finding.path === undefined ? [] : [finding.path],
+    evidence_ids: finding.evidence_ids,
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/security_scan.json', '.rizz/brain/latest.json'],
+  }));
+}
+
+function toolInventoryQueueItems(
+  value: ToolInventoryArtifact,
+): ConfidenceInspectionQueueCandidate[] {
+  return value.surfaces.slice(0, 8).map((surface) => ({
+    source: 'tools' as const,
+    severity: surface.risk_level,
+    target_type: surface.kind,
+    target_id: surface.surface_id,
+    reason: surface.reason,
+    current_confidence: 'verified' as const,
+    confidence_delta:
+      surface.risk_level === 'high' ? 70 : surface.risk_level === 'medium' ? 45 : 20,
+    inspect_hint: surface.inspect_hint,
+    verification_actions: [
+      'Open .rizz/research/tool_inventory.json.',
+      'Review the tool surface before allowing broad agent control.',
+    ],
+    read_first_files: [surface.path],
+    evidence_ids: surface.evidence_ids,
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/tool_inventory.json', '.rizz/brain/latest.json'],
+  }));
+}
+
 function buildConfidenceInspectionQueue(params: {
   readonly evidenceQuality: Record<string, unknown>;
   readonly architectureReasoning: Record<string, unknown>;
   readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+  readonly securityScan: SecurityScanArtifact;
+  readonly toolInventory: ToolInventoryArtifact;
 }): ConfidenceInspectionQueue {
   const candidates = [
     ...evidenceQueueItems(params.evidenceQuality),
     ...architectureQueueItems(params.architectureReasoning),
+    ...securityQueueItems(params.securityScan),
+    ...toolInventoryQueueItems(params.toolInventory),
     ...incrementalQueueItems(params.incrementalMetrics),
   ];
   const items = candidates
@@ -8415,7 +8869,7 @@ function buildConfidenceInspectionQueue(params: {
         ? 'No confidence inspection items were detected.'
         : `${items.length} confidence inspection item(s), including ${highPriorityCount} high-priority item(s), should be checked before broad reuse.`,
     calibration_rule:
-      'Confidence inspection combines evidence gaps, architecture confidence debt, and stale incremental surfaces into one deterministic inspect-first queue.',
+      'Confidence inspection combines evidence gaps, architecture confidence debt, security scan findings, tool inventory surfaces, and stale incremental surfaces into one deterministic inspect-first queue.',
   };
 }
 
@@ -14631,6 +15085,7 @@ function buildResearchArtifacts(params: {
   readonly relationships: readonly BrainRelationship[];
   readonly stack: readonly string[];
   readonly packageManager: string;
+  readonly packageFacts: readonly PackageJsonFact[];
   readonly changedFiles: readonly string[];
   readonly staleFiles: readonly string[];
   readonly incrementalMetrics: IncrementalUnderstandingMetrics;
@@ -14726,10 +15181,22 @@ function buildResearchArtifacts(params: {
     relationships: params.relationships,
     changedFiles,
   });
+  const securityScan = buildSecurityScanArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
+  const toolInventory = buildToolInventoryArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
   const confidenceInspectionQueue = buildConfidenceInspectionQueue({
     evidenceQuality: evidenceQualityBase,
     architectureReasoning: architectureReasoningBase,
     incrementalMetrics: params.incrementalMetrics,
+    securityScan,
+    toolInventory,
   });
   const { evidenceQuality, architectureReasoning } = attachConfidenceInspectionQueue({
     evidenceQuality: evidenceQualityBase,
@@ -15223,6 +15690,8 @@ function buildResearchArtifacts(params: {
       })),
     },
     architectureReasoning,
+    securityScan,
+    toolInventory,
     benchmarkReady,
     benchmarkTasks,
     understandingScore,
@@ -15293,6 +15762,8 @@ function buildLatest(params: {
   readonly now: string;
   readonly stack: readonly string[];
   readonly packageManager: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
   readonly buckets: BrainBuckets;
   readonly relationships: readonly BrainRelationship[];
   readonly changedFiles: readonly string[];
@@ -15399,10 +15870,22 @@ function buildLatest(params: {
     buckets: params.buckets,
     relationships: params.relationships,
   });
+  const securityScan = buildSecurityScanArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
+  const toolInventory = buildToolInventoryArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
   const confidenceInspectionQueue = buildConfidenceInspectionQueue({
     evidenceQuality: evidenceQualityBase,
     architectureReasoning: architectureReasoningBase,
     incrementalMetrics: params.incrementalMetrics,
+    securityScan,
+    toolInventory,
   });
   const { evidenceQuality, architectureReasoning } = attachConfidenceInspectionQueue({
     evidenceQuality: evidenceQualityBase,
@@ -15479,6 +15962,8 @@ function buildLatest(params: {
     latest_architecture_reasoning: architectureReasoning,
     latest_service_intelligence: serviceIntelligence,
     latest_evidence_quality: evidenceQuality,
+    latest_security_scan: securityScan,
+    latest_tool_inventory: toolInventory,
     latest_confidence_inspection_queue: confidenceInspectionQueue,
     latest_understanding_score: understandingScore,
     latest_pie_acceptance: {
@@ -17086,6 +17571,8 @@ function renderConfidenceInspectionQueue(value: unknown): string {
     `${highPriority} high-priority item(s)`,
     `sources: evidence ${String(sources.evidence ?? 0)}, architecture ${String(
       sources.architecture ?? 0,
+    )}, security ${String(sources.security ?? 0)}, tools ${String(
+      sources.tools ?? 0,
     )}, incremental ${String(sources.incremental ?? 0)}`,
     ...queueItems,
   ])}</article>`;
@@ -17834,6 +18321,22 @@ function renderFlagshipSummary(params: {
           ...reviewAttention,
         ])}
       </article>
+      <article class="card compact">
+        <h3>Security Scan</h3>
+        ${renderList([
+          `${recordNumber(params.latest.latest_security_scan, 'posture_score')}/100 posture`,
+          `${recordNumber(params.latest.latest_security_scan, 'finding_count')} finding(s)`,
+          `${recordNumber(params.latest.latest_security_scan, 'high_risk_count')} high risk`,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Tool Inventory</h3>
+        ${renderList([
+          `${recordNumber(params.latest.latest_tool_inventory, 'surface_count')} surface(s)`,
+          `${recordNumber(params.latest.latest_tool_inventory, 'mcp_config_count')} MCP config(s)`,
+          `${recordNumber(params.latest.latest_tool_inventory, 'high_risk_count')} high risk`,
+        ])}
+      </article>
       ${renderAskReadinessLine(params.askReadiness)}
       <article class="card compact">
         <h3>Incremental Changed / Stable</h3>
@@ -17860,6 +18363,8 @@ function renderFlagshipSummary(params: {
           '.rizz/research/evidence_quality.json',
           '.rizz/research/flow_coverage.json',
           '.rizz/research/architecture_reasoning.json',
+          '.rizz/research/security_scan.json',
+          '.rizz/research/tool_inventory.json',
           '.rizz/research/benchmark_ready.json',
           '.rizz/research/benchmark_tasks.json',
           '.rizz/research/pie_acceptance.json',
@@ -18003,6 +18508,86 @@ function renderServiceCausalityDetails(
     })
     .join('');
   return `${qualityCards}<h3>Reachability Paths</h3><div class="grid">${pathCards}</div>`;
+}
+
+function renderSecurityAndToolDetails(latest: Record<string, unknown>): string {
+  const securityScan = nestedRecord(latest, 'latest_security_scan');
+  const toolInventory = nestedRecord(latest, 'latest_tool_inventory');
+  const findings = recordArray(securityScan, 'findings').filter(isRecord).slice(0, 8);
+  const surfaces = recordArray(toolInventory, 'surfaces').filter(isRecord).slice(0, 8);
+  const findingCards = findings
+    .map((finding) => {
+      const severity = recordString(finding, 'severity', 'medium');
+      const category = recordString(finding, 'category', 'security');
+      const target = recordString(finding, 'target_id', 'unknown target');
+      const reason = recordString(finding, 'reason', 'Security scanner finding recorded.');
+      const hint = recordString(finding, 'inspect_hint', 'Inspect before broad agent execution.');
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${severity} ${category} ${target} ${reason} ${hint}`,
+      )}">
+        <div class="badge">${htmlEscape(severity)} · ${htmlEscape(category)}</div>
+        <h3>${htmlEscape(target)}</h3>
+        <p>${htmlEscape(reason)}</p>
+        <p class="muted">${htmlEscape(hint)}</p>
+      </article>`;
+    })
+    .join('');
+  const surfaceCards = surfaces
+    .map((surface) => {
+      const risk = recordString(surface, 'risk_level', 'low');
+      const kind = recordString(surface, 'kind', 'tool_surface');
+      const name = recordString(surface, 'name', 'tool');
+      const path = recordString(surface, 'path', 'unknown path');
+      const reason = recordString(surface, 'reason', 'Tool surface recorded.');
+      const hint = recordString(surface, 'inspect_hint', 'Inspect before broad agent control.');
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${risk} ${kind} ${name} ${path} ${reason} ${hint}`,
+      )}">
+        <div class="badge">${htmlEscape(risk)} · ${htmlEscape(kind)}</div>
+        <h3>${htmlEscape(name)}</h3>
+        <p><code>${htmlEscape(path)}</code></p>
+        <p>${htmlEscape(reason)}</p>
+        <p class="muted">${htmlEscape(hint)}</p>
+      </article>`;
+    })
+    .join('');
+  return `<div class="grid">
+    <article class="card compact">
+      <h3>Security Scan</h3>
+      ${renderList([
+        `${recordNumber(securityScan, 'posture_score')}/100 posture`,
+        `${recordNumber(securityScan, 'finding_count')} finding(s)`,
+        `${recordNumber(securityScan, 'high_risk_count')} high-risk finding(s)`,
+        `${recordNumber(securityScan, 'private_surface_count')} private surface(s)`,
+        `${recordNumber(securityScan, 'risky_script_count')} risky script(s)`,
+        recordString(securityScan, 'summary', 'No security scan summary available.'),
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Tool Inventory</h3>
+      ${renderList([
+        `${recordNumber(toolInventory, 'surface_count')} tool surface(s)`,
+        `${recordNumber(toolInventory, 'mcp_config_count')} MCP config(s)`,
+        `${recordNumber(toolInventory, 'agent_config_count')} agent config(s)`,
+        `${recordNumber(toolInventory, 'ci_workflow_count')} CI workflow(s)`,
+        `${recordNumber(toolInventory, 'package_script_count')} package script(s)`,
+        recordString(toolInventory, 'summary', 'No tool inventory summary available.'),
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/research/security_scan.json',
+        '.rizz/research/tool_inventory.json',
+        '.rizz/research/evidence_quality.json',
+        '.rizz/brain/latest.json',
+      ])}
+    </article>
+  </div>
+  <h3>Security Findings</h3>
+  <div class="grid">${findingCards}</div>
+  <h3>Tool Surfaces</h3>
+  <div class="grid">${surfaceCards}</div>`;
 }
 
 function renderUnderstandingDashboard(score: unknown): string {
@@ -18265,6 +18850,23 @@ function renderReport(params: {
     posture: scanEfficiency >= 70 ? 'strong' : scanEfficiency >= 40 ? 'usable' : 'weak',
     body: renderIncrementalHealthDetails(params.latest),
   });
+  const securityScan = nestedRecord(params.latest, 'latest_security_scan');
+  const toolInventory = nestedRecord(params.latest, 'latest_tool_inventory');
+  const securityToolPosture =
+    recordNumber(securityScan, 'high_risk_count') + recordNumber(toolInventory, 'high_risk_count') >
+    0
+      ? 'weak'
+      : recordNumber(securityScan, 'finding_count') + recordNumber(toolInventory, 'surface_count') >
+          0
+        ? 'usable'
+        : 'strong';
+  const securityToolsObject = renderObjectDetails({
+    title: 'Security & Tools',
+    summary:
+      'Deterministic metadata-only security scan and tool inventory for agent execution posture.',
+    posture: securityToolPosture,
+    body: renderSecurityAndToolDetails(params.latest),
+  });
   const architectureObject = renderObjectDetails({
     title: 'Architecture',
     summary:
@@ -18484,6 +19086,7 @@ function renderReport(params: {
       ${journeyObject}
       ${flowObject}
       ${incrementalHealthObject}
+      ${securityToolsObject}
       ${architectureObject}
       ${evidenceQualityObject}
       ${evidenceObject}
@@ -19021,6 +19624,8 @@ export async function generateProjectBrain(
       now,
       stack: built.stack,
       packageManager: built.packageManager,
+      files,
+      packageFacts,
       buckets: built.buckets,
       relationships: graph.relationships,
       changedFiles: built.changedFiles,
@@ -19053,6 +19658,8 @@ export async function generateProjectBrain(
         flow_coverage: '.rizz/research/flow_coverage.json',
         flow_confidence: '.rizz/research/flow_confidence.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
+        security_scan: '.rizz/research/security_scan.json',
+        tool_inventory: '.rizz/research/tool_inventory.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
@@ -19068,6 +19675,7 @@ export async function generateProjectBrain(
       relationships: graph.relationships,
       stack: built.stack,
       packageManager: built.packageManager,
+      packageFacts,
       changedFiles: built.changedFiles,
       staleFiles: built.staleFiles,
       incrementalMetrics,

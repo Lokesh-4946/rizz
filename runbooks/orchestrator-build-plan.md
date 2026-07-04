@@ -19,10 +19,12 @@ ECC-inspired features are useful when they strengthen that contract without join
 
 ## Current Loop
 
-1. Evidence Quality + Architecture confidence calibration.
-2. Mission Control inspectability for low-confidence, weak-evidence, and stale claims.
-3. PI-Bench assertions for the new inspection contract.
+1. Opt-in Security Scanner + MCP/tool inventory as deterministic research artifacts.
+2. Mission Control inspectability for weak evidence, architecture debt, security/tool surfaces, and
+   stale claims.
+3. PI-Bench assertions for the expanded inspection contract.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice is the Confidence Inspection Queue: one deterministic list that tells a human or
-agent what to inspect first before trusting broad repo understanding.
+The current slice expands the Confidence Inspection Queue so a human or agent can inspect security
+scanner findings and tool surfaces before trusting broad repo understanding or allowing broad agent
+control.
