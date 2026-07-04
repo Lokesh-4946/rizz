@@ -12977,6 +12977,220 @@ function dimensionRecord(params: {
   };
 }
 
+function capabilityScoreRecord(params: {
+  readonly key: string;
+  readonly label: string;
+  readonly score: number;
+  readonly evidenceBasis: readonly string[];
+  readonly nextRequiredImprovements: readonly string[];
+  readonly isBlocked?: boolean;
+}): Record<string, unknown> {
+  const score = boundedScore(params.score);
+  const status = params.isBlocked === true ? 'blocked' : scoreBand(score);
+  const nextRequiredImprovements = unique(
+    params.nextRequiredImprovements.filter((item) => item.trim() !== ''),
+  ).slice(0, 6);
+  return {
+    key: params.key,
+    label: params.label,
+    target_score: 100,
+    score,
+    remaining_to_100: 100 - score,
+    status,
+    evidence_basis: unique(params.evidenceBasis).map(safeText).slice(0, 8),
+    next_required_improvements: score >= 100 ? [] : nextRequiredImprovements.map(safeText),
+  };
+}
+
+function buildPieCapabilityScorecard(params: {
+  readonly dimensions: Record<string, Record<string, unknown>>;
+  readonly evidenceQuality: unknown;
+  readonly architectureReasoning: unknown;
+  readonly benchmarkReady: unknown;
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+  readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
+  readonly evidenceCount: number;
+  readonly readFirstCount: number;
+}): Record<string, unknown> {
+  const flowScore = dimensionScore(params.dimensions.flows);
+  const architectureScore = dimensionScore(params.dimensions.architecture);
+  const evidenceScore = dimensionScore(params.dimensions.evidence);
+  const incrementalScore = dimensionScore(params.dimensions.incremental_status);
+  const reviewScore = boundedScore(
+    dimensionScore(params.dimensions.review_readiness) * 0.6 +
+      architectureScore * 0.2 +
+      flowScore * 0.2,
+  );
+  const benchmarkCalibration = nestedRecord(params.benchmarkReady, 'readiness_calibration');
+  const benchmarkTaskCoverage = nestedRecord(
+    nestedRecord(benchmarkCalibration, 'dimensions'),
+    'benchmark_task_category_coverage',
+  );
+  const benchmarkCoverageScore = recordNumber(benchmarkTaskCoverage, 'score');
+  const benchmarkScore = boundedScore(
+    (readinessScore(params.benchmarkReady) + benchmarkCoverageScore) / 2,
+  );
+  const architectureWhatBreaks = recordArray(params.architectureReasoning, 'what_breaks');
+  const missionControlScore = boundedScore(
+    (params.components.length > 0 ? 18 : 0) +
+      (params.flows.length > 0 ? 18 : 0) +
+      (params.evidenceCount > 0 ? 18 : 0) +
+      (architectureWhatBreaks.length > 0 ? 16 : 0) +
+      (params.readFirstCount > 0 ? 12 : 0) +
+      (benchmarkScore >= 70 ? 18 : Math.round(benchmarkScore * 0.18)),
+  );
+  const foundationAverage = boundedScore(
+    (flowScore +
+      architectureScore +
+      evidenceScore +
+      missionControlScore +
+      benchmarkScore +
+      incrementalScore +
+      reviewScore) /
+      7,
+  );
+  const askReadiness = nestedRecord(params.benchmarkReady, 'ask_readiness');
+  const askReadinessScore = recordNumber(askReadiness, 'score');
+  const askScore = Math.min(askReadinessScore, foundationAverage);
+  const askIsBlocked =
+    recordString(askReadiness, 'status', scoreBand(askReadinessScore)) === 'blocked' ||
+    foundationAverage < 95;
+  const capabilities = [
+    capabilityScoreRecord({
+      key: 'flow_understanding',
+      label: 'Flow Understanding',
+      score: flowScore,
+      evidenceBasis: [
+        `${params.flows.length} reconstructed flow(s)`,
+        `${params.flows.filter((flow) => flowSteps(flow).length > 0).length} flow(s) with steps`,
+        `${params.flows.filter((flow) => flowStringArray(flow, 'tests').length > 0).length} flow(s) with tests`,
+      ],
+      nextRequiredImprovements: [
+        'Improve business journey naming, step extraction, and service/config/test linkage.',
+        ...dimensionWeakSpots(params.dimensions.flows),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'architecture_reasoning',
+      label: 'Architecture Reasoning',
+      score: architectureScore,
+      evidenceBasis: [
+        `${recordArray(params.architectureReasoning, 'coupling_hotspots').length} coupling hotspot(s)`,
+        `${recordArray(params.architectureReasoning, 'critical_paths').length} critical path(s)`,
+        `${architectureWhatBreaks.length} what-breaks claim(s)`,
+      ],
+      nextRequiredImprovements: [
+        'Strengthen why/tradeoff/assumption reasoning and causal what-breaks explanations.',
+        ...dimensionWeakSpots(params.dimensions.architecture),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'evidence_quality_scoring',
+      label: 'Evidence Quality scoring',
+      score: evidenceScore,
+      evidenceBasis: [
+        `${recordNumber(params.evidenceQuality, 'overall_score')}/100 evidence quality`,
+        `${recordNumber(params.evidenceQuality, 'evidence_coverage_score')}/100 evidence coverage`,
+        `${recordNumber(params.evidenceQuality, 'redaction_safety_score')}/100 redaction safety`,
+      ],
+      nextRequiredImprovements: [
+        'Calibrate verified, inferred, uncertain, weak, and redacted evidence more sharply.',
+        ...dimensionWeakSpots(params.dimensions.evidence),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'mission_control_ux',
+      label: 'Mission Control UX',
+      score: missionControlScore,
+      evidenceBasis: [
+        `${params.components.length} component card source(s)`,
+        `${params.flows.length} flow card source(s)`,
+        `${params.readFirstCount} read-first pointer(s)`,
+        `${architectureWhatBreaks.length} architecture what-breaks row(s)`,
+      ],
+      nextRequiredImprovements: [
+        'Keep the Portal flagship-minimal: fewer noisy panels, stronger drilldowns, clearer first-read objects.',
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'pi_bench_seed_dataset_task_format',
+      label: 'PI-Bench seed dataset/task format',
+      score: benchmarkScore,
+      evidenceBasis: [
+        `${readinessScore(params.benchmarkReady)}/100 benchmark readiness`,
+        `${benchmarkCoverageScore}/100 benchmark task category coverage`,
+      ],
+      nextRequiredImprovements: [
+        'Add more real-repo task seeds, expected answers, and ground-truth scoring depth.',
+        ...asStringArray(benchmarkTaskCoverage.missing_categories).map(
+          (category) => `Missing benchmark category: ${category}`,
+        ),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'incremental_understanding_metrics',
+      label: 'Incremental Understanding metrics',
+      score: incrementalScore,
+      evidenceBasis: [
+        `${params.incrementalMetrics.scan_efficiency_score}/100 scan efficiency`,
+        `${params.incrementalMetrics.reused_understanding_count} reused understanding item(s)`,
+        `${params.incrementalMetrics.stale_fact_count} stale fact candidate(s)`,
+      ],
+      nextRequiredImprovements: [
+        'Prove efficient understanding updates across repeated real-repo scans.',
+        ...dimensionWeakSpots(params.dimensions.incremental_status),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'review_intelligence_true_blast_radius',
+      label: 'Review Intelligence with true blast radius',
+      score: reviewScore,
+      evidenceBasis: [
+        `${dimensionScore(params.dimensions.review_readiness)}/100 review readiness`,
+        `${architectureScore}/100 architecture reasoning`,
+        `${flowScore}/100 flow understanding`,
+      ],
+      nextRequiredImprovements: [
+        'Connect file/config/test changes to user-visible journey failures with stronger causal evidence.',
+        ...dimensionWeakSpots(params.dimensions.review_readiness),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'rizz_ask',
+      label: 'rizz ask',
+      score: askScore,
+      isBlocked: askIsBlocked,
+      evidenceBasis: [
+        `${askReadinessScore}/100 ask readiness gate`,
+        `${foundationAverage}/100 foundation average before broad ask`,
+      ],
+      nextRequiredImprovements: [
+        'Keep broad rizz ask blocked until flow, architecture, evidence, Mission Control, benchmark, incremental, and review foundations are strong.',
+        ...asStringArray(askReadiness.next_required_improvements),
+      ],
+    }),
+  ];
+  const averageScore = boundedScore(
+    capabilities.reduce((total, capability) => total + recordNumber(capability, 'score'), 0) /
+      capabilities.length,
+  );
+  return {
+    schema_version: 1,
+    target_score: 100,
+    average_score: averageScore,
+    average_remaining_to_100: 100 - averageScore,
+    foundation_average_score: foundationAverage,
+    capability_count: capabilities.length,
+    capabilities,
+    scoring_notes: [
+      'Capability scores are deterministic local readiness estimates, not claims of product completion.',
+      'A score reaches 100 only when the local Project Intelligence artifacts show strong coverage and no blocking gates.',
+      'rizz ask remains gated by the foundation average so it cannot outrun evidence-backed understanding.',
+    ],
+  };
+}
+
 function buildUnderstandingScoreArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -13144,6 +13358,18 @@ function buildUnderstandingScoreArtifact(params: {
   const dimensionScores = Object.values(dimensions).map((dimension) =>
     recordNumber(dimension, 'score'),
   );
+  const readFirst = readFirstPointers(components);
+  const capabilityScorecard = buildPieCapabilityScorecard({
+    dimensions,
+    evidenceQuality: params.evidenceQuality,
+    architectureReasoning: params.architectureReasoning,
+    benchmarkReady: params.benchmarkReady,
+    incrementalMetrics: params.incrementalMetrics,
+    components,
+    flows,
+    evidenceCount: params.buckets.evidence.length,
+    readFirstCount: readFirst.length,
+  });
   const overallScore = boundedScore(
     recordNumber(dimensions.components, 'score') * 0.2 +
       recordNumber(dimensions.flows, 'score') * 0.14 +
@@ -13164,8 +13390,9 @@ function buildUnderstandingScoreArtifact(params: {
     score_band: scoreBand(overallScore),
     dimension_count: dimensionScores.length,
     dimensions,
+    capability_scorecard: capabilityScorecard,
     top_unknowns: unknownItems,
-    read_first: readFirstPointers(components),
+    read_first: readFirst,
     changed: {
       changed_file_count: params.incrementalMetrics.changed_file_count,
       changed_entity_count: params.incrementalMetrics.changed_entity_count,
@@ -16769,6 +16996,35 @@ function renderDimensionCards(score: unknown): string {
     .join('');
 }
 
+function renderCapabilityScorecard(score: unknown): string {
+  const scorecard = nestedRecord(score, 'capability_scorecard');
+  const capabilities = recordArray(scorecard, 'capabilities').filter(isRecord);
+  if (capabilities.length === 0) {
+    return '<p class="muted">No PIE capability scorecard is available yet.</p>';
+  }
+  return capabilities
+    .map((capability) => {
+      const label = recordString(capability, 'label', 'Capability');
+      const value = recordNumber(capability, 'score');
+      const remaining = recordNumber(capability, 'remaining_to_100');
+      const status = recordString(capability, 'status', scoreBand(value));
+      const evidenceBasis = asStringArray(capability.evidence_basis).slice(0, 3);
+      const next = asStringArray(capability.next_required_improvements).slice(0, 3);
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${label} ${value} ${remaining} ${status} ${evidenceBasis.join(' ')} ${next.join(' ')}`,
+      )}" data-kind="score">
+        <div class="badge">${value}/100 · ${htmlEscape(status)}</div>
+        <h3>${htmlEscape(label)}</h3>
+        <p class="muted">${remaining} remaining to 100</p>
+        <h4>Evidence</h4>
+        ${renderList(evidenceBasis)}
+        <h4>Next</h4>
+        ${renderList(next)}
+      </article>`;
+    })
+    .join('');
+}
+
 function renderReadFirstPointers(score: unknown): string {
   const pointers = recordArray(score, 'read_first').filter(isRecord).slice(0, 6);
   if (pointers.length === 0) return '<p class="muted">No read-first pointers recorded yet.</p>';
@@ -17302,6 +17558,8 @@ function renderUnderstandingDashboard(score: unknown): string {
         ${renderList(changedLabels)}
       </article>
     </div>
+    <h3>Remaining to 100%</h3>
+    <div class="grid">${renderCapabilityScorecard(score)}</div>
     <div class="grid">${renderDimensionCards(score)}</div>
     <h3>Read First</h3>
     <div class="grid">${renderReadFirstPointers(score)}</div>

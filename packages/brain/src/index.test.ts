@@ -1045,6 +1045,15 @@ describe('project brain generation', () => {
       expect(missionControlReport).toContain('Inspect First');
       expect(missionControlReport).toContain('Ask readiness');
       expect(missionControlReport).toContain('future broader repo questions');
+      expect(missionControlReport).toContain('Remaining to 100%');
+      expect(missionControlReport).toContain('Flow Understanding');
+      expect(missionControlReport).toContain('Architecture Reasoning');
+      expect(missionControlReport).toContain('Evidence Quality scoring');
+      expect(missionControlReport).toContain('Mission Control UX');
+      expect(missionControlReport).toContain('PI-Bench seed dataset/task format');
+      expect(missionControlReport).toContain('Incremental Understanding metrics');
+      expect(missionControlReport).toContain('Review Intelligence with true blast radius');
+      expect(missionControlReport).toContain('rizz ask');
       expect(missionControlReport).toContain('What Can Break');
       expect(missionControlReport).toContain('component:packages--brain');
       expect(missionControlReport).toContain('Evidence</h4>');
@@ -1592,6 +1601,23 @@ describe('project brain generation', () => {
           review_readiness: { score: number; weak_spots: string[] };
           unknowns: { score: number; weak_spots: string[] };
         };
+        capability_scorecard: {
+          target_score: number;
+          average_score: number;
+          average_remaining_to_100: number;
+          foundation_average_score: number;
+          capability_count: number;
+          capabilities: Array<{
+            key: string;
+            label: string;
+            target_score: number;
+            score: number;
+            remaining_to_100: number;
+            status: string;
+            evidence_basis: string[];
+            next_required_improvements: string[];
+          }>;
+        };
         top_unknowns: string[];
         read_first: Array<{ path: string; component_id: string; reason: string }>;
         changed: {
@@ -1616,9 +1642,44 @@ describe('project brain generation', () => {
           review_readiness: expect.objectContaining({ score: expect.any(Number) }),
           unknowns: expect.objectContaining({ score: expect.any(Number) }),
         },
+        capability_scorecard: {
+          target_score: 100,
+          average_score: expect.any(Number),
+          average_remaining_to_100: expect.any(Number),
+          foundation_average_score: expect.any(Number),
+          capability_count: 8,
+          capabilities: expect.any(Array),
+        },
       });
       expect(understandingScore.overall_score).toBeGreaterThan(0);
       expect(understandingScore.score_band).toMatch(/strong|usable|weak|not ready/);
+      expect(understandingScore.capability_scorecard.capabilities.map((item) => item.key)).toEqual([
+        'flow_understanding',
+        'architecture_reasoning',
+        'evidence_quality_scoring',
+        'mission_control_ux',
+        'pi_bench_seed_dataset_task_format',
+        'incremental_understanding_metrics',
+        'review_intelligence_true_blast_radius',
+        'rizz_ask',
+      ]);
+      for (const capability of understandingScore.capability_scorecard.capabilities) {
+        expect(capability.target_score).toBe(100);
+        expect(capability.score).toBeGreaterThanOrEqual(0);
+        expect(capability.score).toBeLessThanOrEqual(100);
+        expect(capability.remaining_to_100).toBe(100 - capability.score);
+        expect(capability.evidence_basis.length).toBeGreaterThan(0);
+      }
+      expect(understandingScore.capability_scorecard.capabilities).toContainEqual(
+        expect.objectContaining({
+          key: 'rizz_ask',
+          label: 'rizz ask',
+          status: 'blocked',
+          next_required_improvements: expect.arrayContaining([
+            expect.stringContaining('Keep broad rizz ask blocked'),
+          ]),
+        }),
+      );
       expect(understandingScore.read_first).toContainEqual(
         expect.objectContaining({
           path: 'packages/brain/package.json',
@@ -1773,6 +1834,10 @@ describe('project brain generation', () => {
       const latest = await readJson<{
         latest_understanding_score: {
           overall_score: number;
+          capability_scorecard: {
+            capability_count: number;
+            capabilities: Array<{ key: string; score: number; remaining_to_100: number }>;
+          };
           dimensions: {
             components: { score: number };
             flows: { score: number };
@@ -1834,6 +1899,13 @@ describe('project brain generation', () => {
       );
       expect(latest.latest_understanding_score).toMatchObject({
         overall_score: understandingScore.overall_score,
+        capability_scorecard: {
+          capability_count: 8,
+          capabilities: expect.arrayContaining([
+            expect.objectContaining({ key: 'flow_understanding' }),
+            expect.objectContaining({ key: 'rizz_ask' }),
+          ]),
+        },
         dimensions: {
           components: expect.objectContaining({ score: expect.any(Number) }),
           flows: expect.objectContaining({ score: expect.any(Number) }),
