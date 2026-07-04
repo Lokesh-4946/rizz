@@ -102,6 +102,71 @@ async function setAskReadiness(
 }
 
 describe('project brain generation', () => {
+  it('prioritizes manifests, configs, and tests before content-heavy trees under scan caps', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'aaa-content'), { recursive: true });
+      await mkdir(join(dir, '.github', 'workflows'), { recursive: true });
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await mkdir(join(dir, 'tests'), { recursive: true });
+      for (let index = 0; index < 16; index += 1) {
+        await writeFile(
+          join(dir, 'aaa-content', `${String(index).padStart(2, '0')}.md`),
+          '# Doc\n',
+        );
+        await writeFile(
+          join(dir, '.github', 'workflows', `${String(index).padStart(2, '0')}.yml`),
+          'name: noisy workflow\n',
+        );
+      }
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'large-repo-priority',
+          scripts: { build: 'tsc -b', test: 'vitest run' },
+          devDependencies: { typescript: '^5.0.0', vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'tsconfig.json'), '{}');
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const value = 1;\n');
+      await writeFile(
+        join(dir, 'tests', 'index.test.ts'),
+        'import { expect, it } from "vitest";\n',
+      );
+      const progressEvents: Array<{
+        readonly phase: string;
+        readonly message: string;
+        readonly scannedFiles?: number;
+      }> = [];
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        maxFiles: 4,
+        now: new Date('2026-07-04T10:30:00.000Z'),
+        onProgress: (progress) => progressEvents.push(progress),
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: { scannedFiles: 4, commands: 2, tests: 1 },
+      });
+      if (!result.ok) return;
+
+      const files = await readJson<{
+        entities: Array<{ name: string; data?: { relativePath?: string } }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'files.json'));
+      const paths = files.entities.map((entity) => entity.data?.relativePath ?? entity.name);
+      expect(paths).toEqual(
+        expect.arrayContaining(['package.json', 'tsconfig.json', 'tests/index.test.ts']),
+      );
+      expect(paths.some((path) => path.startsWith('aaa-content/'))).toBe(false);
+      expect(paths.some((path) => path.startsWith('.github/workflows/'))).toBe(false);
+      expect(progressEvents.map((event) => event.phase)).toEqual(
+        expect.arrayContaining(['prepare', 'scan', 'analyze', 'write', 'done']),
+      );
+      expect(progressEvents.some((event) => event.scannedFiles === 4)).toBe(true);
+    });
+  });
+
   it('writes relational brain files, latest state, graph, snapshot, and report', async () => {
     await withTempProject(async (dir) => {
       await writeFile(

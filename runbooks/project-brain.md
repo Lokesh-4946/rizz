@@ -157,6 +157,16 @@ folders, package artifacts, binary media, private env files, key material, and T
 files by default. That keeps the brain focused on source, manifests, tests, docs, and operational
 runbooks instead of local machine noise.
 
+When a repository is larger than the scan cap, traversal is deterministic and high-signal first:
+dependency manifests, package/config files, test directories, and source directories are visited
+before workflow-heavy or content-heavy trees. This keeps capped scans useful on repos such as docs
+sites and large framework monorepos where thousands of markdown, fixture, or workflow files can
+otherwise crowd out `package.json`, config, and tests.
+
+`rizz brain` emits phase progress to stderr while preserving the existing stdout summary. The
+default cap is 5,000 files. UAT and other explicit harnesses can set `RIZZ_BRAIN_MAX_FILES` to a
+positive integer for bounded runs without changing the default product path.
+
 Projects can tune scan scope with a root `.rizzignore` file. Supported patterns are intentionally
 small and dependency-free:
 

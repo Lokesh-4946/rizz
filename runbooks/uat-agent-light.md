@@ -63,6 +63,39 @@ Pass criteria:
 - `rizz review --json` emits parseable JSON and writes review entities plus `.rizz/reports/review.html`
 - generated `.rizz` output contains no provider keys, tokens, or user secrets
 
+## Large-repo intelligence UAT
+
+Run this from a development checkout when a milestone touches Project Intelligence scanning,
+research artifacts, Mission Control, or review evidence:
+
+```sh
+pnpm uat:large-repos -- --max-files 120 --timeout-ms 90000
+```
+
+By default the harness uses a repo matrix for `github/docs` and `vercel/next.js`, clones or reuses
+them under `.rizz/uat/large-repos`, removes generated `.rizz` output before each repo run, streams
+per-repo progress, and writes `.rizz/uat/large-repos/large-repo-uat-report.json`.
+
+To reuse existing local clones:
+
+```sh
+pnpm uat:large-repos -- \
+  --repo github-docs=/path/to/github-docs \
+  --repo next-js=/path/to/next.js \
+  --max-files 120 \
+  --timeout-ms 90000 \
+  --report .rizz/uat/combined-120-priority-uat-report.json
+```
+
+Pass criteria:
+
+- every selected repo exits `0` without timing out
+- progress shows `prepare`, `scan`, `analyze`, `write`, and `done` phases
+- capped scans report nonzero commands and tests for repos with manifests/tests
+- generated report records `fresh_rizz: true`, `timeout_ms`, `max_files`, traversal priority, and
+  per-repo scanned file, command, test, tool, and security counts
+- reruns start from fresh generated artifacts unless `--preserve-rizz` is intentionally used
+
 ## Public install smoke
 
 ```sh

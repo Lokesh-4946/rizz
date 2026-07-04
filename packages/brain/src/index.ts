@@ -1504,6 +1504,15 @@ export interface GenerateProjectBrainOptions {
   readonly rootDir: string;
   readonly now?: Date;
   readonly maxFiles?: number;
+  readonly onProgress?: (progress: GenerateProjectBrainProgress) => void;
+}
+
+export interface GenerateProjectBrainProgress {
+  readonly phase: 'prepare' | 'scan' | 'analyze' | 'write' | 'done';
+  readonly message: string;
+  readonly scannedFiles?: number;
+  readonly maxFiles?: number;
+  readonly elapsedMs?: number;
 }
 
 export interface GenerateProjectBrainSummary {
@@ -2171,12 +2180,27 @@ async function scanFiles(
   rootDir: string,
   maxFiles: number,
   ignorePatterns: readonly IgnorePattern[],
+  onProgress?: (progress: GenerateProjectBrainProgress) => void,
 ): Promise<FileFact[]> {
   const facts: FileFact[] = [];
+  const startedAt = Date.now();
+
+  onProgress?.({
+    phase: 'scan',
+    message: `Scanning files with a ${maxFiles} file cap`,
+    scannedFiles: 0,
+    maxFiles,
+    elapsedMs: 0,
+  });
 
   async function walk(dir: string): Promise<void> {
     if (facts.length >= maxFiles) return;
-    const entries = sorted(await readdir(dir, { withFileTypes: true }), (entry) => entry.name);
+    const entries = sorted(await readdir(dir, { withFileTypes: true }), (entry) => {
+      const absolutePath = join(dir, entry.name);
+      const rel = relative(rootDir, absolutePath).split(sep).join('/');
+      const directoryRank = entry.isDirectory() ? 1 : 0;
+      return `${scanEntryPriority(rel, entry.isDirectory())}:${directoryRank}:${entry.name}`;
+    });
     for (const entry of entries) {
       if (facts.length >= maxFiles) return;
       const absolutePath = join(dir, entry.name);
@@ -2196,11 +2220,58 @@ async function scanFiles(
         extension: extname(entry.name),
         hash: createHash('sha256').update(content).digest('hex'),
       });
+      if (facts.length % 250 === 0 || facts.length === maxFiles) {
+        onProgress?.({
+          phase: 'scan',
+          message: `Scanned ${facts.length} file(s)`,
+          scannedFiles: facts.length,
+          maxFiles,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
     }
   }
 
   await walk(rootDir);
+  onProgress?.({
+    phase: 'scan',
+    message:
+      facts.length >= maxFiles
+        ? `Reached scan cap after ${facts.length} file(s)`
+        : `Completed scan after ${facts.length} file(s)`,
+    scannedFiles: facts.length,
+    maxFiles,
+    elapsedMs: Date.now() - startedAt,
+  });
   return sorted(facts, (fact) => fact.relativePath);
+}
+
+function scanEntryPriority(relativePath: string, isDirectory: boolean): number {
+  const lower = relativePath.toLowerCase();
+  if (!isDirectory) {
+    if (isDependencyPath(relativePath)) return 0;
+    if (isConfigPath(relativePath)) return 1;
+    if (isTestPath(relativePath)) return 2;
+    if (isSourcePath(relativePath)) return 4;
+    if (isContentHeavyPath(relativePath)) return 8;
+    return 5;
+  }
+  if (/^(config|configs|scripts|bin)(\/|$)/.test(lower)) return 1;
+  if (/(^|\/)(__tests__|tests?|test-fixtures?)(\/|$)/.test(lower)) return 2;
+  if (/^(packages|apps|src|lib|server|client|services|api)(\/|$)/.test(lower)) return 3;
+  if (relativePath === '.github' || lower.startsWith('.github/')) return 4;
+  if (isContentHeavyPath(relativePath)) return 9;
+  return 6;
+}
+
+function isSourcePath(relativePath: string): boolean {
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php)$/.test(relativePath.toLowerCase());
+}
+
+function isContentHeavyPath(relativePath: string): boolean {
+  return /(^|\/)(content|contents|docs|documentation|examples|fixtures|static|public)(\/|$)/.test(
+    relativePath.toLowerCase(),
+  );
 }
 
 async function readPackageJsonFacts(
@@ -19582,7 +19653,9 @@ export async function generateProjectBrain(
   options: GenerateProjectBrainOptions,
 ): Promise<GenerateProjectBrainResult> {
   try {
+    const startedAt = Date.now();
     const rootDir = options.rootDir;
+    const reportProgress = options.onProgress;
     const now = (options.now ?? new Date()).toISOString();
     const projectName = basename(rootDir);
     const brainDir = join(rootDir, '.rizz', 'brain');
@@ -19595,6 +19668,11 @@ export async function generateProjectBrain(
     await mkdir(snapshotsDir, { recursive: true });
     await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
+    reportProgress?.({
+      phase: 'prepare',
+      message: `Prepared .rizz workspace for ${projectName}`,
+      elapsedMs: Date.now() - startedAt,
+    });
 
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'files.json'),
@@ -19612,7 +19690,19 @@ export async function generateProjectBrain(
     for (const relativePath of previousFiles.keys()) {
       if (shouldSkipRelativePath(relativePath, ignorePatterns)) previousFiles.delete(relativePath);
     }
-    const files = await scanFiles(rootDir, options.maxFiles ?? 5_000, ignorePatterns);
+    const files = await scanFiles(
+      rootDir,
+      options.maxFiles ?? 5_000,
+      ignorePatterns,
+      reportProgress,
+    );
+    reportProgress?.({
+      phase: 'analyze',
+      message: `Analyzing ${files.length} scanned file(s)`,
+      scannedFiles: files.length,
+      maxFiles: options.maxFiles ?? 5_000,
+      elapsedMs: Date.now() - startedAt,
+    });
     const packageFacts = await readPackageJsonFacts(rootDir, files);
     const built = buildBrain({
       rootDir,
@@ -19724,6 +19814,13 @@ export async function generateProjectBrain(
     const snapshotName = `${now.replace(/:/g, '-')}.json`;
     const snapshot = { index, latest, graph };
 
+    reportProgress?.({
+      phase: 'write',
+      message: 'Writing brain, research, and Mission Control artifacts',
+      scannedFiles: files.length,
+      maxFiles: options.maxFiles ?? 5_000,
+      elapsedMs: Date.now() - startedAt,
+    });
     await writeVerifiedFile(join(brainDir, 'index.json'), jsonString(safeBrainValue(index)));
     await writeVerifiedFile(join(brainDir, 'graph.json'), jsonString(safeBrainValue(graph)));
     await writeVerifiedFile(join(brainDir, 'latest.json'), jsonString(safeBrainValue(latest)));
@@ -19736,6 +19833,13 @@ export async function generateProjectBrain(
     await writeResearchArtifacts(researchDir, researchArtifacts);
     await clearReviewDerivedArtifacts({ researchDir, reportsDir });
     await writeVerifiedFile(join(reportsDir, 'index.html'), report);
+    reportProgress?.({
+      phase: 'done',
+      message: `Generated project brain with ${files.length} file(s)`,
+      scannedFiles: files.length,
+      maxFiles: options.maxFiles ?? 5_000,
+      elapsedMs: Date.now() - startedAt,
+    });
 
     return {
       ok: true,
@@ -23868,7 +23972,7 @@ function parseDiffFileChanges(diffText: string): Map<string, DiffFileChange> {
 }
 
 function isTestPath(path: string): boolean {
-  return /(__tests__|\.test\.|\.spec\.)/.test(path);
+  return /(__tests__|(^|\/)tests?(\/|$)|\.test\.|\.spec\.)/.test(path);
 }
 
 function isConfigPath(path: string): boolean {
