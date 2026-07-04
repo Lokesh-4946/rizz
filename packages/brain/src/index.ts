@@ -8603,6 +8603,22 @@ function confidenceInspectionSources(
   };
 }
 
+function confidenceInspectionCandidateKey(item: ConfidenceInspectionQueueCandidate): string {
+  return `${item.source}\u0000${item.target_type}\u0000${item.target_id}`;
+}
+
+function compareConfidenceInspectionCandidates(
+  a: ConfidenceInspectionQueueCandidate,
+  b: ConfidenceInspectionQueueCandidate,
+): number {
+  return (
+    confidenceInspectionSeverityRank(a.severity) - confidenceInspectionSeverityRank(b.severity) ||
+    confidenceInspectionSourceRank(a.source) - confidenceInspectionSourceRank(b.source) ||
+    b.confidence_delta - a.confidence_delta ||
+    a.target_id.localeCompare(b.target_id)
+  );
+}
+
 function evidenceQueueItems(value: Record<string, unknown>): ConfidenceInspectionQueueCandidate[] {
   const actionability = nestedRecord(value, 'actionability');
   const readFirstByTarget = new Map(
@@ -8845,15 +8861,16 @@ function buildConfidenceInspectionQueue(params: {
     ...toolInventoryQueueItems(params.toolInventory),
     ...incrementalQueueItems(params.incrementalMetrics),
   ];
-  const items = candidates
-    .sort(
-      (a, b) =>
-        confidenceInspectionSeverityRank(a.severity) -
-          confidenceInspectionSeverityRank(b.severity) ||
-        confidenceInspectionSourceRank(a.source) - confidenceInspectionSourceRank(b.source) ||
-        b.confidence_delta - a.confidence_delta ||
-        a.target_id.localeCompare(b.target_id),
-    )
+  const sortedCandidates = [...candidates].sort(compareConfidenceInspectionCandidates);
+  const sourceRepresentatives = (
+    ['evidence', 'architecture', 'security', 'tools', 'incremental'] as const
+  ).flatMap((source) => sortedCandidates.find((candidate) => candidate.source === source) ?? []);
+  const selected = uniqueBy(
+    [...sourceRepresentatives, ...sortedCandidates],
+    confidenceInspectionCandidateKey,
+  ).slice(0, 12);
+  const items = selected
+    .sort(compareConfidenceInspectionCandidates)
     .slice(0, 12)
     .map((item, index) => ({ priority: index + 1, ...item }));
   const highPriorityCount = items.filter((item) => item.severity === 'high').length;
