@@ -19,14 +19,27 @@ ECC-inspired features are useful when they strengthen that contract without join
 
 ## Current Loop
 
-1. Large-repo UAT harness with an explicit repo matrix, per-repo time caps, progress output, and a
-   compact JSON report.
-2. Traversal priority for manifests, configs, tests, and source before workflow-heavy or
-   content-heavy trees when a scan cap is active.
+1. Analyzer subphase progress and cost calibration for capped large-repo scans.
+2. Scorecard reporting after each UAT run: planned score, actual repo capability score, and
+   remaining distance to 100.
 3. Bounded UAT after milestones on complex repos such as `github/docs` and `vercel/next.js`.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice makes capped scans useful on large repos and turns long-running UAT into a
-deterministic report instead of an opaque hang. The next useful slice is analyzer subphase progress
-and cost calibration so large scans can show which research/artifact pass is taking time after
-traversal completes.
+The current slice makes every large-repo UAT run answer two questions: where did time go, and how
+far is each planned capability from 100?
+
+## Capability Scorecard
+
+These are the orchestrator baseline scores for planned work. UAT reports also include actual
+repo-derived scores from `.rizz/research/understanding_score.json`.
+
+| Planned item | Baseline | Remaining | Next improvement |
+| --- | ---: | ---: | --- |
+| Flow Understanding | 86/100 | 14 | Deepen route, service, and journey reconstruction. |
+| Architecture Reasoning | 87/100 | 13 | Calibrate confidence and what-breaks claims. |
+| Evidence Quality scoring | 88/100 | 12 | Make weak, stale, and low-confidence evidence easier to inspect. |
+| Mission Control UX | 88/100 | 12 | Expose score, queue, and drilldown movement in the portal. |
+| PI-Bench seed/task format | 86/100 | 14 | Broaden deterministic task coverage and UAT fixtures. |
+| Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
+| Review Intelligence with true blast radius | 88/100 | 12 | Tie changed files to user-visible failures with stronger causality. |
+| `rizz ask` | 0/100 | 100 | Keep gated until foundation scores justify broad answers. |

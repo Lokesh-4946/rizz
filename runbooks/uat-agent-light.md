@@ -92,8 +92,11 @@ Pass criteria:
 - every selected repo exits `0` without timing out
 - progress shows `prepare`, `scan`, `analyze`, `write`, and `done` phases
 - capped scans report nonzero commands and tests for repos with manifests/tests
-- generated report records `fresh_rizz: true`, `timeout_ms`, `max_files`, traversal priority, and
-  per-repo scanned file, command, test, tool, and security counts
+- generated report records `fresh_rizz: true`, `timeout_ms`, `max_files`, traversal priority,
+  `planned_scorecard`, `matrix_scorecard`, and per-repo scanned file, command, test, tool, and
+  security counts
+- every repo report includes `progress_summary.phase_durations_ms`, slowest progress steps, and
+  the actual out-of-100 `capability_scorecard` from `.rizz/research/understanding_score.json`
 - reruns start from fresh generated artifacts unless `--preserve-rizz` is intentionally used
 
 ## Public install smoke

@@ -265,6 +265,234 @@ function parseCliSummary(stdout) {
   return summary;
 }
 
+function parseProgressEvents(stderr) {
+  const events = [];
+  for (const line of stderr.split(/\r?\n/)) {
+    const match = line.match(
+      /\[rizz brain\]\s+([a-z]+)(?:\/([a-z0-9-]+))?:\s+(.+?)(?:\s+\((\d+)ms\))?\s*$/,
+    );
+    if (match === null) continue;
+    events.push({
+      phase: match[1],
+      ...(match[2] !== undefined ? { detail: match[2] } : {}),
+      message: match[3],
+      ...(match[4] !== undefined ? { elapsed_ms: Number(match[4]) } : {}),
+    });
+  }
+  return events;
+}
+
+function summarizeProgress(events) {
+  const phaseDurations = {};
+  const detailDurations = {};
+  const timedSteps = [];
+  let previousElapsed = 0;
+  let totalReportedMs = 0;
+  for (const event of events) {
+    if (typeof event.elapsed_ms !== 'number') continue;
+    const delta = Math.max(0, event.elapsed_ms - previousElapsed);
+    previousElapsed = event.elapsed_ms;
+    totalReportedMs = event.elapsed_ms;
+    phaseDurations[event.phase] = (phaseDurations[event.phase] ?? 0) + delta;
+    const detailKey = `${event.phase}/${event.detail ?? 'summary'}`;
+    detailDurations[detailKey] = (detailDurations[detailKey] ?? 0) + delta;
+    timedSteps.push({
+      phase: event.phase,
+      detail: event.detail ?? 'summary',
+      message: event.message,
+      duration_ms: delta,
+      elapsed_ms: event.elapsed_ms,
+    });
+  }
+  return {
+    total_reported_ms: totalReportedMs,
+    phase_durations_ms: phaseDurations,
+    detail_durations_ms: detailDurations,
+    slowest_steps: timedSteps
+      .sort((left, right) => right.duration_ms - left.duration_ms)
+      .slice(0, 6),
+  };
+}
+
+function extractCapabilityScorecard(repoDir) {
+  const score = readJsonIfExists(join(repoDir, '.rizz', 'research', 'understanding_score.json'));
+  const scorecard = score?.capability_scorecard;
+  if (scorecard === undefined || scorecard === null || typeof scorecard !== 'object') {
+    return undefined;
+  }
+  const capabilities = Array.isArray(scorecard.capabilities) ? scorecard.capabilities : [];
+  return {
+    target_score: numberOrNull(scorecard.target_score),
+    average_score: numberOrNull(scorecard.average_score),
+    average_remaining_to_100: numberOrNull(scorecard.average_remaining_to_100),
+    foundation_average_score: numberOrNull(scorecard.foundation_average_score),
+    capability_count: numberOrNull(scorecard.capability_count),
+    capabilities: capabilities
+      .filter((capability) => capability !== null && typeof capability === 'object')
+      .map((capability) => ({
+        key: stringOrNull(capability.key),
+        label: stringOrNull(capability.label),
+        score: numberOrNull(capability.score),
+        remaining_to_100: numberOrNull(capability.remaining_to_100),
+        status: stringOrNull(capability.status),
+        is_blocked: capability.is_blocked === true,
+        next_required_improvements: Array.isArray(capability.next_required_improvements)
+          ? capability.next_required_improvements
+              .filter((item) => typeof item === 'string')
+              .slice(0, 5)
+          : [],
+      })),
+  };
+}
+
+function numberOrNull(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function stringOrNull(value) {
+  return typeof value === 'string' ? value : null;
+}
+
+function weakestCapability(scorecard) {
+  if (scorecard === undefined) return undefined;
+  return scorecard.capabilities
+    .filter((capability) => capability.score !== null)
+    .sort((left, right) => left.score - right.score)[0];
+}
+
+function printRunUpdate(repo) {
+  const scorecard = repo.capability_scorecard;
+  const weakest = weakestCapability(scorecard);
+  const score =
+    scorecard?.average_score === null || scorecard?.average_score === undefined
+      ? 'unknown'
+      : `${scorecard.average_score}/100`;
+  const remaining =
+    scorecard?.average_remaining_to_100 === null ||
+    scorecard?.average_remaining_to_100 === undefined
+      ? 'unknown'
+      : `${scorecard.average_remaining_to_100}`;
+  const weakestText =
+    weakest === undefined
+      ? 'weakest unknown'
+      : `weakest ${weakest.label ?? weakest.key}: ${weakest.score}/100`;
+  process.stderr.write(
+    `[uat] ${repo.id}: score ${score}, remaining ${remaining}, ${weakestText}\n`,
+  );
+  if (repo.progress_summary.slowest_steps.length > 0) {
+    const slowest = repo.progress_summary.slowest_steps[0];
+    process.stderr.write(
+      `[uat] ${repo.id}: slowest step ${slowest.phase}/${slowest.detail} ${slowest.duration_ms}ms\n`,
+    );
+  }
+}
+
+function plannedScorecard() {
+  return [
+    plannedItem(
+      'flow_understanding',
+      'Flow Understanding',
+      86,
+      'Deepen route, service, and journey reconstruction.',
+    ),
+    plannedItem(
+      'architecture_reasoning',
+      'Architecture Reasoning',
+      87,
+      'Calibrate confidence and what-breaks claims.',
+    ),
+    plannedItem(
+      'evidence_quality_scoring',
+      'Evidence Quality scoring',
+      88,
+      'Make weak, stale, and low-confidence evidence easier to inspect.',
+    ),
+    plannedItem(
+      'mission_control_ux',
+      'Mission Control UX',
+      88,
+      'Expose score, queue, and drilldown movement in the portal.',
+    ),
+    plannedItem(
+      'pi_bench_seed_dataset_task_format',
+      'PI-Bench seed/task format',
+      86,
+      'Broaden deterministic task coverage and UAT fixtures.',
+    ),
+    plannedItem(
+      'incremental_understanding_metrics',
+      'Incremental Understanding metrics',
+      88,
+      'Improve repeated-scan reuse and stale-surface explanations.',
+    ),
+    plannedItem(
+      'review_intelligence_true_blast_radius',
+      'Review Intelligence with true blast radius',
+      88,
+      'Tie changed files to user-visible failures with stronger causality.',
+    ),
+    plannedItem('rizz_ask', 'rizz ask', 0, 'Remain gated until foundations are stronger.'),
+  ];
+}
+
+function plannedItem(key, label, score, next) {
+  return {
+    key,
+    label,
+    score,
+    target_score: 100,
+    remaining_to_100: 100 - score,
+    next_required_improvement: next,
+  };
+}
+
+function summarizeMatrixScorecard(repos) {
+  const capabilityRows = [];
+  for (const repo of repos) {
+    const capabilities = repo.capability_scorecard?.capabilities ?? [];
+    for (const capability of capabilities) {
+      if (capability.key === null || capability.score === null) continue;
+      capabilityRows.push({
+        repo: repo.id,
+        key: capability.key,
+        label: capability.label,
+        score: capability.score,
+        remaining_to_100: capability.remaining_to_100,
+        status: capability.status,
+        is_blocked: capability.is_blocked,
+      });
+    }
+  }
+  const byCapability = {};
+  for (const row of capabilityRows) {
+    const current = byCapability[row.key] ?? {
+      key: row.key,
+      label: row.label,
+      repos: 0,
+      average_score: 0,
+      average_remaining_to_100: 0,
+      blocked_repos: 0,
+    };
+    current.repos += 1;
+    current.average_score += row.score;
+    current.average_remaining_to_100 += row.remaining_to_100 ?? 0;
+    if (row.is_blocked) current.blocked_repos += 1;
+    byCapability[row.key] = current;
+  }
+  const capabilities = Object.values(byCapability)
+    .map((capability) => ({
+      ...capability,
+      average_score: Math.round(capability.average_score / capability.repos),
+      average_remaining_to_100: Math.round(capability.average_remaining_to_100 / capability.repos),
+    }))
+    .sort((left, right) => left.average_score - right.average_score);
+  return {
+    repos_scored: repos.filter((repo) => repo.capability_scorecard !== null).length,
+    capabilities,
+    weakest_capability: capabilities[0] ?? null,
+  };
+}
+
 async function runRepo(repo, options) {
   const prepared = await ensureRepo(repo, options.workspace, options.timeoutMs);
   if (options.freshRizz) {
@@ -291,6 +519,9 @@ async function runRepo(repo, options) {
     join(prepared.repoDir, '.rizz', 'research', 'security_scan.json'),
   );
   const summary = parseCliSummary(result.stdout);
+  const progressEvents = parseProgressEvents(result.stderr);
+  const progressSummary = summarizeProgress(progressEvents);
+  const capabilityScorecard = extractCapabilityScorecard(prepared.repoDir);
   return {
     id: repo.id,
     note: repo.note,
@@ -311,6 +542,9 @@ async function runRepo(repo, options) {
     package_scripts: toolInventory?.package_script_count ?? null,
     tool_surfaces: toolInventory?.surface_count ?? null,
     security_findings: securityScan?.finding_count ?? null,
+    capability_scorecard: capabilityScorecard ?? null,
+    progress_summary: progressSummary,
+    progress_events: progressEvents,
     stdout_tail: tail(result.stdout),
     stderr_tail: tail(result.stderr),
   };
@@ -326,7 +560,9 @@ async function main() {
   const startedAt = Date.now();
   const repos = [];
   for (const repo of options.repos) {
-    repos.push(await runRepo(repo, options));
+    const result = await runRepo(repo, options);
+    repos.push(result);
+    printRunUpdate(result);
   }
   const report = {
     generated_at: new Date().toISOString(),
@@ -338,6 +574,8 @@ async function main() {
     max_files: options.maxFiles,
     fresh_rizz: options.freshRizz,
     traversal_priority: ['manifests', 'config', 'tests', 'source', 'content-heavy trees'],
+    planned_scorecard: plannedScorecard(),
+    matrix_scorecard: summarizeMatrixScorecard(repos),
     repos,
   };
   writeFileSync(options.reportPath, `${JSON.stringify(report, null, 2)}\n`);
