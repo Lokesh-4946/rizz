@@ -388,6 +388,97 @@ describe('project brain generation', () => {
     });
   });
 
+  it('clears stale review-derived architecture claims after a fresh brain scan', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'core', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'stale-architecture-app', workspaces: ['packages/*'] }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@sample/core' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'package.json'),
+        JSON.stringify({ name: '@sample/cli', scripts: { test: 'vitest run packages/cli' } }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'core', 'src', 'index.ts'),
+        'export function runCore() { return "core"; }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { runCore } from "../../core/src/index.js";\nexport function main() { return runCore(); }\n',
+      );
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.test.ts'),
+        'import { it } from "vitest"; it("starts", () => {});\n',
+      );
+
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:36:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'packages', 'cli', 'src', 'index.ts'),
+        'import { runCore } from "../../core/src/index.js";\nexport function main() { return `${runCore()} changed`; }\n',
+      );
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:37:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(JSON.stringify(review.value.review.architecture_impact_map)).toContain(
+        'impact:component:packages--cli',
+      );
+      expect(await fileExists(join(dir, '.rizz', 'reports', 'review.html'))).toBe(true);
+      expect(await fileExists(join(dir, '.rizz', 'research', 'review_claim_evidence.json'))).toBe(
+        true,
+      );
+
+      await rm(join(dir, 'packages', 'cli'), { recursive: true, force: true });
+      const refreshed = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:38:00.000Z'),
+      });
+      expect(refreshed.ok).toBe(true);
+      if (!refreshed.ok) return;
+
+      const latest = await readJson<{ latest_review_status: { status: string } }>(
+        join(dir, '.rizz', 'brain', 'latest.json'),
+      );
+      expect(latest.latest_review_status.status).toBe('not_run');
+      expect(await fileExists(join(dir, '.rizz', 'reports', 'review.html'))).toBe(false);
+      expect(await fileExists(join(dir, '.rizz', 'research', 'review_claim_evidence.json'))).toBe(
+        false,
+      );
+      expect(await fileExists(join(dir, '.rizz', 'research', 'review_eval.json'))).toBe(false);
+
+      const architectureReasoning = await readJson<Record<string, unknown>>(
+        join(dir, '.rizz', 'research', 'architecture_reasoning.json'),
+      );
+      const architectureText = JSON.stringify(architectureReasoning);
+      expect(architectureText).not.toContain('component:packages--cli');
+      expect(architectureText).not.toContain('impact:component:packages--cli');
+      expect(architectureText).not.toContain('evidence:file-packages--cli');
+
+      const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(report).not.toContain('impact:component:packages--cli');
+      expect(report).not.toContain('.rizz/reports/review.html');
+      expect(report).not.toContain('.rizz/research/review_claim_evidence.json');
+      expect(report).toContain('No review has run for the current brain');
+    });
+  });
+
   it('writes deterministic research artifacts with metrics, coverage, confidence, evidence quality, and incremental update data', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'packages', 'brain', 'src'), { recursive: true });
@@ -954,6 +1045,13 @@ describe('project brain generation', () => {
       expect(missionControlReport).toContain('Inspect First');
       expect(missionControlReport).toContain('Ask readiness');
       expect(missionControlReport).toContain('future broader repo questions');
+      expect(missionControlReport).toContain('What Can Break');
+      expect(missionControlReport).toContain('component:packages--brain');
+      expect(missionControlReport).toContain('Evidence</h4>');
+      expect(missionControlReport).toContain(
+        'href="#evidence-file-packages--brain--src--index-ts"',
+      );
+      expect(missionControlReport).toContain('Unknowns are review prompts, not failures.');
 
       const flowUnderstanding = await readJson<{
         total_flows: number;
@@ -5704,7 +5802,7 @@ describe('project brain generation', () => {
         risky_seams: Array<{ component_id: string; seam: string }>;
         critical_paths: Array<{ component_id: string; blast_radius: string }>;
         tradeoff_matrix: Array<{ component_id: string; coupling_level: string }>;
-        what_breaks: Array<{ component_id: string; impacts: string[] }>;
+        what_breaks: Array<{ component_id: string; impacts: string[]; evidence_ids: string[] }>;
         review_hints: Array<{ reason: string; affected_components?: string[] }>;
       }>(join(dir, '.rizz', 'research', 'architecture_reasoning.json'));
       expect(reasoning.coupling_hotspots).toContainEqual(
@@ -5738,6 +5836,7 @@ describe('project brain generation', () => {
           impacts: expect.arrayContaining([
             expect.stringContaining('Cross-component import consumers or callees need review'),
           ]),
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--cli--src--index.ts']),
         }),
       );
       expect(reasoning.review_hints).toContainEqual(
@@ -5750,8 +5849,21 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(report).toContain('Coupling Hotspots');
       expect(report).toContain('Risky Seams');
+      expect(report).toContain('What Can Break');
+      expect(report).toContain('What Breaks Summary');
       expect(report).toContain('component:packages--cli: medium (6/10)');
       expect(report).toContain('Static imports cross component boundaries');
+      expect(report).toContain('Cross-component import consumers or callees need review');
+      expect(report).toContain('href="#evidence-file-packages--cli--src--index-ts"');
+      const architectureObject = report.slice(
+        report.indexOf('data-object="architecture"'),
+        report.indexOf('data-object="review-readiness"'),
+      );
+      expect(architectureObject).toContain('What Can Break');
+      expect(architectureObject).toContain(
+        'Cross-component import consumers or callees need review',
+      );
+      expect(architectureObject).toContain('href="#evidence-file-packages--cli--src--index-ts"');
     });
   });
 
@@ -6486,6 +6598,42 @@ describe('project brain generation', () => {
       expect(generated).not.toContain(
         'Configuration artifact detected at redacted:sensitive-file:',
       );
+
+      const architectureReasoning = await readJson<Record<string, unknown>>(
+        join(dir, '.rizz', 'research', 'architecture_reasoning.json'),
+      );
+      const architectureReasoningText = JSON.stringify(architectureReasoning);
+      expectNoLeaks('architecture_reasoning.json', architectureReasoningText);
+      expect(architectureReasoningText).toContain('redacted:sensitive-file:');
+
+      const architectureReviewClaimEvidence = await readJson<{
+        architecture_impact_claim_count: number;
+        architecture_impact_claims: Array<{
+          confidence: string;
+          evidence_ids: string[];
+          redacted_evidence_count: number;
+        }>;
+      }>(join(dir, '.rizz', 'research', 'review_claim_evidence.json'));
+      expect(architectureReviewClaimEvidence.architecture_impact_claim_count).toBeGreaterThan(0);
+      expect(JSON.stringify(architectureReviewClaimEvidence)).toContain('redacted:sensitive-file:');
+      expect(JSON.stringify(architectureReviewClaimEvidence)).not.toContain(
+        'client_secret_handler.ts',
+      );
+      const redactedArchitectureClaim =
+        architectureReviewClaimEvidence.architecture_impact_claims.find(
+          (claim) => claim.redacted_evidence_count > 0,
+        );
+      expect(redactedArchitectureClaim).toBeDefined();
+      expect(redactedArchitectureClaim?.confidence).not.toBe('verified');
+      expect(redactedArchitectureClaim?.evidence_ids).toContainEqual(
+        expect.stringMatching(/^evidence:redacted:sensitive-file:[a-f0-9]{12}$/),
+      );
+
+      const missionControlReport = files.get('reports/index.html') ?? '';
+      expect(missionControlReport).toContain('Architecture Impact Claims');
+      expect(missionControlReport).toContain('redacted:sensitive-file:');
+      expect(missionControlReport).toContain('href="#evidence-redacted-sensitive-file-');
+      expectNoLeaks('reports/index.html architecture claims', missionControlReport);
 
       const evidence = await readJson<{
         readonly entities: readonly { readonly id: string; readonly confidence: string }[];

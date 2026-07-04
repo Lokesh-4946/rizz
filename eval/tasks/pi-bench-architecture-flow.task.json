@@ -46,6 +46,8 @@
     ".rizz/research/flow_coverage.json",
     ".rizz/research/evidence_quality.json",
     ".rizz/research/architecture_reasoning.json",
+    ".rizz/research/reasoning_traces.json",
+    ".rizz/reports/index.html",
     ".rizz/research/benchmark_ready.json"
   ],
   "coverage_targets": {
@@ -79,10 +81,35 @@
         "risk_tradeoff_summary",
         "assumption_confidence",
         "evidence_gaps",
+        "what_breaks",
         "impact_map.summary.total_surfaces",
         "impact_map.entries",
         "review_hints",
         "unknowns"
+      ],
+      "required_substrings": [
+        "\"what_breaks\"",
+        "\"impacts\"",
+        "\"evidence_ids\"",
+        "component:packages--api",
+        "changes can affect"
+      ]
+    },
+    {
+      "path": ".rizz/research/reasoning_traces.json",
+      "type": "json",
+      "required_fields": ["traces"],
+      "required_substrings": ["reasoning_type", "architecture", "evidence_ids"]
+    },
+    {
+      "path": ".rizz/reports/index.html",
+      "type": "file",
+      "required_substrings": [
+        "What Can Break",
+        "What Breaks Summary",
+        "component:packages--api",
+        "changes can affect",
+        "href=\"#evidence-file-packages"
       ]
     },
     {
