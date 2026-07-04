@@ -497,6 +497,11 @@ function validateIncrementalAssertions(assertions) {
     'changed_files_exclude',
     'evidence_delta_changed_include',
     'changed_entities_include',
+    'changed_surfaces_include',
+    'new_surfaces_include',
+    'stable_surfaces_include',
+    'stale_surfaces_include',
+    'surface_type_counts_include',
     'forbidden_output_substrings',
   ]) {
     validateOptionalStringArray(assertions, field, errors);
@@ -512,6 +517,11 @@ function validateIncrementalAssertions(assertions) {
     'minimum_reused_understanding_count',
     'minimum_recomputed_understanding_count',
     'minimum_scan_efficiency_score',
+    'minimum_changed_surface_count',
+    'minimum_new_surface_count',
+    'minimum_stable_surface_count',
+    'minimum_stale_surface_count',
+    'minimum_score_delta_count',
   ]) {
     if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
       errors.push(`incremental.assertions.${field} must be a non-negative number`);
@@ -1148,6 +1158,7 @@ function formatIncrementalSummary(incremental) {
     `reused ${incremental.reusedUnderstanding}`,
     `recomputed ${incremental.recomputedUnderstanding}`,
     `efficiency ${incremental.scanEfficiency}`,
+    `surfaces ${incremental.changedSurfaces} changed/${incremental.newSurfaces} new/${incremental.stableSurfaces} stable/${incremental.staleSurfaces} stale`,
     `depth change ${percent(depth.changedFileCoverage)}`,
     `public ${percent(depth.publicChangedFileCoverage)}`,
     `recompute ${percent(depth.recomputedFileCoverage)}`,
@@ -2076,6 +2087,14 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
     .filter((id) => id !== '');
   const evidenceDelta = isRecord(incremental.evidence_delta) ? incremental.evidence_delta : {};
   const evidenceDeltaChanged = Array.isArray(evidenceDelta.changed) ? evidenceDelta.changed : [];
+  const understandingDeltas = isRecord(incremental.understanding_deltas)
+    ? incremental.understanding_deltas
+    : {};
+  const changedSurfaces = incrementalSurfaceLabels(understandingDeltas, 'changed_surfaces');
+  const newSurfaces = incrementalSurfaceLabels(understandingDeltas, 'new_surfaces');
+  const stableSurfaces = incrementalSurfaceLabels(understandingDeltas, 'stable_surfaces');
+  const staleSurfaces = incrementalSurfaceLabels(understandingDeltas, 'stale_surfaces');
+  const surfaceTypeCounts = incrementalSurfaceTypeCountLabels(understandingDeltas);
 
   errors.push(
     ...assertIncludesAll(
@@ -2097,6 +2116,31 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
       changedEntities,
       assertions.changed_entities_include,
       'incremental.changed_entities',
+    ),
+    ...assertSubstringMatches(
+      changedSurfaces,
+      assertions.changed_surfaces_include,
+      'incremental.understanding_deltas.changed_surfaces',
+    ),
+    ...assertSubstringMatches(
+      newSurfaces,
+      assertions.new_surfaces_include,
+      'incremental.understanding_deltas.new_surfaces',
+    ),
+    ...assertSubstringMatches(
+      stableSurfaces,
+      assertions.stable_surfaces_include,
+      'incremental.understanding_deltas.stable_surfaces',
+    ),
+    ...assertSubstringMatches(
+      staleSurfaces,
+      assertions.stale_surfaces_include,
+      'incremental.understanding_deltas.stale_surfaces',
+    ),
+    ...assertSubstringMatches(
+      surfaceTypeCounts,
+      assertions.surface_type_counts_include,
+      'incremental.understanding_deltas.by_surface_type',
     ),
   );
 
@@ -2143,6 +2187,34 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
         `incremental.${artifactField} ${incremental[artifactField]} below ${assertions[assertionField]}`,
       );
     }
+  }
+
+  const minimumDeltaFields = [
+    ['changed_surface_count', 'minimum_changed_surface_count'],
+    ['new_surface_count', 'minimum_new_surface_count'],
+    ['stable_surface_count', 'minimum_stable_surface_count'],
+    ['stale_surface_count', 'minimum_stale_surface_count'],
+  ];
+  for (const [artifactField, assertionField] of minimumDeltaFields) {
+    if (
+      assertions[assertionField] !== undefined &&
+      (typeof understandingDeltas[artifactField] !== 'number' ||
+        understandingDeltas[artifactField] < assertions[assertionField])
+    ) {
+      errors.push(
+        `incremental.understanding_deltas.${artifactField} ${understandingDeltas[artifactField]} below ${assertions[assertionField]}`,
+      );
+    }
+  }
+  if (
+    assertions.minimum_score_delta_count !== undefined &&
+    reviewArray(understandingDeltas, 'score_deltas').length < assertions.minimum_score_delta_count
+  ) {
+    errors.push(
+      `incremental.understanding_deltas.score_deltas ${
+        reviewArray(understandingDeltas, 'score_deltas').length
+      } below ${assertions.minimum_score_delta_count}`,
+    );
   }
 
   const depthMetrics = buildIncrementalDepthMetrics(task, incremental, changedFiles, assertions);
@@ -2234,9 +2306,41 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
         typeof incremental.scan_efficiency_score === 'number'
           ? incremental.scan_efficiency_score
           : 0,
+      changedSurfaces: changedSurfaces.length,
+      newSurfaces: newSurfaces.length,
+      stableSurfaces: stableSurfaces.length,
+      staleSurfaces: staleSurfaces.length,
       depthMetrics,
     },
   };
+}
+
+function incrementalSurfaceLabels(understandingDeltas, key) {
+  return reviewArray(understandingDeltas, key)
+    .filter(isRecord)
+    .map((surface) =>
+      [
+        surface.surface_id,
+        surface.surface_type,
+        surface.status,
+        surface.name,
+        ...reviewArray(surface, 'reasons'),
+      ]
+        .filter((item) => item !== undefined && item !== null)
+        .join(' '),
+    );
+}
+
+function incrementalSurfaceTypeCountLabels(understandingDeltas) {
+  const bySurfaceType = isRecord(understandingDeltas.by_surface_type)
+    ? understandingDeltas.by_surface_type
+    : {};
+  return Object.entries(bySurfaceType).map(([surfaceType, counts]) => {
+    const record = isRecord(counts) ? counts : {};
+    return `${surfaceType}: ${record.changed ?? 0} changed ${record.new ?? 0} new ${
+      record.stable ?? 0
+    } stable ${record.stale ?? 0} stale`;
+  });
 }
 
 function readArtifactText(repoDir, relativePath) {

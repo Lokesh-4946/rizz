@@ -58,6 +58,17 @@
       ],
       "evidence_delta_changed_include": ["evidence:file-src--orders--service.ts"],
       "changed_entities_include": ["file:src--orders--service.ts"],
+      "changed_surfaces_include": [
+        "flow:http--post--orders--src--server.ts flow changed",
+        "POST /orders HTTP route",
+        "semantic fingerprint changed"
+      ],
+      "stable_surfaces_include": [
+        "architecture:relationship-map architecture stable",
+        "component:src component stable",
+        "evidence:file-package.json evidence stable"
+      ],
+      "surface_type_counts_include": ["flow:", "evidence:", "architecture:"],
       "forbidden_output_substrings": [
         "src/client_secret_incremental.ts",
         "client_secret_incremental.ts",
@@ -75,6 +86,10 @@
       "minimum_reused_understanding_count": 1,
       "minimum_recomputed_understanding_count": 2,
       "minimum_scan_efficiency_score": 1,
+      "minimum_changed_surface_count": 2,
+      "minimum_new_surface_count": 0,
+      "minimum_stable_surface_count": 1,
+      "minimum_stale_surface_count": 0,
       "minimum_changed_file_coverage_ratio": 1,
       "minimum_public_changed_file_coverage_ratio": 1,
       "minimum_recomputed_file_coverage_ratio": 1,
@@ -136,7 +151,20 @@
         "service_causality_delta.freshness_score",
         "service_causality_delta.path_deltas",
         "service_causality_delta.summary",
-        "service_causality_delta.calibration_rule"
+        "service_causality_delta.calibration_rule",
+        "understanding_deltas.schema_version",
+        "understanding_deltas.previous_scan_available",
+        "understanding_deltas.changed_surface_count",
+        "understanding_deltas.new_surface_count",
+        "understanding_deltas.stable_surface_count",
+        "understanding_deltas.stale_surface_count",
+        "understanding_deltas.changed_surfaces",
+        "understanding_deltas.stable_surfaces",
+        "understanding_deltas.by_surface_type.flow.changed",
+        "understanding_deltas.by_surface_type.evidence.changed",
+        "understanding_deltas.by_surface_type.architecture.stable",
+        "understanding_deltas.summary",
+        "understanding_deltas.calibration_rule"
       ],
       "expected_json_values": {
         "service_causality_delta.schema_version": 1,
@@ -155,7 +183,10 @@
         "service_causality_delta.path_deltas.0.changed_files": ["src/orders/service.ts"],
         "service_causality_delta.path_deltas.0.changed_evidence_ids": [
           "evidence:file-src--orders--service.ts"
-        ]
+        ],
+        "understanding_deltas.schema_version": 1,
+        "understanding_deltas.previous_scan_available": true,
+        "understanding_deltas.stale_surface_count": 0
       },
       "required_substrings": [
         "src/orders/service.ts",
@@ -168,7 +199,14 @@
         "\"linked evidence changed\"",
         "\"linked source file changed\"",
         "\"target service was recomputed\"",
-        "\"causality fingerprint stayed stable while linked evidence changed\""
+        "\"causality fingerprint stayed stable while linked evidence changed\"",
+        "\"understanding_deltas\"",
+        "\"changed_surfaces\"",
+        "\"stable_surfaces\"",
+        "\"by_surface_type\"",
+        "\"semantic fingerprint changed\"",
+        "\"surface_type\": \"flow\"",
+        "\"surface_type\": \"architecture\""
       ],
       "forbidden_substrings": [
         "src/client_secret_incremental.ts",
@@ -206,11 +244,18 @@
         "latest_incremental_update.service_causality_delta.affected_services",
         "latest_incremental_update.service_causality_delta.changed_evidence_ids",
         "latest_incremental_update.service_causality_delta.freshness_score",
+        "latest_incremental_update.understanding_deltas.changed_surface_count",
+        "latest_incremental_update.understanding_deltas.stable_surface_count",
+        "latest_incremental_update.understanding_deltas.changed_surfaces",
+        "latest_incremental_update.understanding_deltas.stable_surfaces",
+        "latest_incremental_update.understanding_deltas.by_surface_type.flow.changed",
         "project_state.incremental_health.service_causality.drifted_path_count"
       ],
       "expected_json_values": {
         "latest_incremental_update.service_causality_delta.drifted_path_count": 3,
         "latest_incremental_update.service_causality_delta.freshness_score": 0,
+        "latest_incremental_update.understanding_deltas.previous_scan_available": true,
+        "latest_incremental_update.understanding_deltas.stale_surface_count": 0,
         "project_state.incremental_health.service_causality.drifted_path_count": 3
       },
       "required_substrings": [
@@ -219,7 +264,10 @@
         "\"service:src\"",
         "evidence:file-src--orders--service.ts",
         "evidence:redacted:sensitive-file:",
-        "\"freshness_score\": 0"
+        "\"freshness_score\": 0",
+        "\"understanding_deltas\"",
+        "\"changed_surfaces\"",
+        "\"stable_surfaces\""
       ],
       "forbidden_substrings": [
         "src/client_secret_incremental.ts",
@@ -233,7 +281,13 @@
       "type": "file",
       "required_substrings": [
         "Incremental Understanding",
-        "changed understanding",
+        "Understanding Delta",
+        "Changed Understanding Surfaces",
+        "Stable Understanding Surfaces",
+        "Stale Understanding Surfaces",
+        "Surface Type Delta",
+        "recomputed:",
+        "reused:",
         "scan efficiency"
       ],
       "forbidden_substrings": [

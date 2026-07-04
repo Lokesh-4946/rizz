@@ -16831,17 +16831,34 @@ function renderIncrementalUnderstanding(value: unknown): string {
       : staleFacts;
   const changedSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.changed_surfaces) ? understandingDeltas.changed_surfaces : [],
+    'recomputed',
   );
   const newSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.new_surfaces) ? understandingDeltas.new_surfaces : [],
+    'recomputed',
   );
   const stableSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.stable_surfaces) ? understandingDeltas.stable_surfaces : [],
+    'reused',
   );
   const staleSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.stale_surfaces) ? understandingDeltas.stale_surfaces : [],
+    'stale',
   );
+  const bySurfaceType = isRecord(understandingDeltas.by_surface_type)
+    ? understandingDeltas.by_surface_type
+    : {};
+  const summary =
+    typeof understandingDeltas.summary === 'string'
+      ? understandingDeltas.summary
+      : `${changedSurfaceCount} changed, ${newSurfaceCount} new, ${stableSurfaceCount} stable, and ${staleSurfaceCount} stale understanding surface(s).`;
   return `<div class="grid">
+    <article class="card"><h3>Understanding Delta</h3>${renderList([
+      summary,
+      `${changedSurfaceCount + newSurfaceCount} recomputed or new surface(s)`,
+      `${stableSurfaceCount} reused stable surface(s)`,
+      `${staleSurfaceCount} stale surface(s)`,
+    ])}</article>
     <article class="card"><h3>Changed Understanding Surfaces</h3>${renderList([
       `${changedSurfaceCount} changed surface(s)`,
       `${newSurfaceCount} new surface(s)`,
@@ -16864,25 +16881,44 @@ function renderIncrementalUnderstanding(value: unknown): string {
       `${reusedUnderstanding} reused understanding item(s)`,
       `${recomputedUnderstanding} recomputed understanding item(s)`,
     ])}</article>
+    <article class="card"><h3>Surface Type Delta</h3>${renderList(
+      renderUnderstandingSurfaceTypeDeltas(bySurfaceType),
+    )}</article>
     <article class="card"><h3>Relationship Delta</h3>${renderList(relationshipLabels)}</article>
     <article class="card"><h3>Evidence Delta</h3>${renderList(evidenceLabels)}</article>
   </div>`;
 }
 
-function renderUnderstandingSurfaceLabels(surfaces: readonly unknown[]): string[] {
+function renderUnderstandingSurfaceLabels(
+  surfaces: readonly unknown[],
+  posture: 'recomputed' | 'reused' | 'stale',
+): string[] {
   return surfaces
     .filter(isRecord)
     .slice(0, 6)
     .map((surface) => {
       const name = typeof surface.name === 'string' ? surface.name : 'unknown surface';
       const type = typeof surface.surface_type === 'string' ? surface.surface_type : 'unknown';
+      const reasons = asStringArray(surface.reasons).slice(0, 2);
       let delta = '';
       if (typeof surface.score_delta === 'number' && surface.score_delta !== 0) {
         const sign = surface.score_delta > 0 ? '+' : '';
         delta = ` (${sign}${surface.score_delta})`;
       }
-      return `${type}: ${name}${delta}`;
+      const reasonText = reasons.length > 0 ? ` because ${reasons.join('; ')}` : '';
+      return `${posture}: ${type}: ${name}${delta}${reasonText}`;
     });
+}
+
+function renderUnderstandingSurfaceTypeDeltas(bySurfaceType: Record<string, unknown>): string[] {
+  const labels = ['component', 'service', 'flow', 'architecture', 'evidence', 'unknown'];
+  return labels.map((label) => {
+    const counts = isRecord(bySurfaceType[label]) ? bySurfaceType[label] : {};
+    return `${label}: ${recordNumber(counts, 'changed')} changed, ${recordNumber(
+      counts,
+      'new',
+    )} new, ${recordNumber(counts, 'stable')} stable, ${recordNumber(counts, 'stale')} stale`;
+  });
 }
 
 function qualityBandFromScore(score: number): 'weak' | 'usable' | 'strong' {
