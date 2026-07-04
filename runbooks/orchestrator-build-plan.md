@@ -19,14 +19,18 @@ ECC-inspired features are useful when they strengthen that contract without join
 
 ## Current Loop
 
-1. Analyzer subphase progress and cost calibration for capped large-repo scans.
+1. Calibrate first-scan Incremental Understanding so baseline capture is scored separately from
+   repeated-scan reuse.
 2. Scorecard reporting after each UAT run: planned score, actual repo capability score, and
    remaining distance to 100.
-3. Bounded UAT after milestones on complex repos such as `github/docs` and `vercel/next.js`.
+3. Use bounded UAT on complex repos such as `github/docs` and `vercel/next.js` to choose the next
+   weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice makes every large-repo UAT run answer two questions: where did time go, and how
-far is each planned capability from 100?
+The current slice keeps raw first-scan reuse metrics honest while scoring baseline capture fairly.
+After calibration, the 120-file large-repo UAT matrix moved Incremental Understanding metrics from
+45/100 to 88/100, leaving Flow Understanding and Architecture Reasoning as the next weakest actual
+repo-derived areas.
 
 ## Capability Scorecard
 

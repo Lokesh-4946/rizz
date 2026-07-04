@@ -13904,6 +13904,54 @@ function capabilityScoreRecord(params: {
   };
 }
 
+function isIncrementalBaselineCapture(metrics: IncrementalUnderstandingMetrics): boolean {
+  return metrics.previous_brain_fingerprint === null;
+}
+
+function incrementalBaselineCaptureScore(metrics: IncrementalUnderstandingMetrics): number {
+  return boundedScore(
+    (metrics.scanned_files > 0 ? 10 : 0) +
+      (/^[a-f0-9]{64}$/.test(metrics.current_brain_fingerprint) ? 25 : 0) +
+      (metrics.current_entity_count > 0 ? 25 : 0) +
+      (metrics.understanding_deltas.new_surface_count > 0 ? 20 : 0) +
+      (metrics.stale_fact_count === 0 ? 20 : Math.max(0, 20 - metrics.stale_fact_count * 4)),
+  );
+}
+
+function incrementalStatusScore(metrics: IncrementalUnderstandingMetrics): number {
+  if (isIncrementalBaselineCapture(metrics)) {
+    return Math.min(88, incrementalBaselineCaptureScore(metrics));
+  }
+  return boundedScore(
+    Math.max(0, 100 - metrics.stale_fact_count * 12) * 0.45 +
+      metrics.scan_efficiency_score * 0.35 +
+      Math.round(metrics.file_reuse_ratio * 100) * 0.2,
+  );
+}
+
+function incrementalStatusSignals(metrics: IncrementalUnderstandingMetrics): string[] {
+  const signals = [
+    `${metrics.reused_understanding_count} reused understanding item(s)`,
+    `${metrics.scan_efficiency_score}/100 scan efficiency`,
+  ];
+  if (isIncrementalBaselineCapture(metrics)) {
+    signals.unshift(`${incrementalBaselineCaptureScore(metrics)}/100 baseline capture readiness`);
+    signals.push(
+      'First scan establishes the baseline; repeated-scan reuse is measured on later runs.',
+      'First-scan Incremental Understanding score is capped at 88/100 until reuse is proven.',
+    );
+  }
+  return signals;
+}
+
+function incrementalStatusWeakSpots(metrics: IncrementalUnderstandingMetrics): string[] {
+  const weakSpots = [...metrics.stale_fact_candidates.slice(0, 6)];
+  if (isIncrementalBaselineCapture(metrics)) {
+    weakSpots.unshift('Run a second scan to prove stable/reused understanding on this repository.');
+  }
+  return weakSpots;
+}
+
 function buildPieCapabilityScorecard(params: {
   readonly dimensions: Record<string, Record<string, unknown>>;
   readonly evidenceQuality: unknown;
@@ -14035,8 +14083,7 @@ function buildPieCapabilityScorecard(params: {
       label: 'Incremental Understanding metrics',
       score: incrementalScore,
       evidenceBasis: [
-        `${params.incrementalMetrics.scan_efficiency_score}/100 scan efficiency`,
-        `${params.incrementalMetrics.reused_understanding_count} reused understanding item(s)`,
+        ...incrementalStatusSignals(params.incrementalMetrics),
         `${params.incrementalMetrics.stale_fact_count} stale fact candidate(s)`,
       ],
       nextRequiredImprovements: [
@@ -14138,11 +14185,7 @@ function buildUnderstandingScoreArtifact(params: {
         0.25 +
       Math.max(0, 100 - architectureUnknowns.length * 12) * 0.35,
   );
-  const incrementalScore = boundedScore(
-    Math.max(0, 100 - params.incrementalMetrics.stale_fact_count * 12) * 0.45 +
-      params.incrementalMetrics.scan_efficiency_score * 0.35 +
-      Math.round(params.incrementalMetrics.file_reuse_ratio * 100) * 0.2,
-  );
+  const incrementalScore = incrementalStatusScore(params.incrementalMetrics);
   const unknownItems = topUnknowns({
     buckets: params.buckets,
     architectureReasoning: params.architectureReasoning,
@@ -14227,12 +14270,11 @@ function buildUnderstandingScoreArtifact(params: {
     }),
     incremental_status: dimensionRecord({
       score: incrementalScore,
-      summary: `${params.incrementalMetrics.changed_file_count} changed file(s), ${params.incrementalMetrics.changed_entity_count} changed entity/entities.`,
-      signals: [
-        `${params.incrementalMetrics.reused_understanding_count} reused understanding item(s)`,
-        `${params.incrementalMetrics.scan_efficiency_score}/100 scan efficiency`,
-      ],
-      weakSpots: params.incrementalMetrics.stale_fact_candidates.slice(0, 6),
+      summary: isIncrementalBaselineCapture(params.incrementalMetrics)
+        ? `${params.incrementalMetrics.changed_file_count} baseline file(s), ${params.incrementalMetrics.current_entity_count} captured understanding entity/entities.`
+        : `${params.incrementalMetrics.changed_file_count} changed file(s), ${params.incrementalMetrics.changed_entity_count} changed entity/entities.`,
+      signals: incrementalStatusSignals(params.incrementalMetrics),
+      weakSpots: incrementalStatusWeakSpots(params.incrementalMetrics),
     }),
     review_readiness: dimensionRecord({
       score: reviewReadinessScore,
