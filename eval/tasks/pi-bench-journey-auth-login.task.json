@@ -74,15 +74,27 @@
         "affected_journey_count",
         "affected_journey_step_count",
         "user_visible_failure_mode_count",
-        "review_readiness_score"
+        "review_readiness_score",
+        "blast_radius_actionability_score",
+        "blast_radius_actionability_status",
+        "blast_radius_actionability.affected_journey_count",
+        "blast_radius_actionability.affected_journey_step_count",
+        "blast_radius_actionability.user_visible_failure_mode_count",
+        "blast_radius_actionability.signals"
       ],
-      "required_substrings": ["\"affected_journey_count\"", "\"user_visible_failure_mode_count\""]
+      "required_substrings": [
+        "\"affected_journey_count\"",
+        "\"user_visible_failure_mode_count\"",
+        "\"blast_radius_actionability\"",
+        "\"status\""
+      ]
     },
     {
       "path": ".rizz/reports/review.html",
       "type": "file",
       "required_substrings": [
         "User login journey",
+        "Blast Radius Actionability",
         "Validation/auth",
         "User-Visible Risk",
         "src/auth/login-service.test.ts"

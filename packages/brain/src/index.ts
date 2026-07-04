@@ -1058,6 +1058,7 @@ interface ReviewClaimEvidenceArtifactData {
   };
   readonly claims_by_surface: Record<ReviewClaimEvidenceSurface, number>;
   readonly claims_by_confidence: Record<Confidence, number>;
+  readonly blast_radius_actionability: ReviewBlastRadiusActionabilityData;
   readonly redacted_evidence_count: number;
   readonly secret_safety: {
     readonly redacted_reference_count: number;
@@ -1066,6 +1067,24 @@ interface ReviewClaimEvidenceArtifactData {
   };
   readonly claims: readonly ReviewClaimEvidenceData[];
   readonly architecture_impact_claims: readonly ReviewArchitectureImpactClaimEvidenceData[];
+}
+
+interface ReviewBlastRadiusActionabilityData {
+  readonly score: number;
+  readonly status: 'strong' | 'partial' | 'weak';
+  readonly changed_file_count: number;
+  readonly affected_journey_count: number;
+  readonly affected_journey_step_count: number;
+  readonly user_visible_failure_mode_count: number;
+  readonly evidence_id_count: number;
+  readonly verification_plan_count: number;
+  readonly required_verification_count: number;
+  readonly architecture_what_breaks_note_count: number;
+  readonly service_causality_path_count: number;
+  readonly affected_test_count: number;
+  readonly missing_evidence_count: number;
+  readonly signals: readonly string[];
+  readonly gaps: readonly string[];
 }
 
 interface ReviewEvalArtifactData {
@@ -1120,6 +1139,11 @@ interface ReviewEvalArtifactData {
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
   readonly review_readiness_score: number;
+  readonly blast_radius_actionability_score: number;
+  readonly blast_radius_actionability_status: ReviewBlastRadiusActionabilityData['status'];
+  readonly actionable_signal_count: number;
+  readonly actionability_gap_count: number;
+  readonly blast_radius_actionability: ReviewBlastRadiusActionabilityData;
   readonly secret_safety: {
     readonly redaction_applied: boolean;
     readonly redacted_reference_count: number;
@@ -21999,6 +22023,121 @@ function scoreReviewReadiness(
   );
 }
 
+function reviewBlastRadiusActionabilityStatus(
+  score: number,
+): ReviewBlastRadiusActionabilityData['status'] {
+  if (score >= 80) return 'strong';
+  if (score >= 55) return 'partial';
+  return 'weak';
+}
+
+function buildReviewBlastRadiusActionability(
+  review: ReviewSummaryData,
+): ReviewBlastRadiusActionabilityData {
+  const summary = review.review_evidence_summary;
+  const affectedJourneyCount = summary.affected_journeys.length;
+  const affectedJourneyStepCount = summary.affected_journey_steps;
+  const userVisibleFailureModeCount = summary.user_visible_failure_modes.length;
+  const evidenceIdCount = summary.evidence_ids.length;
+  const verificationPlanCount = review.verification_plan.length;
+  const requiredVerificationCount = review.verification_plan.filter(
+    (item) => item.priority === 'required',
+  ).length;
+  const architectureWhatBreaksNoteCount = summary.architecture_what_breaks.length;
+  const serviceCausalityPathCount = summary.service_causality_paths;
+  const affectedTestCount = summary.affected_tests.length;
+  const missingEvidenceCount =
+    summary.journey_missing_evidence.length +
+    summary.architecture_evidence_gap_ids.length +
+    summary.architecture_confidence_gaps.length;
+  const signalEntries = [
+    affectedJourneyCount > 0
+      ? `${affectedJourneyCount} affected journey name(s) connect the diff to user behavior.`
+      : undefined,
+    affectedJourneyStepCount > 0
+      ? `${affectedJourneyStepCount} affected journey step(s) identify where behavior can break.`
+      : undefined,
+    userVisibleFailureModeCount > 0
+      ? `${userVisibleFailureModeCount} user-visible failure mode(s) were recorded.`
+      : undefined,
+    architectureWhatBreaksNoteCount > 0
+      ? `${architectureWhatBreaksNoteCount} architecture what-breaks note(s) explain causal impact.`
+      : undefined,
+    serviceCausalityPathCount > 0
+      ? `${serviceCausalityPathCount} service causality path(s) link files to runtime behavior.`
+      : undefined,
+    affectedTestCount > 0
+      ? `${affectedTestCount} affected test artifact(s) can verify the blast radius.`
+      : undefined,
+    evidenceIdCount > 0
+      ? `${evidenceIdCount} evidence record(s) support review claims.`
+      : undefined,
+    verificationPlanCount > 0
+      ? `${verificationPlanCount} targeted verification step(s) were generated.`
+      : undefined,
+  ];
+  const gapEntries = [
+    affectedJourneyCount === 0
+      ? 'No affected product/business journey was named for this diff.'
+      : undefined,
+    affectedJourneyStepCount === 0
+      ? 'No journey step was linked to the changed surface.'
+      : undefined,
+    userVisibleFailureModeCount === 0
+      ? 'No user-visible failure mode was available for the affected surface.'
+      : undefined,
+    affectedTestCount === 0
+      ? 'No affected test artifact was linked to the changed surface.'
+      : undefined,
+    architectureWhatBreaksNoteCount === 0
+      ? 'No architecture what-breaks note was linked to the changed surface.'
+      : undefined,
+    evidenceIdCount === 0 ? 'No evidence IDs were attached to review claims.' : undefined,
+    ...summary.journey_missing_evidence.map((item) => `Journey evidence gap: ${safeText(item)}`),
+    ...summary.architecture_evidence_gap_ids.map(
+      (item) => `Architecture evidence gap: ${safeText(item)}`,
+    ),
+    ...summary.architecture_confidence_gaps.map(
+      (item) => `Architecture confidence gap: ${safeText(item)}`,
+    ),
+  ];
+  const signals = unique(signalEntries.filter((item): item is string => item !== undefined)).map(
+    safeText,
+  );
+  const gaps = unique(gapEntries.filter((item): item is string => item !== undefined)).map(
+    safeText,
+  );
+  const score = boundedScore(
+    (affectedJourneyCount > 0 ? 14 : 0) +
+      (affectedJourneyStepCount > 0 ? 14 : 0) +
+      (userVisibleFailureModeCount > 0 ? 16 : 0) +
+      (architectureWhatBreaksNoteCount > 0 ? 12 : 0) +
+      (serviceCausalityPathCount > 0 ? 10 : 0) +
+      (affectedTestCount > 0 ? 10 : 0) +
+      (evidenceIdCount > 0 ? 12 : 0) +
+      (verificationPlanCount > 0 ? 8 : 0) +
+      (requiredVerificationCount > 0 ? 4 : 0) -
+      Math.min(18, missingEvidenceCount * 3),
+  );
+  return {
+    score,
+    status: reviewBlastRadiusActionabilityStatus(score),
+    changed_file_count: review.changed_files.length,
+    affected_journey_count: affectedJourneyCount,
+    affected_journey_step_count: affectedJourneyStepCount,
+    user_visible_failure_mode_count: userVisibleFailureModeCount,
+    evidence_id_count: evidenceIdCount,
+    verification_plan_count: verificationPlanCount,
+    required_verification_count: requiredVerificationCount,
+    architecture_what_breaks_note_count: architectureWhatBreaksNoteCount,
+    service_causality_path_count: serviceCausalityPathCount,
+    affected_test_count: affectedTestCount,
+    missing_evidence_count: missingEvidenceCount,
+    signals: signals.slice(0, 10),
+    gaps: gaps.slice(0, 10),
+  };
+}
+
 function emptyReviewClaimSurfaceCounts(): Record<ReviewClaimEvidenceSurface, number> {
   return {
     blast_radius_reason: 0,
@@ -22089,6 +22228,7 @@ function buildArchitectureImpactClaimEvidence(
 function buildReviewClaimEvidenceArtifact(
   review: ReviewSummaryData,
 ): ReviewClaimEvidenceArtifactData {
+  const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
   const claims: ReviewClaimEvidenceData[] = [];
   const pushClaim = (
     surface: ReviewClaimEvidenceSurface,
@@ -22239,6 +22379,7 @@ function buildReviewClaimEvidenceArtifact(
     },
     claims_by_surface: claimsBySurface,
     claims_by_confidence: claimsByConfidence,
+    blast_radius_actionability: blastRadiusActionability,
     redacted_evidence_count: redactedReferenceCountValue,
     secret_safety: {
       redacted_reference_count: redactedReferenceCountValue,
@@ -22257,6 +22398,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
   const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeReview);
   const serviceCausality = review.affected_flows.flatMap((flow) => flow.service_causality);
   const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
+  const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
   return {
     schema_version: 1,
     generated_at: review.generated_at,
@@ -22332,6 +22474,11 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     overall_risk: review.overall_risk,
     surgicality_score: review.surgicality_score,
     review_readiness_score: scoreReviewReadiness(review, unsafeSensitiveReferenceCount),
+    blast_radius_actionability_score: blastRadiusActionability.score,
+    blast_radius_actionability_status: blastRadiusActionability.status,
+    actionable_signal_count: blastRadiusActionability.signals.length,
+    actionability_gap_count: blastRadiusActionability.gaps.length,
+    blast_radius_actionability: blastRadiusActionability,
     secret_safety: {
       redaction_applied: redactedCount > 0,
       redacted_reference_count: redactedCount,
@@ -23989,6 +24136,23 @@ function renderDependencyRuntimeImpact(impact: ReviewDependencyRuntimeImpactData
   ${renderList(impact.reasons)}`;
 }
 
+function renderBlastRadiusActionability(actionability: ReviewBlastRadiusActionabilityData): string {
+  return `<div class="grid">
+    <article class="card"><h2>Actionability</h2><p>${actionability.score}/100 · ${htmlEscape(actionability.status)}</p></article>
+    <article class="card"><h2>Journey Steps</h2><p>${actionability.affected_journey_step_count}</p></article>
+    <article class="card"><h2>User-Visible Modes</h2><p>${actionability.user_visible_failure_mode_count}</p></article>
+    <article class="card"><h2>Evidence Records</h2><p>${actionability.evidence_id_count}</p></article>
+  </div>
+  <h3>Actionable Signals</h3>
+  ${renderList(actionability.signals)}
+  <h3>Evidence Gaps</h3>
+  ${renderList(
+    actionability.gaps.length === 0
+      ? ['No actionability gaps were detected for this review.']
+      : actionability.gaps,
+  )}`;
+}
+
 function renderArchitectureImpactClaimEvidenceRows(
   claims: readonly ReviewArchitectureImpactClaimEvidenceData[],
 ): string {
@@ -24094,6 +24258,7 @@ function renderVerificationPlanRows(plan: readonly ReviewVerificationPlanItemDat
 
 function renderReviewReport(review: ReviewSummaryData): string {
   const architectureImpactClaims = buildArchitectureImpactClaimEvidence(review);
+  const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
   const findingRows = review.findings
     .map(
       (finding) => `<tr>
@@ -24150,6 +24315,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
         <article class="card"><h2>Evidence Records</h2><p>${review.review_evidence_summary.evidence_ids.length}</p></article>
       </div>
       ${renderList(review.blast_radius_reasons)}
+    </section>
+    <section>
+      <h2>Blast Radius Actionability</h2>
+      ${renderBlastRadiusActionability(blastRadiusActionability)}
     </section>
     <section>
       <h2>Architecture Impact Evidence</h2>

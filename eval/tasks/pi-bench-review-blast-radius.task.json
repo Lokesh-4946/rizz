@@ -176,6 +176,19 @@
         "overall_risk",
         "surgicality_score",
         "review_readiness_score",
+        "blast_radius_actionability_score",
+        "blast_radius_actionability_status",
+        "actionable_signal_count",
+        "actionability_gap_count",
+        "blast_radius_actionability.score",
+        "blast_radius_actionability.status",
+        "blast_radius_actionability.affected_journey_count",
+        "blast_radius_actionability.affected_journey_step_count",
+        "blast_radius_actionability.user_visible_failure_mode_count",
+        "blast_radius_actionability.architecture_what_breaks_note_count",
+        "blast_radius_actionability.affected_test_count",
+        "blast_radius_actionability.signals",
+        "blast_radius_actionability.gaps",
         "secret_safety.output_secret_safe",
         "secret_safety.unsafe_sensitive_reference_count",
         "redaction.redacted_reference_count"
@@ -185,6 +198,7 @@
         "\"provider_calls_required\": false",
         "\"network_required\": false",
         "\"blast_radius\": \"moderate\"",
+        "\"blast_radius_actionability\"",
         "\"architecture_impact_route_surface_count\": 0",
         "\"output_secret_safe\": true"
       ],
@@ -217,6 +231,9 @@
         "claims_by_surface.affected_flow",
         "claims_by_surface.verification_plan",
         "claims_by_confidence.inferred",
+        "blast_radius_actionability.score",
+        "blast_radius_actionability.status",
+        "blast_radius_actionability.signals",
         "secret_safety.output_secret_safe",
         "secret_safety.unsafe_sensitive_reference_count",
         "claims"
@@ -229,6 +246,7 @@
         "\"architecture_impact_claims\"",
         "\"impact_id\": \"impact:component:packages--shared\"",
         "\"architecture_impact_claim_count\"",
+        "\"blast_radius_actionability\"",
         "\"output_secret_safe\": true",
         "redacted:sensitive-file:"
       ],
@@ -265,6 +283,8 @@
       "type": "file",
       "required_substrings": [
         "Architecture Impact Evidence",
+        "Blast Radius Actionability",
+        "Actionable Signals",
         "Based on the pre-change Project Intelligence Layer plus the current git diff",
         "impact:component:packages--shared",
         "review_claim_evidence.json"
