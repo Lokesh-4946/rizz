@@ -75,14 +75,17 @@ Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/res
 - `confidence.json` summarizes entity and relationship confidence counts plus component-level
   confidence and evidence IDs.
 - `evidence_quality.json` summarizes referenced evidence IDs, missing evidence references,
-  evidence-backed entities/relationships, and component field-evidence counts.
+  evidence-backed entities/relationships, component field-evidence counts, and the shared
+  confidence inspection queue for weak evidence, architecture debt, and stale incremental surfaces.
 - `incremental_update.json` summarizes changed, current, new, and stale files for the latest scan.
 - `flow_understanding.json`, `flow_coverage.json`, and `flow_confidence.json` summarize flow count,
   kind distribution, journey names, normalized journey steps, test/config coverage, low-confidence
   flows, affected flows, and confidence calibration.
 - `architecture_reasoning.json` summarizes boundary candidates, cross-component flows, risk
   concentrations, review hints, and unknowns from deterministic component, flow, relationship,
-  evidence, and confidence data.
+  evidence, and confidence data. Its `confidence_debt.inspection_queue` mirrors architecture items
+  from the shared queue so agents can inspect low-confidence assumptions without searching every
+  artifact.
 
 These artifacts are local scan output. They do not require a provider key, model call, cloud
 account, or external service.

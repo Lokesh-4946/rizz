@@ -81,6 +81,7 @@
         "risk_tradeoff_summary",
         "assumption_confidence",
         "evidence_gaps",
+        "confidence_debt.inspection_queue",
         "what_breaks",
         "impact_map.summary.total_surfaces",
         "impact_map.entries",

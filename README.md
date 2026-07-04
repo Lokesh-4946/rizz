@@ -22,6 +22,7 @@ The current `0.2.1` product surface is:
 - `.rizz/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, state/data dependencies, evidence, tests, configs, and risks
 - `.rizz/brain/graph.json` relationships with evidence and confidence
 - `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
+- confidence inspection queues that point agents to weak evidence, architecture confidence debt, and stale understanding before broad reuse
 - `.rizz/reports/index.html` Mission Control local architecture intelligence portal
 - `.rizz/reports/review.html` local risk/blast-radius review report with journey, state/data impact, and targeted verification planning
 - `rizz setup` dependency doctor and provider route picker

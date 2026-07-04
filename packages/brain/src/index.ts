@@ -7221,6 +7221,38 @@ interface EvidenceConfidenceDelta {
   readonly evidence_ids: readonly string[];
 }
 
+type ConfidenceInspectionSource = 'evidence' | 'architecture' | 'incremental';
+
+interface ConfidenceInspectionQueueItem {
+  readonly priority: number;
+  readonly source: ConfidenceInspectionSource;
+  readonly severity: EvidenceGap['severity'];
+  readonly target_type: string;
+  readonly target_id: string;
+  readonly reason: string;
+  readonly current_confidence: Confidence;
+  readonly confidence_delta: number;
+  readonly inspect_hint: string;
+  readonly verification_actions: readonly string[];
+  readonly read_first_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly evidence_gap_ids: readonly string[];
+  readonly artifacts: readonly string[];
+}
+
+type ConfidenceInspectionQueueCandidate = Omit<ConfidenceInspectionQueueItem, 'priority'>;
+
+interface ConfidenceInspectionQueue {
+  readonly schema_version: number;
+  readonly item_count: number;
+  readonly candidate_count: number;
+  readonly high_priority_count: number;
+  readonly sources: Record<ConfidenceInspectionSource, number>;
+  readonly items: readonly ConfidenceInspectionQueueItem[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
 interface ServiceCausalityQualitySummary {
   readonly total_claims: number;
   readonly evidence_backed_claims: number;
@@ -8137,6 +8169,286 @@ function evidenceConfidenceDeltasForGaps(params: {
       ).slice(0, 8),
     };
   });
+}
+
+function parseInspectionSeverity(value: unknown): EvidenceGap['severity'] {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
+  return 'medium';
+}
+
+function confidenceInspectionSeverityRank(severity: EvidenceGap['severity']): number {
+  if (severity === 'high') return 0;
+  if (severity === 'medium') return 1;
+  return 2;
+}
+
+function confidenceInspectionSourceRank(source: ConfidenceInspectionSource): number {
+  if (source === 'evidence') return 0;
+  if (source === 'architecture') return 1;
+  return 2;
+}
+
+function confidenceInspectionSources(
+  items: readonly ConfidenceInspectionQueueItem[],
+): Record<ConfidenceInspectionSource, number> {
+  return {
+    evidence: items.filter((item) => item.source === 'evidence').length,
+    architecture: items.filter((item) => item.source === 'architecture').length,
+    incremental: items.filter((item) => item.source === 'incremental').length,
+  };
+}
+
+function evidenceQueueItems(value: Record<string, unknown>): ConfidenceInspectionQueueCandidate[] {
+  const actionability = nestedRecord(value, 'actionability');
+  const readFirstByTarget = new Map(
+    recordArray(actionability, 'suggested_read_first')
+      .filter(isRecord)
+      .map((item) => [recordString(item, 'target_id', ''), item] as const)
+      .filter(([target]) => target !== ''),
+  );
+  const deltasByTarget = new Map(
+    recordArray(actionability, 'evidence_confidence_deltas')
+      .filter(isRecord)
+      .map((item) => [recordString(item, 'target_id', ''), item] as const)
+      .filter(([target]) => target !== ''),
+  );
+  return recordArray(actionability, 'top_evidence_gaps')
+    .filter(isRecord)
+    .slice(0, 10)
+    .map((gap) => {
+      const targetId = recordString(gap, 'id', 'unknown evidence gap');
+      const field = recordString(gap, 'field', '');
+      const readFirst = readFirstByTarget.get(targetId);
+      const delta = deltasByTarget.get(targetId);
+      const reason = recordString(gap, 'reason', 'Evidence gap needs inspection.');
+      return {
+        source: 'evidence' as const,
+        severity: parseInspectionSeverity(gap.severity),
+        target_type: recordString(gap, 'kind', 'evidence_gap'),
+        target_id: field === '' ? targetId : `${targetId}.${field}`,
+        reason,
+        current_confidence: parseConfidence(gap.confidence),
+        confidence_delta: recordNumber(delta, 'confidence_delta'),
+        inspect_hint: recordString(
+          readFirst,
+          'inspect_hint',
+          'Inspect the evidence gap before relying on this claim.',
+        ),
+        verification_actions: asStringArray(delta?.verification_actions).slice(0, 4),
+        read_first_files: asStringArray(readFirst?.read_first_files).slice(0, 6),
+        evidence_ids: unique([
+          ...asStringArray(readFirst?.evidence_ids),
+          ...asStringArray(delta?.evidence_ids),
+        ]).slice(0, 8),
+        evidence_gap_ids: [],
+        artifacts: ['.rizz/research/evidence_quality.json', '.rizz/brain/latest.json'],
+      };
+    });
+}
+
+function architectureQueueItems(
+  value: Record<string, unknown>,
+): ConfidenceInspectionQueueCandidate[] {
+  const confidenceDebt = nestedRecord(value, 'confidence_debt');
+  const architectureEvidenceGaps = recordArray(value, 'evidence_gaps').filter(isRecord);
+  const evidenceIdsByGapId = new Map(
+    architectureEvidenceGaps
+      .map((gap) => [recordString(gap, 'gap_id', ''), asStringArray(gap.evidence_ids)] as const)
+      .filter(([gapId]) => gapId !== ''),
+  );
+  const evidenceIdsForGapIds = (gapIds: readonly string[]): string[] =>
+    unique(gapIds.flatMap((gapId) => evidenceIdsByGapId.get(gapId) ?? [])).slice(0, 8);
+  const unsupportedAssumptions = recordArray(confidenceDebt, 'unsupported_assumptions')
+    .filter(isRecord)
+    .slice(0, 6)
+    .map((assumption): ConfidenceInspectionQueueCandidate => {
+      const evidenceGapIds = asStringArray(assumption.evidence_gap_ids).slice(0, 8);
+      return {
+        source: 'architecture' as const,
+        severity: evidenceGapIds.length > 0 ? 'high' : 'medium',
+        target_type: 'architecture_assumption',
+        target_id: recordString(assumption, 'assumption_id', 'unknown assumption'),
+        reason: recordString(
+          assumption,
+          'reason',
+          'Architecture assumption lacks enough direct evidence.',
+        ),
+        current_confidence: parseConfidence(assumption.confidence),
+        confidence_delta: Math.max(
+          0,
+          Math.round((1 - recordNumber(assumption, 'confidence_score')) * 100),
+        ),
+        inspect_hint:
+          'Inspect the linked evidence gaps and source files before upgrading this assumption.',
+        verification_actions: [
+          'Open .rizz/research/architecture_reasoning.json and inspect the evidence_gap_ids.',
+          'Use rizz explain on the component or flow named by the assumption.',
+        ],
+        read_first_files: [],
+        evidence_ids: evidenceIdsForGapIds(evidenceGapIds),
+        evidence_gap_ids: evidenceGapIds,
+        artifacts: ['.rizz/research/architecture_reasoning.json', '.rizz/brain/latest.json'],
+      };
+    });
+  const lowConfidenceAreas = recordArray(confidenceDebt, 'low_confidence_areas')
+    .filter(isRecord)
+    .slice(0, 8)
+    .map((area): ConfidenceInspectionQueueCandidate => {
+      const evidenceGapIds = asStringArray(area.evidence_gap_ids).slice(0, 8);
+      return {
+        source: 'architecture' as const,
+        severity: recordNumber(area, 'confidence_score') < 0.5 ? 'high' : 'medium',
+        target_type: recordString(area, 'area_type', 'architecture_area'),
+        target_id: recordString(area, 'entity_id', recordString(area, 'area_id', 'unknown area')),
+        reason: recordString(area, 'reason', 'Architecture confidence area needs inspection.'),
+        current_confidence: parseConfidence(area.confidence),
+        confidence_delta: Math.max(
+          0,
+          Math.round((1 - recordNumber(area, 'confidence_score')) * 100),
+        ),
+        inspect_hint:
+          'Inspect the architecture confidence debt section and confirm direct source evidence.',
+        verification_actions: [
+          'Open the Mission Control Architecture object.',
+          'Confirm whether this area is static inference or direct runtime evidence.',
+        ],
+        read_first_files: [],
+        evidence_ids: evidenceIdsForGapIds(evidenceGapIds),
+        evidence_gap_ids: evidenceGapIds,
+        artifacts: ['.rizz/research/architecture_reasoning.json', '.rizz/reports/index.html'],
+      };
+    });
+  const evidenceGaps = architectureEvidenceGaps.slice(0, 6).map(
+    (gap): ConfidenceInspectionQueueCandidate => ({
+      source: 'architecture' as const,
+      severity: parseInspectionSeverity(gap.severity),
+      target_type: 'architecture_evidence_gap',
+      target_id: recordString(gap, 'entity_id', recordString(gap, 'gap_id', 'unknown gap')),
+      reason: recordString(gap, 'gap', 'Architecture evidence gap needs inspection.'),
+      current_confidence: 'uncertain' as const,
+      confidence_delta: parseInspectionSeverity(gap.severity) === 'high' ? 65 : 35,
+      inspect_hint:
+        'Inspect the architecture evidence gap before relying on the inferred boundary or flow.',
+      verification_actions: [
+        'Open .rizz/research/architecture_reasoning.json.',
+        'Check whether the source file, flow, or relationship has direct evidence IDs.',
+      ],
+      read_first_files: [],
+      evidence_ids: asStringArray(gap.evidence_ids).slice(0, 8),
+      evidence_gap_ids: [recordString(gap, 'gap_id', 'unknown gap')],
+      artifacts: ['.rizz/research/architecture_reasoning.json'],
+    }),
+  );
+  return [...unsupportedAssumptions, ...lowConfidenceAreas, ...evidenceGaps];
+}
+
+function incrementalQueueItems(
+  metrics: IncrementalUnderstandingMetrics,
+): ConfidenceInspectionQueueCandidate[] {
+  const staleSurfaces = metrics.understanding_deltas.stale_surfaces.slice(0, 8).map((surface) => ({
+    source: 'incremental' as const,
+    severity: 'medium' as const,
+    target_type: `${surface.surface_type}_surface`,
+    target_id: safeText(surface.surface_id),
+    reason: 'Understanding surface is stale and should be refreshed before reuse.',
+    current_confidence: 'uncertain' as const,
+    confidence_delta: 35,
+    inspect_hint: 'Run rizz brain again or inspect the stale surface source before relying on it.',
+    verification_actions: [
+      'Run rizz brain after source changes.',
+      'Inspect the stale surface in incremental_update.json.',
+    ],
+    read_first_files: [],
+    evidence_ids: surface.evidence_ids.map(safeText).slice(0, 8),
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/incremental_update.json', '.rizz/brain/latest.json'],
+  }));
+  const staleFacts = metrics.stale_fact_candidates.slice(0, 8).map((candidate) => ({
+    source: 'incremental' as const,
+    severity: 'low' as const,
+    target_type: 'stale_fact_candidate',
+    target_id: safeText(candidate),
+    reason: 'Previously known fact may no longer describe the current repo state.',
+    current_confidence: 'uncertain' as const,
+    confidence_delta: 20,
+    inspect_hint: 'Inspect the stale fact candidate before using it as current context.',
+    verification_actions: ['Run rizz brain and confirm the entity latest_status before reuse.'],
+    read_first_files: [],
+    evidence_ids: [],
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/incremental_update.json'],
+  }));
+  return [...staleSurfaces, ...staleFacts];
+}
+
+function buildConfidenceInspectionQueue(params: {
+  readonly evidenceQuality: Record<string, unknown>;
+  readonly architectureReasoning: Record<string, unknown>;
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+}): ConfidenceInspectionQueue {
+  const candidates = [
+    ...evidenceQueueItems(params.evidenceQuality),
+    ...architectureQueueItems(params.architectureReasoning),
+    ...incrementalQueueItems(params.incrementalMetrics),
+  ];
+  const items = candidates
+    .sort(
+      (a, b) =>
+        confidenceInspectionSeverityRank(a.severity) -
+          confidenceInspectionSeverityRank(b.severity) ||
+        confidenceInspectionSourceRank(a.source) - confidenceInspectionSourceRank(b.source) ||
+        b.confidence_delta - a.confidence_delta ||
+        a.target_id.localeCompare(b.target_id),
+    )
+    .slice(0, 12)
+    .map((item, index) => ({ priority: index + 1, ...item }));
+  const highPriorityCount = items.filter((item) => item.severity === 'high').length;
+  return {
+    schema_version: 1,
+    item_count: items.length,
+    candidate_count: candidates.length,
+    high_priority_count: highPriorityCount,
+    sources: confidenceInspectionSources(items),
+    items,
+    summary:
+      items.length === 0
+        ? 'No confidence inspection items were detected.'
+        : `${items.length} confidence inspection item(s), including ${highPriorityCount} high-priority item(s), should be checked before broad reuse.`,
+    calibration_rule:
+      'Confidence inspection combines evidence gaps, architecture confidence debt, and stale incremental surfaces into one deterministic inspect-first queue.',
+  };
+}
+
+function attachConfidenceInspectionQueue(params: {
+  readonly evidenceQuality: Record<string, unknown>;
+  readonly architectureReasoning: Record<string, unknown>;
+  readonly queue: ConfidenceInspectionQueue;
+}): {
+  readonly evidenceQuality: Record<string, unknown>;
+  readonly architectureReasoning: Record<string, unknown>;
+} {
+  const actionability = nestedRecord(params.evidenceQuality, 'actionability');
+  const confidenceDebt = nestedRecord(params.architectureReasoning, 'confidence_debt');
+  const architectureItems = params.queue.items
+    .filter((item) => item.source === 'architecture')
+    .map((item, index) => ({ ...item, priority: index + 1 }));
+  return {
+    evidenceQuality: {
+      ...params.evidenceQuality,
+      confidence_inspection_queue: params.queue,
+      actionability: {
+        ...actionability,
+        confidence_inspection_queue: params.queue,
+      },
+    },
+    architectureReasoning: {
+      ...params.architectureReasoning,
+      confidence_debt: {
+        ...confidenceDebt,
+        inspection_queue: architectureItems.slice(0, 8),
+      },
+    },
+  };
 }
 
 function redactionHiddenEvidenceSummary(params: {
@@ -14395,7 +14707,7 @@ function buildResearchArtifacts(params: {
     now: params.now,
     buckets: params.buckets,
   });
-  const evidenceQuality = buildEvidenceQualityArtifact({
+  const evidenceQualityBase = buildEvidenceQualityArtifact({
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
@@ -14407,12 +14719,22 @@ function buildResearchArtifacts(params: {
     relationships: params.relationships,
     changedFiles,
   });
-  const architectureReasoning = buildArchitectureReasoningArtifact({
+  const architectureReasoningBase = buildArchitectureReasoningArtifact({
     projectName: params.projectName,
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
     changedFiles,
+  });
+  const confidenceInspectionQueue = buildConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    incrementalMetrics: params.incrementalMetrics,
+  });
+  const { evidenceQuality, architectureReasoning } = attachConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    queue: confidenceInspectionQueue,
   });
   const benchmarkReady = buildBenchmarkReadyArtifact({
     projectName: params.projectName,
@@ -15065,17 +15387,27 @@ function buildLatest(params: {
     confidence: risk.confidence,
     evidence_ids: risk.evidence_ids,
   }));
-  const architectureReasoning = buildArchitectureReasoningArtifact({
+  const architectureReasoningBase = buildArchitectureReasoningArtifact({
     projectName: params.projectName,
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
     changedFiles: params.changedFiles,
   });
-  const evidenceQuality = buildEvidenceQualityArtifact({
+  const evidenceQualityBase = buildEvidenceQualityArtifact({
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
+  });
+  const confidenceInspectionQueue = buildConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    incrementalMetrics: params.incrementalMetrics,
+  });
+  const { evidenceQuality, architectureReasoning } = attachConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    queue: confidenceInspectionQueue,
   });
   const componentIntelligence = buildComponentIntelligenceArtifact({
     now: params.now,
@@ -15147,6 +15479,7 @@ function buildLatest(params: {
     latest_architecture_reasoning: architectureReasoning,
     latest_service_intelligence: serviceIntelligence,
     latest_evidence_quality: evidenceQuality,
+    latest_confidence_inspection_queue: confidenceInspectionQueue,
     latest_understanding_score: understandingScore,
     latest_pie_acceptance: {
       path: '.rizz/research/pie_acceptance.json',
@@ -16273,6 +16606,16 @@ function renderArchitectureConfidenceDebt(value: unknown): string {
       return `${areaId}: ${reason}`;
     });
   const blockingUnknowns = asStringArray(value.blocking_unknowns).slice(0, 4);
+  const inspectionQueue = recordArray(value, 'inspection_queue')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((item) => {
+      const priority = recordNumber(item, 'priority');
+      const severity = recordString(item, 'severity', 'medium');
+      const target = recordString(item, 'target_id', 'unknown target');
+      const hint = recordString(item, 'inspect_hint', 'Inspect architecture evidence.');
+      return `P${priority} ${severity}: ${target} - ${hint}`;
+    });
   return renderList([
     `${debtLevel} confidence debt: ${summary}`,
     `${unsupportedCount} unsupported assumption(s)`,
@@ -16282,6 +16625,7 @@ function renderArchitectureConfidenceDebt(value: unknown): string {
     ...unsupportedAssumptions,
     ...lowConfidenceAreas,
     ...blockingUnknowns,
+    ...inspectionQueue,
   ]);
 }
 
@@ -16715,6 +17059,38 @@ function renderEvidenceActionability(value: unknown): string {
     ])}</article>`;
 }
 
+function renderConfidenceInspectionQueue(value: unknown): string {
+  if (!isRecord(value)) return '';
+  const queue = isRecord(value.confidence_inspection_queue)
+    ? value.confidence_inspection_queue
+    : nestedRecord(value, 'confidence_inspection_queue');
+  const items = recordArray(queue, 'items').filter(isRecord).slice(0, 6);
+  if (items.length === 0) return '';
+  const summary = recordString(queue, 'summary', 'Confidence inspection queue is available.');
+  const highPriority = recordNumber(queue, 'high_priority_count');
+  const sources = isRecord(queue.sources) ? queue.sources : {};
+  const queueItems = items.map((item) => {
+    const priority = recordNumber(item, 'priority');
+    const source = recordString(item, 'source', 'unknown');
+    const severity = recordString(item, 'severity', 'medium');
+    const target = recordString(item, 'target_id', 'unknown target');
+    const reason = recordString(item, 'reason', 'Inspect this confidence item.');
+    const hint = recordString(item, 'inspect_hint', '');
+    const files = asStringArray(item.read_first_files).slice(0, 2);
+    const evidenceGaps = asStringArray(item.evidence_gap_ids).slice(0, 2);
+    const artifacts = asStringArray(item.artifacts).slice(0, 2);
+    return `P${priority} [${source}/${severity}] ${target}: ${reason}${hint === '' ? '' : ` ${hint}`}${files.length === 0 ? '' : ` Read: ${files.join(', ')}`}${evidenceGaps.length === 0 ? '' : ` Gaps: ${evidenceGaps.join(', ')}`}${artifacts.length === 0 ? '' : ` Artifacts: ${artifacts.join(', ')}`}`;
+  });
+  return `<article class="card"><h3>Confidence Inspection Queue</h3>${renderList([
+    summary,
+    `${highPriority} high-priority item(s)`,
+    `sources: evidence ${String(sources.evidence ?? 0)}, architecture ${String(
+      sources.architecture ?? 0,
+    )}, incremental ${String(sources.incremental ?? 0)}`,
+    ...queueItems,
+  ])}</article>`;
+}
+
 function renderEvidenceQuality(value: unknown): string {
   if (!isRecord(value)) {
     return '<p class="muted">No evidence quality artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
@@ -16771,6 +17147,7 @@ function renderEvidenceQuality(value: unknown): string {
     <article class="card"><h3>Confidence Distribution</h3>${renderList(distribution)}</article>
     <article class="card"><h3>Top Evidence Gaps</h3>${renderList(topGaps)}</article>
     <article class="card"><h3>Unknown / Uncertain Areas</h3>${renderList(uncertainAreas)}</article>
+    ${renderConfidenceInspectionQueue(value)}
     ${evidenceCalibration}
     ${evidenceActionability}
   </div>`;
@@ -17378,6 +17755,20 @@ function renderFlagshipSummary(params: {
   const weakEvidenceClaims = recordNumber(params.evidenceQuality, 'weak_evidence_claims');
   const unsupportedClaims = recordNumber(params.evidenceQuality, 'unsupported_claims');
   const evidenceGaps = recordNumber(params.evidenceQuality, 'evidence_gap_count');
+  const confidenceInspectionQueue = nestedRecord(
+    params.evidenceQuality,
+    'confidence_inspection_queue',
+  );
+  const confidenceInspectionItems = recordArray(confidenceInspectionQueue, 'items')
+    .filter(isRecord)
+    .slice(0, 3)
+    .map((item) => {
+      const priority = recordNumber(item, 'priority');
+      const source = recordString(item, 'source', 'unknown');
+      const severity = recordString(item, 'severity', 'medium');
+      const target = recordString(item, 'target_id', 'unknown target');
+      return `P${priority} ${source}/${severity}: ${target}`;
+    });
   const reviewAttention = isRecord(params.understandingScore)
     ? recordArray(params.understandingScore.review_readiness, 'required_attention')
         .filter((item): item is string => typeof item === 'string')
@@ -17406,6 +17797,14 @@ function renderFlagshipSummary(params: {
           `${evidenceGaps} evidence gap(s)`,
           `redaction impact: ${redactionImpactLabel}`,
           `redaction safety: ${redactionSafety}/100`,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Inspect First</h3>
+        ${renderList([
+          `${recordNumber(confidenceInspectionQueue, 'item_count')} confidence item(s)`,
+          `${recordNumber(confidenceInspectionQueue, 'high_priority_count')} high priority`,
+          ...confidenceInspectionItems,
         ])}
       </article>
       <article class="card compact">
