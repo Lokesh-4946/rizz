@@ -76,7 +76,13 @@ Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/res
   confidence and evidence IDs.
 - `evidence_quality.json` summarizes referenced evidence IDs, missing evidence references,
   evidence-backed entities/relationships, component field-evidence counts, and the shared
-  confidence inspection queue for weak evidence, architecture debt, and stale incremental surfaces.
+  confidence inspection queue for weak evidence, architecture debt, security/tool risk surfaces,
+  and stale incremental surfaces.
+- `security_scan.json` summarizes deterministic metadata-only security findings such as
+  secret-like file surfaces, package lifecycle scripts, networked shell scripts, destructive shell
+  patterns, and sensitive dependency surfaces without reading or exposing secret values.
+- `tool_inventory.json` summarizes deterministic metadata-only tool surfaces such as MCP configs,
+  agent instruction files, CI workflows, and package scripts without loading tools by default.
 - `incremental_update.json` summarizes changed, current, new, and stale files for the latest scan.
 - `flow_understanding.json`, `flow_coverage.json`, and `flow_confidence.json` summarize flow count,
   kind distribution, journey names, normalized journey steps, test/config coverage, low-confidence

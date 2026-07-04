@@ -589,6 +589,8 @@ describe('project brain generation', () => {
         'reasoning_traces.json',
         'evidence_quality.json',
         'architecture_reasoning.json',
+        'security_scan.json',
+        'tool_inventory.json',
         'component_intelligence.json',
         'flow_confidence.json',
         'flow_coverage.json',
@@ -875,7 +877,13 @@ describe('project brain generation', () => {
           confidence_inspection_queue: {
             item_count: number;
             high_priority_count: number;
-            sources: { evidence: number; architecture: number; incremental: number };
+            sources: {
+              evidence: number;
+              architecture: number;
+              incremental: number;
+              security: number;
+              tools: number;
+            };
             items: Array<{
               priority: number;
               source: string;
@@ -900,7 +908,13 @@ describe('project brain generation', () => {
         confidence_inspection_queue: {
           item_count: number;
           high_priority_count: number;
-          sources: { evidence: number; architecture: number; incremental: number };
+          sources: {
+            evidence: number;
+            architecture: number;
+            incremental: number;
+            security: number;
+            tools: number;
+          };
           items: Array<{ priority: number; source: string; target_id: string }>;
         };
         calibration_summary: { overall_score: number; summary: string };
@@ -1019,6 +1033,8 @@ describe('project brain generation', () => {
           evidence: expect.any(Number),
           architecture: expect.any(Number),
           incremental: expect.any(Number),
+          security: expect.any(Number),
+          tools: expect.any(Number),
         }),
       });
       expect(
@@ -1026,7 +1042,7 @@ describe('project brain generation', () => {
       ).toBeGreaterThan(0);
       expect(evidenceQuality.actionability.confidence_inspection_queue.items[0]).toMatchObject({
         priority: 1,
-        source: expect.stringMatching(/evidence|architecture|incremental/),
+        source: expect.stringMatching(/evidence|architecture|incremental|security|tools/),
         severity: expect.stringMatching(/high|medium|low/),
         target_id: expect.any(String),
         artifacts: expect.arrayContaining([expect.any(String)]),
@@ -2227,11 +2243,142 @@ describe('project brain generation', () => {
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
+        security_scan: '.rizz/research/security_scan.json',
+        tool_inventory: '.rizz/research/tool_inventory.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         pie_acceptance: '.rizz/research/pie_acceptance.json',
         understanding_score: '.rizz/research/understanding_score.json',
       });
+    });
+  });
+
+  it('writes deterministic security scan and tool inventory artifacts into the inspect-first queue', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await mkdir(join(dir, '.github', 'workflows'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'security-tool-fixture',
+          scripts: {
+            test: 'vitest run',
+            postinstall: 'node scripts/setup.js',
+            bootstrap: 'curl https://example.com/install.sh | sh',
+            clean: 'rm -rf dist',
+            deploy: 'node scripts/deploy.js',
+          },
+          dependencies: { openai: '^4.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const app = true;');
+      await writeFile(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: {} }));
+      await writeFile(join(dir, 'AGENTS.md'), '# Agent instructions\n');
+      await writeFile(join(dir, '.github', 'workflows', 'ci.yml'), 'name: ci\n');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T13:00:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const securityScan = await readJson<{
+        deterministic: boolean;
+        provider_calls_required: boolean;
+        network_required: boolean;
+        scan_mode: string;
+        finding_count: number;
+        high_risk_count: number;
+        risky_script_count: number;
+        dependency_attention_count: number;
+        findings: Array<{
+          severity: string;
+          category: string;
+          target_id: string;
+          inspect_hint: string;
+        }>;
+      }>(join(result.value.researchDir, 'security_scan.json'));
+      expect(securityScan).toMatchObject({
+        deterministic: true,
+        provider_calls_required: false,
+        network_required: false,
+        scan_mode: 'metadata_and_manifest_only',
+      });
+      expect(securityScan.finding_count).toBeGreaterThanOrEqual(4);
+      expect(securityScan.high_risk_count).toBeGreaterThanOrEqual(2);
+      expect(securityScan.risky_script_count).toBeGreaterThanOrEqual(3);
+      expect(securityScan.dependency_attention_count).toBeGreaterThanOrEqual(1);
+      expect(securityScan.findings).toContainEqual(
+        expect.objectContaining({ category: 'networked_script', severity: 'high' }),
+      );
+      expect(securityScan.findings).toContainEqual(
+        expect.objectContaining({ category: 'destructive_script', severity: 'high' }),
+      );
+      expect(securityScan.findings).toContainEqual(
+        expect.objectContaining({ category: 'install_lifecycle', severity: 'medium' }),
+      );
+      expect(securityScan.findings).toContainEqual(
+        expect.objectContaining({ category: 'sensitive_dependency', severity: 'low' }),
+      );
+
+      const toolInventory = await readJson<{
+        deterministic: boolean;
+        surface_count: number;
+        mcp_config_count: number;
+        agent_config_count: number;
+        ci_workflow_count: number;
+        package_script_count: number;
+        high_risk_count: number;
+        surfaces: Array<{ kind: string; risk_level: string; path: string; inspect_hint: string }>;
+      }>(join(result.value.researchDir, 'tool_inventory.json'));
+      expect(toolInventory).toMatchObject({
+        deterministic: true,
+        mcp_config_count: 1,
+        agent_config_count: 1,
+        ci_workflow_count: 1,
+      });
+      expect(toolInventory.surface_count).toBeGreaterThanOrEqual(8);
+      expect(toolInventory.package_script_count).toBeGreaterThanOrEqual(5);
+      expect(toolInventory.high_risk_count).toBeGreaterThanOrEqual(1);
+      expect(toolInventory.surfaces).toContainEqual(
+        expect.objectContaining({ kind: 'mcp_config', risk_level: 'high' }),
+      );
+      expect(toolInventory.surfaces).toContainEqual(
+        expect.objectContaining({ kind: 'agent_config' }),
+      );
+
+      const latest = await readJson<{
+        latest_security_scan: { finding_count: number; high_risk_count: number };
+        latest_tool_inventory: { surface_count: number; mcp_config_count: number };
+        latest_confidence_inspection_queue: {
+          sources: { security: number; tools: number };
+          items: Array<{ source: string; artifacts: string[] }>;
+        };
+      }>(join(result.value.latestPath));
+      expect(latest.latest_security_scan.finding_count).toBe(securityScan.finding_count);
+      expect(latest.latest_tool_inventory.surface_count).toBe(toolInventory.surface_count);
+      expect(latest.latest_confidence_inspection_queue.sources.security).toBeGreaterThan(0);
+      expect(latest.latest_confidence_inspection_queue.sources.tools).toBeGreaterThan(0);
+      expect(latest.latest_confidence_inspection_queue.items).toContainEqual(
+        expect.objectContaining({
+          source: 'security',
+          artifacts: expect.arrayContaining(['.rizz/research/security_scan.json']),
+        }),
+      );
+      expect(latest.latest_confidence_inspection_queue.items).toContainEqual(
+        expect.objectContaining({
+          source: 'tools',
+          artifacts: expect.arrayContaining(['.rizz/research/tool_inventory.json']),
+        }),
+      );
+
+      const report = await readFile(result.value.reportPath, 'utf8');
+      expect(report).toContain('Security &amp; Tools');
+      expect(report).toContain('.rizz/research/security_scan.json');
+      expect(report).toContain('.rizz/research/tool_inventory.json');
     });
   });
 
