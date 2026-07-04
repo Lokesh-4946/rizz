@@ -16,6 +16,7 @@
     "test": "vitest run",
     "eval": "node eval/run.mjs",
     "footprint": "node scripts/footprint-check.mjs",
+    "uat:large-repos": "pnpm build && node scripts/uat-large-repos.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm eval && pnpm footprint",
     "pack:check": "node scripts/pack-public-check.mjs",
     "link:local": "pnpm build && node scripts/install-local.mjs",

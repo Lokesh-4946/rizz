@@ -19,12 +19,14 @@ ECC-inspired features are useful when they strengthen that contract without join
 
 ## Current Loop
 
-1. Opt-in Security Scanner + MCP/tool inventory as deterministic research artifacts.
-2. Mission Control inspectability for weak evidence, architecture debt, security/tool surfaces, and
-   stale claims.
-3. PI-Bench assertions for the expanded inspection contract.
+1. Large-repo UAT harness with an explicit repo matrix, per-repo time caps, progress output, and a
+   compact JSON report.
+2. Traversal priority for manifests, configs, tests, and source before workflow-heavy or
+   content-heavy trees when a scan cap is active.
+3. Bounded UAT after milestones on complex repos such as `github/docs` and `vercel/next.js`.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice expands the Confidence Inspection Queue so a human or agent can inspect security
-scanner findings and tool surfaces before trusting broad repo understanding or allowing broad agent
-control.
+The current slice makes capped scans useful on large repos and turns long-running UAT into a
+deterministic report instead of an opaque hang. The next useful slice is analyzer subphase progress
+and cost calibration so large scans can show which research/artifact pass is taking time after
+traversal completes.

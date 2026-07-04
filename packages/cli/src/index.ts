@@ -112,7 +112,19 @@ async function startTuiLazy(options: StartTuiOptions): Promise<void> {
 
 async function runBrainCommand(): Promise<number> {
   const { generateProjectBrain } = await import('@valoir/rizz-brain');
-  const result = await generateProjectBrain({ rootDir: process.cwd() });
+  const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
+  if (maxFiles.ok === false) {
+    process.stderr.write(`rizz: ${maxFiles.error}\n`);
+    return 2;
+  }
+  const result = await generateProjectBrain({
+    rootDir: process.cwd(),
+    ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
+    onProgress: (progress) => {
+      const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
+      process.stderr.write(`[rizz brain] ${progress.phase}: ${progress.message}${elapsed}\n`);
+    },
+  });
   if (!result.ok) {
     process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     return 1;
@@ -129,6 +141,19 @@ async function runBrainCommand(): Promise<number> {
   process.stdout.write(`  changed: ${summary.changedFiles}\n`);
   process.stdout.write(`  stale: ${summary.staleFiles}\n`);
   return 0;
+}
+
+function parseBrainMaxFiles(
+  value: string | undefined,
+):
+  | { readonly ok: true; readonly value: number | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (value === undefined || value.trim() === '') return { ok: true, value: undefined };
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return { ok: false, error: 'RIZZ_BRAIN_MAX_FILES must be a positive integer' };
+  }
+  return { ok: true, value: parsed };
 }
 
 async function runReviewCommand(options: { readonly json: boolean }): Promise<number> {
