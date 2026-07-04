@@ -642,6 +642,48 @@ describe('project brain generation', () => {
           status: 'new',
         }),
       );
+      const firstUnderstandingScore = await readJson<{
+        dimensions: {
+          incremental_status: {
+            score: number;
+            summary: string;
+            signals: string[];
+            weak_spots: string[];
+          };
+        };
+        capability_scorecard: {
+          capabilities: Array<{
+            key: string;
+            score: number;
+            remaining_to_100: number;
+            evidence_basis: string[];
+            next_required_improvements: string[];
+          }>;
+        };
+      }>(join(first.value.researchDir, 'understanding_score.json'));
+      expect(firstUnderstandingScore.dimensions.incremental_status).toMatchObject({
+        score: 88,
+        summary: expect.stringContaining('baseline file'),
+        signals: expect.arrayContaining([
+          '100/100 baseline capture readiness',
+          expect.stringContaining('First scan establishes the baseline'),
+          'First-scan Incremental Understanding score is capped at 88/100 until reuse is proven.',
+        ]),
+        weak_spots: expect.arrayContaining([
+          expect.stringContaining('Run a second scan to prove stable/reused understanding'),
+        ]),
+      });
+      expect(firstUnderstandingScore.capability_scorecard.capabilities).toContainEqual(
+        expect.objectContaining({
+          key: 'incremental_understanding_metrics',
+          score: 88,
+          remaining_to_100: 12,
+          evidence_basis: expect.arrayContaining(['100/100 baseline capture readiness']),
+          next_required_improvements: expect.arrayContaining([
+            expect.stringContaining('Run a second scan to prove stable/reused understanding'),
+          ]),
+        }),
+      );
 
       await writeFile(join(dir, 'packages', 'brain', 'src', 'index.ts'), 'export const brain = 2;');
       const second = await generateProjectBrain({
@@ -1744,7 +1786,12 @@ describe('project brain generation', () => {
           flows: { score: number; weak_spots: string[] };
           architecture: { score: number; weak_spots: string[] };
           evidence: { score: number; weak_spots: string[] };
-          incremental_status: { score: number; weak_spots: string[] };
+          incremental_status: {
+            score: number;
+            summary: string;
+            signals: string[];
+            weak_spots: string[];
+          };
           review_readiness: { score: number; weak_spots: string[] };
           unknowns: { score: number; weak_spots: string[] };
         };
