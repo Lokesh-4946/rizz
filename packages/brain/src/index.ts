@@ -2107,6 +2107,17 @@ async function writeVerifiedFile(path: string, contents: string): Promise<void> 
   if (written !== contents) throw new Error(`write verification failed for ${path}`);
 }
 
+async function clearReviewDerivedArtifacts(params: {
+  readonly researchDir: string;
+  readonly reportsDir: string;
+}): Promise<void> {
+  await Promise.all([
+    rm(join(params.researchDir, 'review_eval.json'), { force: true }),
+    rm(join(params.researchDir, 'review_claim_evidence.json'), { force: true }),
+    rm(join(params.reportsDir, 'review.html'), { force: true }),
+  ]);
+}
+
 async function scanFiles(
   rootDir: string,
   maxFiles: number,
@@ -15860,10 +15871,16 @@ function renderMissionControlDependencyRuntimeImpact(latest: Record<string, unkn
   </div>`;
 }
 
-function renderMissionControlArchitectureImpactClaims(latest: Record<string, unknown>): string {
+function renderMissionControlArchitectureImpactClaims(
+  latest: Record<string, unknown>,
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
     return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+  }
+  if (recordString(status, 'status', 'not_run') === 'not_run') {
+    return '<p class="muted">No review has run for the current brain. Run <code>rizz review</code> to add architecture impact claims.</p>';
   }
   const claimRows = recordArray(status, 'architecture_impact_claims').filter(isRecord).slice(0, 5);
   const claimCount = recordNumber(status, 'architecture_impact_claim_count');
@@ -15936,7 +15953,7 @@ function renderMissionControlArchitectureImpactClaims(latest: Record<string, unk
         <h4>Changed Files</h4>
         ${renderList(sourceFiles)}
         <h4>Evidence</h4>
-        ${renderList(evidenceIds)}
+        ${renderEvidenceLinks(evidenceIds, evidenceById)}
         <h4>What Could Break</h4>
         ${renderList(whatBreaks)}
         <h4>Review Focus</h4>
@@ -15994,7 +16011,77 @@ function renderArchitectureConfidenceDebt(value: unknown): string {
   ]);
 }
 
-function renderArchitectureReasoning(value: unknown): string {
+function renderArchitectureWhatBreaksEvidence(
+  value: Record<string, unknown>,
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const componentBreaks = recordArray(value, 'what_breaks')
+    .filter(isRecord)
+    .map((item) => {
+      const componentId = recordString(item, 'component_id', 'unknown component');
+      const blastRadius = recordString(item, 'blast_radius', 'unknown');
+      return {
+        id: componentId,
+        label: `${componentId} · ${blastRadius} radius`,
+        surface: 'component',
+        confidence: 'inferred',
+        impacts: asStringArray(item.impacts),
+        tests: asStringArray(item.tests),
+        evidenceIds: asStringArray(item.evidence_ids),
+      };
+    });
+  const routeBreaks = recordArray(value, 'route_what_breaks')
+    .filter(isRecord)
+    .map((item) => {
+      const flowId = recordString(item, 'flow_id', 'unknown flow');
+      const routePath = recordString(item, 'route_path', 'unknown route');
+      const routeType = recordString(item, 'route_type', 'route');
+      return {
+        id: flowId,
+        label: `${routePath} · ${routeType}`,
+        surface: 'route',
+        confidence: 'inferred',
+        impacts: asStringArray(item.impacts),
+        tests: asStringArray(item.tests),
+        evidenceIds: asStringArray(item.evidence_ids),
+      };
+    });
+  const rows = [...componentBreaks, ...routeBreaks].filter((item) => item.impacts.length > 0);
+  if (rows.length === 0) {
+    return `<article class="card">
+      <h3>What Can Break</h3>
+      <p class="muted">No breakage paths recorded yet. This does not mean the architecture is safe.</p>
+    </article>`;
+  }
+  return rows
+    .slice(0, 6)
+    .map(
+      (row) => `<article class="card" data-search="${htmlEscape(
+        `${row.id} ${row.label} ${row.surface} ${row.impacts.join(' ')}`,
+      )}">
+        <div class="badge">${htmlEscape(row.confidence)} · ${htmlEscape(row.surface)}</div>
+        <h3>${htmlEscape(row.label)}</h3>
+        <h4>What Can Break</h4>
+        ${renderList(row.impacts.slice(0, 5))}
+        <h4>Evidence</h4>
+        ${renderEvidenceLinks(row.evidenceIds.slice(0, 8), evidenceById)}
+        <h4>Tests</h4>
+        ${renderList(row.tests.slice(0, 5))}
+        <h4>Unknowns</h4>
+        ${renderList(
+          row.evidenceIds.length === 0
+            ? ['No evidence records found for this claim yet. Treat it as unverified.']
+            : ['Unknowns are review prompts, not failures.'],
+        )}
+      </article>`,
+    )
+    .join('');
+}
+
+function renderArchitectureReasoning(
+  value: unknown,
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
   if (!isRecord(value)) {
     return '<p class="muted">No architecture reasoning artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
   }
@@ -16196,6 +16283,7 @@ function renderArchitectureReasoning(value: unknown): string {
   return `<div class="grid">
     <article class="card"><h3>Confidence Debt</h3>${renderArchitectureConfidenceDebt(confidenceDebt)}</article>
     <article class="card"><h3>Deployment Intelligence</h3>${renderList(deploymentLabels)}</article>
+    ${renderArchitectureWhatBreaksEvidence(value, evidenceById)}
     <article class="card"><h3>Impact Map</h3>${renderList([
       architectureImpactSummary(value),
       ...impactLabels,
@@ -16209,7 +16297,7 @@ function renderArchitectureReasoning(value: unknown): string {
     <article class="card"><h3>Critical Paths</h3>${renderList(criticalPathLabels)}</article>
     <article class="card"><h3>Risky Seams</h3>${renderList(seamLabels)}</article>
     <article class="card"><h3>Tradeoff Matrix</h3>${renderList(tradeoffLabels)}</article>
-    <article class="card"><h3>What Breaks</h3>${renderList(whatBreaksLabels)}</article>
+    <article class="card"><h3>What Breaks Summary</h3>${renderList(whatBreaksLabels)}</article>
     <article class="card"><h3>Cross-Component Flows</h3>${renderList(flowLabels)}</article>
     <article class="card"><h3>Risk Concentrations</h3>${renderList(riskLabels)}</article>
     <article class="card"><h3>Review Hints</h3>${renderList(hintLabels)}</article>
@@ -17443,7 +17531,7 @@ function renderReport(params: {
       'Reasoning from relationships, component pressure, coupling, boundaries, and evidence gaps.',
     posture: understandingPosture,
     body: `<p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}
+      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning, evidenceById)}
       <h3>Dependency Graph</h3>
       <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>
         ${params.relationships
@@ -17479,7 +17567,7 @@ function renderReport(params: {
       <h3>Affected Route Flows</h3>
       ${renderLatestReviewRouteFlows(params.latest, params.buckets.flows, evidenceById)}
       <h3>Architecture Impact Claims</h3>
-      ${renderMissionControlArchitectureImpactClaims(params.latest)}
+      ${renderMissionControlArchitectureImpactClaims(params.latest, evidenceById)}
       <h3>Risk Areas</h3>
       <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>
       <h3>Required Attention</h3>
@@ -18281,6 +18369,7 @@ export async function generateProjectBrain(
     }
     await writeFlowMirrors(flowDir, now, built.buckets.flows);
     await writeResearchArtifacts(researchDir, researchArtifacts);
+    await clearReviewDerivedArtifacts({ researchDir, reportsDir });
     await writeVerifiedFile(join(reportsDir, 'index.html'), report);
 
     return {
