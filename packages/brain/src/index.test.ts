@@ -7216,6 +7216,7 @@ describe('project brain generation', () => {
         overall_risk: 'medium',
         surgicality_score: result.value.review.surgicality_score,
         blast_radius_actionability_status: expect.stringMatching(/^(strong|partial|weak)$/),
+        review_precision_status: expect.stringMatching(/^(strong|partial|weak)$/),
         blast_radius_actionability: {
           changed_file_count: 1,
           affected_journey_count: expect.any(Number),
@@ -7224,6 +7225,16 @@ describe('project brain generation', () => {
           architecture_what_breaks_note_count:
             result.value.review.review_evidence_summary.architecture_what_breaks.length,
           affected_test_count: 1,
+        },
+        precision_calibration: {
+          changed_file_count: 1,
+          runtime_source_change_count: 1,
+          false_positive_guards: expect.arrayContaining(['state_data_overstatement_guard']),
+          false_negative_signals: expect.arrayContaining([
+            'affected_flow_context_preserved',
+            'test_evidence_preserved',
+            'architecture_what_breaks_context_preserved',
+          ]),
         },
         secret_safety: {
           unsafe_sensitive_reference_count: 0,
@@ -7238,6 +7249,11 @@ describe('project brain generation', () => {
       expect(result.value.reviewEval.blast_radius_actionability_score).toBeLessThanOrEqual(100);
       expect(result.value.reviewEval.actionable_signal_count).toBeGreaterThan(0);
       expect(result.value.reviewEval.actionability_gap_count).toBeGreaterThanOrEqual(0);
+      expect(result.value.reviewEval.review_precision_score).toBeGreaterThanOrEqual(0);
+      expect(result.value.reviewEval.review_precision_score).toBeLessThanOrEqual(100);
+      expect(result.value.reviewEval.false_positive_guard_count).toBeGreaterThan(0);
+      expect(result.value.reviewEval.false_negative_signal_count).toBeGreaterThan(0);
+      expect(result.value.reviewEval.precision_gap_count).toBeGreaterThanOrEqual(0);
       expect(result.value.reviewEval.blast_radius_actionability.signals).toEqual(
         expect.arrayContaining([
           expect.stringContaining('architecture what-breaks note'),
@@ -8941,6 +8957,19 @@ describe('project brain generation', () => {
         affected_relationship_count: 0,
         affected_data_dependency_count: 0,
         affected_state_operation_count: 0,
+        precision_calibration: {
+          generated_artifact_only_change: true,
+          false_positive_guards: expect.arrayContaining([
+            'generated_artifact_visibility_guard',
+            'state_data_overstatement_guard',
+            'architecture_overstatement_guard',
+            'missing_tests_overstatement_guard',
+          ]),
+          false_negative_signals: expect.arrayContaining(['generated_artifact_change_visible']),
+          precision_gaps: expect.not.arrayContaining([
+            'runtime_source_change_without_flow_context',
+          ]),
+        },
       });
     });
   });
@@ -9019,6 +9048,22 @@ describe('project brain generation', () => {
       expect(review.value.reviewEval).toMatchObject({
         generated_artifact_count: 0,
         dependency_runtime_impact_count: 1,
+        precision_calibration: {
+          dependency_or_config_only_change: true,
+          lockfile_only_change: true,
+          false_positive_guards: expect.arrayContaining([
+            'dependency_config_runtime_guard',
+            'lockfile_install_resolution_guard',
+            'state_data_overstatement_guard',
+            'architecture_overstatement_guard',
+            'missing_tests_overstatement_guard',
+          ]),
+          false_negative_signals: expect.arrayContaining([
+            'dependency_runtime_context_preserved',
+            'evidence_links_preserved',
+          ]),
+          precision_gaps: [],
+        },
       });
     });
   });

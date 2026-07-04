@@ -81,7 +81,18 @@
         "affected_flow_count",
         "affected_data_dependency_count",
         "affected_state_operation_count",
+        "review_precision_score",
+        "review_precision_status",
+        "false_positive_guard_count",
+        "false_negative_signal_count",
+        "precision_calibration.false_positive_guards",
+        "precision_calibration.false_negative_signals",
         "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": [
+        "\"state_data_overstatement_guard\"",
+        "\"missing_tests_overstatement_guard\"",
+        "\"affected_flow_context_preserved\""
       ],
       "expected_json_values": {
         "affected_data_dependency_count": 0,
@@ -115,7 +126,12 @@
     {
       "path": ".rizz/reports/review.html",
       "type": "file",
-      "required_substrings": ["Affected Flows", "src/accounts/profile-repository.ts"],
+      "required_substrings": [
+        "Affected Flows",
+        "Review Precision Calibration",
+        "state_data_overstatement_guard",
+        "src/accounts/profile-repository.ts"
+      ],
       "forbidden_substrings": ["State/data dependency overlaps the diff"]
     }
   ],
