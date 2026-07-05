@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { constants, readFileSync, statSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
+import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
+import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
 import {
   commandTargetPaths,
   commandTargetSteps,
@@ -1739,6 +1741,7 @@ const RESEARCH_ARTIFACT_FILES = {
   understandingScore: 'understanding_score.json',
   pieAcceptance: 'pie_acceptance.json',
   verificationEvidence: 'verification_evidence.json',
+  agentRepairPackets: 'agent_repair_packets.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -15646,6 +15649,10 @@ function buildResearchArtifacts(params: {
     architectureReasoning: architectureReasoningBase,
     queue: confidenceInspectionQueue,
   });
+  const agentRepairPackets = buildAgentRepairPacketsArtifact({
+    generatedAt: params.now,
+    confidenceInspectionQueue,
+  });
   const benchmarkReady = buildBenchmarkReadyArtifact({
     projectName: params.projectName,
     now: params.now,
@@ -16140,6 +16147,7 @@ function buildResearchArtifacts(params: {
     understandingScore,
     pieAcceptance,
     verificationEvidence: emptyVerificationEvidenceArtifact(params.projectName, params.now),
+    agentRepairPackets,
   };
 }
 
@@ -20147,6 +20155,7 @@ export async function generateProjectBrain(
         understanding_score: '.rizz/research/understanding_score.json',
         pie_acceptance: '.rizz/research/pie_acceptance.json',
         verification_evidence: '.rizz/research/verification_evidence.json',
+        agent_repair_packets: '.rizz/research/agent_repair_packets.json',
       },
     };
     reportStep(
@@ -20324,7 +20333,9 @@ export async function addVerificationEvidence(
           }),
         ),
       );
-      await updateBrainIndexVerificationEvidencePath(join(brainDir, 'index.json'));
+      await updateBrainIndexResearchPaths(join(brainDir, 'index.json'), {
+        verification_evidence: '.rizz/research/verification_evidence.json',
+      });
     }
     return { ok: true, value: { rootDir, researchDir, artifactPath, item, artifact } };
   } catch (error: unknown) {
@@ -20389,6 +20400,11 @@ export async function reviewProjectChanges(
     });
     const reviewEval = buildReviewEvalArtifact(review);
     const reviewClaimEvidence = buildReviewClaimEvidenceArtifact(review);
+    const agentRepairPackets = buildAgentRepairPacketsArtifact({
+      generatedAt: now,
+      confidenceInspectionQueue: latest.latest_confidence_inspection_queue,
+      review,
+    });
 
     const reviewEntity = makeEntity({
       id: review.id,
@@ -20513,7 +20529,16 @@ export async function reviewProjectChanges(
       verificationEvidenceArtifactPath(rootDir),
       jsonString(safeResearchValue(verificationEvidence)),
     );
-    await updateBrainIndexReviewArtifactPaths(join(brainDir, 'index.json'));
+    await writeVerifiedFile(
+      join(researchDir, 'agent_repair_packets.json'),
+      jsonString(safeResearchValue(agentRepairPackets)),
+    );
+    await updateBrainIndexResearchPaths(join(brainDir, 'index.json'), {
+      review_eval: '.rizz/research/review_eval.json',
+      review_claim_evidence: '.rizz/research/review_claim_evidence.json',
+      verification_evidence: '.rizz/research/verification_evidence.json',
+      agent_repair_packets: '.rizz/research/agent_repair_packets.json',
+    });
 
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
@@ -24200,42 +24225,6 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
       'Readiness combines surgicality, risk, blast radius, findings, test guidance, evidence, and secret safety.',
     ],
   };
-}
-
-async function updateBrainIndexReviewArtifactPaths(indexPath: string): Promise<void> {
-  const index = (await readJsonFile<Record<string, unknown>>(indexPath)) ?? {};
-  const researchPaths = isRecord(index.research_paths) ? index.research_paths : {};
-  await writeVerifiedFile(
-    indexPath,
-    jsonString(
-      safeBrainValue({
-        ...index,
-        research_paths: {
-          ...researchPaths,
-          review_eval: '.rizz/research/review_eval.json',
-          review_claim_evidence: '.rizz/research/review_claim_evidence.json',
-          verification_evidence: '.rizz/research/verification_evidence.json',
-        },
-      }),
-    ),
-  );
-}
-
-async function updateBrainIndexVerificationEvidencePath(indexPath: string): Promise<void> {
-  const index = (await readJsonFile<Record<string, unknown>>(indexPath)) ?? {};
-  const researchPaths = isRecord(index.research_paths) ? index.research_paths : {};
-  await writeVerifiedFile(
-    indexPath,
-    jsonString(
-      safeBrainValue({
-        ...index,
-        research_paths: {
-          ...researchPaths,
-          verification_evidence: '.rizz/research/verification_evidence.json',
-        },
-      }),
-    ),
-  );
 }
 
 function isSourceFile(path: string): boolean {

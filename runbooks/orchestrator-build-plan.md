@@ -29,12 +29,12 @@ Current loop readiness:
 | Stage | Readiness | Remaining | Notes |
 | --- | ---: | ---: | --- |
 | Human intent | 75/100 | 25 | Intent can enter through CLI/review/explain flows, but mission-contract capture is still lightweight. |
-| rizz mission contract, project intelligence, and inspect-first context | 88/100 | 12 | Project intelligence, Mission Control, confidence queues, security/tool inventory, and UAT artifacts are strong; mission-contract packaging can be sharper. |
-| Coding agent implementation | 70/100 | 30 | rizz can inform any agent, but session adapters and repair handoff formats remain opt-in/future work. |
+| rizz mission contract, project intelligence, and inspect-first context | 89/100 | 11 | Project intelligence, Mission Control, confidence queues, security/tool inventory, unified repair packets, and UAT artifacts are strong; mission-contract packaging can be sharper. |
+| Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
 | rizz review | 91/100 | 9 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, and deterministic review artifacts. |
-| rizz correction packet | 80/100 | 20 | Component-local architecture correction packets now exist; broader review/evidence correction packets still need unification. |
-| Coding agent repair | 72/100 | 28 | Repair instructions are inspectable, but agent-specific apply/repair loops are not yet first-class. |
-| rizz verification | 84/100 | 16 | Verification evidence and runtime-honesty rules exist; targeted proof loops need stronger UX and scoring. |
+| rizz correction packet | 88/100 | 12 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, and verification guidance. |
+| Coding agent repair | 76/100 | 24 | Repair instructions are packetized for agents, but agent-specific apply/repair loops are not yet first-class. |
+| rizz verification | 85/100 | 15 | Verification evidence and runtime-honesty rules feed repair packets; targeted proof loops need stronger UX and scoring. |
 | Human approval | 70/100 | 30 | Reports support approval, but explicit approval packets and signoff state are still thin. |
 
 ## Opt-In Expansion Map
@@ -59,36 +59,36 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice sharpens Architecture Reasoning correction packets for component-local gaps. rizz
-now writes `component_correction_packets` into `architecture_reasoning.json` and feeds those packets
-into `confidence_debt.inspection_queue`, so agents see precise read/inspect/test/verify steps before
-generic architecture debt. The 120-file large-repo UAT matrix stayed at Architecture Reasoning
-84/100, but the remaining debt is more actionable: `github/docs component:config` gets a priority-1
-packet for missing config/test/entrypoint/flow evidence, and `vercel/next.js component:scripts` gets
-a priority-1 packet for missing component-local test evidence without claiming runtime verification.
-The next weakest repo-derived area remains Architecture Reasoning, specifically moving correction
-packets from component-local architecture gaps into broader review/evidence repair handoffs.
+The current slice unifies correction packets across architecture, evidence quality, review blast
+radius, and verification. rizz now writes `.rizz/research/agent_repair_packets.json`, exposes it via
+brain index research paths, and refreshes it after `rizz review` so a coding agent gets one
+prioritized inspect/repair/verify packet list instead of separate artifact-specific queues. The
+120-file large-repo UAT matrix stayed at Architecture Reasoning 84/100, but usefulness improved:
+`github/docs` emits 12 repair packets with architecture/security/tool provenance, and
+`vercel/next.js` emits 12 repair packets with `component:scripts` as P1 plus evidence-quality
+followups. The next weakest repo-derived area remains Architecture Reasoning, specifically reducing
+remaining weak component boundary assumptions without over-claiming runtime verification.
 
 ## Capability Scorecard
 
 These are the orchestrator baseline scores for planned work. UAT reports also include actual
 repo-derived scores from `.rizz/research/understanding_score.json`.
 
-| Planned item | Baseline | Remaining | Next improvement |
+| Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
-| Flow Understanding | 86/100 | 14 | Deepen route, service, and journey reconstruction. |
-| Architecture Reasoning | 87/100 | 13 | Calibrate confidence and what-breaks claims. |
-| Evidence Quality scoring | 88/100 | 12 | Make weak, stale, and low-confidence evidence easier to inspect. |
-| Mission Control UX | 88/100 | 12 | Expose score, queue, and drilldown movement in the portal. |
-| PI-Bench seed/task format | 86/100 | 14 | Broaden deterministic task coverage and UAT fixtures. |
+| Flow Understanding | 91/100 | 10 | Deepen route, service, and journey reconstruction. |
+| Architecture Reasoning | 84/100 | 16 | Reduce weak component boundary assumptions and direct-evidence gaps. |
+| Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
+| Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
+| PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
-| Review Intelligence with true blast radius | 88/100 | 12 | Tie changed files to user-visible failures with stronger causality. |
-| `rizz ask` | 0/100 | 100 | Keep gated until foundation scores justify broad answers. |
+| Review Intelligence with true blast radius | 91/100 | 9 | Tie changed files to user-visible failures with stronger causality. |
+| `rizz ask` | 92/100 | 8 | Keep gated until packet/verification confidence is stronger. |
 
 ## Latest 120-File UAT Actuals
 
 Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
-Report: `.rizz/uat/component-correction-packets-120-report.json`
+Report: `.rizz/uat/unified-repair-packets-120-report.json`
 
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
@@ -123,3 +123,8 @@ Precision notes:
 - Runtime verification remains explicit in `flow_evidence_precision`; local static evidence does not
   upgrade script-derived flows to verified architecture confidence, and correction packets do not
   claim repairs were performed.
+- Unified repair packets preserve provenance instead of collapsing all guidance into one opaque
+  instruction: `github/docs` produced 12 packets with 3 architecture, 2 evidence-quality, 6 security,
+  and 1 tool packet; `vercel/next.js` produced 12 packets with 1 architecture, 9 evidence-quality, 1
+  security, and 1 tool packet. Review-time packets add `review_blast_radius` and `verification`
+  sources after `rizz review`.
