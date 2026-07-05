@@ -3,16 +3,7 @@ import { createHash } from 'node:crypto';
 import { constants, readFileSync, statSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
-import {
-  architectureFlowEvidenceSummary as aes,
-  flowArchitectureConfidence as afc,
-  architectureFlowEvidencePrecisionRecord as ap,
-  componentBoundaryConfidence as bc,
-  componentBoundaryEvidenceById as bi,
-  componentBoundaryEvidenceRecords as br,
-  componentBoundaryUnknowns as bu,
-  componentLocalEvidenceRecords as cl,
-} from './architecture-confidence.js';
+import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import {
   commandTargetPaths,
   commandTargetSteps,
@@ -8881,6 +8872,7 @@ function architectureQueueItems(
   value: Record<string, unknown>,
 ): ConfidenceInspectionQueueCandidate[] {
   const confidenceDebt = nestedRecord(value, 'confidence_debt');
+  const correctionPackets = cqi(value);
   const architectureEvidenceGaps = recordArray(value, 'evidence_gaps').filter(isRecord);
   const evidenceIdsByGapId = new Map(
     architectureEvidenceGaps
@@ -8970,7 +8962,7 @@ function architectureQueueItems(
       artifacts: ['.rizz/research/architecture_reasoning.json'],
     }),
   );
-  return [...unsupportedAssumptions, ...lowConfidenceAreas, ...evidenceGaps];
+  return [...correctionPackets, ...unsupportedAssumptions, ...lowConfidenceAreas, ...evidenceGaps];
 }
 
 function incrementalQueueItems(
@@ -11888,6 +11880,7 @@ function buildArchitectureReasoningArtifact(params: {
   }
   const cbe = br({ components, flowsByComponent });
   const be = bi(cbe);
+  const cp = ccp({ components, flowsByComponent, boundaryEvidenceByComponent: be });
   const boundaryCandidates = components
     .map((component) => {
       const componentFlows = flowsByComponent.get(component.id) ?? [];
@@ -12250,6 +12243,7 @@ function buildArchitectureReasoningArtifact(params: {
     service_intelligence: serviceIntelligence,
     component_local_evidence: cl({ components, flows, services }),
     component_boundary_evidence: cbe,
+    component_correction_packets: cp,
     flow_evidence_precision: ap(flowEvidenceSummary),
     service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,

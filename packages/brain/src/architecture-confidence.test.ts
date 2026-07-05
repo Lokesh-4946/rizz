@@ -5,6 +5,8 @@ import {
   componentBoundaryConfidence,
   componentBoundaryEvidenceRecord,
   componentBoundaryUnknowns,
+  componentCorrectionPackets,
+  componentCorrectionQueueItems,
   componentLocalEvidenceReadiness,
   componentLocalEvidenceRecords,
   flowArchitectureConfidence,
@@ -206,5 +208,110 @@ describe('architecture confidence calibration', () => {
     expect(componentBoundaryUnknowns(component, record)).toEqual([
       'Runtime behavior has not been executed.',
     ]);
+  });
+
+  it('builds correction packets for component-local boundary gaps', () => {
+    const configComponent = {
+      id: 'component:config',
+      confidence: 'inferred' as const,
+      evidence_ids: ['evidence:file-config--deployment-yaml'],
+      data: {
+        boundary_type: 'unknown',
+        criticality: 'medium',
+        read_first: ['config/deployment.yaml'],
+      },
+    };
+    const scriptsComponent = {
+      id: 'component:scripts',
+      confidence: 'verified' as const,
+      evidence_ids: ['evidence:file-package-json'],
+      data: {
+        boundary_type: 'automation',
+        criticality: 'medium',
+        read_first: ['scripts/build.js'],
+      },
+    };
+    const boundaryRecords = [
+      componentBoundaryEvidenceRecord({ component: configComponent, flows: [] }),
+      componentBoundaryEvidenceRecord({
+        component: scriptsComponent,
+        flows: [
+          {
+            id: 'flow:scripts--build',
+            confidence: 'inferred',
+            evidence_ids: ['evidence:file-package-json'],
+            data: {
+              kind: 'script',
+              entrypoints: [
+                {
+                  path: 'package.json',
+                  symbol: 'build',
+                  component_id: 'component:scripts',
+                  evidence: ['evidence:file-package-json'],
+                },
+              ],
+              configs: ['package.json'],
+            },
+          },
+        ],
+      }),
+    ];
+    const flowsByComponent = new Map([
+      [
+        'component:scripts',
+        [
+          {
+            id: 'flow:scripts--build',
+            confidence: 'inferred' as const,
+            evidence_ids: ['evidence:file-package-json'],
+            data: { configs: ['package.json'] },
+          },
+        ],
+      ],
+    ]);
+    const packets = componentCorrectionPackets({
+      components: [configComponent, scriptsComponent],
+      flowsByComponent,
+      boundaryEvidenceByComponent: new Map(
+        boundaryRecords.map((record) => [String(record.component_id), record]),
+      ),
+    });
+
+    expect(packets).toContainEqual(
+      expect.objectContaining({
+        component_id: 'component:config',
+        severity: 'high',
+        missing_evidence: expect.arrayContaining([
+          'direct entrypoint evidence',
+          'component-local test evidence',
+          'component-local config evidence',
+          'reconstructed flow coverage',
+        ]),
+        read_first_files: ['config/deployment.yaml'],
+        verification_actions: expect.arrayContaining([
+          expect.stringContaining('component_boundary_evidence improves'),
+        ]),
+      }),
+    );
+    expect(packets).toContainEqual(
+      expect.objectContaining({
+        component_id: 'component:scripts',
+        severity: 'high',
+        missing_evidence: ['component-local test evidence'],
+        test_actions: expect.arrayContaining([expect.stringContaining('package-script flows')]),
+      }),
+    );
+
+    const queueItems = componentCorrectionQueueItems({
+      component_correction_packets: packets,
+    });
+    expect(queueItems[0]).toMatchObject({
+      source: 'architecture',
+      target_type: 'component_correction_packet',
+      severity: 'high',
+      target_id: 'component:config',
+      read_first_files: ['config/deployment.yaml'],
+      artifacts: expect.arrayContaining(['.rizz/research/architecture_reasoning.json']),
+    });
   });
 });
