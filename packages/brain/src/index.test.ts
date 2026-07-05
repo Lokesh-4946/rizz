@@ -891,6 +891,7 @@ describe('project brain generation', () => {
         'pie_acceptance.json',
         'service_intelligence.json',
         'verification_evidence.json',
+        'agent_repair_packets.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
         artifactNames,
@@ -3374,6 +3375,39 @@ describe('project brain generation', () => {
           expect.stringContaining('component_boundary_evidence improves'),
         ]),
       });
+
+      const agentRepairPackets = await readJson<{
+        packet_count: number;
+        high_priority_count: number;
+        sources: { architecture: number; evidence_quality: number; verification: number };
+        packets: Array<{
+          priority: number;
+          source: string;
+          target_type: string;
+          target_id: string;
+          read_first_files: string[];
+          verification_actions: string[];
+          artifacts: string[];
+          calibration_rule?: string;
+        }>;
+        calibration_rule: string;
+      }>(join(result.value.researchDir, 'agent_repair_packets.json'));
+      expect(agentRepairPackets.packet_count).toBeGreaterThan(0);
+      expect(agentRepairPackets.sources.architecture).toBeGreaterThan(0);
+      expect(agentRepairPackets.sources.verification).toBe(0);
+      expect(agentRepairPackets.packets).toContainEqual(
+        expect.objectContaining({
+          source: 'architecture',
+          target_type: 'component_correction_packet',
+          target_id: 'component:config',
+          read_first_files: expect.arrayContaining(['config/kubernetes/deployment.yaml']),
+          verification_actions: expect.arrayContaining([
+            expect.stringContaining('component_boundary_evidence improves'),
+          ]),
+          artifacts: expect.arrayContaining(['.rizz/research/agent_repair_packets.json']),
+        }),
+      );
+      expect(agentRepairPackets.calibration_rule).toContain('do not claim repairs');
     });
   });
 
@@ -9266,6 +9300,42 @@ describe('project brain generation', () => {
         review.value.review.verification_plan.length,
       );
       expect(review.value.reviewEval.verification_plan_required_count).toBeGreaterThan(0);
+      const agentRepairPackets = await readJson<{
+        packet_count: number;
+        high_priority_count: number;
+        sources: { review_blast_radius: number; verification: number };
+        packets: Array<{
+          source: string;
+          target_type: string;
+          verification_actions: string[];
+          artifacts: string[];
+        }>;
+      }>(join(dir, '.rizz', 'research', 'agent_repair_packets.json'));
+      expect(agentRepairPackets).toMatchObject({
+        packet_count: expect.any(Number),
+        high_priority_count: expect.any(Number),
+        sources: expect.objectContaining({
+          review_blast_radius: expect.any(Number),
+          verification: expect.any(Number),
+        }),
+      });
+      expect(agentRepairPackets.sources.review_blast_radius).toBeGreaterThan(0);
+      expect(agentRepairPackets.sources.verification).toBeGreaterThan(0);
+      expect(agentRepairPackets.packets).toContainEqual(
+        expect.objectContaining({
+          source: 'verification',
+          target_type: expect.stringContaining('verification:'),
+          verification_actions: expect.arrayContaining([
+            expect.stringContaining('Record the result with rizz verification evidence'),
+          ]),
+        }),
+      );
+      expect(agentRepairPackets.packets).toContainEqual(
+        expect.objectContaining({
+          source: 'review_blast_radius',
+          artifacts: expect.arrayContaining(['.rizz/research/review_claim_evidence.json']),
+        }),
+      );
       const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(reviewReport).toContain('State/Data Impact');
