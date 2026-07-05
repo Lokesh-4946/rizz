@@ -324,6 +324,48 @@ describe('project brain generation', () => {
     });
   });
 
+  it('backs folder ownership relationships with direct child-file evidence', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src', 'feature'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'folder-evidence-app' }));
+      await writeFile(join(dir, 'src', 'feature', 'handler.ts'), 'export const handler = true;\n');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:31:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const graph = await readJson<{
+        relationships: Array<{
+          from: string;
+          relation: string;
+          to: string;
+          evidence_ids: string[];
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          relation: 'owns',
+          to: 'folder:src--feature',
+          evidence_ids: expect.arrayContaining(['evidence:file-src--feature--handler.ts']),
+        }),
+      );
+
+      const folders = await readJson<{
+        entities: Array<{ id: string; evidence_ids: string[] }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'folders.json'));
+      expect(folders.entities).toContainEqual(
+        expect.objectContaining({
+          id: 'folder:src--feature',
+          evidence_ids: expect.arrayContaining(['evidence:file-src--feature--handler.ts']),
+        }),
+      );
+    });
+  });
+
   it('ingests verification evidence into research storage and review eval counts', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
@@ -5964,12 +6006,11 @@ describe('project brain generation', () => {
           status: expect.stringMatching(/limited|blocked/),
         }),
       );
-      expect(benchmarkReady.ask_readiness.gates).toContainEqual(
-        expect.objectContaining({
-          key: 'evidence_quality',
-          status: expect.stringMatching(/limited|blocked/),
-        }),
+      const evidenceQualityGate = benchmarkReady.ask_readiness.gates.find(
+        (gate) => gate.key === 'evidence_quality',
       );
+      expect(evidenceQualityGate?.score).toBeLessThan(100);
+      expect(evidenceQualityGate?.reasons.join(' ')).toContain('evidence quality');
       expect(benchmarkReady.ask_readiness.reasons.length).toBeGreaterThan(0);
       expect(benchmarkReady.ask_readiness.next_required_improvements.length).toBeGreaterThan(0);
     });

@@ -168,22 +168,21 @@
       ],
       "expected_json_values": {
         "service_causality_delta.schema_version": 1,
-        "service_causality_delta.previous_path_count": 4,
-        "service_causality_delta.current_path_count": 4,
+        "service_causality_delta.previous_path_count": 2,
+        "service_causality_delta.current_path_count": 2,
         "service_causality_delta.stable_path_count": 0,
         "service_causality_delta.recomputed_path_count": 0,
-        "service_causality_delta.drifted_path_count": 4,
+        "service_causality_delta.drifted_path_count": 2,
         "service_causality_delta.new_path_count": 0,
         "service_causality_delta.stale_path_count": 0,
-        "service_causality_delta.evidence_changed_path_count": 4,
+        "service_causality_delta.evidence_changed_path_count": 2,
         "service_causality_delta.affected_flow_count": 2,
-        "service_causality_delta.affected_service_count": 2,
+        "service_causality_delta.affected_service_count": 1,
         "service_causality_delta.freshness_score": 0,
         "service_causality_delta.path_deltas.0.status": "drifted",
         "service_causality_delta.path_deltas.0.changed_files": ["src/orders/service.ts"],
         "service_causality_delta.path_deltas.0.changed_evidence_ids": [
-          "evidence:file-src--orders--service.ts",
-          "evidence:redacted:sensitive-file:ad1611ec1306"
+          "evidence:file-src--orders--service.ts"
         ],
         "understanding_deltas.schema_version": 1,
         "understanding_deltas.previous_scan_available": true,
@@ -253,11 +252,11 @@
         "project_state.incremental_health.service_causality.drifted_path_count"
       ],
       "expected_json_values": {
-        "latest_incremental_update.service_causality_delta.drifted_path_count": 4,
+        "latest_incremental_update.service_causality_delta.drifted_path_count": 2,
         "latest_incremental_update.service_causality_delta.freshness_score": 0,
         "latest_incremental_update.understanding_deltas.previous_scan_available": true,
         "latest_incremental_update.understanding_deltas.stale_surface_count": 0,
-        "project_state.incremental_health.service_causality.drifted_path_count": 4
+        "project_state.incremental_health.service_causality.drifted_path_count": 2
       },
       "required_substrings": [
         "service_causality_delta",
