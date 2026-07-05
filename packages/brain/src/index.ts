@@ -4,6 +4,10 @@ import { constants, readFileSync, statSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import {
+  componentLocalEvidenceRecords as acl,
+  flowArchitectureConfidence as afc,
+} from './architecture-confidence.js';
+import {
   classifySensitivePath,
   containsSensitiveReference,
   redactSensitiveText,
@@ -9828,10 +9832,7 @@ function architectureAssumptionConfidence(params: {
   readonly component: BrainEntity;
   readonly componentFlows: readonly BrainEntity[];
 }): Confidence {
-  return weakestConfidence([
-    params.component.confidence,
-    ...params.componentFlows.map((flow) => flow.confidence),
-  ]);
+  return weakestConfidence([params.component.confidence, ...params.componentFlows.map(afc)]);
 }
 
 function architectureAssumptionScore(params: {
@@ -9891,7 +9892,7 @@ function routeFlowEntryLabels(flow: BrainEntity): string[] {
 
 function routeArchitectureConfidence(flow: BrainEntity): Confidence {
   return weakestConfidence([
-    flow.confidence,
+    afc(flow),
     flowStringArray(flow, 'tests').length > 0 ? 'verified' : 'inferred',
     flowStringArray(flow, 'configs').length > 0 ? 'verified' : 'inferred',
   ]);
@@ -9914,7 +9915,7 @@ function routeArchitectureGapIds(flow: BrainEntity): string[] {
   if (flowStringArray(flow, 'configs').length === 0) {
     gapIds.push(`gap:${safeText(flow.id)}:route-config`);
   }
-  if (flow.confidence !== 'verified') {
+  if (routeArchitectureConfidence(flow) !== 'verified') {
     gapIds.push(`gap:${safeText(flow.id)}:runtime-verification`);
   }
   return gapIds;
@@ -9964,7 +9965,7 @@ function routeArchitectureAssumptions(flows: readonly BrainEntity[]): Architectu
           ...(configs.length === 0
             ? [`No config or manifest artifact was linked to route ${routePath}.`]
             : []),
-          ...(flow.confidence === 'verified'
+          ...(routeArchitectureConfidence(flow) === 'verified'
             ? []
             : [`Route ${routePath} is statically reconstructed and not runtime verified.`]),
         ]).map(safeText),
@@ -10484,7 +10485,7 @@ function architectureEvidenceGaps(params: {
       });
     }
   }
-  for (const flow of params.flows.filter((item) => item.confidence !== 'verified')) {
+  for (const flow of params.flows.filter((item) => afc(item) !== 'verified')) {
     gaps.push({
       gap_id: `gap:${safeText(flow.id)}:runtime-verification`,
       entity_id: safeText(flow.id),
@@ -10492,7 +10493,7 @@ function architectureEvidenceGaps(params: {
       severity: flowStringArray(flow, 'components').length > 1 ? 'high' : 'medium',
       evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
       rules: [
-        `confidence:${flow.confidence}`,
+        `confidence:${afc(flow)}`,
         `components:${flowStringArray(flow, 'components').length}`,
       ],
     });
@@ -11681,7 +11682,7 @@ function inferServices(params: {
         : []),
     ]);
     const unknowns = unique([
-      ...(routes.length === 0
+      ...(routes.length === 0 && jobs.length === 0
         ? ['No API route evidence was linked directly to this service.']
         : []),
       ...(jobs.length === 0
@@ -11919,10 +11920,7 @@ function buildArchitectureReasoningArtifact(params: {
         outbound_count: outboundCount,
         coupling_level: coupling.level,
         coupling_score: coupling.score,
-        confidence: weakestConfidence([
-          component.confidence,
-          ...componentFlows.map((flow) => flow.confidence),
-        ]),
+        confidence: weakestConfidence([component.confidence, ...componentFlows.map(afc)]),
         evidence_ids: unique([
           ...component.evidence_ids,
           ...componentFlows.flatMap((flow) => flow.evidence_ids),
@@ -12057,7 +12055,7 @@ function buildArchitectureReasoningArtifact(params: {
   const changedFlows = flows.filter((flow) =>
     flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
   );
-  const lowConfidenceFlows = flows.filter((flow) => flow.confidence !== 'verified');
+  const weakFlows = flows.filter((flow) => afc(flow) !== 'verified');
   const reviewHints: Array<Record<string, unknown>> = [];
   if (changedFlows.length > 0) {
     reviewHints.push({
@@ -12107,14 +12105,13 @@ function buildArchitectureReasoningArtifact(params: {
       confidence: 'inferred',
     });
   }
-  if (lowConfidenceFlows.length > 0) {
+  if (weakFlows.length > 0) {
     reviewHints.push({
-      reason:
-        'Low-confidence flows need evidence review before architectural decisions rely on them.',
-      affected_flows: lowConfidenceFlows.map((flow) => safeText(flow.id)),
-      suggested_tests: unique(
-        lowConfidenceFlows.flatMap((flow) => flowStringArray(flow, 'tests')),
-      ).map(safeText),
+      reason: 'Low-confidence flows need evidence review.',
+      affected_flows: weakFlows.map((flow) => safeText(flow.id)),
+      suggested_tests: unique(weakFlows.flatMap((flow) => flowStringArray(flow, 'tests'))).map(
+        safeText,
+      ),
       confidence: 'inferred',
     });
   }
@@ -12228,9 +12225,7 @@ function buildArchitectureReasoningArtifact(params: {
           `${relationshipsWithoutEvidence.length} relationship(s) do not have direct evidence IDs yet.`,
         ]
       : []),
-    ...(lowConfidenceFlows.length > 0
-      ? [`${lowConfidenceFlows.length} reconstructed flow(s) are not verified yet.`]
-      : []),
+    ...(weakFlows.length > 0 ? [`${weakFlows.length} flow(s) need local evidence.`] : []),
     ...(crossComponentFlows.length === 0 &&
     crossComponentRelationships.length === 0 &&
     flows.length > 0
@@ -12259,6 +12254,7 @@ function buildArchitectureReasoningArtifact(params: {
     route_what_breaks: routeWhatBreaks,
     deployment_intelligence: deploymentIntelligence,
     service_intelligence: serviceIntelligence,
+    component_local_evidence: acl({ components, flows, services }),
     service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,

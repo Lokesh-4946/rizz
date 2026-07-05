@@ -1513,9 +1513,7 @@ describe('project brain generation', () => {
       expect(architectureReasoning.impact_map.calibration_rule).toContain(
         'deterministic static inference',
       );
-      expect(architectureReasoning.unknowns).toContain(
-        '2 reconstructed flow(s) are not verified yet.',
-      );
+      expect(architectureReasoning.unknowns).toContain('2 flow(s) need local evidence.');
       expect(architectureReasoning.confidence_debt).toMatchObject({
         debt_level: expect.stringMatching(/low|medium|high/),
         debt_count: expect.any(Number),
@@ -1535,7 +1533,7 @@ describe('project brain generation', () => {
         evidence_gap_ids: expect.any(Array),
       });
       expect(architectureReasoning.confidence_debt.blocking_unknowns).toContain(
-        '2 reconstructed flow(s) are not verified yet.',
+        '2 flow(s) need local evidence.',
       );
 
       const benchmarkReady = await readJson<{
@@ -4116,7 +4114,7 @@ describe('project brain generation', () => {
             }),
           ]),
           coupling_level: 'medium',
-          confidence: 'inferred',
+          confidence: 'verified',
           evidence_ids: expect.arrayContaining([
             'evidence:file-src--server.ts',
             'evidence:file-src--orders--service.ts',
@@ -4950,7 +4948,7 @@ describe('project brain generation', () => {
           affected_files: expect.arrayContaining(['src/api.ts', 'src/sessions/service.ts']),
           affected_tests: expect.arrayContaining(['src/sessions/session.test.ts']),
           affected_configs: expect.arrayContaining(['package.json', 'tsconfig.json']),
-          confidence: 'inferred',
+          confidence: 'verified',
           what_breaks: expect.arrayContaining([
             expect.stringContaining('Changing route /sessions can alter POST request handling'),
           ]),
@@ -5463,8 +5461,8 @@ describe('project brain generation', () => {
           what_breaks: expect.arrayContaining([
             expect.stringContaining('Changing the route entrypoint can alter /docs/[slug]'),
           ]),
-          evidence_gap_ids: expect.arrayContaining([`gap:${docsPage.id}:runtime-verification`]),
-          confidence: 'inferred',
+          evidence_gap_ids: [],
+          confidence: 'verified',
           confidence_score: expect.any(Number),
         }),
       );
@@ -5494,7 +5492,7 @@ describe('project brain generation', () => {
           affected_components: expect.arrayContaining(['component:src']),
           affected_tests: expect.arrayContaining(['src/app/docs/[slug]/page.test.tsx']),
           affected_configs: expect.arrayContaining(['next.config.ts', 'package.json']),
-          evidence_gap_ids: expect.arrayContaining([`gap:${docsPage.id}:runtime-verification`]),
+          evidence_gap_ids: [],
           what_breaks: expect.arrayContaining([
             expect.stringContaining('Changing route /docs/[slug] can alter page rendering'),
           ]),
@@ -5516,7 +5514,8 @@ describe('project brain generation', () => {
             'tests:2',
           ]),
           evidence_ids: expect.arrayContaining([expect.stringContaining('evidence:file-')]),
-          unknowns: expect.arrayContaining([expect.stringContaining('not runtime verified')]),
+          unknowns: [],
+          confidence: 'verified',
         }),
       );
       expect(architectureReasoning.design_pressures).toContainEqual(
