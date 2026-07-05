@@ -28,14 +28,13 @@ ECC-inspired features are useful when they strengthen that contract without join
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice makes package-script flows causally useful under capped scans. Script commands now
-produce manifest-backed command-target steps when their target path is named in `package.json` but
-falls outside the scan cap, while scanned shell scripts are treated as source handlers. Quoted
-compound commands are rejected as targets so rizz does not invent fake file paths. After
-calibration, the 120-file large-repo UAT matrix moved Flow Understanding from 87/100 to 91/100:
-`github/docs` Flow moved from 85/100 to 90/100, and `vercel/next.js` moved from 88/100 to 91/100.
-The next weakest repo-derived area is Architecture Reasoning, specifically reducing low-confidence
-script architecture gaps without over-claiming runtime verification.
+The current slice sharpens Architecture Reasoning for script-derived flows. rizz now separates
+missing local evidence from local static evidence that still needs runtime verification, so
+manifest-backed command targets no longer inflate the "needs local evidence" queue. After
+calibration, the 120-file large-repo UAT matrix moved Architecture Reasoning from 83/100 to 84/100:
+`github/docs` Architecture moved from 78/100 to 79/100, and `vercel/next.js` moved from 88/100 to
+89/100. The next weakest repo-derived area remains Architecture Reasoning, specifically component
+boundary evidence and component-local tests/configs rather than blanket script-flow evidence debt.
 
 ## Capability Scorecard
 
@@ -60,7 +59,7 @@ Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
 | Flow Understanding | 91/100 | 10 | 87/100 | +4 |
-| Architecture Reasoning | 83/100 | 17 | 83/100 | 0 |
+| Architecture Reasoning | 84/100 | 16 | 83/100 | +1 |
 | Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
 | Mission Control UX | 100/100 | 0 | 100/100 | 0 |
 | PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
@@ -70,14 +69,16 @@ Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
 
 Repo detail:
 
-| Repo | Flow score | Remaining | Inventory-only scripts | Command-target script flows | Weakest capability |
+| Repo | Architecture score | Remaining | Local evidence gap flows | Static runtime verification flows | Weakest capability |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `github/docs` | 90/100 | 10 | 4 | 101 | Architecture Reasoning, 78/100 |
-| `vercel/next.js` | 91/100 | 9 | 17 | 57 | Architecture Reasoning, 88/100 |
+| `github/docs` | 79/100 | 21 | 0 | 113 | Architecture Reasoning, 79/100 |
+| `vercel/next.js` | 89/100 | 11 | 0 | 101 | Incremental Understanding metrics, 88/100 |
 
 Precision notes:
 
-- `github/docs` inventory-only package-script flows dropped from 82 to 4 under the 120-file cap.
-- `vercel/next.js` inventory-only package-script flows dropped from 26 to 17 under the 120-file cap.
-- Manifest-backed command-target steps are evidence-backed by the package script line and do not
-  pretend an out-of-cap source file was scanned.
+- `github/docs` no longer reports `113 flow(s) need local evidence`; it reports 113 weak flows as
+  static runtime-verification debt with 0 local-evidence gap flows.
+- `vercel/next.js` no longer reports `101 flow(s) need local evidence`; it reports 101 weak flows as
+  static runtime-verification debt with 0 local-evidence gap flows.
+- Runtime verification remains explicit in `flow_evidence_precision`; local static evidence does not
+  upgrade these script-derived flows to verified architecture confidence.

@@ -6,6 +6,8 @@ import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import {
   componentLocalEvidenceRecords as acl,
   flowArchitectureConfidence as afc,
+  architectureFlowEvidenceSummary as afes,
+  architectureFlowEvidencePrecisionRecord as afpr,
 } from './architecture-confidence.js';
 import {
   commandTargetPaths,
@@ -12038,7 +12040,8 @@ function buildArchitectureReasoningArtifact(params: {
   const changedFlows = flows.filter((flow) =>
     flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
   );
-  const weakFlows = flows.filter((flow) => afc(flow) !== 'verified');
+  const flowEvidenceSummary = afes(flows);
+  const weakFlows = flowEvidenceSummary.weakFlows;
   const reviewHints: Array<Record<string, unknown>> = [];
   if (changedFlows.length > 0) {
     reviewHints.push({
@@ -12208,7 +12211,9 @@ function buildArchitectureReasoningArtifact(params: {
           `${relationshipsWithoutEvidence.length} relationship(s) do not have direct evidence IDs yet.`,
         ]
       : []),
-    ...(weakFlows.length > 0 ? [`${weakFlows.length} flow(s) need local evidence.`] : []),
+    ...(flowEvidenceSummary.localEvidenceDebtFlows.length > 0
+      ? [`${flowEvidenceSummary.localEvidenceDebtFlows.length} flow(s) need local evidence.`]
+      : []),
     ...(crossComponentFlows.length === 0 &&
     crossComponentRelationships.length === 0 &&
     flows.length > 0
@@ -12238,6 +12243,7 @@ function buildArchitectureReasoningArtifact(params: {
     deployment_intelligence: deploymentIntelligence,
     service_intelligence: serviceIntelligence,
     component_local_evidence: acl({ components, flows, services }),
+    flow_evidence_precision: afpr(flowEvidenceSummary),
     service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
