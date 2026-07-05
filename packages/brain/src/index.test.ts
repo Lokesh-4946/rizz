@@ -192,6 +192,7 @@ describe('project brain generation', () => {
             format: 'prettier --check .',
             docs: 'node scripts/docs.js',
             clean: 'rimraf dist',
+            'clean:packages': "lerna exec 'node ../../scripts/rm.mjs dist'",
             bench: 'node scripts/bench.js',
           },
           dependencies: { express: '^4.19.0' },
@@ -258,6 +259,50 @@ describe('project brain generation', () => {
             expect.stringContaining('inventory-only script flow'),
           ]),
         }),
+      );
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          confidence: string;
+          data?: {
+            confidence?: { score: number };
+            signals?: string[];
+            steps?: Array<{ type: string; path: string; evidence: string[] }>;
+            unknowns?: string[];
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const docsFlow = flows.entities.find((flow) => flow.id === 'flow:scripts--docs');
+      expect(docsFlow).toMatchObject({
+        confidence: 'inferred',
+        data: expect.objectContaining({
+          signals: expect.arrayContaining(['command target', 'package script']),
+        }),
+      });
+      expect(docsFlow?.data?.confidence?.score).toBeGreaterThanOrEqual(0.5);
+      expect(docsFlow?.data?.steps).toContainEqual(
+        expect.objectContaining({
+          type: 'handler',
+          path: 'scripts/docs.js',
+          evidence: ['evidence:file-package.json'],
+        }),
+      );
+      expect(docsFlow?.data?.unknowns).not.toContain(
+        'No source entry file was detected for this package script.',
+      );
+
+      const compoundFlow = flows.entities.find(
+        (flow) => flow.id === 'flow:scripts--clean-packages',
+      );
+      expect(compoundFlow?.data?.signals).not.toContain('command target');
+      expect(compoundFlow?.data?.steps).not.toContainEqual(
+        expect.objectContaining({
+          path: expect.stringContaining(' '),
+        }),
+      );
+      expect(compoundFlow?.data?.unknowns).toContain(
+        'No source entry file was detected for this package script.',
       );
     });
   });

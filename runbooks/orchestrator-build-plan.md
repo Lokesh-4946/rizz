@@ -28,14 +28,14 @@ ECC-inspired features are useful when they strengthen that contract without join
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice separates redaction-safe entity confidence from architecture-local confidence, so
-route and service flows can be treated as verified for architecture when static route, test, config,
-and service evidence is present. Architecture artifacts now include component-local route/service
-evidence records, and job-backed script services no longer claim missing API-route evidence. After
-calibration, the 120-file large-repo UAT matrix moved Architecture Reasoning from 82/100 to 83/100:
-`github/docs` Architecture moved from 76/100 to 78/100, and `vercel/next.js` moved from 87/100 to
-88/100. The next weakest repo-derived area is still Architecture Reasoning, now specifically package
-script flows that need source/test/service causality before they can be architecture-verified.
+The current slice makes package-script flows causally useful under capped scans. Script commands now
+produce manifest-backed command-target steps when their target path is named in `package.json` but
+falls outside the scan cap, while scanned shell scripts are treated as source handlers. Quoted
+compound commands are rejected as targets so rizz does not invent fake file paths. After
+calibration, the 120-file large-repo UAT matrix moved Flow Understanding from 87/100 to 91/100:
+`github/docs` Flow moved from 85/100 to 90/100, and `vercel/next.js` moved from 88/100 to 91/100.
+The next weakest repo-derived area is Architecture Reasoning, specifically reducing low-confidence
+script architecture gaps without over-claiming runtime verification.
 
 ## Capability Scorecard
 
@@ -59,28 +59,25 @@ Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
 
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
-| Flow Understanding | 87/100 | 14 | 87/100 | 0 |
-| Architecture Reasoning | 83/100 | 17 | 82/100 | +1 |
+| Flow Understanding | 91/100 | 10 | 87/100 | +4 |
+| Architecture Reasoning | 83/100 | 17 | 83/100 | 0 |
 | Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
 | Mission Control UX | 100/100 | 0 | 100/100 | 0 |
 | PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
 | Incremental Understanding metrics | 88/100 | 12 | 88/100 | 0 |
-| Review Intelligence with true blast radius | 90/100 | 10 | 90/100 | 0 |
-| `rizz ask` | 92/100 | 9 | 92/100 | 0 |
+| Review Intelligence with true blast radius | 91/100 | 9 | 90/100 | +1 |
+| `rizz ask` | 92/100 | 8 | 92/100 | 0 |
 
 Repo detail:
 
-| Repo | Architecture score | Remaining | Impact surfaces | Cross-component relationships | Service causality paths | Weakest capability |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `github/docs` | 78/100 | 22 | 11 | 0 | 0 of 0 services | Architecture Reasoning, 78/100 |
-| `vercel/next.js` | 88/100 | 12 | 2 | 1 | 1 across 1 service | Flow Understanding, 88/100 |
+| Repo | Flow score | Remaining | Inventory-only scripts | Command-target script flows | Weakest capability |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `github/docs` | 90/100 | 10 | 4 | 101 | Architecture Reasoning, 78/100 |
+| `vercel/next.js` | 91/100 | 9 | 17 | 57 | Architecture Reasoning, 88/100 |
 
 Precision notes:
 
-- `github/docs` now reports `component:src` as component-local verified with 9 route flows, 44 local
-  tests, and 8 local configs; the remaining 113 weak flows are mostly package-script inventory.
-- `vercel/next.js` now reports `component:test` as component-local verified and `component:scripts`
-  as inferred with 1 direct service flow and `vercel.json` config evidence.
-- `vercel/next.js` no longer emits the misleading "No API route evidence was linked directly to
-  this service" unknown for the job-backed `service:scripts`; the only service unknown is redacted
-  evidence labeling.
+- `github/docs` inventory-only package-script flows dropped from 82 to 4 under the 120-file cap.
+- `vercel/next.js` inventory-only package-script flows dropped from 26 to 17 under the 120-file cap.
+- Manifest-backed command-target steps are evidence-backed by the package script line and do not
+  pretend an out-of-cap source file was scanned.
