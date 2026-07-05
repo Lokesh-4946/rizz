@@ -19,18 +19,19 @@ ECC-inspired features are useful when they strengthen that contract without join
 
 ## Current Loop
 
-1. Calibrate first-scan Incremental Understanding so baseline capture is scored separately from
-   repeated-scan reuse.
+1. Calibrate Flow Understanding so capped large-repo UAT scores high-signal route/script/test
+   flows separately from inventory-only package-script flows.
 2. Scorecard reporting after each UAT run: planned score, actual repo capability score, and
    remaining distance to 100.
 3. Use bounded UAT on complex repos such as `github/docs` and `vercel/next.js` to choose the next
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice keeps raw first-scan reuse metrics honest while scoring baseline capture fairly.
-After calibration, the 120-file large-repo UAT matrix moved Incremental Understanding metrics from
-45/100 to 88/100, leaving Flow Understanding and Architecture Reasoning as the next weakest actual
-repo-derived areas.
+The current slice keeps low-signal package-script inventory inspectable while scoring flow readiness
+from stronger local evidence: entrypoints, steps, evidence, contracts, causal surfaces,
+verification/test surfaces, and confidence. After calibration, the 120-file large-repo UAT matrix
+moved Flow Understanding from 69/100 to 87/100, leaving Architecture Reasoning as the next weakest
+actual repo-derived area.
 
 ## Capability Scorecard
 
@@ -47,3 +48,25 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
 | Review Intelligence with true blast radius | 88/100 | 12 | Tie changed files to user-visible failures with stronger causality. |
 | `rizz ask` | 0/100 | 100 | Keep gated until foundation scores justify broad answers. |
+
+## Latest 120-File UAT Actuals
+
+Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
+
+| Capability | Matrix score | Remaining | Previous matrix score | Movement |
+| --- | ---: | ---: | ---: | ---: |
+| Flow Understanding | 87/100 | 14 | 69/100 | +18 |
+| Architecture Reasoning | 71/100 | 29 | 71/100 | 0 |
+| Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
+| Mission Control UX | 100/100 | 0 | 100/100 | 0 |
+| PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
+| Incremental Understanding metrics | 88/100 | 12 | 88/100 | 0 |
+| Review Intelligence with true blast radius | 88/100 | 13 | 84/100 | +4 |
+| `rizz ask` | 90/100 | 10 | 87/100 | +3 |
+
+Repo detail:
+
+| Repo | Flow score | Remaining | High-signal candidates | Inventory-only script gaps | Weakest capability |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `github/docs` | 85/100 | 15 | 40 | 82 | Architecture Reasoning, 59/100 |
+| `vercel/next.js` | 88/100 | 12 | 76 | 26 | Architecture Reasoning, 83/100 |

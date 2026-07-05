@@ -176,6 +176,92 @@ describe('project brain generation', () => {
     });
   });
 
+  it('scores high-signal flow candidates separately from inventory-only scripts', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src', 'accounts'), { recursive: true });
+      await mkdir(join(dir, 'tests'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'flow-signal-calibration',
+          scripts: {
+            start: 'tsx src/server.ts',
+            test: 'vitest run',
+            build: 'tsc -b',
+            lint: 'eslint .',
+            format: 'prettier --check .',
+            docs: 'node scripts/docs.js',
+            clean: 'rimraf dist',
+            bench: 'node scripts/bench.js',
+          },
+          dependencies: { express: '^4.19.0' },
+          devDependencies: { tsx: '^4.0.0', typescript: '^5.0.0', vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'src', 'server.ts'),
+        'import express from "express";\nimport { loadProfile } from "./accounts/repository.js";\nconst app = express();\napp.get("/profile", async (_req, res) => res.json(await loadProfile("guest")));\nexport { app };\n',
+      );
+      await writeFile(
+        join(dir, 'src', 'accounts', 'repository.ts'),
+        'export async function loadProfile(id: string) { return { id, source: "repository" }; }\n',
+      );
+      await writeFile(
+        join(dir, 'tests', 'profile.test.ts'),
+        'import { expect, it } from "vitest";\nit("loads a profile", () => expect("profile").toBe("profile"));\n',
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:00:00.000Z'),
+      });
+
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      const understandingScore = await readJson<{
+        dimensions: {
+          flows: {
+            score: number;
+            summary: string;
+            signals: string[];
+            weak_spots: string[];
+          };
+        };
+        capability_scorecard: {
+          capabilities: Array<{
+            key: string;
+            score: number;
+            evidence_basis: string[];
+          }>;
+        };
+      }>(join(brain.value.researchDir, 'understanding_score.json'));
+      expect(understandingScore.dimensions.flows.score).toBeGreaterThanOrEqual(80);
+      expect(understandingScore.dimensions.flows.summary).toContain('high-signal candidate');
+      expect(understandingScore.dimensions.flows.signals).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('high-signal flow candidate'),
+          expect.stringContaining('inventory-only script flow'),
+          expect.stringContaining('causal surfaces'),
+          expect.stringContaining('verification surfaces'),
+        ]),
+      );
+      expect(understandingScore.dimensions.flows.weak_spots).toEqual(
+        expect.arrayContaining([expect.stringContaining('inventory-only')]),
+      );
+      expect(understandingScore.capability_scorecard.capabilities).toContainEqual(
+        expect.objectContaining({
+          key: 'flow_understanding',
+          score: understandingScore.dimensions.flows.score,
+          evidence_basis: expect.arrayContaining([
+            expect.stringContaining('high-signal flow candidate'),
+            expect.stringContaining('inventory-only script flow'),
+          ]),
+        }),
+      );
+    });
+  });
+
   it('writes relational brain files, latest state, graph, snapshot, and report', async () => {
     await withTempProject(async (dir) => {
       await writeFile(

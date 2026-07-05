@@ -5159,6 +5159,110 @@ function flowSteps(entity: BrainEntity): FlowStep[] {
   });
 }
 
+interface FlowSignalProfile {
+  readonly flow: BrainEntity;
+  readonly hasEntrypoint: boolean;
+  readonly hasSteps: boolean;
+  readonly hasEvidence: boolean;
+  readonly hasContracts: boolean;
+  readonly hasCausalSurface: boolean;
+  readonly hasVerificationSurface: boolean;
+  readonly isHighSignal: boolean;
+  readonly isInventoryOnly: boolean;
+  readonly confidenceScore: number;
+}
+
+function flowHasNonCommandEntrypoint(entrypoints: readonly FlowEntrypoint[]): boolean {
+  return entrypoints.some((entrypoint) => entrypoint.type !== 'command');
+}
+
+function flowHasCausalStep(steps: readonly FlowStep[]): boolean {
+  return steps.some((step) =>
+    [
+      'handler',
+      'service',
+      'function',
+      'test',
+      'test_coverage',
+      'rendering_response',
+      'data_access',
+    ].includes(step.type),
+  );
+}
+
+function flowSignalProfile(flow: BrainEntity): FlowSignalProfile {
+  const entrypoints = flowEntrypoints(flow);
+  const steps = flowSteps(flow);
+  const kind = flowKind(flow);
+  const hasRouteOrApiEntrypoint = flowHasNonCommandEntrypoint(entrypoints) || kind === 'api';
+  const hasVerificationSurface = flowStringArray(flow, 'tests').length > 0 || kind === 'test';
+  const hasCausalSurface =
+    safeFlowServiceCausality(flow).length > 0 ||
+    safeFlowDataDependencies(flow).length > 0 ||
+    flowStringArray(flow, 'services').length > 0 ||
+    flowHasCausalStep(steps);
+  const isHighSignal = hasRouteOrApiEntrypoint || hasVerificationSurface || hasCausalSurface;
+  const isInventoryOnly =
+    entrypoints.length > 0 &&
+    entrypoints.every((entrypoint) => entrypoint.type === 'command') &&
+    !hasVerificationSurface &&
+    !hasCausalSurface;
+  return {
+    flow,
+    hasEntrypoint: entrypoints.length > 0,
+    hasSteps: steps.length > 0,
+    hasEvidence: flow.evidence_ids.length > 0,
+    hasContracts:
+      flowStringArray(flow, 'entry_contract').length > 0 &&
+      flowStringArray(flow, 'exit_contract').length > 0,
+    hasCausalSurface,
+    hasVerificationSurface,
+    isHighSignal,
+    isInventoryOnly,
+    confidenceScore: asFlowConfidenceScore(flow),
+  };
+}
+
+function flowSignalScore(profiles: readonly FlowSignalProfile[]): number {
+  if (profiles.length === 0) return 0;
+  const scoredProfiles = profiles.filter((profile) => profile.isHighSignal);
+  const denominatorProfiles = scoredProfiles.length > 0 ? scoredProfiles : profiles;
+  const denominator = denominatorProfiles.length;
+  const averageConfidence =
+    denominatorProfiles.reduce((total, profile) => total + profile.confidenceScore, 0) /
+    denominator;
+  return boundedScore(
+    scorePercent(
+      denominatorProfiles.filter((profile) => profile.hasEntrypoint).length,
+      denominator,
+    ) *
+      0.16 +
+      scorePercent(denominatorProfiles.filter((profile) => profile.hasSteps).length, denominator) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasEvidence).length,
+        denominator,
+      ) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasContracts).length,
+        denominator,
+      ) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasCausalSurface).length,
+        denominator,
+      ) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasVerificationSurface).length,
+        denominator,
+      ) *
+        0.1 +
+      averageConfidence * 100 * 0.1,
+  );
+}
+
 function inferScriptFlow(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -14006,6 +14110,9 @@ function buildPieCapabilityScorecard(params: {
   const askIsBlocked =
     recordString(askReadiness, 'status', scoreBand(askReadinessScore)) === 'blocked' ||
     foundationAverage < 95;
+  const flowProfiles = params.flows.map(flowSignalProfile);
+  const highSignalFlowCount = flowProfiles.filter((profile) => profile.isHighSignal).length;
+  const inventoryOnlyFlowCount = flowProfiles.filter((profile) => profile.isInventoryOnly).length;
   const capabilities = [
     capabilityScoreRecord({
       key: 'flow_understanding',
@@ -14013,6 +14120,8 @@ function buildPieCapabilityScorecard(params: {
       score: flowScore,
       evidenceBasis: [
         `${params.flows.length} reconstructed flow(s)`,
+        `${highSignalFlowCount} high-signal flow candidate(s) scored`,
+        `${inventoryOnlyFlowCount} inventory-only script flow(s) tracked as gaps`,
         `${params.flows.filter((flow) => flowSteps(flow).length > 0).length} flow(s) with steps`,
         `${params.flows.filter((flow) => flowStringArray(flow, 'tests').length > 0).length} flow(s) with tests`,
       ],
@@ -14159,16 +14268,14 @@ function buildUnderstandingScoreArtifact(params: {
   const flowsWithSteps = flows.filter((flow) => flowSteps(flow).length > 0);
   const flowsWithEvidence = flows.filter((flow) => flow.evidence_ids.length > 0);
   const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
-  const averageFlowConfidence =
-    flows.length === 0
-      ? 0
-      : flows.reduce((total, flow) => total + asFlowConfidenceScore(flow), 0) / flows.length;
-  const flowScore = boundedScore(
-    scorePercent(flowsWithSteps.length, flows.length) * 0.3 +
-      scorePercent(flowsWithEvidence.length, flows.length) * 0.25 +
-      scorePercent(flowsWithTests.length, flows.length) * 0.2 +
-      averageFlowConfidence * 100 * 0.25,
+  const flowProfiles = flows.map(flowSignalProfile);
+  const highSignalFlowProfiles = flowProfiles.filter((profile) => profile.isHighSignal);
+  const inventoryOnlyFlowProfiles = flowProfiles.filter((profile) => profile.isInventoryOnly);
+  const flowProfilesWithCausalSurface = flowProfiles.filter((profile) => profile.hasCausalSurface);
+  const flowProfilesWithVerificationSurface = flowProfiles.filter(
+    (profile) => profile.hasVerificationSurface,
   );
+  const flowScore = flowSignalScore(flowProfiles);
   const knownBoundaryComponents = components.filter(
     (component) => stringData(component, 'boundary_type') !== 'unknown',
   );
@@ -14221,15 +14328,29 @@ function buildUnderstandingScoreArtifact(params: {
     }),
     flows: dimensionRecord({
       score: flowScore,
-      summary: `${flows.length} reconstructed flow(s), ${flowsWithTests.length} with tests.`,
+      summary: `${flows.length} reconstructed flow(s), ${highSignalFlowProfiles.length} high-signal candidate(s), ${flowsWithTests.length} with linked tests.`,
       signals: [
+        `${highSignalFlowProfiles.length} high-signal flow candidate(s) scored`,
+        `${inventoryOnlyFlowProfiles.length} inventory-only script flow(s) kept as inspectable gaps`,
+        `${flowProfilesWithCausalSurface.length} flow(s) with causal surfaces`,
+        `${flowProfilesWithVerificationSurface.length} flow(s) with verification surfaces`,
         `${flowsWithSteps.length} flow(s) with steps`,
         `${flowsWithEvidence.length} flow(s) with evidence`,
       ],
-      weakSpots: flows
-        .filter((flow) => flow.confidence !== 'verified')
+      weakSpots: unique([
+        ...(inventoryOnlyFlowProfiles.length > 0
+          ? [
+              `${inventoryOnlyFlowProfiles.length} package-script flow(s) are inventory-only until source, service, data, or test causality is linked.`,
+            ]
+          : []),
+        ...highSignalFlowProfiles
+          .filter((profile) => !profile.hasVerificationSurface)
+          .map((profile) => profile.flow.id),
+        ...inventoryOnlyFlowProfiles.map((profile) => profile.flow.id),
+        ...flows.filter((flow) => flow.confidence !== 'verified').map((flow) => flow.id),
+      ])
         .slice(0, 6)
-        .map((flow) => flow.id),
+        .map(safeText),
     }),
     services: dimensionRecord({
       score: serviceScore,
