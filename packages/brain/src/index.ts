@@ -12,6 +12,14 @@ import {
   shouldOmitSensitivePath,
   unredactedSensitiveReferenceCount,
 } from './sensitivity.js';
+import {
+  flowIntelligenceCoversFile as flowCoversFile,
+  inferServiceEntrypointFlow as inferSvcFlow,
+  pathMatchesServiceRoot as sr,
+  serviceEntrypointsForFlowFallback as svcFlowEntrypoints,
+  serviceIdsForFiles as svcIdsForFiles,
+  serviceStepsForFlow as svcStepsForFlow,
+} from './service-flow-linking.js';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
@@ -4006,6 +4014,10 @@ function componentIdsForFiles(
   );
 }
 
+function idsEvidence(ids: readonly string[], entities: readonly BrainEntity[]): string[] {
+  return ids.flatMap((id) => entities.find((entity) => entity.id === id)?.evidence_ids ?? []);
+}
+
 function flowConfidenceFor(
   intelligence: Pick<FlowIntelligence, 'tests' | 'signals' | 'unknowns'>,
 ): {
@@ -5325,6 +5337,12 @@ function inferScriptFlow(params: {
   const relatedComponents = params.components.filter((component) =>
     relatedComponentIds.has(component.id),
   );
+  const serviceLinkFiles = unique([
+    ...commandFiles.map((file) => file.relativePath),
+    ...entryFiles.map((file) => file.relativePath),
+    ...importContext.importedFiles.map((file) => file.relativePath),
+  ]);
+  const serviceIds = svcIdsForFiles(serviceLinkFiles, params.services);
   const files = unique([
     params.packageFact.relativePath,
     ...commandFiles.map((file) => file.relativePath),
@@ -5334,7 +5352,6 @@ function inferScriptFlow(params: {
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'important_files')),
     ...relatedComponents.flatMap((component) => component.source_files.slice(0, 3)),
   ]).slice(0, 30);
-  const serviceIds = serviceIdsForFiles(files, params.services);
   const configs = unique([
     params.packageFact.relativePath,
     ...deploymentConfigs.map((file) => file.relativePath),
@@ -5406,6 +5423,18 @@ function inferScriptFlow(params: {
     });
     order += 1;
   }
+  const serviceSteps = svcStepsForFlow({
+    flowId,
+    startOrder: order,
+    files: serviceLinkFiles,
+    serviceIds,
+    services: params.services,
+    safeText,
+    evidenceId,
+    flowStepId,
+  });
+  steps.push(...serviceSteps);
+  order += serviceSteps.length;
   for (const config of configs.slice(0, 3)) {
     steps.push({
       step_id: flowStepId(flowId, order),
@@ -5580,13 +5609,9 @@ function inferScriptFlow(params: {
       runtime_surfaces: unique([
         scriptEvidenceId,
         ...configs.map(evidenceId),
-        ...serviceIds.flatMap(
-          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-        ),
+        ...idsEvidence(serviceIds, params.services),
       ]),
-      services: serviceIds.flatMap(
-        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-      ),
+      services: idsEvidence(serviceIds, params.services),
       service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: tests.map(evidenceId),
@@ -5824,7 +5849,7 @@ function inferNextAppRouteFlow(params: {
   const relatedComponents = params.components.filter((component) =>
     componentIds.includes(component.id),
   );
-  const serviceIds = serviceIdsForFiles(
+  const serviceIds = svcIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.services,
   );
@@ -6041,13 +6066,9 @@ function inferNextAppRouteFlow(params: {
       runtime_surfaces: unique([
         evId,
         ...configs.map(evidenceId),
-        ...serviceIds.flatMap(
-          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-        ),
+        ...idsEvidence(serviceIds, params.services),
       ]),
-      services: serviceIds.flatMap(
-        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-      ),
+      services: idsEvidence(serviceIds, params.services),
       service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
@@ -6454,7 +6475,7 @@ function inferHttpRouteDeclarationFlow(params: {
   const relatedComponents = params.components.filter((component) =>
     componentIds.includes(component.id),
   );
-  const serviceIds = serviceIdsForFiles(
+  const serviceIds = svcIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.services,
   );
@@ -6666,13 +6687,9 @@ function inferHttpRouteDeclarationFlow(params: {
       runtime_surfaces: unique([
         evId,
         ...configs.map(evidenceId),
-        ...serviceIds.flatMap(
-          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-        ),
+        ...idsEvidence(serviceIds, params.services),
       ]),
-      services: serviceIds.flatMap(
-        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-      ),
+      services: idsEvidence(serviceIds, params.services),
       service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
@@ -6703,7 +6720,7 @@ function inferRouteFlow(params: {
     allScannedFiles.map((file) => file.relativePath),
     params.components,
   );
-  const serviceIds = serviceIdsForFiles(
+  const serviceIds = svcIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.services,
   );
@@ -6857,13 +6874,9 @@ function inferRouteFlow(params: {
       runtime_surfaces: unique([
         evId,
         ...configs.map(evidenceId),
-        ...serviceIds.flatMap(
-          (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-        ),
+        ...idsEvidence(serviceIds, params.services),
       ]),
-      services: serviceIds.flatMap(
-        (id) => params.services.find((service) => service.id === id)?.evidence_ids ?? [],
-      ),
+      services: idsEvidence(serviceIds, params.services),
       service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
@@ -7012,6 +7025,30 @@ function reconstructFlows(params: {
         changedFiles: changedFileSet,
       }),
     );
+  }
+  for (const service of params.buckets.services) {
+    for (const entrypoint of svcFlowEntrypoints(service)) {
+      if (flowCoversFile(flowIntelligence, entrypoint)) continue;
+      flowIntelligence.push(
+        inferSvcFlow({
+          rootDir: params.rootDir,
+          service,
+          entrypoint,
+          changedFiles: changedFileSet,
+          deps: {
+            safeText,
+            evidenceId,
+            entityId,
+            flowStepId,
+            flowEvidenceForNeedle,
+            flowConfidenceFor,
+            flowServiceCausality,
+            inferFlowContracts,
+            flowRuntimeSurfaces,
+          },
+        }),
+      );
+    }
   }
 
   const byId = new Map<string, FlowIntelligence>();
@@ -11752,18 +11789,6 @@ function inferServices(params: {
   return sorted(services, (service) => service.id);
 }
 
-function serviceIdsForFiles(files: readonly string[], services: readonly BrainEntity[]): string[] {
-  return unique(
-    services
-      .filter((service) =>
-        service.source_files.some((source) =>
-          files.some((file) => file === source || source.startsWith(`${file}/`)),
-        ),
-      )
-      .map((service) => service.id),
-  );
-}
-
 function flowServiceCausality(params: {
   readonly frameworkLabel: string;
   readonly entryLabel: string;
@@ -11775,9 +11800,16 @@ function flowServiceCausality(params: {
   return params.serviceIds.flatMap((serviceId): FlowServiceCausality[] => {
     const service = params.services.find((item) => item.id === serviceId);
     if (service === undefined) return [];
-    const serviceFiles = service.source_files.filter((file) => params.files.includes(file));
+    const serviceFiles = unique([
+      ...service.source_files.filter((file) =>
+        params.files.some((candidate) => file === candidate || candidate.startsWith(`${file}/`)),
+      ),
+      ...params.files.filter((file) => sr(file, service)),
+    ]);
     const serviceSteps = params.steps.filter(
-      (step) => step.type === 'service' && service.source_files.includes(step.path),
+      (step) =>
+        ['handler', 'service', 'function'].includes(step.type) &&
+        (service.source_files.includes(step.path) || sr(step.path, service)),
     );
     const storage = serviceDataStringArray(service, 'storage_dependencies');
     const envVars = serviceDataStringArray(service, 'environment_variables');
