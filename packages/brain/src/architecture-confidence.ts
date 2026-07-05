@@ -17,6 +17,19 @@ interface ServiceCausalityLike {
   readonly evidence_ids?: unknown;
 }
 
+interface FlowStepLike {
+  readonly type?: unknown;
+  readonly path?: unknown;
+  readonly evidence?: unknown;
+}
+
+export interface ArchitectureFlowEvidenceSummary<T extends EntityLike = EntityLike> {
+  readonly weakFlows: readonly T[];
+  readonly localEvidenceDebtFlows: readonly T[];
+  readonly staticRuntimeDebtFlows: readonly T[];
+  readonly scriptStaticEvidenceFlows: readonly T[];
+}
+
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -55,6 +68,84 @@ function flowEntrypoints(flow: EntityLike): EntrypointLike[] {
 function serviceCausality(flow: EntityLike): ServiceCausalityLike[] {
   const value = flow.data?.service_causality;
   return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function flowSteps(flow: EntityLike): FlowStepLike[] {
+  const value = flow.data?.steps;
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function hasStepEvidence(step: FlowStepLike): boolean {
+  return Array.isArray(step.evidence) && step.evidence.length > 0;
+}
+
+export function flowHasStaticArchitectureEvidence(flow: EntityLike): boolean {
+  const signals = stringArrayData(flow, 'signals');
+  const hasCausalSignal = signals.some((signal) =>
+    [
+      'command path',
+      'command target',
+      'relative import',
+      'source entry',
+      'static import',
+      'test artifact',
+    ].includes(signal),
+  );
+  const hasCausalStep = flowSteps(flow).some(
+    (step) =>
+      typeof step.type === 'string' &&
+      ['function', 'handler', 'service', 'test'].includes(step.type) &&
+      hasStepEvidence(step),
+  );
+  return (
+    hasCausalSignal ||
+    hasCausalStep ||
+    flowEntrypoints(flow).some((entrypoint) => {
+      if (!hasStepEvidence(entrypoint)) return false;
+      return (
+        typeof entrypoint.type === 'string' &&
+        ['api', 'command', 'http', 'layout', 'metadata', 'page', 'route'].includes(entrypoint.type)
+      );
+    }) ||
+    stringArrayData(flow, 'tests').length > 0 ||
+    serviceCausality(flow).some(
+      (item) =>
+        Array.isArray(item.evidence_ids) &&
+        item.evidence_ids.length > 0 &&
+        Array.isArray(item.effects) &&
+        item.effects.length > 0,
+    )
+  );
+}
+
+export function architectureFlowEvidenceSummary<T extends EntityLike>(
+  flows: readonly T[],
+): ArchitectureFlowEvidenceSummary<T> {
+  const weakFlows = flows.filter((flow) => flowArchitectureConfidence(flow) !== 'verified');
+  const staticRuntimeDebtFlows = weakFlows.filter(flowHasStaticArchitectureEvidence);
+  const staticRuntimeIds = new Set(staticRuntimeDebtFlows.map((flow) => flow.id));
+  return {
+    weakFlows,
+    localEvidenceDebtFlows: weakFlows.filter((flow) => !staticRuntimeIds.has(flow.id)),
+    staticRuntimeDebtFlows,
+    scriptStaticEvidenceFlows: staticRuntimeDebtFlows.filter((flow) => {
+      const signals = stringArrayData(flow, 'signals');
+      return stringData(flow, 'kind') === 'script' || signals.includes('package script');
+    }),
+  };
+}
+
+export function architectureFlowEvidencePrecisionRecord(
+  summary: ArchitectureFlowEvidenceSummary,
+): Record<string, unknown> {
+  return {
+    weak_flow_count: summary.weakFlows.length,
+    local_evidence_gap_count: summary.localEvidenceDebtFlows.length,
+    static_runtime_verification_count: summary.staticRuntimeDebtFlows.length,
+    script_static_evidence_count: summary.scriptStaticEvidenceFlows.length,
+    calibration_rule:
+      'Manifest-backed command targets and source/service/test steps count as local static architecture evidence, but they do not claim runtime verification.',
+  };
 }
 
 export function flowArchitectureScore(flow: EntityLike): number {

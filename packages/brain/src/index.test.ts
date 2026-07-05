@@ -1501,6 +1501,12 @@ describe('project brain generation', () => {
           blocking_unknowns: string[];
           calibration_rule: string;
         };
+        flow_evidence_precision: {
+          weak_flow_count: number;
+          local_evidence_gap_count: number;
+          static_runtime_verification_count: number;
+          calibration_rule: string;
+        };
         unknowns: string[];
       }>(join(researchDir, 'architecture_reasoning.json'));
       expect(architectureReasoning.boundary_candidates).toContainEqual(
@@ -1558,7 +1564,13 @@ describe('project brain generation', () => {
       expect(architectureReasoning.impact_map.calibration_rule).toContain(
         'deterministic static inference',
       );
-      expect(architectureReasoning.unknowns).toContain('2 flow(s) need local evidence.');
+      expect(architectureReasoning.unknowns).not.toContain('2 flow(s) need local evidence.');
+      expect(architectureReasoning.flow_evidence_precision).toMatchObject({
+        weak_flow_count: 2,
+        local_evidence_gap_count: 0,
+        static_runtime_verification_count: 2,
+        calibration_rule: expect.stringContaining('do not claim runtime verification'),
+      });
       expect(architectureReasoning.confidence_debt).toMatchObject({
         debt_level: expect.stringMatching(/low|medium|high/),
         debt_count: expect.any(Number),
@@ -1577,7 +1589,7 @@ describe('project brain generation', () => {
         reason: expect.any(String),
         evidence_gap_ids: expect.any(Array),
       });
-      expect(architectureReasoning.confidence_debt.blocking_unknowns).toContain(
+      expect(architectureReasoning.confidence_debt.blocking_unknowns).not.toContain(
         '2 flow(s) need local evidence.',
       );
 

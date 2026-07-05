@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  architectureFlowEvidenceSummary,
   componentLocalEvidenceReadiness,
   componentLocalEvidenceRecords,
   flowArchitectureConfidence,
@@ -58,6 +59,54 @@ describe('architecture confidence calibration', () => {
         },
       }),
     ).toBe('inferred');
+  });
+
+  it('separates script static evidence from missing local evidence debt', () => {
+    const manifestOnlyScript = {
+      id: 'flow:scripts--release',
+      confidence: 'uncertain' as const,
+      evidence_ids: ['evidence:file-package-json'],
+      data: {
+        kind: 'script',
+        confidence: { score: 0.35, reason: 'script-only evidence' },
+        signals: ['package script'],
+        entrypoints: [{ type: 'script', evidence: ['evidence:file-package-json'] }],
+      },
+    };
+    const commandTargetScript = {
+      id: 'flow:scripts--docs',
+      confidence: 'inferred' as const,
+      evidence_ids: ['evidence:file-package-json'],
+      data: {
+        kind: 'script',
+        confidence: { score: 0.7, reason: 'manifest-backed command target' },
+        signals: ['command target', 'package script'],
+        entrypoints: [{ type: 'command', evidence: ['evidence:file-package-json'] }],
+        components: ['component:scripts'],
+        steps: [
+          {
+            type: 'handler',
+            path: 'scripts/docs.js',
+            evidence: ['evidence:file-package-json'],
+          },
+        ],
+      },
+    };
+
+    const summary = architectureFlowEvidenceSummary([manifestOnlyScript, commandTargetScript]);
+
+    expect(summary.weakFlows.map((flow) => flow.id)).toEqual([
+      'flow:scripts--release',
+      'flow:scripts--docs',
+    ]);
+    expect(summary.localEvidenceDebtFlows.map((flow) => flow.id)).toEqual([
+      'flow:scripts--release',
+    ]);
+    expect(summary.staticRuntimeDebtFlows.map((flow) => flow.id)).toEqual(['flow:scripts--docs']);
+    expect(summary.scriptStaticEvidenceFlows.map((flow) => flow.id)).toEqual([
+      'flow:scripts--docs',
+    ]);
+    expect(flowArchitectureConfidence(commandTargetScript)).toBe('inferred');
   });
 
   it('summarizes component-local route and service evidence', () => {
