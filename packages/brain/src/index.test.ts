@@ -3157,6 +3157,118 @@ describe('project brain generation', () => {
     });
   });
 
+  it('links standalone script service entrypoints back to command-flow causality', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'scripts'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'script-service-app',
+          scripts: { test: 'vitest run' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'scripts', 'upload-adapter-results.mjs'),
+        [
+          'import { writeFile } from "node:fs/promises";',
+          'const endpoint = process.env.ADAPTER_RESULTS_ENDPOINT;',
+          'const response = await fetch(endpoint, { method: "POST" });',
+          'await writeFile(".adapter-results.json", String(response.status));',
+          '',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:10:30.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const services = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            related_flows?: string[];
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'services.json'));
+      const scriptService = services.entities.find((service) => service.id === 'service:scripts');
+      expect(scriptService?.data?.related_flows).toContain(
+        'flow:service-job--scripts--upload-adapter-results.mjs',
+      );
+
+      const flows = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: {
+            services?: string[];
+            service_causality?: Array<{
+              service_id: string;
+              files: string[];
+              step_ids: string[];
+              effects: string[];
+              evidence_ids: string[];
+            }>;
+            signals?: string[];
+            unknowns?: string[];
+          };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'flows.json'));
+      const serviceFlow = flows.entities.find(
+        (flow) => flow.id === 'flow:service-job--scripts--upload-adapter-results.mjs',
+      );
+      expect(serviceFlow?.data?.services).toEqual(['service:scripts']);
+      expect(serviceFlow?.data?.signals).toEqual(
+        expect.arrayContaining(['service entrypoint', 'service job', 'external API evidence']),
+      );
+      expect(serviceFlow?.data?.unknowns).toContain(
+        'No package script or route command was found for this service entrypoint in the capped scan.',
+      );
+      expect(serviceFlow?.data?.service_causality).toContainEqual(
+        expect.objectContaining({
+          service_id: 'service:scripts',
+          files: expect.arrayContaining(['scripts/upload-adapter-results.mjs']),
+          step_ids: expect.arrayContaining([
+            'flow-step:flow-service-job--scripts--upload-adapter-results.mjs:001',
+            'flow-step:flow-service-job--scripts--upload-adapter-results.mjs:002',
+          ]),
+          effects: expect.arrayContaining([
+            'env:ADAPTER_RESULTS_ENDPOINT',
+            'external:http-client',
+            'storage:filesystem',
+          ]),
+          evidence_ids: expect.arrayContaining([
+            'evidence:file-scripts--upload-adapter-results.mjs',
+          ]),
+        }),
+      );
+
+      const architectureReasoning = await readJson<{
+        service_causality_reasoning: {
+          total_services: number;
+          total_paths: number;
+          affected_flows: string[];
+          affected_services: string[];
+          effect_count: number;
+          missing_step_link_paths: string[];
+        };
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+      expect(architectureReasoning.service_causality_reasoning.total_services).toBe(1);
+      expect(architectureReasoning.service_causality_reasoning.total_paths).toBe(1);
+      expect(architectureReasoning.service_causality_reasoning.effect_count).toBeGreaterThan(0);
+      expect(architectureReasoning.service_causality_reasoning.missing_step_link_paths).toEqual([]);
+      expect(architectureReasoning.service_causality_reasoning.affected_flows).toContain(
+        'flow:service-job--scripts--upload-adapter-results.mjs',
+      );
+      expect(architectureReasoning.service_causality_reasoning.affected_services).toContain(
+        'service:scripts',
+      );
+    });
+  });
+
   it('emits deterministic flow contracts for validation, side effects, outputs, tests, and configs', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'packages', 'api', 'src', 'routes'), { recursive: true });
