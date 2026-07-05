@@ -8,6 +8,11 @@ import {
   flowArchitectureConfidence as afc,
 } from './architecture-confidence.js';
 import {
+  commandTargetPaths,
+  commandTargetSteps,
+  flowConfidenceFor,
+} from './script-flow-causality.js';
+import {
   classifySensitivePath,
   containsSensitiveReference,
   redactSensitiveText,
@@ -3469,6 +3474,7 @@ const RESOLVABLE_SOURCE_EXTENSIONS = [
   '.mjs',
   '.cjs',
   '.py',
+  '.sh',
   '.json',
 ] as const;
 
@@ -4020,42 +4026,6 @@ function componentIdsForFiles(
 
 function idsEvidence(ids: readonly string[], entities: readonly BrainEntity[]): string[] {
   return ids.flatMap((id) => entities.find((entity) => entity.id === id)?.evidence_ids ?? []);
-}
-
-function flowConfidenceFor(
-  intelligence: Pick<FlowIntelligence, 'tests' | 'signals' | 'unknowns'>,
-): {
-  readonly confidence: Confidence;
-  readonly score: number;
-  readonly reason: string;
-} {
-  let score = 0.35;
-  if (intelligence.signals.includes('package script')) score += 0.2;
-  if (intelligence.signals.includes('static import')) score += 0.15;
-  if (intelligence.signals.includes('route file')) score += 0.15;
-  if (intelligence.tests.length > 0) score += 0.15;
-  if (intelligence.unknowns.length > 0) score -= 0.1;
-  const capped = Math.max(0.1, Math.min(0.95, Number(score.toFixed(2))));
-  if (capped >= 0.9 && intelligence.unknowns.length === 0) {
-    return {
-      confidence: 'verified',
-      score: capped,
-      reason: 'Direct entrypoint, source, and test evidence were detected.',
-    };
-  }
-  if (capped >= 0.5) {
-    return {
-      confidence: 'inferred',
-      score: capped,
-      reason:
-        'Flow is reconstructed from local static evidence; runtime reachability is not traced.',
-    };
-  }
-  return {
-    confidence: 'uncertain',
-    score: capped,
-    reason: 'Flow has weak or partial static evidence and needs confirmation before relying on it.',
-  };
 }
 
 function matchingEvidenceIds(params: {
@@ -5298,6 +5268,7 @@ function inferScriptFlow(params: {
   const ownerComponentId = ownerPath === undefined ? undefined : entityId('component', ownerPath);
   const ownerFiles = sourceFilesForPackage(params.files, params.packageFact);
   const commandFiles = filesReferencedByCommand(params.files, params.command, ownerPath);
+  const commandTargets = commandTargetPaths(params.command, ownerPath);
   const isDeploymentScript = isDeployLikeScript(params.scriptName, params.command);
   const deploymentConfigs = isDeploymentScript
     ? deploymentConfigFilesForPackage(params.files, params.packageFact)
@@ -5398,6 +5369,17 @@ function inferScriptFlow(params: {
     });
     order += 1;
   }
+  const targetSteps = commandTargetSteps({
+    targets: commandEntryFiles.length > 0 ? [] : commandTargets,
+    representedPaths: new Set([...commandFiles, ...entryFiles].map((file) => file.relativePath)),
+    flowId,
+    startOrder: order,
+    scriptName: params.scriptName,
+    evidenceId: scriptEvidenceId,
+    flowStepId,
+  });
+  steps.push(...targetSteps);
+  order += targetSteps.length;
   for (const component of relatedComponents.filter(
     (component) => component.id !== ownerComponentId,
   )) {
@@ -5469,6 +5451,7 @@ function inferScriptFlow(params: {
     ...(isDeploymentScript ? ['deployment'] : []),
     ...(entryFiles.length > 0 ? ['source entry'] : []),
     ...(commandFiles.length > 0 ? ['command path'] : []),
+    ...(commandEntryFiles.length === 0 && commandTargets.length > 0 ? ['command target'] : []),
     ...(importedSpecifiers.size > 0 ? ['static import'] : []),
     ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
     ...(tests.length > 0 ? ['test artifact'] : []),
@@ -5480,7 +5463,7 @@ function inferScriptFlow(params: {
     )
       ? ['Dynamic import is static evidence only; runtime reachability is not traced.']
       : []),
-    ...(entryFiles.length === 0
+    ...(entryFiles.length === 0 && commandTargets.length === 0
       ? ['No source entry file was detected for this package script.']
       : []),
     ...(isDeploymentScript
