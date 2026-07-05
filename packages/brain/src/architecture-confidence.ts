@@ -9,6 +9,9 @@ interface EntityLike {
 
 interface EntrypointLike {
   readonly type?: unknown;
+  readonly path?: unknown;
+  readonly symbol?: unknown;
+  readonly component_id?: unknown;
   readonly evidence?: unknown;
 }
 
@@ -146,6 +149,125 @@ export function architectureFlowEvidencePrecisionRecord(
     calibration_rule:
       'Manifest-backed command targets and source/service/test steps count as local static architecture evidence, but they do not claim runtime verification.',
   };
+}
+
+export function componentBoundaryEvidenceRecord(params: {
+  readonly component: EntityLike;
+  readonly flows: readonly EntityLike[];
+}): Record<string, unknown> {
+  const fieldEvidence = recordStringArrayData(params.component, 'field_evidence');
+  const flowEntryPoints = params.flows.flatMap(flowEntrypoints).filter((entrypoint) => {
+    if (entrypoint.component_id === params.component.id) return true;
+    return Array.isArray(entrypoint.evidence) && entrypoint.evidence.length > 0;
+  });
+  const componentEntryPoints = stringArrayData(params.component, 'entry_points');
+  const directEntrypoints = unique([
+    ...componentEntryPoints,
+    ...flowEntryPoints.flatMap((entrypoint) => {
+      const path = typeof entrypoint.path === 'string' ? entrypoint.path : undefined;
+      const symbol = typeof entrypoint.symbol === 'string' ? entrypoint.symbol : undefined;
+      if (path === undefined) return symbol === undefined ? [] : [symbol];
+      return [symbol === undefined ? path : `${path}#${symbol}`];
+    }),
+  ]);
+  const localTests = unique([
+    ...stringArrayData(params.component, 'tests'),
+    ...params.flows.flatMap((flow) => stringArrayData(flow, 'tests')),
+  ]);
+  const localConfigs = unique([
+    ...stringArrayData(params.component, 'configs'),
+    ...params.flows.flatMap((flow) => stringArrayData(flow, 'configs')),
+  ]);
+  const readFirst = stringArrayData(params.component, 'read_first');
+  const confidence =
+    directEntrypoints.length > 0 &&
+    readFirst.length > 0 &&
+    localTests.length + localConfigs.length > 0
+      ? 'verified'
+      : directEntrypoints.length + readFirst.length + localTests.length + localConfigs.length > 0
+        ? 'inferred'
+        : 'uncertain';
+  return {
+    component_id: params.component.id,
+    direct_entrypoint_count: directEntrypoints.length,
+    local_test_count: localTests.length,
+    local_config_count: localConfigs.length,
+    read_first_count: readFirst.length,
+    direct_entrypoints: directEntrypoints.slice(0, 8),
+    local_tests: localTests.slice(0, 8),
+    local_configs: localConfigs.slice(0, 8),
+    read_first: readFirst.slice(0, 8),
+    confidence,
+    evidence_ids: unique([
+      ...params.component.evidence_ids,
+      ...(fieldEvidence.entry_points ?? []),
+      ...(fieldEvidence.tests ?? []),
+      ...(fieldEvidence.configs ?? []),
+      ...(fieldEvidence.read_first ?? []),
+      ...params.flows.flatMap((flow) => flow.evidence_ids),
+    ]).slice(0, 20),
+    calibration_rule:
+      'Boundary confidence uses direct entrypoints, local tests/configs, and read-first files; it does not claim runtime verification.',
+  };
+}
+
+export function componentBoundaryEvidenceRecords<T extends EntityLike>(params: {
+  readonly components: readonly T[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly EntityLike[]>;
+}): Record<string, unknown>[] {
+  return params.components.map((component) =>
+    componentBoundaryEvidenceRecord({
+      component,
+      flows: params.flowsByComponent.get(component.id) ?? [],
+    }),
+  );
+}
+
+export function componentBoundaryEvidenceById(
+  records: readonly Record<string, unknown>[],
+): Map<string, Record<string, unknown>> {
+  return new Map(
+    records.flatMap((record) =>
+      typeof record.component_id === 'string' ? [[record.component_id, record]] : [],
+    ),
+  );
+}
+
+export function componentBoundaryConfidence(boundaryEvidence: unknown): Confidence {
+  if (!isRecord(boundaryEvidence)) return 'uncertain';
+  if (boundaryEvidence.confidence === 'verified') return 'verified';
+  if (boundaryEvidence.confidence === 'inferred') return 'inferred';
+  return 'uncertain';
+}
+
+export function componentBoundaryUnknowns(
+  component: EntityLike,
+  boundaryEvidence: unknown,
+): string[] {
+  if (!isRecord(boundaryEvidence)) return stringArrayData(component, 'unknowns');
+  const hasDirectEntrypoint = Number(boundaryEvidence.direct_entrypoint_count ?? 0) > 0;
+  const hasLocalTests = Number(boundaryEvidence.local_test_count ?? 0) > 0;
+  const hasLocalConfigs = Number(boundaryEvidence.local_config_count ?? 0) > 0;
+  const hasReadFirst = Number(boundaryEvidence.read_first_count ?? 0) > 0;
+  return stringArrayData(component, 'unknowns').filter((unknown) => {
+    if (
+      hasDirectEntrypoint &&
+      unknown === 'No explicit entrypoint was detected for this component.'
+    ) {
+      return false;
+    }
+    if (hasLocalTests && unknown === 'No component-local test evidence was detected.') {
+      return false;
+    }
+    if (
+      hasReadFirst &&
+      (hasLocalConfigs || hasLocalTests || hasDirectEntrypoint) &&
+      unknown === 'Component understanding is backed by limited static evidence.'
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function flowArchitectureScore(flow: EntityLike): number {

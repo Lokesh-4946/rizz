@@ -6,6 +6,24 @@ context contract.
 
 ECC-inspired features are useful when they strengthen that contract without joining the default path.
 
+## Human-Agent Loop
+
+rizz is most useful when a human keeps their preferred coding agent and uses rizz as the local
+evidence contract around that agent:
+
+1. Human intent.
+2. rizz mission contract, project intelligence, and inspect-first context.
+3. Coding agent implementation.
+4. rizz review.
+5. rizz correction packet.
+6. Coding agent repair.
+7. rizz verification.
+8. Human approval.
+
+The product should optimize this loop without turning rizz into a heavy default orchestrator. rizz
+must distinguish static understanding from runtime verification, recommend targeted checks, and only
+upgrade confidence when evidence exists.
+
 ## Opt-In Expansion Map
 
 | Feature | rizz Usefulness | Default Path |
@@ -28,13 +46,16 @@ ECC-inspired features are useful when they strengthen that contract without join
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice sharpens Architecture Reasoning for script-derived flows. rizz now separates
-missing local evidence from local static evidence that still needs runtime verification, so
-manifest-backed command targets no longer inflate the "needs local evidence" queue. After
-calibration, the 120-file large-repo UAT matrix moved Architecture Reasoning from 83/100 to 84/100:
-`github/docs` Architecture moved from 78/100 to 79/100, and `vercel/next.js` moved from 88/100 to
-89/100. The next weakest repo-derived area remains Architecture Reasoning, specifically component
-boundary evidence and component-local tests/configs rather than blanket script-flow evidence debt.
+The current slice sharpens Architecture Reasoning for component-local boundary confidence. rizz now
+writes `component_boundary_evidence` into `architecture_reasoning.json`, including direct
+entrypoints, local tests/configs, read-first files, evidence IDs, and a calibration rule that static
+boundary confidence does not claim runtime verification. The 120-file large-repo UAT matrix stayed
+at Architecture Reasoning 84/100, but the remaining debt is now inspectable by component:
+`github/docs` has verified `component:src` boundary evidence while `component:config` still lacks
+entrypoints/tests/flow coverage; `vercel/next.js` has verified `component:scripts` and
+`component:test` boundary evidence while `component:scripts` still flags missing local test evidence.
+The next weakest repo-derived area remains Architecture Reasoning, specifically turning those
+component-local gaps into targeted correction packets without over-claiming runtime behavior.
 
 ## Capability Scorecard
 
@@ -55,16 +76,17 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 ## Latest 120-File UAT Actuals
 
 Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
+Report: `.rizz/uat/component-boundary-evidence-120-report.json`
 
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
-| Flow Understanding | 91/100 | 10 | 87/100 | +4 |
-| Architecture Reasoning | 84/100 | 16 | 83/100 | +1 |
+| Flow Understanding | 91/100 | 10 | 91/100 | 0 |
+| Architecture Reasoning | 84/100 | 16 | 84/100 | 0 |
 | Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
 | Mission Control UX | 100/100 | 0 | 100/100 | 0 |
 | PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
 | Incremental Understanding metrics | 88/100 | 12 | 88/100 | 0 |
-| Review Intelligence with true blast radius | 91/100 | 9 | 90/100 | +1 |
+| Review Intelligence with true blast radius | 91/100 | 9 | 91/100 | 0 |
 | `rizz ask` | 92/100 | 8 | 92/100 | 0 |
 
 Repo detail:
@@ -77,8 +99,13 @@ Repo detail:
 Precision notes:
 
 - `github/docs` no longer reports `113 flow(s) need local evidence`; it reports 113 weak flows as
-  static runtime-verification debt with 0 local-evidence gap flows.
+  static runtime-verification debt with 0 local-evidence gap flows. `component:src` is verified from
+  15 direct entrypoints, 44 local tests, 8 local configs, and 8 read-first files; `component:config`
+  remains inferred with 8 read-first files but no direct entrypoint/test/config evidence.
 - `vercel/next.js` no longer reports `101 flow(s) need local evidence`; it reports 101 weak flows as
-  static runtime-verification debt with 0 local-evidence gap flows.
+  static runtime-verification debt with 0 local-evidence gap flows. `component:scripts` is verified
+  from 52 direct entrypoints, 2 local configs, and 8 read-first files, while still flagging 0 local
+  tests; `component:test` is verified from 3 direct entrypoints, 32 local tests, 4 local configs, and
+  8 read-first files.
 - Runtime verification remains explicit in `flow_evidence_precision`; local static evidence does not
   upgrade these script-derived flows to verified architecture confidence.

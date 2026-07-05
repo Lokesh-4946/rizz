@@ -2914,6 +2914,20 @@ describe('project brain generation', () => {
           rules: string[];
           unknowns: string[];
         }>;
+        component_boundary_evidence: Array<{
+          component_id: string;
+          direct_entrypoint_count: number;
+          local_test_count: number;
+          local_config_count: number;
+          read_first_count: number;
+          direct_entrypoints: string[];
+          local_tests: string[];
+          local_configs: string[];
+          read_first: string[];
+          confidence: string;
+          evidence_ids: string[];
+          calibration_rule: string;
+        }>;
         coupling_rationale: Array<{
           component_id: string;
           coupling_level: string;
@@ -3080,9 +3094,28 @@ describe('project brain generation', () => {
           component_id: 'component:packages--cli',
           boundary_type: 'entrypoint',
           rationale: expect.stringContaining('linked flow'),
-          confidence: 'inferred',
+          confidence: 'verified',
         }),
       );
+      const cliBoundaryEvidence = architectureReasoning.component_boundary_evidence.find(
+        (record) => record.component_id === 'component:packages--cli',
+      );
+      expect(cliBoundaryEvidence).toMatchObject({
+        confidence: 'verified',
+        direct_entrypoint_count: expect.any(Number),
+        local_test_count: expect.any(Number),
+        local_config_count: expect.any(Number),
+        read_first_count: expect.any(Number),
+        direct_entrypoints: expect.arrayContaining(['packages/cli/src/index.ts']),
+        local_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
+        local_configs: expect.arrayContaining(['packages/cli/package.json']),
+        read_first: expect.arrayContaining(['packages/cli/package.json']),
+        calibration_rule: expect.stringContaining('does not claim runtime verification'),
+      });
+      expect(cliBoundaryEvidence?.direct_entrypoint_count).toBeGreaterThan(0);
+      expect(cliBoundaryEvidence?.local_test_count).toBeGreaterThan(0);
+      expect(cliBoundaryEvidence?.local_config_count).toBeGreaterThan(0);
+      expect(cliBoundaryEvidence?.read_first_count).toBeGreaterThan(0);
       expect(architectureReasoning.coupling_rationale).toContainEqual(
         expect.objectContaining({
           component_id: 'component:packages--cli',

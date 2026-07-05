@@ -4,10 +4,14 @@ import { constants, readFileSync, statSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import {
-  componentLocalEvidenceRecords as acl,
+  architectureFlowEvidenceSummary as aes,
   flowArchitectureConfidence as afc,
-  architectureFlowEvidenceSummary as afes,
-  architectureFlowEvidencePrecisionRecord as afpr,
+  architectureFlowEvidencePrecisionRecord as ap,
+  componentBoundaryConfidence as bc,
+  componentBoundaryEvidenceById as bi,
+  componentBoundaryEvidenceRecords as br,
+  componentBoundaryUnknowns as bu,
+  componentLocalEvidenceRecords as cl,
 } from './architecture-confidence.js';
 import {
   commandTargetPaths,
@@ -10147,11 +10151,13 @@ function architectureAssumptionRecords(params: {
   readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
   readonly relationships: readonly BrainRelationship[];
   readonly flows: readonly BrainEntity[];
+  readonly be: ReadonlyMap<string, Record<string, unknown>>;
 }): ArchitectureAssumption[] {
   const assumptions: ArchitectureAssumption[] = [...routeArchitectureAssumptions(params.flows)];
   for (const component of params.components) {
     const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
     const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+    const be = params.be.get(component.id);
     const coupling = componentCouplingRecord(component);
     const configs = stringArrayData(component, 'configs');
     const dependencies = stringArrayData(component, 'dependencies');
@@ -10165,8 +10171,8 @@ function architectureAssumptionRecords(params: {
       evidenceIds,
       componentFlows,
     });
-    const confidence = architectureAssumptionConfidence({ component, componentFlows });
     const confidenceScore = architectureAssumptionScore({ component, componentFlows });
+    const confidence = architectureAssumptionConfidence({ component, componentFlows });
     const fieldEvidence = recordStringArrayData(component, 'field_evidence');
     assumptions.push({
       assumption_id: `assumption:${safeText(component.id)}:boundary`,
@@ -10195,7 +10201,7 @@ function architectureAssumptionRecords(params: {
         `dependencies:${dependencies.length}`,
       ],
       unknowns: unique([
-        ...stringArrayData(component, 'unknowns'),
+        ...bu(component, be),
         ...(componentFlows.length === 0
           ? ['No reconstructed flow currently crosses or reaches this boundary.']
           : []),
@@ -10339,11 +10345,13 @@ function architectureBoundaryRationale(params: {
   readonly components: readonly BrainEntity[];
   readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
   readonly relationships: readonly BrainRelationship[];
+  readonly be: ReadonlyMap<string, Record<string, unknown>>;
 }): ArchitectureBoundaryRationale[] {
   return sorted(
     params.components.map((component) => {
       const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
       const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+      const be = params.be.get(component.id);
       const signals = stringArrayData(component, 'signals');
       const configs = stringArrayData(component, 'configs');
       const dependencies = stringArrayData(component, 'dependencies');
@@ -10358,15 +10366,9 @@ function architectureBoundaryRationale(params: {
           componentFlows,
           relationships: params.relationships,
         }),
-        confidence: architectureAssumptionConfidence({ component, componentFlows }),
-        rules: [
-          `boundary_type:${boundaryType}`,
-          `signals:${signals.length}`,
-          `flow_links:${componentFlows.length}`,
-          `configs:${configs.length}`,
-          `dependencies:${dependencies.length}`,
-        ],
-        unknowns: stringArrayData(component, 'unknowns').map(safeText),
+        confidence: bc(be),
+        rules: [`boundary_type:${boundaryType}`, `flow_links:${componentFlows.length}`],
+        unknowns: bu(component, be).map(safeText),
       };
     }),
     (rationale) => rationale.component_id,
@@ -11884,6 +11886,8 @@ function buildArchitectureReasoningArtifact(params: {
       flowsByComponent.set(componentId, [...existing, flow]);
     }
   }
+  const cbe = br({ components, flowsByComponent });
+  const be = bi(cbe);
   const boundaryCandidates = components
     .map((component) => {
       const componentFlows = flowsByComponent.get(component.id) ?? [];
@@ -12040,7 +12044,7 @@ function buildArchitectureReasoningArtifact(params: {
   const changedFlows = flows.filter((flow) =>
     flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
   );
-  const flowEvidenceSummary = afes(flows);
+  const flowEvidenceSummary = aes(flows);
   const weakFlows = flowEvidenceSummary.weakFlows;
   const reviewHints: Array<Record<string, unknown>> = [];
   if (changedFlows.length > 0) {
@@ -12159,6 +12163,7 @@ function buildArchitectureReasoningArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
     flows,
+    be,
   });
   const designPressures = sorted(
     [
@@ -12171,6 +12176,7 @@ function buildArchitectureReasoningArtifact(params: {
     components,
     flowsByComponent,
     relationships: params.relationships,
+    be,
   });
   const couplingRationale = architectureCouplingRationale({
     components,
@@ -12242,8 +12248,9 @@ function buildArchitectureReasoningArtifact(params: {
     route_what_breaks: routeWhatBreaks,
     deployment_intelligence: deploymentIntelligence,
     service_intelligence: serviceIntelligence,
-    component_local_evidence: acl({ components, flows, services }),
-    flow_evidence_precision: afpr(flowEvidenceSummary),
+    component_local_evidence: cl({ components, flows, services }),
+    component_boundary_evidence: cbe,
+    flow_evidence_precision: ap(flowEvidenceSummary),
     service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
@@ -12395,6 +12402,7 @@ function buildReasoningTracesArtifact(params: {
       flowsByComponent.set(componentId, [...existing, flow]);
     }
   }
+  const be = bi(br({ components, flowsByComponent }));
 
   const componentTraces = components.map((component) => {
     const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
@@ -12509,6 +12517,7 @@ function buildReasoningTracesArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
     flows,
+    be,
   }).map((assumption) =>
     reasoningTrace({
       entityId: assumption.entity_id,

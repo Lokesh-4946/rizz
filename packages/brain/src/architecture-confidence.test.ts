@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   architectureFlowEvidenceSummary,
+  componentBoundaryConfidence,
+  componentBoundaryEvidenceRecord,
+  componentBoundaryUnknowns,
   componentLocalEvidenceReadiness,
   componentLocalEvidenceRecords,
   flowArchitectureConfidence,
@@ -147,5 +150,61 @@ describe('architecture confidence calibration', () => {
     ]);
     expect(records[0]?.evidence_ids).toContain('evidence:file-app--api--search--route-test-ts');
     expect(componentLocalEvidenceReadiness(records)).toBe(100);
+  });
+
+  it('calibrates component boundary confidence from direct local evidence', () => {
+    const component = {
+      id: 'component:packages--cli',
+      confidence: 'inferred' as const,
+      evidence_ids: ['evidence:file-packages--cli--package.json'],
+      data: {
+        entry_points: ['packages/cli/src/index.ts'],
+        tests: ['packages/cli/src/index.test.ts'],
+        configs: ['packages/cli/package.json'],
+        read_first: ['packages/cli/package.json', 'packages/cli/src/index.ts'],
+        unknowns: [
+          'No explicit entrypoint was detected for this component.',
+          'No component-local test evidence was detected.',
+          'Component understanding is backed by limited static evidence.',
+          'Runtime behavior has not been executed.',
+        ],
+      },
+    };
+
+    const record = componentBoundaryEvidenceRecord({
+      component,
+      flows: [
+        {
+          id: 'flow:packages--cli--start',
+          confidence: 'inferred',
+          evidence_ids: ['evidence:file-packages--cli--src--index.ts'],
+          data: {
+            entrypoints: [
+              {
+                path: 'packages/cli/src/index.ts',
+                component_id: 'component:packages--cli',
+                evidence: ['evidence:file-packages--cli--src--index.ts'],
+              },
+            ],
+            tests: ['packages/cli/src/index.test.ts'],
+            configs: ['packages/cli/package.json'],
+          },
+        },
+      ],
+    });
+
+    expect(record).toMatchObject({
+      component_id: 'component:packages--cli',
+      direct_entrypoint_count: 1,
+      local_test_count: 1,
+      local_config_count: 1,
+      read_first_count: 2,
+      confidence: 'verified',
+      calibration_rule: expect.stringContaining('does not claim runtime verification'),
+    });
+    expect(componentBoundaryConfidence(record)).toBe('verified');
+    expect(componentBoundaryUnknowns(component, record)).toEqual([
+      'Runtime behavior has not been executed.',
+    ]);
   });
 });
