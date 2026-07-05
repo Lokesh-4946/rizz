@@ -28,14 +28,14 @@ ECC-inspired features are useful when they strengthen that contract without join
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice tightened service-to-flow precision so one-file top-level script services only
-link through direct service source evidence, while nested/richer services keep root fallback. Folder
-entities and project-folder ownership now carry deterministic child-file evidence. After calibration,
-the 120-file large-repo UAT matrix moved Architecture Reasoning from 81/100 to 82/100, reduced the
-`next.js` script service causality paths from 52 noisy links to 1 direct service-entrypoint path, and
-left relationship evidence gaps at 0 in both UAT repos. The next weakest repo-derived area is still
-Architecture Reasoning, now specifically verified flow confidence and component-local route/service
-evidence.
+The current slice separates redaction-safe entity confidence from architecture-local confidence, so
+route and service flows can be treated as verified for architecture when static route, test, config,
+and service evidence is present. Architecture artifacts now include component-local route/service
+evidence records, and job-backed script services no longer claim missing API-route evidence. After
+calibration, the 120-file large-repo UAT matrix moved Architecture Reasoning from 82/100 to 83/100:
+`github/docs` Architecture moved from 76/100 to 78/100, and `vercel/next.js` moved from 87/100 to
+88/100. The next weakest repo-derived area is still Architecture Reasoning, now specifically package
+script flows that need source/test/service causality before they can be architecture-verified.
 
 ## Capability Scorecard
 
@@ -60,25 +60,27 @@ Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
 | Flow Understanding | 87/100 | 14 | 87/100 | 0 |
-| Architecture Reasoning | 82/100 | 19 | 81/100 | +1 |
+| Architecture Reasoning | 83/100 | 17 | 82/100 | +1 |
 | Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
 | Mission Control UX | 100/100 | 0 | 100/100 | 0 |
 | PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
 | Incremental Understanding metrics | 88/100 | 12 | 88/100 | 0 |
-| Review Intelligence with true blast radius | 90/100 | 11 | 90/100 | 0 |
+| Review Intelligence with true blast radius | 90/100 | 10 | 90/100 | 0 |
 | `rizz ask` | 92/100 | 9 | 92/100 | 0 |
 
 Repo detail:
 
 | Repo | Architecture score | Remaining | Impact surfaces | Cross-component relationships | Service causality paths | Weakest capability |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `github/docs` | 76/100 | 24 | 11 | 0 | 0 of 0 services | Architecture Reasoning, 76/100 |
-| `vercel/next.js` | 87/100 | 13 | 2 | 1 | 1 across 1 service | Architecture Reasoning, 87/100 |
+| `github/docs` | 78/100 | 22 | 11 | 0 | 0 of 0 services | Architecture Reasoning, 78/100 |
+| `vercel/next.js` | 88/100 | 12 | 2 | 1 | 1 across 1 service | Flow Understanding, 88/100 |
 
 Precision notes:
 
-- `vercel/next.js` now reports only `flow:service-job--scripts--upload-adapter-test-results.mjs`
-  as service causality for `service:scripts`; sibling package-script flows remain command/component
-  context instead of service causality claims.
-- `github/docs` and `vercel/next.js` both have 0 relationships without evidence after folder
-  ownership receives direct child-file evidence.
+- `github/docs` now reports `component:src` as component-local verified with 9 route flows, 44 local
+  tests, and 8 local configs; the remaining 113 weak flows are mostly package-script inventory.
+- `vercel/next.js` now reports `component:test` as component-local verified and `component:scripts`
+  as inferred with 1 direct service flow and `vercel.json` config evidence.
+- `vercel/next.js` no longer emits the misleading "No API route evidence was linked directly to
+  this service" unknown for the job-backed `service:scripts`; the only service unknown is redacted
+  evidence labeling.
