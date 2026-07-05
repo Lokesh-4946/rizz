@@ -15,7 +15,7 @@ import {
 import {
   flowIntelligenceCoversFile as flowCoversFile,
   inferServiceEntrypointFlow as inferSvcFlow,
-  pathMatchesServiceRoot as sr,
+  serviceMatchesFlowFile as svcFile,
   serviceEntrypointsForFlowFallback as svcFlowEntrypoints,
   serviceIdsForFiles as svcIdsForFiles,
   serviceStepsForFlow as svcStepsForFlow,
@@ -11800,16 +11800,10 @@ function flowServiceCausality(params: {
   return params.serviceIds.flatMap((serviceId): FlowServiceCausality[] => {
     const service = params.services.find((item) => item.id === serviceId);
     if (service === undefined) return [];
-    const serviceFiles = unique([
-      ...service.source_files.filter((file) =>
-        params.files.some((candidate) => file === candidate || candidate.startsWith(`${file}/`)),
-      ),
-      ...params.files.filter((file) => sr(file, service)),
-    ]);
+    const serviceFiles = unique(params.files.filter((file) => svcFile(service, file)));
     const serviceSteps = params.steps.filter(
       (step) =>
-        ['handler', 'service', 'function'].includes(step.type) &&
-        (service.source_files.includes(step.path) || sr(step.path, service)),
+        ['handler', 'service', 'function'].includes(step.type) && svcFile(service, step.path),
     );
     const storage = serviceDataStringArray(service, 'storage_dependencies');
     const envVars = serviceDataStringArray(service, 'environment_variables');
@@ -19706,6 +19700,7 @@ function buildBrain(params: {
     const sourceFiles = params.files
       .filter((file) => folder === '.' || file.relativePath.startsWith(`${folder}/`))
       .map((file) => file.relativePath);
+    const folderEvidenceIds = sourceFiles.slice(0, 12).map(evidenceId);
     buckets.folders.push(
       makeEntity({
         id: folderId,
@@ -19715,11 +19710,14 @@ function buildBrain(params: {
           folder === '.' ? 'Project root folder.' : `Folder inferred from ${safeText(folder)}.`,
         now: params.now,
         confidence: 'verified',
+        evidenceIds: folderEvidenceIds,
         sourceFiles,
         data: { path: folder, fileCount: sourceFiles.length },
       }),
     );
-    if (folder !== '.') addRelation(relationships, projectId, 'owns', folderId, [], 'verified');
+    if (folder !== '.') {
+      addRelation(relationships, projectId, 'owns', folderId, folderEvidenceIds, 'verified');
+    }
   }
 
   for (const componentPath of inferredComponentPaths) {

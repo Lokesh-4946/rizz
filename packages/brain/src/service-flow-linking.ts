@@ -194,11 +194,21 @@ export function pathMatchesServiceRoot(path: string, service: BrainEntityLike): 
   return root.length > 0 && (path === root || path.startsWith(`${root}/`));
 }
 
+function canUseServiceRootFallback(service: BrainEntityLike): boolean {
+  const root = serviceRootForEntity(service);
+  return (
+    root.includes('/') ||
+    service.source_files.length > 1 ||
+    stringArrayData(service, 'entrypoints').length > 1
+  );
+}
+
 export function serviceMatchesFlowFile(service: BrainEntityLike, file: string): boolean {
   return (
     service.source_files.some(
       (source) => file === source || file.startsWith(`${source}/`) || source.startsWith(`${file}/`),
-    ) || pathMatchesServiceRoot(file, service)
+    ) ||
+    (canUseServiceRootFallback(service) && pathMatchesServiceRoot(file, service))
   );
 }
 

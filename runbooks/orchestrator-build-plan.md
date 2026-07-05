@@ -28,12 +28,14 @@ ECC-inspired features are useful when they strengthen that contract without join
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice reconstructs standalone service-entrypoint script flows when no package script or
-route flow covers the service file, then links package-script command flows to service roots through
-real scanned file evidence. After calibration, the 120-file large-repo UAT matrix moved Architecture
-Reasoning from 79/100 to 81/100. The next weakest repo-derived area is still Architecture Reasoning,
-now specifically reducing noisy script-root service links and adding direct evidence for folder
-relationships.
+The current slice tightened service-to-flow precision so one-file top-level script services only
+link through direct service source evidence, while nested/richer services keep root fallback. Folder
+entities and project-folder ownership now carry deterministic child-file evidence. After calibration,
+the 120-file large-repo UAT matrix moved Architecture Reasoning from 81/100 to 82/100, reduced the
+`next.js` script service causality paths from 52 noisy links to 1 direct service-entrypoint path, and
+left relationship evidence gaps at 0 in both UAT repos. The next weakest repo-derived area is still
+Architecture Reasoning, now specifically verified flow confidence and component-local route/service
+evidence.
 
 ## Capability Scorecard
 
@@ -58,17 +60,25 @@ Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
 | Flow Understanding | 87/100 | 14 | 87/100 | 0 |
-| Architecture Reasoning | 81/100 | 20 | 79/100 | +2 |
+| Architecture Reasoning | 82/100 | 19 | 81/100 | +1 |
 | Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
 | Mission Control UX | 100/100 | 0 | 100/100 | 0 |
 | PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
 | Incremental Understanding metrics | 88/100 | 12 | 88/100 | 0 |
-| Review Intelligence with true blast radius | 90/100 | 11 | 89/100 | +1 |
-| `rizz ask` | 92/100 | 9 | 91/100 | +1 |
+| Review Intelligence with true blast radius | 90/100 | 11 | 90/100 | 0 |
+| `rizz ask` | 92/100 | 9 | 92/100 | 0 |
 
 Repo detail:
 
 | Repo | Architecture score | Remaining | Impact surfaces | Cross-component relationships | Service causality paths | Weakest capability |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `github/docs` | 75/100 | 25 | 11 | 0 | 0 of 0 services | Architecture Reasoning, 75/100 |
-| `vercel/next.js` | 86/100 | 14 | 2 | 1 | 52 across 1 service | Architecture Reasoning, 86/100 |
+| `github/docs` | 76/100 | 24 | 11 | 0 | 0 of 0 services | Architecture Reasoning, 76/100 |
+| `vercel/next.js` | 87/100 | 13 | 2 | 1 | 1 across 1 service | Architecture Reasoning, 87/100 |
+
+Precision notes:
+
+- `vercel/next.js` now reports only `flow:service-job--scripts--upload-adapter-test-results.mjs`
+  as service causality for `service:scripts`; sibling package-script flows remain command/component
+  context instead of service causality claims.
+- `github/docs` and `vercel/next.js` both have 0 relationships without evidence after folder
+  ownership receives direct child-file evidence.
