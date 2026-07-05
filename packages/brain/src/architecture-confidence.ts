@@ -26,6 +26,8 @@ interface FlowStepLike {
   readonly evidence?: unknown;
 }
 
+type CorrectionSeverity = 'high' | 'medium' | 'low';
+
 export interface ArchitectureFlowEvidenceSummary<T extends EntityLike = EntityLike> {
   readonly weakFlows: readonly T[];
   readonly localEvidenceDebtFlows: readonly T[];
@@ -61,6 +63,31 @@ function recordStringArrayData(entity: EntityLike, key: string): Record<string, 
       Array.isArray(items) ? items.filter((item): item is string => typeof item === 'string') : [],
     ]),
   );
+}
+
+function recordString(value: unknown, key: string, fallback = ''): string {
+  if (!isRecord(value)) return fallback;
+  const item = value[key];
+  return typeof item === 'string' ? item : fallback;
+}
+
+function recordNumber(value: unknown, key: string): number {
+  if (!isRecord(value)) return 0;
+  const item = value[key];
+  return typeof item === 'number' ? item : 0;
+}
+
+function recordStringArray(value: unknown, key: string): string[] {
+  if (!isRecord(value)) return [];
+  const item = value[key];
+  if (!Array.isArray(item)) return [];
+  return item.filter((entry): entry is string => typeof entry === 'string');
+}
+
+function recordArray(value: unknown, key: string): Readonly<Record<string, unknown>>[] {
+  if (!isRecord(value)) return [];
+  const item = value[key];
+  return Array.isArray(item) ? item.filter(isRecord) : [];
 }
 
 function flowEntrypoints(flow: EntityLike): EntrypointLike[] {
@@ -270,6 +297,222 @@ export function componentBoundaryUnknowns(
   });
 }
 
+function correctionPacketSlug(value: string): string {
+  return value
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+}
+
+function correctionSeverity(params: {
+  readonly missingEntrypoint: boolean;
+  readonly missingTests: boolean;
+  readonly missingConfig: boolean;
+  readonly missingFlows: boolean;
+  readonly isScriptComponent: boolean;
+}): CorrectionSeverity {
+  if (params.missingEntrypoint && (params.missingTests || params.missingFlows)) return 'high';
+  if (params.missingTests && params.isScriptComponent) return 'high';
+  if (params.missingFlows || params.missingTests || params.missingConfig) return 'medium';
+  return 'low';
+}
+
+function correctionConfidenceDelta(severity: CorrectionSeverity): number {
+  if (severity === 'high') return 100;
+  if (severity === 'medium') return 60;
+  return 20;
+}
+
+function correctionParseSeverity(value: unknown): CorrectionSeverity {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
+  return 'medium';
+}
+
+function correctionCurrentConfidence(value: unknown): Confidence {
+  if (!isRecord(value)) return 'uncertain';
+  if (value.confidence === 'verified') return 'verified';
+  if (value.confidence === 'inferred') return 'inferred';
+  return 'uncertain';
+}
+
+export function componentCorrectionPackets<T extends EntityLike>(params: {
+  readonly components: readonly T[];
+  readonly flowsByComponent: ReadonlyMap<string, readonly EntityLike[]>;
+  readonly boundaryEvidenceByComponent: ReadonlyMap<string, Record<string, unknown>>;
+}): Record<string, unknown>[] {
+  return params.components
+    .flatMap((component): Record<string, unknown>[] => {
+      const boundaryEvidence = params.boundaryEvidenceByComponent.get(component.id);
+      if (!isRecord(boundaryEvidence)) return [];
+      const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
+      const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+      const directEntrypointCount = recordNumber(boundaryEvidence, 'direct_entrypoint_count');
+      const localTestCount = recordNumber(boundaryEvidence, 'local_test_count');
+      const localConfigCount = recordNumber(boundaryEvidence, 'local_config_count');
+      const readFirstCount = recordNumber(boundaryEvidence, 'read_first_count');
+      const directEntrypoints = recordStringArray(boundaryEvidence, 'direct_entrypoints');
+      const readFirstFiles = recordStringArray(boundaryEvidence, 'read_first');
+      const localConfigs = recordStringArray(boundaryEvidence, 'local_configs');
+      const isScriptComponent =
+        boundaryType === 'automation' ||
+        component.id.includes(':scripts') ||
+        directEntrypoints.some((entrypoint) => entrypoint.includes('package.json#'));
+      const missingEntrypoint = directEntrypointCount === 0;
+      const missingTests =
+        localTestCount === 0 &&
+        (stringData(component, 'criticality') !== 'low' ||
+          boundaryType === 'automation' ||
+          boundaryType === 'unknown' ||
+          component.id.includes(':config'));
+      const missingConfig = localConfigCount === 0 && boundaryType !== 'quality';
+      const missingFlows = componentFlows.length === 0;
+      if (!missingEntrypoint && !missingTests && !missingConfig && !missingFlows) return [];
+      const missingEvidence = unique([
+        ...(missingEntrypoint ? ['direct entrypoint evidence'] : []),
+        ...(missingTests ? ['component-local test evidence'] : []),
+        ...(missingConfig ? ['component-local config evidence'] : []),
+        ...(missingFlows ? ['reconstructed flow coverage'] : []),
+      ]);
+      const severity = correctionSeverity({
+        missingEntrypoint,
+        missingTests,
+        missingConfig,
+        missingFlows,
+        isScriptComponent,
+      });
+      const inspectActions = unique([
+        ...(missingEntrypoint
+          ? [`Identify the concrete entrypoint for ${component.id} before changing it.`]
+          : []),
+        ...(missingFlows
+          ? [`Link ${component.id} to route, script, service, or test flows if the component runs.`]
+          : []),
+        ...(missingConfig
+          ? [`Inspect local manifests/configs that define ${component.id} behavior.`]
+          : []),
+        ...(readFirstCount > 0
+          ? [`Start with the listed read-first files for ${component.id}.`]
+          : [`Find a read-first source or config file for ${component.id}.`]),
+      ]);
+      const testActions = unique([
+        ...(missingTests
+          ? [
+              isScriptComponent
+                ? `Add or identify a local smoke test for ${component.id} package-script flows.`
+                : `Add or identify a component-local test for ${component.id}.`,
+            ]
+          : []),
+        `Do not mark ${component.id} runtime-verified until the targeted check actually runs.`,
+      ]);
+      const verificationActions = unique([
+        `Run rizz brain and confirm ${component.id} component_boundary_evidence improves.`,
+        ...(missingTests
+          ? [
+              'Run the targeted local test and attach verification evidence before upgrading runtime confidence.',
+            ]
+          : []),
+        ...(missingFlows
+          ? ['Confirm the component appears in at least one reconstructed flow.']
+          : []),
+      ]);
+      return [
+        {
+          packet_id: `correction:${correctionPacketSlug(component.id)}:component-boundary`,
+          component_id: component.id,
+          boundary_type: boundaryType,
+          severity,
+          confidence: correctionCurrentConfidence(boundaryEvidence),
+          reason: `${component.id} needs component-local correction for ${missingEvidence.join(', ')}.`,
+          missing_evidence: missingEvidence,
+          current_evidence: {
+            direct_entrypoint_count: directEntrypointCount,
+            local_test_count: localTestCount,
+            local_config_count: localConfigCount,
+            read_first_count: readFirstCount,
+            flow_count: componentFlows.length,
+          },
+          read_first_files: readFirstFiles.slice(0, 6),
+          inspect_targets: unique([...readFirstFiles, ...directEntrypoints, ...localConfigs]).slice(
+            0,
+            10,
+          ),
+          inspect_actions: inspectActions,
+          test_actions: testActions,
+          verification_actions: verificationActions,
+          evidence_ids: unique([
+            ...component.evidence_ids,
+            ...recordStringArray(boundaryEvidence, 'evidence_ids'),
+            ...componentFlows.flatMap((flow) => flow.evidence_ids),
+          ]).slice(0, 12),
+          evidence_gap_ids: missingEvidence.map(
+            (gap) => `gap:${correctionPacketSlug(component.id)}:${correctionPacketSlug(gap)}`,
+          ),
+          agent_prompt: `Read the packet files, inspect ${component.id}, then repair only the missing local evidence before rerunning rizz.`,
+          target_outcome:
+            'The next brain scan should show direct boundary evidence, targeted local checks, and unchanged runtime honesty unless tests actually ran.',
+          calibration_rule:
+            'Correction packets are deterministic static guidance for agents; they recommend read/inspect/test steps and do not assert repairs were performed.',
+        },
+      ];
+    })
+    .sort(
+      (a, b) =>
+        correctionSeverityRank(recordString(a, 'severity', 'medium')) -
+          correctionSeverityRank(recordString(b, 'severity', 'medium')) ||
+        recordString(a, 'component_id').localeCompare(recordString(b, 'component_id')),
+    )
+    .slice(0, 20);
+}
+
+function correctionSeverityRank(value: string): number {
+  if (value === 'high') return 0;
+  if (value === 'medium') return 1;
+  return 2;
+}
+
+export function componentCorrectionQueueItems(
+  architectureReasoning: Record<string, unknown>,
+): Array<{
+  readonly source: 'architecture';
+  readonly severity: CorrectionSeverity;
+  readonly target_type: string;
+  readonly target_id: string;
+  readonly reason: string;
+  readonly current_confidence: Confidence;
+  readonly confidence_delta: number;
+  readonly inspect_hint: string;
+  readonly verification_actions: readonly string[];
+  readonly read_first_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly evidence_gap_ids: readonly string[];
+  readonly artifacts: readonly string[];
+}> {
+  return recordArray(architectureReasoning, 'component_correction_packets')
+    .slice(0, 8)
+    .map((packet) => {
+      const severity = correctionParseSeverity(packet.severity);
+      return {
+        source: 'architecture',
+        severity,
+        target_type: 'component_correction_packet',
+        target_id: recordString(packet, 'component_id', 'unknown component'),
+        reason: recordString(packet, 'reason', 'Component-local correction packet needs action.'),
+        current_confidence: correctionCurrentConfidence(packet),
+        confidence_delta: correctionConfidenceDelta(severity),
+        inspect_hint: recordString(
+          packet,
+          'agent_prompt',
+          'Read the component correction packet before editing.',
+        ),
+        verification_actions: recordStringArray(packet, 'verification_actions').slice(0, 4),
+        read_first_files: recordStringArray(packet, 'read_first_files').slice(0, 6),
+        evidence_ids: recordStringArray(packet, 'evidence_ids').slice(0, 8),
+        evidence_gap_ids: recordStringArray(packet, 'evidence_gap_ids').slice(0, 8),
+        artifacts: ['.rizz/research/architecture_reasoning.json', '.rizz/reports/index.html'],
+      };
+    });
+}
+
 export function flowArchitectureScore(flow: EntityLike): number {
   const confidence = flow.data?.confidence;
   if (isRecord(confidence) && typeof confidence.score === 'number') return confidence.score;
@@ -397,3 +640,16 @@ export function componentLocalEvidenceReadiness(records: readonly unknown[]): nu
       (verified.length / localRecords.length) * 25,
   );
 }
+
+export {
+  architectureFlowEvidencePrecisionRecord as ap,
+  architectureFlowEvidenceSummary as aes,
+  componentBoundaryConfidence as bc,
+  componentBoundaryEvidenceById as bi,
+  componentBoundaryEvidenceRecords as br,
+  componentBoundaryUnknowns as bu,
+  componentCorrectionPackets as ccp,
+  componentCorrectionQueueItems as cqi,
+  componentLocalEvidenceRecords as cl,
+  flowArchitectureConfidence as afc,
+};

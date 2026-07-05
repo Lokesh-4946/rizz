@@ -2928,6 +2928,18 @@ describe('project brain generation', () => {
           evidence_ids: string[];
           calibration_rule: string;
         }>;
+        component_correction_packets: Array<{
+          packet_id: string;
+          component_id: string;
+          severity: string;
+          missing_evidence: string[];
+          read_first_files: string[];
+          inspect_actions: string[];
+          test_actions: string[];
+          verification_actions: string[];
+          evidence_gap_ids: string[];
+          agent_prompt: string;
+        }>;
         coupling_rationale: Array<{
           component_id: string;
           coupling_level: string;
@@ -2969,6 +2981,14 @@ describe('project brain generation', () => {
             entity_id: string;
             area_type: string;
             reason: string;
+          }>;
+          inspection_queue: Array<{
+            source: string;
+            target_type: string;
+            target_id: string;
+            reason: string;
+            read_first_files: string[];
+            verification_actions: string[];
           }>;
           blocking_unknowns: string[];
           summary: string;
@@ -3284,6 +3304,76 @@ describe('project brain generation', () => {
       expect(explained.value.explanation.failure_modes).not.toContain(
         'No directly linked tests were detected for this flow.',
       );
+    });
+  });
+
+  it('writes component correction packets into the architecture inspection queue', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'config', 'kubernetes'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'config-gap-app' }));
+      await writeFile(join(dir, 'config', 'kubernetes', 'deployment.yaml'), 'kind: Deployment\n');
+      await writeFile(join(dir, 'config', 'kubernetes', 'service.yaml'), 'kind: Service\n');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:12:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const architectureReasoning = await readJson<{
+        component_correction_packets: Array<{
+          component_id: string;
+          severity: string;
+          missing_evidence: string[];
+          read_first_files: string[];
+          inspect_actions: string[];
+          test_actions: string[];
+          verification_actions: string[];
+          calibration_rule: string;
+        }>;
+        confidence_debt: {
+          inspection_queue: Array<{
+            source: string;
+            target_type: string;
+            target_id: string;
+            reason: string;
+            read_first_files: string[];
+            verification_actions: string[];
+          }>;
+        };
+      }>(join(result.value.researchDir, 'architecture_reasoning.json'));
+
+      expect(architectureReasoning.component_correction_packets).toContainEqual(
+        expect.objectContaining({
+          component_id: 'component:config',
+          severity: 'high',
+          missing_evidence: expect.arrayContaining([
+            'direct entrypoint evidence',
+            'component-local test evidence',
+            'reconstructed flow coverage',
+          ]),
+          read_first_files: expect.arrayContaining(['config/kubernetes/deployment.yaml']),
+          inspect_actions: expect.arrayContaining([
+            expect.stringContaining('Start with the listed read-first files'),
+          ]),
+          test_actions: expect.arrayContaining([expect.stringContaining('component-local test')]),
+          verification_actions: expect.arrayContaining([
+            expect.stringContaining('component_boundary_evidence improves'),
+          ]),
+          calibration_rule: expect.stringContaining('do not assert repairs were performed'),
+        }),
+      );
+      expect(architectureReasoning.confidence_debt.inspection_queue[0]).toMatchObject({
+        source: 'architecture',
+        target_type: 'component_correction_packet',
+        target_id: 'component:config',
+        read_first_files: expect.arrayContaining(['config/kubernetes/deployment.yaml']),
+        verification_actions: expect.arrayContaining([
+          expect.stringContaining('component_boundary_evidence improves'),
+        ]),
+      });
     });
   });
 
