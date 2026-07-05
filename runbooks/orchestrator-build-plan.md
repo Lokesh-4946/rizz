@@ -19,19 +19,21 @@ ECC-inspired features are useful when they strengthen that contract without join
 
 ## Current Loop
 
-1. Calibrate Flow Understanding so capped large-repo UAT scores high-signal route/script/test
-   flows separately from inventory-only package-script flows.
+1. Calibrate Architecture Reasoning so capped large-repo UAT scores impact maps,
+   cross-component relationship evidence, service-causality readiness, what-breaks claims, and
+   confidence debt separately.
 2. Scorecard reporting after each UAT run: planned score, actual repo capability score, and
    remaining distance to 100.
 3. Use bounded UAT on complex repos such as `github/docs` and `vercel/next.js` to choose the next
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice keeps low-signal package-script inventory inspectable while scoring flow readiness
-from stronger local evidence: entrypoints, steps, evidence, contracts, causal surfaces,
-verification/test surfaces, and confidence. After calibration, the 120-file large-repo UAT matrix
-moved Flow Understanding from 69/100 to 87/100, leaving Architecture Reasoning as the next weakest
-actual repo-derived area.
+The current slice keeps absent service entities from unfairly blocking architecture readiness while
+still flagging repos where services exist but no flow-to-service causality path is linked. It also
+records graph-level cross-component relationships so architecture reasoning is not limited to flows
+that already span multiple components. After calibration, the 120-file large-repo UAT matrix moved
+Architecture Reasoning from 71/100 to 79/100; the next weakest repo-derived area is still
+Architecture Reasoning, now specifically service-to-flow causality linkage.
 
 ## Capability Scorecard
 
@@ -56,17 +58,17 @@ Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |
 | Flow Understanding | 87/100 | 14 | 69/100 | +18 |
-| Architecture Reasoning | 71/100 | 29 | 71/100 | 0 |
+| Architecture Reasoning | 79/100 | 21 | 71/100 | +8 |
 | Evidence Quality scoring | 100/100 | 0 | 100/100 | 0 |
 | Mission Control UX | 100/100 | 0 | 100/100 | 0 |
 | PI-Bench seed/task format | 97/100 | 3 | 97/100 | 0 |
 | Incremental Understanding metrics | 88/100 | 12 | 88/100 | 0 |
-| Review Intelligence with true blast radius | 88/100 | 13 | 84/100 | +4 |
-| `rizz ask` | 90/100 | 10 | 87/100 | +3 |
+| Review Intelligence with true blast radius | 89/100 | 11 | 88/100 | +1 |
+| `rizz ask` | 91/100 | 9 | 90/100 | +1 |
 
 Repo detail:
 
-| Repo | Flow score | Remaining | High-signal candidates | Inventory-only script gaps | Weakest capability |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `github/docs` | 85/100 | 15 | 40 | 82 | Architecture Reasoning, 59/100 |
-| `vercel/next.js` | 88/100 | 12 | 76 | 26 | Architecture Reasoning, 83/100 |
+| Repo | Architecture score | Remaining | Impact surfaces | Cross-component relationships | Service causality paths | Weakest capability |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `github/docs` | 75/100 | 25 | 11 | 0 | 0 of 0 services | Architecture Reasoning, 75/100 |
+| `vercel/next.js` | 83/100 | 17 | 2 | 1 | 0 of 1 service | Architecture Reasoning, 83/100 |

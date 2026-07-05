@@ -252,6 +252,7 @@ type ArchitectureImpactSurfaceType = 'component' | 'route';
 type ArchitectureImpactRiskLevel = 'low' | 'medium' | 'high';
 
 interface ArchitectureServiceCausalityReasoning {
+  readonly total_services: number;
   readonly total_paths: number;
   readonly affected_flows: readonly string[];
   readonly affected_services: readonly string[];
@@ -320,6 +321,9 @@ interface ArchitectureImpactMap {
     readonly high_coupling_surfaces: number;
     readonly test_backed_surfaces: number;
     readonly config_backed_surfaces: number;
+    readonly evidence_backed_surfaces: number;
+    readonly what_breaks_surfaces: number;
+    readonly dependent_component_surfaces: number;
     readonly service_causality_paths: number;
     readonly service_causality_effect_count: number;
     readonly service_causality_backed_surfaces: number;
@@ -11104,10 +11108,11 @@ function serviceCausalityEffectCategory(effect: string): string {
   return safeText(category);
 }
 
-function buildArchitectureServiceCausalityReasoning(
-  flows: readonly BrainEntity[],
-): ArchitectureServiceCausalityReasoning {
-  const claims = flows.flatMap((flow) =>
+function buildArchitectureServiceCausalityReasoning(params: {
+  readonly flows: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
+}): ArchitectureServiceCausalityReasoning {
+  const claims = params.flows.flatMap((flow) =>
     safeFlowServiceCausality(flow).map((claim) => ({ flow, claim })),
   );
   const effects = unique(claims.flatMap(({ claim }) => claim.effects)).map(safeText);
@@ -11141,14 +11146,17 @@ function buildArchitectureServiceCausalityReasoning(
       };
     });
   const unknowns = unique([
-    ...(claims.length === 0
-      ? ['No service causality paths were reconstructed for architecture reasoning yet.']
+    ...(claims.length === 0 && params.services.length > 0
+      ? [
+          `${params.services.length} service entity/entities were reconstructed, but no service causality paths were linked to flows yet.`,
+        ]
       : []),
     ...missingEffectPaths.map((path) => `${path} has no recorded service effect.`),
     ...missingStepLinkPaths.map((path) => `${path} is not linked to a reconstructed flow step.`),
     ...claims.flatMap(({ claim }) => claim.unknowns),
   ]).map(safeText);
   return {
+    total_services: params.services.length,
     total_paths: claims.length,
     affected_flows: unique(claims.map(({ flow }) => flow.id)).map(safeText),
     affected_services: unique(claims.map(({ claim }) => claim.service_id)).map(safeText),
@@ -11205,6 +11213,10 @@ function buildArchitectureImpactMap(params: {
       high_coupling_surfaces: entries.filter((entry) => entry.coupling_level === 'high').length,
       test_backed_surfaces: entries.filter((entry) => entry.affected_tests.length > 0).length,
       config_backed_surfaces: entries.filter((entry) => entry.affected_configs.length > 0).length,
+      evidence_backed_surfaces: entries.filter((entry) => entry.evidence_ids.length > 0).length,
+      what_breaks_surfaces: entries.filter((entry) => entry.what_breaks.length > 0).length,
+      dependent_component_surfaces: entries.filter((entry) => entry.dependent_components.length > 0)
+        .length,
       service_causality_paths: serviceCausality.length,
       service_causality_effect_count: serviceCausalityEffects.length,
       service_causality_backed_surfaces: entries.filter(
@@ -11219,6 +11231,39 @@ function buildArchitectureImpactMap(params: {
     calibration_rule:
       'Impact map is deterministic static inference from component boundaries, route metadata, flows, graph relationships, tests, configs, coupling, and evidence IDs.',
   };
+}
+
+function architectureCrossComponentRelationships(
+  relationships: readonly BrainRelationship[],
+): Array<Record<string, unknown>> {
+  return relationships
+    .filter(
+      (relationship) =>
+        relationship.from.startsWith('component:') &&
+        relationship.to.startsWith('component:') &&
+        ['imports', 'calls', 'depends_on'].includes(relationship.relation),
+    )
+    .map((relationship) => ({
+      from: safeText(relationship.from),
+      relation: safeText(relationship.relation),
+      to: safeText(relationship.to),
+      confidence: relationship.confidence,
+      evidence_ids: relationship.evidence_ids.slice(0, 20).map(safeText),
+      what_breaks: [
+        `${relationship.from} ${relationship.relation} ${relationship.to}; changes on either side can break static architecture reachability.`,
+      ].map(safeText),
+      rules: [
+        `relation:${safeText(relationship.relation)}`,
+        `evidence_ids:${relationship.evidence_ids.length}`,
+      ],
+    }))
+    .sort(
+      (a, b) =>
+        recordArray(b, 'evidence_ids').length - recordArray(a, 'evidence_ids').length ||
+        String(a.from).localeCompare(String(b.from)) ||
+        String(a.to).localeCompare(String(b.to)),
+    )
+    .slice(0, 30);
 }
 
 function isDeploymentFlow(flow: BrainEntity): boolean {
@@ -12140,7 +12185,11 @@ function buildArchitectureReasoningArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
   });
-  const serviceCausalityReasoning = buildArchitectureServiceCausalityReasoning(flows);
+  const serviceCausalityReasoning = buildArchitectureServiceCausalityReasoning({
+    flows,
+    services,
+  });
+  const crossComponentRelationships = architectureCrossComponentRelationships(params.relationships);
   const architectureUnknowns = unique([
     ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
     ...(componentsWithoutFlows.length > 0
@@ -12156,7 +12205,9 @@ function buildArchitectureReasoningArtifact(params: {
     ...(lowConfidenceFlows.length > 0
       ? [`${lowConfidenceFlows.length} reconstructed flow(s) are not verified yet.`]
       : []),
-    ...(crossComponentFlows.length === 0 && flows.length > 0
+    ...(crossComponentFlows.length === 0 &&
+    crossComponentRelationships.length === 0 &&
+    flows.length > 0
       ? ['No cross-component flows were reconstructed from static evidence yet.']
       : []),
     ...serviceCausalityReasoning.unknowns,
@@ -12185,6 +12236,7 @@ function buildArchitectureReasoningArtifact(params: {
     service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
+    cross_component_relationships: crossComponentRelationships,
     risk_concentrations: riskConcentrations,
     review_hints: reviewHints,
     architecture_assumptions: architectureAssumptions,
@@ -13905,6 +13957,94 @@ function architectureImpactSummary(value: unknown): string {
   return `${totalSurfaces} impact surface(s): ${componentSurfaces} component(s), ${routeSurfaces} route(s), ${highCouplingSurfaces} high-coupling surface(s).`;
 }
 
+function architectureImpactReadiness(architectureReasoning: unknown): number {
+  const impactMap = nestedRecord(architectureReasoning, 'impact_map');
+  const summary = nestedRecord(impactMap, 'summary');
+  const totalSurfaces = recordNumber(summary, 'total_surfaces');
+  if (totalSurfaces === 0) return 0;
+  return boundedScore(
+    20 +
+      scorePercent(recordNumber(summary, 'what_breaks_surfaces'), totalSurfaces) * 0.25 +
+      scorePercent(recordNumber(summary, 'evidence_backed_surfaces'), totalSurfaces) * 0.25 +
+      scorePercent(recordNumber(summary, 'test_backed_surfaces'), totalSurfaces) * 0.15 +
+      scorePercent(recordNumber(summary, 'config_backed_surfaces'), totalSurfaces) * 0.15,
+  );
+}
+
+function architectureLinkageReadiness(architectureReasoning: unknown): number {
+  const crossComponentFlowCount = recordArray(
+    architectureReasoning,
+    'cross_component_flows',
+  ).length;
+  const crossComponentRelationshipCount = recordArray(
+    architectureReasoning,
+    'cross_component_relationships',
+  ).length;
+  const routeArchitectureCount = recordArray(architectureReasoning, 'route_architecture').length;
+  const impactSummary = nestedRecord(nestedRecord(architectureReasoning, 'impact_map'), 'summary');
+  return boundedScore(
+    (crossComponentFlowCount > 0 ? 35 : 0) +
+      (crossComponentRelationshipCount > 0 ? 35 : 0) +
+      (routeArchitectureCount > 0 ? 40 : 0) +
+      (recordNumber(impactSummary, 'dependent_component_surfaces') > 0 ? 15 : 0),
+  );
+}
+
+function architectureServiceCausalityReadiness(architectureReasoning: unknown): number {
+  const serviceCausality = nestedRecord(architectureReasoning, 'service_causality_reasoning');
+  const totalServices = recordNumber(serviceCausality, 'total_services');
+  const totalPaths = recordNumber(serviceCausality, 'total_paths');
+  if (totalServices === 0) return 100;
+  if (totalPaths === 0) return 35;
+  return boundedScore(
+    65 +
+      scorePercent(totalPaths, totalServices) * 0.2 +
+      (recordNumber(serviceCausality, 'effect_count') > 0 ? 15 : 0),
+  );
+}
+
+function architectureWhatBreaksReadiness(architectureReasoning: unknown): number {
+  const componentBreaks = recordArray(architectureReasoning, 'what_breaks').length;
+  const routeBreaks = recordArray(architectureReasoning, 'route_what_breaks').length;
+  const impactSummary = nestedRecord(nestedRecord(architectureReasoning, 'impact_map'), 'summary');
+  const impactBreaks = recordNumber(impactSummary, 'what_breaks_surfaces');
+  return Math.min(100, (componentBreaks + routeBreaks + impactBreaks) * 24);
+}
+
+function architectureConfidenceReadiness(architectureReasoning: unknown): number {
+  const confidenceDebt = nestedRecord(architectureReasoning, 'confidence_debt');
+  const unknowns = asStringArray(
+    isRecord(architectureReasoning) ? architectureReasoning.unknowns : undefined,
+  );
+  return boundedScore(
+    100 -
+      unknowns.length * 5 -
+      recordNumber(confidenceDebt, 'unsupported_assumption_count') * 8 -
+      recordNumber(confidenceDebt, 'low_confidence_area_count') * 2,
+  );
+}
+
+function architectureSignalScore(params: {
+  readonly components: readonly BrainEntity[];
+  readonly architectureReasoning: unknown;
+}): number {
+  const knownBoundaryComponents = params.components.filter(
+    (component) => stringData(component, 'boundary_type') !== 'unknown',
+  );
+  const componentCouplingCoverage = params.components.filter(
+    (component) => componentCouplingRecord(component).reasons.length > 0,
+  );
+  return boundedScore(
+    scorePercent(knownBoundaryComponents.length, params.components.length) * 0.16 +
+      scorePercent(componentCouplingCoverage.length, params.components.length) * 0.12 +
+      architectureImpactReadiness(params.architectureReasoning) * 0.28 +
+      architectureLinkageReadiness(params.architectureReasoning) * 0.12 +
+      architectureServiceCausalityReadiness(params.architectureReasoning) * 0.06 +
+      architectureConfidenceReadiness(params.architectureReasoning) * 0.18 +
+      architectureWhatBreaksReadiness(params.architectureReasoning) * 0.08,
+  );
+}
+
 function readinessScore(value: unknown): number {
   if (!isRecord(value)) return 0;
   const readiness = value.readiness;
@@ -14086,6 +14226,18 @@ function buildPieCapabilityScorecard(params: {
     (readinessScore(params.benchmarkReady) + benchmarkCoverageScore) / 2,
   );
   const architectureWhatBreaks = recordArray(params.architectureReasoning, 'what_breaks');
+  const architectureImpactSummaryRecord = nestedRecord(
+    nestedRecord(params.architectureReasoning, 'impact_map'),
+    'summary',
+  );
+  const architectureServiceCausality = nestedRecord(
+    params.architectureReasoning,
+    'service_causality_reasoning',
+  );
+  const architectureCrossComponentRelationships = recordArray(
+    params.architectureReasoning,
+    'cross_component_relationships',
+  );
   const missionControlScore = boundedScore(
     (params.components.length > 0 ? 18 : 0) +
       (params.flows.length > 0 ? 18 : 0) +
@@ -14135,6 +14287,10 @@ function buildPieCapabilityScorecard(params: {
       label: 'Architecture Reasoning',
       score: architectureScore,
       evidenceBasis: [
+        `${recordNumber(architectureImpactSummaryRecord, 'total_surfaces')} architecture impact surface(s)`,
+        `${recordNumber(architectureImpactSummaryRecord, 'what_breaks_surfaces')} what-breaks impact surface(s)`,
+        `${architectureCrossComponentRelationships.length} cross-component relationship(s)`,
+        `${recordNumber(architectureServiceCausality, 'total_paths')} service causality path(s)`,
         `${recordArray(params.architectureReasoning, 'coupling_hotspots').length} coupling hotspot(s)`,
         `${recordArray(params.architectureReasoning, 'critical_paths').length} critical path(s)`,
         `${architectureWhatBreaks.length} what-breaks claim(s)`,
@@ -14279,19 +14435,22 @@ function buildUnderstandingScoreArtifact(params: {
   const knownBoundaryComponents = components.filter(
     (component) => stringData(component, 'boundary_type') !== 'unknown',
   );
+  const couplingEvidenceComponents = components.filter(
+    (component) => componentCouplingRecord(component).reasons.length > 0,
+  );
   const architectureUnknowns = asStringArray(
     isRecord(params.architectureReasoning) ? params.architectureReasoning.unknowns : undefined,
   );
-  const architectureScore = boundedScore(
-    scorePercent(knownBoundaryComponents.length, components.length) * 0.4 +
-      scorePercent(
-        components.filter((component) => componentCouplingRecord(component).reasons.length > 0)
-          .length,
-        components.length,
-      ) *
-        0.25 +
-      Math.max(0, 100 - architectureUnknowns.length * 12) * 0.35,
+  const architectureImpactMap = nestedRecord(params.architectureReasoning, 'impact_map');
+  const architectureImpactMapSummary = nestedRecord(architectureImpactMap, 'summary');
+  const architectureServiceCausality = nestedRecord(
+    params.architectureReasoning,
+    'service_causality_reasoning',
   );
+  const architectureScore = architectureSignalScore({
+    components,
+    architectureReasoning: params.architectureReasoning,
+  });
   const incrementalScore = incrementalStatusScore(params.incrementalMetrics);
   const unknownItems = topUnknowns({
     buckets: params.buckets,
@@ -14369,12 +14528,30 @@ function buildUnderstandingScoreArtifact(params: {
     }),
     architecture: dimensionRecord({
       score: architectureScore,
-      summary: `${knownBoundaryComponents.length}/${components.length} component boundary type(s) known.`,
+      summary: `${knownBoundaryComponents.length}/${components.length} component boundary type(s) known; ${recordNumber(
+        architectureImpactMapSummary,
+        'total_surfaces',
+      )} impact surface(s) mapped.`,
       signals: [
+        `${couplingEvidenceComponents.length} component(s) with coupling rationale`,
+        `${recordNumber(architectureImpactMapSummary, 'what_breaks_surfaces')} impact surface(s) with what-breaks claims`,
+        `${recordArray(params.architectureReasoning, 'cross_component_relationships').length} cross-component relationship(s) with evidence`,
+        `${recordNumber(architectureServiceCausality, 'total_paths')} service causality path(s) across ${recordNumber(
+          architectureServiceCausality,
+          'total_services',
+        )} service entity/entities`,
         `${recordArray(params.architectureReasoning, 'coupling_hotspots').length} coupling hotspot(s)`,
         `${recordArray(params.architectureReasoning, 'critical_paths').length} critical path(s)`,
       ],
-      weakSpots: architectureUnknowns,
+      weakSpots: unique([
+        ...architectureUnknowns,
+        ...asStringArray(
+          isRecord(params.architectureReasoning) &&
+            isRecord(params.architectureReasoning.confidence_debt)
+            ? params.architectureReasoning.confidence_debt.blocking_unknowns
+            : undefined,
+        ),
+      ]).slice(0, 8),
     }),
     evidence: dimensionRecord({
       score: evidenceScore,

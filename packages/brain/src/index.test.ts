@@ -2876,6 +2876,9 @@ describe('project brain generation', () => {
             component_surfaces: number;
             test_backed_surfaces: number;
             config_backed_surfaces: number;
+            evidence_backed_surfaces: number;
+            what_breaks_surfaces: number;
+            dependent_component_surfaces: number;
             top_impacted_surfaces: string[];
           };
           entries: Array<{
@@ -2900,6 +2903,13 @@ describe('project brain generation', () => {
           }>;
         };
         cross_component_flows: Array<{ flow_id: string; components: string[] }>;
+        cross_component_relationships: Array<{
+          from: string;
+          relation: string;
+          to: string;
+          evidence_ids: string[];
+          what_breaks: string[];
+        }>;
       }>(join(result.value.researchDir, 'architecture_reasoning.json'));
       expect(architectureReasoning.cross_component_flows).toContainEqual(
         expect.objectContaining({
@@ -2907,6 +2917,17 @@ describe('project brain generation', () => {
           components: expect.arrayContaining([
             'component:packages--cli',
             'component:packages--core',
+          ]),
+        }),
+      );
+      expect(architectureReasoning.cross_component_relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'component:packages--cli',
+          relation: 'imports',
+          to: 'component:packages--core',
+          evidence_ids: expect.arrayContaining(['evidence:file-packages--cli--src--index.ts']),
+          what_breaks: expect.arrayContaining([
+            expect.stringContaining('component:packages--cli imports component:packages--core'),
           ]),
         }),
       );
@@ -3017,6 +3038,8 @@ describe('project brain generation', () => {
         component_surfaces: 2,
         test_backed_surfaces: 2,
         config_backed_surfaces: 2,
+        evidence_backed_surfaces: 2,
+        what_breaks_surfaces: 2,
       });
       expect(architectureReasoning.impact_map.summary.top_impacted_surfaces).toContain(
         'impact:component:packages--cli',
@@ -3085,6 +3108,35 @@ describe('project brain generation', () => {
       expect(report).toContain('Design Pressures');
       expect(report).toContain('Coupling Rationale');
       expect(report).toContain('Evidence Gaps');
+
+      const understandingScore = await readJson<{
+        dimensions: {
+          architecture: {
+            score: number;
+            signals: string[];
+          };
+        };
+        capability_scorecard: {
+          capabilities: Array<{ key: string; evidence_basis: string[] }>;
+        };
+      }>(join(result.value.researchDir, 'understanding_score.json'));
+      expect(understandingScore.dimensions.architecture.score).toBeGreaterThanOrEqual(80);
+      expect(understandingScore.dimensions.architecture.signals).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('impact surface'),
+          expect.stringContaining('cross-component relationship'),
+          expect.stringContaining('service causality path'),
+        ]),
+      );
+      expect(understandingScore.capability_scorecard.capabilities).toContainEqual(
+        expect.objectContaining({
+          key: 'architecture_reasoning',
+          evidence_basis: expect.arrayContaining([
+            expect.stringContaining('architecture impact surface'),
+            expect.stringContaining('cross-component relationship'),
+          ]),
+        }),
+      );
 
       const explained = await explainProjectTarget({
         rootDir: dir,
