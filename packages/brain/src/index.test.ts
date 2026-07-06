@@ -3382,6 +3382,7 @@ describe('project brain generation', () => {
         sources: { architecture: number; evidence_quality: number; verification: number };
         packets: Array<{
           priority: number;
+          related_packet_ids: string[];
           source: string;
           target_type: string;
           target_id: string;
@@ -3400,6 +3401,7 @@ describe('project brain generation', () => {
           source: 'architecture',
           target_type: 'component_correction_packet',
           target_id: 'component:config',
+          related_packet_ids: expect.any(Array),
           read_first_files: expect.arrayContaining(['config/kubernetes/deployment.yaml']),
           verification_actions: expect.arrayContaining([
             expect.stringContaining('component_boundary_evidence improves'),

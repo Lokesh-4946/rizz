@@ -14,6 +14,7 @@ type AgentRepairPacketConfidence = 'verified' | 'inferred' | 'uncertain';
 interface AgentRepairPacket {
   readonly priority: number;
   readonly packet_id: string;
+  readonly related_packet_ids: readonly string[];
   readonly source: AgentRepairPacketSource;
   readonly severity: AgentRepairPacketSeverity;
   readonly target_type: string;
@@ -111,6 +112,12 @@ function sourceRank(value: AgentRepairPacketSource): number {
   return 6;
 }
 
+function targetTypeRank(value: string): number {
+  if (value === 'component_correction_packet') return 0;
+  if (value === 'architecture_assumption') return 1;
+  return 2;
+}
+
 function queueSource(value: string): AgentRepairPacketSource {
   if (value === 'evidence') return 'evidence_quality';
   if (value === 'architecture') return 'architecture';
@@ -148,6 +155,7 @@ function queuePackets(confidenceInspectionQueue: unknown): AgentRepairPacket[] {
     return {
       priority: 0,
       packet_id: `repair:${source}:${slug(targetType)}:${slug(targetId)}`,
+      related_packet_ids: [],
       source,
       severity: parseSeverity(item.severity),
       target_type: targetType,
@@ -203,6 +211,7 @@ function reviewFindingPackets(review: unknown): AgentRepairPacket[] {
       return {
         priority: 0,
         packet_id: `repair:review:${slug(findingId)}`,
+        related_packet_ids: [],
         source: 'review_blast_radius',
         severity: findingSeverity(finding.severity),
         target_type: recordString(finding, 'category', 'review_finding'),
@@ -246,6 +255,7 @@ function verificationPlanPackets(review: unknown): AgentRepairPacket[] {
       return {
         priority: 0,
         packet_id: `repair:verification:${slug(planId)}`,
+        related_packet_ids: [],
         source: 'verification',
         severity: recordString(item, 'priority') === 'required' ? 'high' : 'medium',
         target_type: `verification:${recordString(item, 'verification_type', 'manual')}`,
@@ -285,6 +295,7 @@ function comparePackets(a: AgentRepairPacket, b: AgentRepairPacket): number {
   return (
     severityRank(a.severity) - severityRank(b.severity) ||
     sourceRank(a.source) - sourceRank(b.source) ||
+    targetTypeRank(a.target_type) - targetTypeRank(b.target_type) ||
     a.target_id.localeCompare(b.target_id)
   );
 }
@@ -301,16 +312,141 @@ function uniquePackets(packets: readonly AgentRepairPacket[]): AgentRepairPacket
   return out;
 }
 
+function componentCorrectionTarget(packet: AgentRepairPacket): string | undefined {
+  if (packet.source !== 'architecture') return undefined;
+  if (packet.target_type !== 'component_correction_packet') return undefined;
+  return packet.target_id.startsWith('component:') ? packet.target_id : undefined;
+}
+
+function packetComponentTarget(packet: AgentRepairPacket): string | undefined {
+  if (packet.source !== 'architecture') return undefined;
+  if (packet.target_id.startsWith('component:')) return packet.target_id;
+  if (!packet.target_id.startsWith('assumption:component:')) return undefined;
+  const assumptionTarget = packet.target_id.replace(/^assumption:/, '');
+  const suffixes = [':boundary', ':coupling'];
+  const suffix = suffixes.find((item) => assumptionTarget.endsWith(item));
+  return suffix === undefined ? undefined : assumptionTarget.slice(0, -suffix.length);
+}
+
+function mergePacketLists(
+  a: readonly string[],
+  b: readonly string[],
+  limit: number,
+): readonly string[] {
+  return unique([...a, ...b]).slice(0, limit);
+}
+
+function mergePacketText(
+  a: readonly string[],
+  b: readonly string[],
+  limit: number,
+): readonly string[] {
+  return unique([...a, ...b]).slice(0, limit);
+}
+
+function mergeArchitectureContext(
+  correction: AgentRepairPacket,
+  related: readonly AgentRepairPacket[],
+): AgentRepairPacket {
+  const relatedPacketIds = unique([
+    ...correction.related_packet_ids,
+    ...related.map((packet) => packet.packet_id),
+    ...related.flatMap((packet) => packet.related_packet_ids),
+  ]);
+  const relatedInspectActions = related.map(
+    (packet) => `Folded related ${packet.target_type} ${packet.target_id} into this packet.`,
+  );
+  return {
+    ...correction,
+    related_packet_ids: relatedPacketIds,
+    intent:
+      related.length === 0
+        ? correction.intent
+        : `${correction.intent} Related architecture assumptions and evidence gaps were folded into this component-local packet.`,
+    read_first_files: mergePacketLists(
+      correction.read_first_files,
+      related.flatMap((packet) => packet.read_first_files),
+      8,
+    ),
+    inspect_actions: mergePacketText(
+      correction.inspect_actions,
+      [...relatedInspectActions, ...related.flatMap((packet) => packet.inspect_actions)],
+      8,
+    ),
+    verification_actions: mergePacketText(
+      correction.verification_actions,
+      related.flatMap((packet) => packet.verification_actions),
+      8,
+    ),
+    evidence_ids: mergePacketLists(
+      correction.evidence_ids,
+      related.flatMap((packet) => packet.evidence_ids),
+      12,
+    ),
+    evidence_gap_ids: mergePacketLists(
+      correction.evidence_gap_ids,
+      related.flatMap((packet) => packet.evidence_gap_ids),
+      12,
+    ),
+    artifacts: mergePacketLists(
+      correction.artifacts,
+      related.flatMap((packet) => packet.artifacts),
+      8,
+    ),
+    agent_prompt:
+      related.length === 0
+        ? correction.agent_prompt
+        : `${correction.agent_prompt} Treat related_packet_ids as provenance, not extra standalone tasks.`,
+  };
+}
+
+function consolidateComponentArchitecturePackets(
+  packets: readonly AgentRepairPacket[],
+): AgentRepairPacket[] {
+  const correctionTargets = new Map<string, AgentRepairPacket>();
+  for (const packet of packets) {
+    const target = componentCorrectionTarget(packet);
+    if (target !== undefined && !correctionTargets.has(target)) {
+      correctionTargets.set(target, packet);
+    }
+  }
+  if (correctionTargets.size === 0) return [...packets];
+
+  const relatedByComponent = new Map<string, AgentRepairPacket[]>();
+  const passthrough: AgentRepairPacket[] = [];
+  for (const packet of packets) {
+    const correctionTarget = componentCorrectionTarget(packet);
+    if (correctionTarget !== undefined) continue;
+    const componentTarget = packetComponentTarget(packet);
+    if (componentTarget !== undefined && correctionTargets.has(componentTarget)) {
+      const related = relatedByComponent.get(componentTarget) ?? [];
+      related.push(packet);
+      relatedByComponent.set(componentTarget, related);
+      continue;
+    }
+    passthrough.push(packet);
+  }
+
+  return [
+    ...passthrough,
+    ...[...correctionTargets.entries()].map(([target, correction]) =>
+      mergeArchitectureContext(correction, relatedByComponent.get(target) ?? []),
+    ),
+  ];
+}
+
 export function buildAgentRepairPacketsArtifact(params: {
   readonly generatedAt: string;
   readonly confidenceInspectionQueue: unknown;
   readonly review?: unknown;
 }): AgentRepairPacketsArtifact {
-  const packets = uniquePackets([
-    ...reviewFindingPackets(params.review),
-    ...verificationPlanPackets(params.review),
-    ...queuePackets(params.confidenceInspectionQueue),
-  ])
+  const packets = consolidateComponentArchitecturePackets(
+    uniquePackets([
+      ...reviewFindingPackets(params.review),
+      ...verificationPlanPackets(params.review),
+      ...queuePackets(params.confidenceInspectionQueue),
+    ]),
+  )
     .sort(comparePackets)
     .slice(0, 16)
     .map((packet, index) => ({ ...packet, priority: index + 1 }));
@@ -330,6 +466,6 @@ export function buildAgentRepairPacketsArtifact(params: {
         ? 'No agent repair packets were generated.'
         : `${packets.length} unified agent repair packet(s), including ${highPriorityCount} high-priority packet(s), are ready for inspect-first repair.`,
     calibration_rule:
-      'Agent repair packets unify architecture correction, evidence quality, review blast radius, and verification guidance; packets are deterministic guidance and do not claim repairs or runtime verification were performed.',
+      'Agent repair packets unify architecture correction, evidence quality, review blast radius, and verification guidance; component-local architecture packets may fold duplicate assumptions into related_packet_ids; packets are deterministic guidance and do not claim repairs or runtime verification were performed.',
   };
 }
