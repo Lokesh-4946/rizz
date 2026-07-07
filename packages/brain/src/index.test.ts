@@ -890,11 +890,59 @@ describe('project brain generation', () => {
         'understanding_score.json',
         'pie_acceptance.json',
         'service_intelligence.json',
+        'verification_plan.json',
         'verification_evidence.json',
         'agent_repair_packets.json',
       ].sort((a, b) => a.localeCompare(b));
       expect((await readdir(researchDir)).sort((a, b) => a.localeCompare(b))).toEqual(
         artifactNames,
+      );
+      const verificationPlan = await readJson<{
+        execution_owner: string;
+        runtime_execution_policy: string;
+        plan_count: number;
+        required_count: number;
+        items: Array<{
+          priority: string;
+          verification_type: string;
+          command: string;
+          expected_evidence: { record_with: string; confidence_upgrade_rule: string };
+        }>;
+      }>(join(researchDir, 'verification_plan.json'));
+      expect(verificationPlan).toMatchObject({
+        execution_owner: 'coding_agent',
+        plan_count: expect.any(Number),
+        required_count: expect.any(Number),
+      });
+      expect(verificationPlan.runtime_execution_policy).toContain('coding agent runs commands');
+      expect(verificationPlan.items).toContainEqual(
+        expect.objectContaining({
+          priority: 'required',
+          verification_type: 'test',
+          command: expect.stringContaining('vitest'),
+          expected_evidence: expect.objectContaining({ record_with: 'rizz verify add' }),
+        }),
+      );
+      const agentRepairPackets = await readJson<{
+        sources: { verification: number };
+        packets: Array<{
+          source: string;
+          artifacts: string[];
+          verification_actions: string[];
+        }>;
+      }>(join(researchDir, 'agent_repair_packets.json'));
+      expect(agentRepairPackets.sources.verification).toBeGreaterThan(0);
+      expect(agentRepairPackets.packets).toContainEqual(
+        expect.objectContaining({
+          source: 'verification',
+          artifacts: expect.arrayContaining([
+            '.rizz/research/verification_plan.json',
+            '.rizz/research/verification_evidence.json',
+          ]),
+          verification_actions: expect.arrayContaining([
+            expect.stringContaining('rizz verify add'),
+          ]),
+        }),
       );
 
       const metrics = await readJson<{
@@ -2538,6 +2586,7 @@ describe('project brain generation', () => {
           benchmark_ready: string;
           benchmark_tasks: string;
           pie_acceptance: string;
+          verification_plan: string;
         };
       }>(join(dir, '.rizz', 'brain', 'index.json'));
       expect(index.flow_index_path).toBe('.rizz/brain/flows/index.json');
@@ -2553,6 +2602,7 @@ describe('project brain generation', () => {
         benchmark_ready: '.rizz/research/benchmark_ready.json',
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         pie_acceptance: '.rizz/research/pie_acceptance.json',
+        verification_plan: '.rizz/research/verification_plan.json',
         understanding_score: '.rizz/research/understanding_score.json',
       });
     });

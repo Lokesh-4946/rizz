@@ -29,6 +29,7 @@ import {
   serviceIdsForFiles as svcIdsForFiles,
   serviceStepsForFlow as svcStepsForFlow,
 } from './service-flow-linking.js';
+import { buildAgentVerificationPlanArtifact as bavp } from './verification-plan.js';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
@@ -1741,6 +1742,7 @@ const RESEARCH_ARTIFACT_FILES = {
   benchmarkTasks: 'benchmark_tasks.json',
   understandingScore: 'understanding_score.json',
   pieAcceptance: 'pie_acceptance.json',
+  verificationPlan: 'verification_plan.json',
   verificationEvidence: 'verification_evidence.json',
   agentRepairPackets: 'agent_repair_packets.json',
 } as const;
@@ -9094,7 +9096,7 @@ function buildConfidenceInspectionQueue(params: {
         ? 'No confidence inspection items were detected.'
         : `${items.length} confidence inspection item(s), including ${highPriorityCount} high-priority item(s), should be checked before broad reuse.`,
     calibration_rule:
-      'Confidence inspection combines evidence gaps, architecture debt, security findings, tools, and stale surfaces.',
+      'Confidence inspection combines evidence gaps, architecture debt, security, tools, and stale surfaces.',
   };
 }
 
@@ -10357,7 +10359,7 @@ function architectureBoundaryRationale(params: {
         component_id: safeText(component.id),
         boundary_type: boundaryType,
         rationale: safeText(
-          `${component.id} is a ${boundaryType} boundary from ${signals.length} structural signal(s), ${componentFlows.length} linked flow(s), ${configs.length} config signal(s), and ${dependencies.length} dependency signal(s).`,
+          `${component.id} is a ${boundaryType} boundary from ${signals.length} structure, ${componentFlows.length} linked flow(s), ${configs.length} config, and ${dependencies.length} dependency signal(s).`,
         ),
         evidence_ids: architectureEvidenceIdsForComponent({
           component,
@@ -10396,7 +10398,7 @@ function architectureCouplingRationale(params: {
           coupling_level: coupling.level,
           coupling_score: coupling.score,
           rationale: safeText(
-            `${component.id} coupling is ${coupling.level} from ${coupling.static_import_count} static import(s), ${coupling.internal_imports.length} internal target(s), and ${coupling.external_imports.length} external root(s).`,
+            `${component.id} coupling is ${coupling.level}: ${coupling.static_import_count} static import(s), ${coupling.internal_imports.length} internal, ${coupling.external_imports.length} external.`,
           ),
           intentional_coupling: intentionalCoupling,
           risky_coupling: riskyCoupling,
@@ -10768,7 +10770,7 @@ function buildArchitectureConfidenceDebt(params: {
     low_confidence_areas: lowConfidenceAreas,
     blocking_unknowns: blockingUnknowns,
     summary: safeText(
-      `${unsupportedAssumptions.length} unsupported assumption(s), ${inferredTradeoffs.length} inferred tradeoff(s), ${lowConfidenceAreas.length} low-confidence area(s), and ${blockingUnknowns.length} blocking unknown(s).`,
+      `${unsupportedAssumptions.length} unsupported assumption(s), ${inferredTradeoffs.length} inferred, ${lowConfidenceAreas.length} low-confidence, ${blockingUnknowns.length} blocking unknown(s).`,
     ),
     calibration_rule:
       'Confidence debt is derived only from local architecture assumptions, tradeoffs, evidence gaps, confidence scores, and unknowns.',
@@ -12536,7 +12538,7 @@ function buildReasoningTracesArtifact(params: {
     entityId: projectId,
     reasoningType: 'architecture',
     suffix: 'project-summary',
-    claim: `Project architecture confidence is calibrated from ${components.length} component(s), ${flows.length} flow(s), and ${params.relationships.length} relationship claim(s).`,
+    claim: `Architecture confidence uses ${components.length} component(s), ${flows.length} flow(s), and ${params.relationships.length} relationship claim(s).`,
     evidenceIds: unique([
       ...components.flatMap(evidenceIdsForComponent),
       ...flows.flatMap(evidenceIdsForFlow),
@@ -15054,7 +15056,7 @@ function buildServiceCausalityDelta(params: {
       `${stablePathCount} stable, ${recomputedPathCount} recomputed/new, ${driftedPathCount} drifted, and ${stalePathCount} stale service causality path(s).`,
     ),
     calibration_rule:
-      'Service causality freshness compares flow-to-service path fingerprints and linked evidence ids across scans; drift means a causality claim stayed structurally identical while linked service, flow, or evidence files changed.',
+      'Service causality freshness compares flow-service fingerprints and evidence ids; drift means linked service, flow, or evidence changed.',
   };
 }
 
@@ -15652,9 +15654,16 @@ function buildResearchArtifacts(params: {
     architectureReasoning: architectureReasoningBase,
     queue: confidenceInspectionQueue,
   });
+  const verificationPlan = bavp({
+    generatedAt: params.now,
+    commands: params.buckets.commands,
+    flows: params.buckets.flows,
+    components: params.buckets.components,
+  });
   const agentRepairPackets = buildAgentRepairPacketsArtifact({
     generatedAt: params.now,
     confidenceInspectionQueue,
+    verificationPlan,
   });
   const benchmarkReady = buildBenchmarkReadyArtifact({
     projectName: params.projectName,
@@ -16149,6 +16158,7 @@ function buildResearchArtifacts(params: {
     benchmarkTasks,
     understandingScore,
     pieAcceptance,
+    verificationPlan,
     verificationEvidence: emptyVerificationEvidenceArtifact(params.projectName, params.now),
     agentRepairPackets,
   };
@@ -16407,8 +16417,8 @@ function buildLatest(params: {
     project_id: entityId('project', params.projectName),
     latest_architecture_summary:
       params.buckets.components.length === 0
-        ? 'No durable component map has been inferred yet.'
-        : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.flows.length} reconstructed flow(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
+        ? 'No component map inferred yet.'
+        : `${params.projectName}: ${params.buckets.components.length} component(s), ${params.buckets.flows.length} flow(s), ${params.buckets.commands.length} command(s), ${params.buckets.tests.length} test(s).`,
     latest_architecture_impact_summary: architectureImpactSummary(architectureReasoning),
     latest_component_map: componentMap,
     latest_service_map: serviceMap,
@@ -17243,7 +17253,7 @@ function renderUnknowns(params: {
 function renderLatestReview(latest: Record<string, unknown>): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
   }
   const rows = Object.entries(status)
     .map(
@@ -17279,11 +17289,11 @@ function renderReviewStatusValue(value: unknown): string {
 function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Agent plan: <code>.rizz/research/verification_plan.json</code>.</p>';
   }
   const plan = recordArray(status, 'verification_plan').filter(isRecord);
   if (plan.length === 0) {
-    return '<p class="muted">No targeted verification plan was recorded by the latest review.</p>';
+    return '<p class="muted">No review verification plan recorded.</p>';
   }
   const required = plan.filter((item) => recordString(item, 'priority', '') === 'required');
   const recommended = plan.filter((item) => recordString(item, 'priority', '') === 'recommended');
@@ -17319,7 +17329,7 @@ function renderLatestReviewRouteFlows(
 ): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
   }
   const affectedFlowIds = new Set(asStringArray(status.affected_flows));
   if (affectedFlowIds.size === 0) {
@@ -17354,7 +17364,7 @@ function renderLatestReviewRouteFlows(
 function renderMissionControlDependencyRuntimeImpact(latest: Record<string, unknown>): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
   }
   const impact = status.dependency_runtime_impact;
   if (!isRecord(impact)) {
@@ -17423,7 +17433,7 @@ function renderMissionControlArchitectureImpactClaims(
 ): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
   }
   if (recordString(status, 'status', 'not_run') === 'not_run') {
     return '<p class="muted">No review has run for the current brain. Run <code>rizz review</code> to add architecture impact claims.</p>';
@@ -19255,8 +19265,7 @@ function renderReport(params: {
   });
   const componentObject = renderObjectDetails({
     title: 'Components',
-    summary:
-      'Product and code boundaries reconstructed from manifests, source files, imports, tests, and local evidence.',
+    summary: 'Boundaries reconstructed from manifests, source, imports, tests, and evidence.',
     count: params.buckets.components.length,
     posture: params.buckets.components.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderComponentCards(params.buckets.components, evidenceById)}</div>`,
@@ -20157,6 +20166,7 @@ export async function generateProjectBrain(
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
         pie_acceptance: '.rizz/research/pie_acceptance.json',
+        verification_plan: '.rizz/research/verification_plan.json',
         verification_evidence: '.rizz/research/verification_evidence.json',
         agent_repair_packets: '.rizz/research/agent_repair_packets.json',
       },
@@ -21517,7 +21527,7 @@ function buildExplanation(params: {
     fi?.purpose ??
     (primaryService === undefined
       ? undefined
-      : `${safeText(primaryService.name)} is a ${stringData(primaryService, 'framework') ?? 'unknown'} service inferred from source evidence across ${serviceDataStringArray(primaryService, 'related_flows').length} flow(s).`) ??
+      : `${safeText(primaryService.name)} is a ${stringData(primaryService, 'framework') ?? 'unknown'} service inferred across ${serviceDataStringArray(primaryService, 'related_flows').length} flow(s).`) ??
     stringData(target, 'purpose') ??
     (typeof componentData.purpose === 'string' ? componentData.purpose : undefined) ??
     target.description;
@@ -21834,7 +21844,7 @@ function buildFlowExplanation(params: {
         ? []
         : [`Explains the ${journey.name} with ${journeySteps.length} normalized journey step(s).`]),
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
-      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${dataDependencies.length} state/data dependency signal(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${dataDependencies.length} state/data, ${files.length} file(s), ${tests.length} test(s), ${configs.length} config(s).`,
       ...serviceCausality.map((item) => item.cause),
       ...dataDependencies.map(
         (dependency) =>
@@ -23118,7 +23128,7 @@ function buildReview(params: {
       category: 'Regression risk',
       title: 'Broad change crosses multiple brain boundaries',
       description: safeText(
-        `The diff touches ${changedFiles.length} file(s), ${affectedComponents.length} direct component(s), ${dependentComponents.length} dependent component(s), and ${affectedFlows.length} flow(s). ${blastRadiusReasons[0] ?? ''}`,
+        `Diff touches ${changedFiles.length} file(s), ${affectedComponents.length} direct component(s), ${dependentComponents.length} dependent, ${affectedFlows.length} flow(s). ${blastRadiusReasons[0] ?? ''}`,
       ),
       affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
@@ -23233,7 +23243,7 @@ function buildReview(params: {
     const impactDescription =
       dependencyRuntimeImpact === null
         ? 'No local flow, service, component, script, or dependency evidence was linked to these package/config files.'
-        : `Runtime/dependency impact links ${dependencyRuntimeImpact.changed_files.length} changed package/config file(s) to ${dependencyRuntimeImpact.affected_flows.length} flow(s), ${dependencyRuntimeImpact.affected_services.length} service(s), ${dependencyRuntimeImpact.affected_components.length} component(s), and ${dependencyRuntimeImpact.package_scripts.length} package script(s). Focused verification: ${
+        : `Runtime/dependency impact links ${dependencyRuntimeImpact.changed_files.length} package/config, ${dependencyRuntimeImpact.affected_flows.length} flow(s), ${dependencyRuntimeImpact.affected_services.length} service(s), ${dependencyRuntimeImpact.affected_components.length} component(s), ${dependencyRuntimeImpact.package_scripts.length} script(s). Verify: ${
             dependencyRuntimeImpact.verification_focus.slice(0, 4).join('; ') || 'none recorded'
           }.`;
     addFinding({
@@ -23467,7 +23477,7 @@ function buildReview(params: {
       category: 'Overengineering',
       title: 'Large diff has little visible test movement',
       description:
-        'The change may be carrying too much product surface for the amount of verification in the diff.',
+        'The change may carry too much product surface for the verification in the diff.',
       affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
       confidence: 'inferred',
@@ -25525,19 +25535,19 @@ function blastRadiusReasonLines(params: {
     params.dependencyRuntimeImpact === null
       ? []
       : [
-          `Dependency/runtime impact links changed package/config files to ${params.dependencyRuntimeImpact.affected_flows.length} flow(s), ${params.dependencyRuntimeImpact.affected_services.length} service(s), ${params.dependencyRuntimeImpact.affected_components.length} component(s), and ${params.dependencyRuntimeImpact.package_scripts.length} package script(s).`,
+          `Dependency/runtime impact links changed package/config files to ${params.dependencyRuntimeImpact.affected_flows.length} flow(s), ${params.dependencyRuntimeImpact.affected_services.length} service(s), ${params.dependencyRuntimeImpact.affected_components.length} component(s), ${params.dependencyRuntimeImpact.package_scripts.length} script(s).`,
           `Focused dependency/runtime verification: ${params.dependencyRuntimeImpact.verification_focus.slice(0, 5).join('; ') || 'none recorded'}.`,
         ];
   return [
     `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
     params.dependentComponents.length === 0
-      ? 'No dependent consumer components were found from import/call/dependency graph edges.'
+      ? 'No dependent consumer components were found.'
       : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
     `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
     serviceCausality.length === 0
       ? 'No service causality path was recorded for the affected flows.'
       : `${serviceCausality.length} service causality path(s) explain flow-to-service blast radius; effects: ${serviceCausalityEffects.slice(0, 6).join(', ') || 'none recorded'}.`,
-    `${params.affectedServices.length} affected service(s) link the change to routes, jobs, storage, external API, env, or deployment evidence.`,
+    `${params.affectedServices.length} affected service(s) link the change to routes, jobs, storage, API, env, or deploy evidence.`,
     ...routeFlowReasons,
     ...impactMapReasons,
     ...dependencyRuntimeReasons,
@@ -25591,7 +25601,7 @@ function affectedRouteFlowReasons(flows: readonly AffectedFlowData[]): string[] 
       const entrypointSummary = reviewRouteListSummary('Entrypoints', flow.entrypoints);
       const componentSummary = reviewRouteListSummary('Components', flow.components);
       const reasonSummary = reviewRouteListSummary('Causality', flow.reasons, 5);
-      return `${routePath} route flow (${routeType}) is affected through ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${reasonSummary} ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
+      return `${routePath} route flow (${routeType}) is affected by ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${reasonSummary} ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
     });
 }
 
@@ -25760,7 +25770,7 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Journey</th><th>Affected Steps</th><th>State/Data Impact</th><th>User-Visible Risk</th><th>Runtime Surfaces</th><th>Changed Files</th><th>Components</th><th>Services</th><th>Tests / Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Journey</th><th>Steps</th><th>State/Data Impact</th><th>User-Visible Risk</th><th>Runtime</th><th>Files</th><th>Components</th><th>Services</th><th>Tests/Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
         <td><strong>${htmlEscape(flow.journey_name ?? flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
@@ -25795,7 +25805,7 @@ function renderAffectedServiceRows(services: readonly ReviewAffectedServiceData[
   if (services.length === 0) {
     return '<p class="muted">No service intelligence overlaps this diff.</p>';
   }
-  return `<table><thead><tr><th>Service</th><th>Reasons</th><th>Changed Files</th><th>Flows</th><th>Tests / Configs</th><th>Routes / Jobs</th><th>Storage / Env / External / Deploy</th><th>Risks</th></tr></thead><tbody>${services
+  return `<table><thead><tr><th>Service</th><th>Reasons</th><th>Files</th><th>Flows</th><th>Tests/Configs</th><th>Routes/Jobs</th><th>Storage/Env/API/Deploy</th><th>Risks</th></tr></thead><tbody>${services
     .map(
       (service) => `<tr>
         <td><strong>${htmlEscape(service.name)}</strong><br><span class="muted">${htmlEscape(
@@ -25957,7 +25967,7 @@ function renderAffectedRelationshipRows(
 
 function renderVerificationPlanRows(plan: readonly ReviewVerificationPlanItemData[]): string {
   if (plan.length === 0) {
-    return '<p class="muted">No targeted verification plan was generated for this review.</p>';
+    return '<p class="muted">No review verification plan generated.</p>';
   }
   return `<table><thead><tr><th>Priority</th><th>Type</th><th>Reason</th><th>Commands</th><th>Manual Checks</th><th>Linked Evidence</th></tr></thead><tbody>${plan
     .map(
