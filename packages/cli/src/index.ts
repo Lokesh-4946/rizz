@@ -34,6 +34,7 @@ Usage:
                      explain a detected service from the project brain
   rizz verify add    record verification evidence for review calibration
   rizz review        review current git diff with the project brain
+                    optional: --mission <text|json>, --mission-file <path>
   rizz chat          launch model TUI
   rizz setup         choose model route
   rizz doctor        readiness check
@@ -159,9 +160,17 @@ function parseBrainMaxFiles(
   return { ok: true, value: parsed };
 }
 
-async function runReviewCommand(options: { readonly json: boolean }): Promise<number> {
+async function runReviewCommand(options: {
+  readonly json: boolean;
+  readonly mission?: string;
+  readonly missionFile?: string;
+}): Promise<number> {
   const { reviewProjectChanges } = await import('@valoir/rizz-brain');
-  const result = await reviewProjectChanges({ rootDir: process.cwd(), json: options.json });
+  const result = await reviewProjectChanges({
+    rootDir: process.cwd(),
+    ...(options.mission !== undefined ? { mission: options.mission } : {}),
+    ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
+  });
   if (!result.ok) {
     if (options.json) {
       await writeJsonStdout(result);
@@ -185,6 +194,9 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
   );
   process.stdout.write(`  affected flows: ${summary.review.affected_flows.length}\n`);
   process.stdout.write(`  affected services: ${summary.review.affected_services.length}\n`);
+  process.stdout.write(
+    `  mission scope: ${summary.review.review_governance.mission_contract.status} (${summary.review.review_governance.mission_contract.score}/100)\n`,
+  );
   process.stdout.write(`  findings: ${summary.findings}\n`);
   process.stdout.write(`  action: ${summary.recommendedAction}\n`);
   process.stdout.write(`  review: ${displayLocalPath(summary.reviewPath)}\n`);
@@ -684,13 +696,23 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   if (c.rest[0] === 'review') {
     const reviewArgs = c.rest.slice(1);
+    const mission = extractFlag(reviewArgs, '--mission');
+    const missionFile = extractFlag(mission.rest, '--mission-file');
     const allowed = new Set(['--json']);
-    const unknown = reviewArgs.find((arg) => !allowed.has(arg));
+    const unknown = missionFile.rest.find((arg) => !allowed.has(arg));
+    if (mission.missingValue || missionFile.missingValue) {
+      process.stderr.write('rizz: review mission flags need values\n');
+      return 2;
+    }
     if (unknown !== undefined) {
       process.stderr.write(`rizz: unknown review option '${unknown}'\nTry 'rizz --help'.\n`);
       return 2;
     }
-    return runReviewCommand({ json: reviewArgs.includes('--json') });
+    return runReviewCommand({
+      json: missionFile.rest.includes('--json'),
+      ...(mission.value !== undefined ? { mission: mission.value } : {}),
+      ...(missionFile.value !== undefined ? { missionFile: missionFile.value } : {}),
+    });
   }
   if (c.rest[0] === 'verify') {
     const verifyArgs = c.rest.slice(1);

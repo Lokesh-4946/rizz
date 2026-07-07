@@ -14,6 +14,7 @@ import {
   readReviewGitChanges,
   renderReviewGovernance,
 } from './review-governance.js';
+import { loadReviewMissionContract } from './review-mission-contract.js';
 import {
   commandTargetPaths,
   commandTargetSteps,
@@ -1580,7 +1581,8 @@ export type GenerateProjectBrainResult =
 export interface ReviewProjectChangesOptions {
   readonly rootDir: string;
   readonly now?: Date;
-  readonly json?: boolean;
+  readonly mission?: string;
+  readonly missionFile?: string;
 }
 
 export interface AddVerificationEvidenceOptions {
@@ -20441,6 +20443,12 @@ export async function reviewProjectChanges(
       sanitizeText: safeText,
     });
     if (!gitChanges.ok) return { ok: false, error: gitChanges.error };
+    const missionContract = loadReviewMissionContract({
+      rootDir,
+      ...(options.mission !== undefined ? { mission: options.mission } : {}),
+      ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
+      sanitizeText: safeText,
+    });
     const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now);
 
     const review = buildReview({
@@ -20452,6 +20460,7 @@ export async function reviewProjectChanges(
       changedFiles: gitChanges.value.changedFiles,
       diffText: gitChanges.value.diffText,
       git: gitChanges.value.git,
+      missionContract,
       verificationEvidence,
     });
     const reviewEval = buildReviewEvalArtifact(review);
@@ -22796,6 +22805,7 @@ function buildReview(params: {
   readonly changedFiles: readonly string[];
   readonly diffText: string;
   readonly git: ReviewGitBasisData;
+  readonly missionContract: ReturnType<typeof loadReviewMissionContract>;
   readonly verificationEvidence: VerificationEvidenceArtifactData;
 }): ReviewSummaryData {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
@@ -22814,17 +22824,6 @@ function buildReview(params: {
       !isDependencyPath(file) &&
       hasRuntimeRelevantSourceDiff(file, params.diffText),
   );
-  const reviewGovernance = buildReviewGovernance({
-    git: params.git,
-    changedFiles,
-    reviewableChangedFiles,
-    generatedArtifacts: changedGeneratedArtifactFiles,
-    diffText: params.diffText,
-    isSourceFile,
-    isConfigPath,
-    isDependencyPath,
-    sanitizeText: safeText,
-  });
   const affectedComponents = affectedComponentEntities(
     reviewableChangedFiles,
     params.entitySets.components,
@@ -22850,6 +22849,21 @@ function buildReview(params: {
   });
   const affectedFlowIds = affectedFlows.map((flow) => flow.id);
   const affectedServiceIds = affectedServices.map((service) => service.id);
+  const reviewGovernance = buildReviewGovernance({
+    git: params.git,
+    changedFiles,
+    reviewableChangedFiles,
+    generatedArtifacts: changedGeneratedArtifactFiles,
+    diffText: params.diffText,
+    missionContract: params.missionContract,
+    affectedComponentIds: unique([...affectedComponentIds, ...dependentComponentIds]),
+    affectedServiceIds,
+    affectedFlowIds,
+    isSourceFile,
+    isConfigPath,
+    isDependencyPath,
+    sanitizeText: safeText,
+  });
   const architectureImpactMap = reviewArchitectureImpactMap({
     latest: params.latest,
     changedFiles: reviewableChangedFiles,
@@ -24086,7 +24100,7 @@ function buildReviewClaimEvidenceArtifact(
     basis: {
       source: 'pre_change_project_brain_plus_git_diff',
       description:
-        'Review claim evidence is derived from the existing Project Intelligence Layer plus the current git diff; it does not claim post-change runtime certainty.',
+        'Derived from the Project Intelligence Layer plus the current git diff; no runtime certainty is claimed.',
       review_fields: [
         'changed_files',
         'blast_radius_reasons',
@@ -24240,10 +24254,8 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
           : 'Review eval output still contains unsafe sensitive references.',
     },
     scoring_notes: [
-      'Review eval is computed from deterministic local review, brain, graph, and evidence artifacts.',
-      'Architecture impact counts are populated only when changed files, components, or flows overlap the local impact map.',
-      'Verification evidence can reduce local regression risk only when checks are explicitly recorded.',
-      'Readiness combines surgicality, risk, blast radius, findings, test guidance, evidence, and secret safety.',
+      'Computed from deterministic local review, brain, graph, diff, and evidence artifacts.',
+      'Verification evidence reduces risk only when checks are explicitly recorded.',
     ],
   };
 }

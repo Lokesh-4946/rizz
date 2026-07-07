@@ -1,6 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  type ReviewMissionComparisonData,
+  type ReviewMissionContractLoad,
+  compareReviewMissionContract,
+} from './review-mission-contract.js';
 
 export type ReviewDiffBasis = 'working_tree' | 'branch' | 'none';
 export type ReviewGovernanceStatus = 'clean' | 'watch' | 'needs_attention';
@@ -22,6 +27,7 @@ export interface ReviewGovernanceData {
   readonly status: ReviewGovernanceStatus;
   readonly score: number;
   readonly git: ReviewGitBasisData;
+  readonly mission_contract: ReviewMissionComparisonData;
   readonly reviewable_changed_files: readonly string[];
   readonly generated_artifacts: readonly string[];
   readonly scope_clusters: readonly string[];
@@ -51,9 +57,43 @@ export function renderReviewGovernance(governance: ReviewGovernanceData): string
   return `<div class="grid">
     <article class="card"><h2>Governance</h2><p>${governance.score}/100 · ${htmlEscape(governance.status)}</p></article>
     <article class="card"><h2>Diff Basis</h2><p>${htmlEscape(governance.git.diff_basis)}</p></article>
+    <article class="card"><h2>Mission Scope</h2><p>${governance.mission_contract.score}/100 · ${htmlEscape(governance.mission_contract.status)}</p></article>
     <article class="card"><h2>Scope Clusters</h2><p>${governance.scope_clusters.length}</p></article>
     <article class="card"><h2>Duplicate Signals</h2><p>${governance.duplicate_change_signals.length}</p></article>
   </div>
+  <h3>Mission Contract</h3>
+  ${renderList([
+    `Source: ${governance.mission_contract.source}`,
+    `Status: ${governance.mission_contract.status}`,
+    ...(governance.mission_contract.contract_id === null
+      ? []
+      : [`Contract: ${governance.mission_contract.contract_id}`]),
+    ...(governance.mission_contract.summary === null
+      ? []
+      : [`Summary: ${governance.mission_contract.summary}`]),
+    ...(governance.mission_contract.contract_path === null
+      ? []
+      : [`Path: ${governance.mission_contract.contract_path}`]),
+    ...(governance.mission_contract.compared_fields.length === 0
+      ? ['Compared fields: none']
+      : [`Compared fields: ${governance.mission_contract.compared_fields.join(', ')}`]),
+  ])}
+  <h3>Mission Scope Signals</h3>
+  ${renderList([
+    ...governance.mission_contract.violating_paths.map((path) => `Out-of-mission path: ${path}`),
+    ...governance.mission_contract.forbidden_paths.map((path) => `Forbidden path: ${path}`),
+    ...governance.mission_contract.unexpected_scope_clusters.map(
+      (cluster) => `Unexpected scope cluster: ${cluster}`,
+    ),
+    ...governance.mission_contract.generated_artifact_violations.map(
+      (path) => `Generated artifact needs mission approval: ${path}`,
+    ),
+    ...governance.mission_contract.version_control_mismatches,
+    ...governance.mission_contract.warnings,
+    ...(governance.mission_contract.status === 'matched'
+      ? ['Diff matches the deterministic mission contract boundaries.']
+      : []),
+  ])}
   <h3>Version-Control Warnings</h3>
   ${renderList(
     governance.version_control_warnings.length === 0
@@ -424,6 +464,10 @@ export function buildReviewGovernance(params: {
   readonly reviewableChangedFiles: readonly string[];
   readonly generatedArtifacts: readonly string[];
   readonly diffText: string;
+  readonly missionContract: ReviewMissionContractLoad;
+  readonly affectedComponentIds: readonly string[];
+  readonly affectedServiceIds: readonly string[];
+  readonly affectedFlowIds: readonly string[];
   readonly isSourceFile: (path: string) => boolean;
   readonly isConfigPath: (path: string) => boolean;
   readonly isDependencyPath: (path: string) => boolean;
@@ -452,6 +496,9 @@ export function buildReviewGovernance(params: {
     ...(params.git.untracked_files.length > 0
       ? [`${params.git.untracked_files.length} untracked file(s) are included in review scope.`]
       : []),
+    ...(params.git.branch_name.startsWith('codex/')
+      ? ['Branch name uses codex/ prefix; use feature/*, fix/*, or release/* for rizz-owned work.']
+      : []),
   ].map(params.sanitizeText);
   const generatedArtifactNoise =
     params.generatedArtifacts.length > 0
@@ -463,13 +510,38 @@ export function buildReviewGovernance(params: {
       : [];
   const scopeSignals = scopeDriftSignals({ ...params, clusters: scopeClusters });
   const duplicateSignals = duplicateChangeSignals(params);
+  const missionComparison = compareReviewMissionContract({
+    mission: params.missionContract,
+    baseRef: params.git.base_ref,
+    changedFiles: params.changedFiles,
+    reviewableChangedFiles: params.reviewableChangedFiles,
+    generatedArtifacts: params.generatedArtifacts,
+    scopeClusters,
+    affectedComponentIds: params.affectedComponentIds,
+    affectedServiceIds: params.affectedServiceIds,
+    affectedFlowIds: params.affectedFlowIds,
+    sanitizeText: params.sanitizeText,
+  });
+  const missionSignals =
+    missionComparison.status === 'mismatch' || missionComparison.status === 'insufficient' ? 1 : 0;
+  const missionScopeSignals =
+    missionComparison.status === 'mismatch'
+      ? missionComparison.agent_next_actions.map((action) =>
+          params.sanitizeText(`Mission contract: ${action}`),
+        )
+      : [];
+  const allScopeSignals = unique([...scopeSignals, ...missionScopeSignals]);
   const issueCount =
     versionControlWarnings.length +
-    scopeSignals.length +
+    allScopeSignals.length +
     duplicateSignals.length +
-    generatedArtifactNoise.length;
+    generatedArtifactNoise.length +
+    missionSignals;
   const status: ReviewGovernanceStatus =
-    versionControlWarnings.length > 0 || scopeSignals.length > 1 || duplicateSignals.length > 1
+    versionControlWarnings.length > 0 ||
+    missionComparison.status === 'mismatch' ||
+    allScopeSignals.length > 1 ||
+    duplicateSignals.length > 1
       ? 'needs_attention'
       : issueCount > 0
         ? 'watch'
@@ -478,18 +550,20 @@ export function buildReviewGovernance(params: {
     status,
     score: boundedScore(100 - Math.min(70, issueCount * 12)),
     git: params.git,
+    mission_contract: missionComparison,
     reviewable_changed_files: params.reviewableChangedFiles.map(params.sanitizeText),
     generated_artifacts: params.generatedArtifacts.map(params.sanitizeText),
     scope_clusters: scopeClusters.map(params.sanitizeText),
     dominant_scope:
       scopeClusters.length === 1 ? params.sanitizeText(scopeClusters[0] ?? 'root') : null,
     version_control_warnings: versionControlWarnings,
-    scope_drift_signals: scopeSignals,
+    scope_drift_signals: allScopeSignals,
     duplicate_change_signals: duplicateSignals,
     generated_artifact_noise: generatedArtifactNoise,
     agent_next_actions: unique([
       ...versionControlWarnings.map((warning) => `Resolve version-control hygiene: ${warning}`),
-      ...scopeSignals.map((signal) => `Confirm mission scope: ${signal}`),
+      ...allScopeSignals.map((signal) => `Confirm mission scope: ${signal}`),
+      ...missionComparison.agent_next_actions,
       ...duplicateSignals.map((signal) => `Inspect possible duplication: ${signal}`),
       ...generatedArtifactNoise.map((signal) => `Confirm generated artifact source: ${signal}`),
     ]).slice(0, 8),

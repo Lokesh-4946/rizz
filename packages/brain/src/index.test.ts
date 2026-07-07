@@ -8716,6 +8716,142 @@ describe('project brain generation', () => {
     });
   });
 
+  it('compares review diffs against a deterministic mission contract', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'mission-match', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'packages', 'cli', 'src', 'index.ts'), 'export const cli = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:51:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(join(dir, 'packages', 'cli', 'src', 'index.ts'), 'export const cli = 2;\n');
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:52:00.000Z'),
+        mission: JSON.stringify({
+          id: 'cli-review',
+          summary: 'Keep review governance changes inside the CLI package.',
+          target_branch: 'origin/develop',
+          allowed_path_prefixes: ['packages/cli'],
+          expected_scope_clusters: ['packages/cli'],
+          expected_components: ['component:packages--cli'],
+          max_reviewable_files: 1,
+        }),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.review_governance.mission_contract).toMatchObject({
+        status: 'matched',
+        score: 100,
+        source: 'inline',
+        contract_id: 'cli-review',
+        compared_fields: expect.arrayContaining([
+          'allowed_path_prefixes',
+          'expected_scope_clusters',
+          'expected_components',
+          'max_reviewable_files',
+          'target_branch',
+        ]),
+        matched_paths: ['packages/cli/src/index.ts'],
+        violating_paths: [],
+      });
+      expect(result.value.review.findings).not.toContainEqual(
+        expect.objectContaining({
+          description: expect.stringContaining('Mission contract:'),
+        }),
+      );
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Mission Contract');
+      expect(report).toContain('Diff matches the deterministic mission contract boundaries.');
+    });
+  });
+
+  it('flags mission-contract mismatches as review governance findings', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'api', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'web', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'mission-mismatch', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'packages', 'api', 'src', 'index.ts'), 'export const api = 1;\n');
+      await writeFile(join(dir, 'packages', 'web', 'src', 'index.ts'), 'export const web = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:53:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(join(dir, 'packages', 'api', 'src', 'index.ts'), 'export const api = 2;\n');
+      await writeFile(join(dir, 'packages', 'web', 'src', 'index.ts'), 'export const web = 2;\n');
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:54:00.000Z'),
+        mission: JSON.stringify({
+          id: 'api-only',
+          summary: 'Only the API package should change.',
+          allowed_path_prefixes: ['packages/api'],
+          expected_scope_clusters: ['packages/api'],
+          forbidden_path_prefixes: ['packages/web'],
+          max_scope_clusters: 1,
+        }),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.review_governance).toMatchObject({
+        status: 'needs_attention',
+        mission_contract: {
+          status: 'mismatch',
+          source: 'inline',
+          contract_id: 'api-only',
+          matched_paths: ['packages/api/src/index.ts'],
+          violating_paths: ['packages/web/src/index.ts'],
+          forbidden_paths: ['packages/web/src/index.ts'],
+          unexpected_scope_clusters: ['packages/web'],
+        },
+      });
+      expect(result.value.review.review_governance.agent_next_actions).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Move or justify out-of-mission file: packages/web/src/index.ts'),
+        ]),
+      );
+      expect(result.value.review.review_governance.scope_drift_signals).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            'Mission contract: Move or justify out-of-mission file: packages/web/src/index.ts',
+          ),
+        ]),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Diff may include extra mission scope',
+          category: 'Overengineering',
+          affected_files: expect.arrayContaining([
+            'packages/api/src/index.ts',
+            'packages/web/src/index.ts',
+          ]),
+        }),
+      );
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Out-of-mission path: packages/web/src/index.ts');
+      expect(report).toContain('Forbidden path: packages/web/src/index.ts');
+    });
+  });
+
   it('reviews service changes with affected service blast radius evidence', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);

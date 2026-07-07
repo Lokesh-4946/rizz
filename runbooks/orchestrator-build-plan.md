@@ -29,9 +29,9 @@ Current loop readiness:
 | Stage | Readiness | Remaining | Notes |
 | --- | ---: | ---: | --- |
 | Human intent | 75/100 | 25 | Intent can enter through CLI/review/explain flows, but mission-contract capture is still lightweight. |
-| rizz mission contract, project intelligence, and inspect-first context | 91/100 | 9 | Project intelligence, Mission Control, confidence queues, file-level explain, security/tool inventory, unified repair packets, and UAT artifacts are strong; mission-contract packaging can be sharper. |
+| rizz mission contract, project intelligence, and inspect-first context | 94/100 | 6 | Project intelligence, Mission Control, confidence queues, file-level explain, security/tool inventory, unified repair packets, UAT artifacts, and review-time mission-contract comparison are strong; explicit mission capture UX can still be sharper. |
 | Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
-| rizz review | 93/100 | 7 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, scope drift, generated noise, and repeated changed code. |
+| rizz review | 96/100 | 4 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, repeated changed code, and mission-contract drift. |
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 77/100 | 23 | Repair instructions are packetized and less duplicative for agents, but agent-specific apply/repair loops are not yet first-class. |
 | rizz verification | 91/100 | 9 | rizz now scores recorded proof, approval state, covered proof, and missing required evidence in review/Mission Control. |
@@ -59,10 +59,11 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice adds a review-governance packet to `rizz review`. Review now records Git basis,
-working-tree hygiene, branch freshness, reviewable vs generated artifacts, scope clusters, mission
-scope drift signals, repeated changed-code signals, and agent next actions. This is deterministic
-PR governance, not a semantic guarantee: duplicate and unrelated-work signals remain heuristics for
+The current slice adds mission-contract comparison to review governance. `rizz review` now compares
+the diff against the active mission contract alongside Git basis, working-tree hygiene, branch
+freshness, reviewable vs generated artifacts, scope clusters, repeated changed-code signals, and
+agent next actions. This is deterministic PR governance, not semantic approval: vague or missing
+mission contracts, duplicate-work signals, and unrelated-work signals remain heuristics for
 agents/humans to inspect.
 
 ## Capability Scorecard
@@ -78,27 +79,27 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
-| Review Intelligence with true blast radius | 93/100 | 7 | Strengthen mission-contract comparison and AST-level duplicate detection. |
+| Review Intelligence with true blast radius | 96/100 | 4 | Strengthen AST-level duplicate detection and richer mission-contract capture/normalization. |
 | Verification Plan + Evidence Ingest | 91/100 | 9 | Add explicit signoff packet/state and reuse proof status across repeated agent repair loops. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `feature/review-governance-packet`, local gate on the rizz repo.
+Run: `feature/mission-contract-review-governance`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused review-governance tests | 2/2 passed |
-| Full unit suite | 358/358 passed |
+| Focused review-governance/mission tests | 3/3 passed |
+| Full unit suite | 360/360 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
-| Footprint | cold start 48ms / 250ms, core 195KB / 200KB |
+| Footprint | cold start 49ms / 250ms, core 196KB / 200KB |
 
-Current verdict: rizz review is closer to a useful agent-facing PR gate. It now says not only what
-the diff might break, but whether the review basis itself is clean enough for approval and which
-scope/duplication signals need an agent or human to inspect.
+Current verdict: rizz review is now a stronger agent-facing PR gate because it checks whether the
+diff still matches the stated mission contract, not just what the diff might break. Remaining risk is
+contract quality: weak, stale, or absent mission text still needs human/orchestrator judgment.
 
 ## Latest DBMS UAT Actuals
 
