@@ -287,6 +287,51 @@ function verificationPlanPackets(review: unknown): AgentRepairPacket[] {
     });
 }
 
+function agentVerificationPlanPackets(plan: unknown): AgentRepairPacket[] {
+  return recordArray(plan, 'items')
+    .slice(0, 8)
+    .map((item) => {
+      const planId = recordString(item, 'id', 'unknown verification');
+      const command = recordString(item, 'command');
+      const instructions = recordStringArray(item, 'agent_instructions');
+      return {
+        priority: 0,
+        packet_id: `repair:verification:${slug(planId)}`,
+        related_packet_ids: [],
+        source: 'verification',
+        severity: recordString(item, 'priority') === 'required' ? 'high' : 'medium',
+        target_type: `verification:${recordString(item, 'verification_type', 'manual')}`,
+        target_id: planId,
+        intent: recordString(item, 'reason', 'Agent-run verification is needed before approval.'),
+        read_first_files: recordStringArray(item, 'linked_files').slice(0, 8),
+        inspect_actions: [
+          'Open .rizz/research/verification_plan.json and inspect the agent-run check.',
+          ...instructions.slice(0, 3),
+        ],
+        repair_actions: ['Do not claim runtime verification until evidence is recorded.'],
+        verification_actions:
+          command === ''
+            ? ['Perform the manual check and record the result with rizz verify add.']
+            : [
+                `Run ${command}.`,
+                'Record the result with rizz verify add before claiming runtime confidence.',
+              ],
+        evidence_ids: recordStringArray(item, 'evidence_ids').slice(0, 10),
+        evidence_gap_ids: [],
+        artifacts: [
+          '.rizz/research/verification_plan.json',
+          '.rizz/research/verification_evidence.json',
+        ],
+        agent_prompt: `Complete verification ${planId}, then record pass/fail evidence.`,
+        stop_conditions: [
+          'Stop if the command is destructive, networked, or outside the mission approval boundary.',
+          'Stop if verification fails; hand the failure back as repair context.',
+        ],
+        confidence: parseConfidence(item.confidence),
+      };
+    });
+}
+
 function packetKey(packet: AgentRepairPacket): string {
   return `${packet.source}\u0000${packet.target_type}\u0000${packet.target_id}`;
 }
@@ -439,11 +484,13 @@ export function buildAgentRepairPacketsArtifact(params: {
   readonly generatedAt: string;
   readonly confidenceInspectionQueue: unknown;
   readonly review?: unknown;
+  readonly verificationPlan?: unknown;
 }): AgentRepairPacketsArtifact {
   const packets = consolidateComponentArchitecturePackets(
     uniquePackets([
       ...reviewFindingPackets(params.review),
       ...verificationPlanPackets(params.review),
+      ...agentVerificationPlanPackets(params.verificationPlan),
       ...queuePackets(params.confidenceInspectionQueue),
     ]),
   )

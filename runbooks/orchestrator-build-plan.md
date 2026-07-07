@@ -32,9 +32,9 @@ Current loop readiness:
 | rizz mission contract, project intelligence, and inspect-first context | 91/100 | 9 | Project intelligence, Mission Control, confidence queues, file-level explain, security/tool inventory, unified repair packets, and UAT artifacts are strong; mission-contract packaging can be sharper. |
 | Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
 | rizz review | 91/100 | 9 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, and deterministic review artifacts. |
-| rizz correction packet | 89/100 | 11 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, verification guidance, and component-local duplicate assumption provenance. |
+| rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 77/100 | 23 | Repair instructions are packetized and less duplicative for agents, but agent-specific apply/repair loops are not yet first-class. |
-| rizz verification | 85/100 | 15 | Verification evidence and runtime-honesty rules feed repair packets; targeted proof loops need stronger UX and scoring. |
+| rizz verification | 88/100 | 12 | rizz now emits deterministic agent-owned verification plans and evidence-ingest instructions; richer proof UX and pass/fail scoring remain. |
 | Human approval | 70/100 | 30 | Reports support approval, but explicit approval packets and signoff state are still thin. |
 
 ## Opt-In Expansion Map
@@ -59,14 +59,12 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice improves file-level explain intelligence for agent handoff. `rizz explain` now
-uses deterministic file content signals from exports, local functions, imports, and repeated domain
-terms before falling back to component ownership. On the DBMS UAT repo, `uiV2Contracts.ts` now
-explains itself as a `document/tenant/form/workflow` contract/runtime surface and names exports such
-as `mapDocument`, `formsAsRepositoryItems`, `nestUiV2Comments`, and
-`resolveStartWorkflowFormId`, while still marking the claim as static inspection rather than
-runtime verification. The next weakest repo-derived area remains Architecture Reasoning: exact
-consumers, component-local tests, and service causality paths still need sharper evidence.
+The current slice adds first-class Verification Plan + Evidence Ingest. `rizz brain` now writes
+`.rizz/research/verification_plan.json` as an agent-owned command plan, and unified
+`agent_repair_packets` include verification packets that tell the coding agent what to run and how
+to record proof with `rizz verify add`. This is not a runtime scanner: rizz plans and judges
+evidence, while the coding agent runs commands with the user's workspace approval. Runtime-verified
+confidence only upgrades after evidence exists.
 
 ## Capability Scorecard
 
@@ -82,7 +80,27 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
 | Review Intelligence with true blast radius | 91/100 | 9 | Tie changed files to user-visible failures with stronger causality. |
+| Verification Plan + Evidence Ingest | 88/100 | 12 | Make proof status easier to inspect and score after agents record command evidence. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
+
+## Latest Baton Result
+
+Run: `feature/verification-plan-evidence`, local gate on the rizz repo.
+
+| Check | Result |
+| --- | ---: |
+| Focused verification-plan tests | 2/2 passed |
+| Full unit suite | 356/356 passed |
+| PI-Bench | 25/25 passed |
+| PI-Bench average research readiness | 76/100 |
+| CLI process smoke | 10/10 passed |
+| Install-local smoke | 5/5 passed |
+| Footprint | cold start 53ms / 250ms, core 195KB / 200KB |
+
+Current verdict: rizz is closer to the intended human-agent loop because it can now hand an agent
+the verification work as a deterministic packet and judge the returned evidence. Remaining distance
+is mainly inspection UX, explicit verification scoring, and agent-loop integration, not adding a
+heavy always-on runtime runner.
 
 ## Latest DBMS UAT Actuals
 
