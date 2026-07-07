@@ -6288,6 +6288,122 @@ describe('project brain generation', () => {
     });
   });
 
+  it('keeps apps workspace package roots separate for file explanations', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'apps', 'api', 'src', 'lib'), { recursive: true });
+      await mkdir(join(dir, 'apps', 'admin-portal', 'src'), { recursive: true });
+      await mkdir(join(dir, 'apps', 'docgrid-ui-v2', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'shared', 'src'), { recursive: true });
+      await mkdir(join(dir, 'stitch-export', 'stitch_npds_trust_platform_ux_system'), {
+        recursive: true,
+      });
+      await mkdir(join(dir, '.sovereign-data', 'models'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'enterprise-content-workflow-platform',
+          workspaces: ['apps/*', 'packages/*'],
+        }),
+      );
+      await writeFile(
+        join(dir, 'apps', 'api', 'package.json'),
+        JSON.stringify({
+          name: 'npds-api',
+          scripts: {
+            build: 'tsc -p tsconfig.json',
+            test: 'cd ../.. && vitest run apps/api/src',
+          },
+          dependencies: { '@npds/shared': '0.1.0', zod: '^3.0.0' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(
+        join(dir, 'apps', 'api', 'src', 'lib', 'uiV2Contracts.ts'),
+        [
+          'import { sharedWorkflowId } from "@npds/shared";',
+          'export interface WorkflowFormRuntime { workflowId: string; fields: string[] }',
+          'export function createWorkflowFormRuntime(fields: string[]): WorkflowFormRuntime {',
+          '  return { workflowId: sharedWorkflowId, fields };',
+          '}',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'apps', 'api', 'src', 'lib', 'uiV2Contracts.test.ts'),
+        'import { createWorkflowFormRuntime } from "./uiV2Contracts";',
+      );
+      await writeFile(
+        join(dir, 'apps', 'admin-portal', 'package.json'),
+        JSON.stringify({ name: 'admin-portal', scripts: { build: 'vite build' } }),
+      );
+      await writeFile(join(dir, 'apps', 'admin-portal', 'src', 'App.tsx'), 'export const App = 1;');
+      await writeFile(
+        join(dir, 'apps', 'docgrid-ui-v2', 'package.json'),
+        JSON.stringify({ name: 'docgrid-ui-v2', scripts: { build: 'vite build' } }),
+      );
+      await writeFile(
+        join(dir, 'apps', 'docgrid-ui-v2', 'src', 'viewerApi.ts'),
+        'export const viewerApi = 1;',
+      );
+      await writeFile(
+        join(dir, 'packages', 'shared', 'package.json'),
+        JSON.stringify({ name: '@npds/shared' }),
+      );
+      await writeFile(
+        join(dir, 'packages', 'shared', 'src', 'index.ts'),
+        'export const sharedWorkflowId = "workflow";',
+      );
+      await writeFile(
+        join(dir, 'stitch-export', 'stitch_npds_trust_platform_ux_system', 'package.json'),
+        JSON.stringify({ name: 'stitch-junk' }),
+      );
+      await writeFile(join(dir, '.sovereign-data', 'models', 'cache.json'), '{}');
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:20:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const components = await readJson<{ entities: Array<{ id: string; description: string }> }>(
+        join(dir, '.rizz', 'brain', 'entities', 'components.json'),
+      );
+      const componentIds = components.entities.map((entity) => entity.id);
+      expect(componentIds).toEqual(
+        expect.arrayContaining([
+          'component:apps--admin-portal',
+          'component:apps--api',
+          'component:apps--docgrid-ui-v2',
+          'component:packages--shared',
+        ]),
+      );
+      expect(componentIds).not.toContain('component:apps');
+      expect(componentIds).not.toContain('component:stitch-export');
+      expect(await readTreeText(join(dir, '.rizz'))).not.toContain('.sovereign-data');
+
+      const explained = await explainProjectTarget({
+        rootDir: dir,
+        target: 'apps/api/src/lib/uiV2Contracts.ts',
+        now: new Date('2026-06-28T10:21:00.000Z'),
+      });
+      expect(explained.ok).toBe(true);
+      if (!explained.ok) return;
+      expect(explained.value.explanation).toMatchObject({
+        resolved_entity_id: 'file:apps--api--src--lib--uiv2contracts.ts',
+        entity_type: 'file',
+        related_components: ['component:apps--api'],
+        purpose: expect.stringContaining('npds-api'),
+        entry_points: expect.arrayContaining(['apps/api/package.json']),
+        tests: expect.arrayContaining(['apps/api/src/lib/uiV2Contracts.test.ts']),
+      });
+      expect(explained.value.explanation.purpose).not.toContain('admin-portal');
+      expect(explained.value.explanation.entry_points).not.toContain(
+        'apps/admin-portal/package.json',
+      );
+    });
+  });
+
   it('enriches components with purpose, interfaces, criticality, dependencies, and removal impact', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });

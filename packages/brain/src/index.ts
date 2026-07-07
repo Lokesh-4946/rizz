@@ -1753,6 +1753,7 @@ const IGNORED_DIRS = new Set([
   '.idea',
   '.pytest_cache',
   '.rizz',
+  '.sovereign-data',
   '.next',
   '.turbo',
   '.vercel',
@@ -1765,6 +1766,7 @@ const IGNORED_DIRS = new Set([
   'logs',
   'node_modules',
   'out',
+  'stitch-export',
   'target',
 ]);
 
@@ -2601,8 +2603,8 @@ function componentPaths(files: readonly FileFact[]): string[] {
     const first = parts[0];
     const second = parts[1];
     if (first === undefined) continue;
-    if (first === 'packages' && second !== undefined && parts.length > 2) {
-      folders.add(`packages/${second}`);
+    if ((first === 'packages' || first === 'apps') && second !== undefined && parts.length > 2) {
+      folders.add(`${first}/${second}`);
       continue;
     }
     if (parts.length > 1 && first !== '.github') folders.add(first);
