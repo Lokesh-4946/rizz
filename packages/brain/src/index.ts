@@ -6,6 +6,7 @@ import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
+import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
 import {
   commandTargetPaths,
   commandTargetSteps,
@@ -8659,7 +8660,7 @@ function buildSecurityScanArtifact(params: {
         ? 'No deterministic security scanner findings were detected.'
         : `${findings.length} security scanner finding(s), including ${highRiskCount} high-risk item(s), need inspection before broad agent execution.`,
     calibration_rule:
-      'Security scan is deterministic and metadata-only; it flags private credential paths, risky package scripts, and sensitive dependency surfaces without reading or exposing private values.',
+      'Security scan is deterministic metadata; it flags credential paths, risky scripts, and sensitive dependency surfaces.',
   };
 }
 
@@ -9093,7 +9094,7 @@ function buildConfidenceInspectionQueue(params: {
         ? 'No confidence inspection items were detected.'
         : `${items.length} confidence inspection item(s), including ${highPriorityCount} high-priority item(s), should be checked before broad reuse.`,
     calibration_rule:
-      'Confidence inspection combines evidence gaps, architecture confidence debt, security scan findings, tool inventory surfaces, and stale incremental surfaces into one deterministic inspect-first queue.',
+      'Confidence inspection combines evidence gaps, architecture debt, security findings, tools, and stale surfaces.',
   };
 }
 
@@ -9178,7 +9179,7 @@ function calibrationSummary(params: {
     weak_evidence_claims: params.weakEvidenceClaims,
     evidence_gap_count: params.evidenceGapCount,
     confidence_distribution: params.confidenceDistribution,
-    summary: `${params.unsupportedClaims} unsupported claim(s), ${params.weakEvidenceClaims} weak evidence claim(s), and ${params.evidenceGapCount} total actionability gap(s) limit confidence.`,
+    summary: `${params.unsupportedClaims} unsupported claim(s), ${params.weakEvidenceClaims} weak, ${params.evidenceGapCount} gap(s) limit confidence.`,
     calibration_rule:
       'Evidence confidence is calibrated from direct evidence coverage, field-specific evidence, missing references, claim confidence, and secret-safe redaction impact.',
   };
@@ -11398,7 +11399,7 @@ function buildServiceArchitectureIntelligence(
       ),
     ).slice(0, 12),
     calibration_rule:
-      'Service architecture intelligence is deterministic static inference from first-class service entities, flow links, storage/API/env evidence, deployment configs, and known unknowns.',
+      'Service architecture intelligence is deterministic static inference from service entities, flow links, storage/API/env evidence, configs, and unknowns.',
   };
 }
 
@@ -20641,6 +20642,7 @@ export async function explainProjectTarget(
     const now = (options.now ?? new Date()).toISOString();
     const explanation = buildExplanation({
       now,
+      rootDir,
       query: options.target,
       target: resolved.value,
       latest,
@@ -20722,6 +20724,7 @@ export async function askProjectQuestion(
           })
         : buildAskAnswer({
             now,
+            rootDir,
             question: options.question,
             parsed: parsed.value,
             readiness,
@@ -20829,7 +20832,7 @@ function parseAskQuestion(
     error: {
       code: 'ASK_UNSUPPORTED_QUESTION',
       message:
-        'rizz ask only answers Project Intelligence questions over .rizz/brain and .rizz/research. Supported forms: what should I read first; what breaks if <target> changes; who depends on <target>; why does <target> exist; what evidence backs <target>.',
+        'Supported: read first; breaks if <target>; depends on <target>; why exists; evidence for <target>.',
     },
   };
 }
@@ -20951,6 +20954,7 @@ function buildBlockedAskAnswer(params: {
 
 function buildAskAnswer(params: {
   readonly now: string;
+  readonly rootDir: string;
   readonly question: string;
   readonly parsed: ParsedAskQuestion;
   readonly readiness: AskReadinessSummary;
@@ -20993,6 +20997,7 @@ function buildAskAnswer(params: {
   }
   const explanation = buildExplanation({
     now: params.now,
+    rootDir: params.rootDir,
     query: params.parsed.target,
     target: resolved.value,
     latest: params.latest,
@@ -21477,6 +21482,7 @@ function explainMatchScore(
 
 function buildExplanation(params: {
   readonly now: string;
+  readonly rootDir: string;
   readonly query: string;
   readonly target: BrainEntity;
   readonly latest: Record<string, unknown>;
@@ -21492,6 +21498,11 @@ function buildExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const componentData = primaryComponent?.data ?? {};
   const targetData = target.data ?? {};
+  const fp = stringData(target, 'relativePath') ?? target.name;
+  const fi =
+    target.type === 'file'
+      ? fxi({ path: fp, content: readTextIfAvailable(params.rootDir, fp) })
+      : undefined;
   const primaryService = target.type === 'service' ? target : undefined;
   const relatedFlows = relatedFlowContext(target, params.entitySets.flows);
   const relatedComponentIds = unique([
@@ -21503,9 +21514,10 @@ function buildExplanation(params: {
     ...relationshipContext.dependedOnByEntityIds.filter((id) => id.startsWith('component:')),
   ]);
   const purpose =
+    fi?.purpose ??
     (primaryService === undefined
       ? undefined
-      : `${safeText(primaryService.name)} is a ${stringData(primaryService, 'framework') ?? 'unknown'} service inferred from local source evidence. It participates in ${serviceDataStringArray(primaryService, 'related_flows').length} reconstructed flow(s).`) ??
+      : `${safeText(primaryService.name)} is a ${stringData(primaryService, 'framework') ?? 'unknown'} service inferred from source evidence across ${serviceDataStringArray(primaryService, 'related_flows').length} flow(s).`) ??
     stringData(target, 'purpose') ??
     (typeof componentData.purpose === 'string' ? componentData.purpose : undefined) ??
     target.description;
@@ -21525,6 +21537,7 @@ function buildExplanation(params: {
           ),
         ]);
   const responsibilities = explainArray(
+    fi?.responsibilities,
     targetData.responsibilities,
     componentData.responsibilities,
     serviceResponsibilities,

@@ -6393,10 +6393,18 @@ describe('project brain generation', () => {
         resolved_entity_id: 'file:apps--api--src--lib--uiv2contracts.ts',
         entity_type: 'file',
         related_components: ['component:apps--api'],
-        purpose: expect.stringContaining('npds-api'),
+        purpose: expect.stringContaining('workflow/form'),
         entry_points: expect.arrayContaining(['apps/api/package.json']),
         tests: expect.arrayContaining(['apps/api/src/lib/uiV2Contracts.test.ts']),
       });
+      expect(explained.value.explanation.purpose).toContain('WorkflowFormRuntime');
+      expect(explained.value.explanation.purpose).toContain('createWorkflowFormRuntime');
+      expect(explained.value.explanation.responsibilities).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('WorkflowFormRuntime'),
+          expect.stringContaining('static source inspection'),
+        ]),
+      );
       expect(explained.value.explanation.purpose).not.toContain('admin-portal');
       expect(explained.value.explanation.entry_points).not.toContain(
         'apps/admin-portal/package.json',

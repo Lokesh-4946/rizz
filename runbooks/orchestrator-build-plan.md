@@ -29,7 +29,7 @@ Current loop readiness:
 | Stage | Readiness | Remaining | Notes |
 | --- | ---: | ---: | --- |
 | Human intent | 75/100 | 25 | Intent can enter through CLI/review/explain flows, but mission-contract capture is still lightweight. |
-| rizz mission contract, project intelligence, and inspect-first context | 90/100 | 10 | Project intelligence, Mission Control, confidence queues, security/tool inventory, unified repair packets, and UAT artifacts are strong; mission-contract packaging can be sharper. |
+| rizz mission contract, project intelligence, and inspect-first context | 91/100 | 9 | Project intelligence, Mission Control, confidence queues, file-level explain, security/tool inventory, unified repair packets, and UAT artifacts are strong; mission-contract packaging can be sharper. |
 | Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
 | rizz review | 91/100 | 9 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, and deterministic review artifacts. |
 | rizz correction packet | 89/100 | 11 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, verification guidance, and component-local duplicate assumption provenance. |
@@ -59,14 +59,14 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice improves Architecture Reasoning packet precision. rizz still writes
-`.rizz/research/agent_repair_packets.json` as the single prioritized inspect/repair/verify packet
-list, but component-local correction packets now fold duplicate architecture assumptions and
-low-confidence component areas into `related_packet_ids`. The 120-file large-repo UAT matrix stayed
-at Architecture Reasoning 84/100, but `github/docs` dropped from 12 to 10 repair packets and from 3
-to 1 architecture packet while preserving the folded assumption provenance. The next weakest
-repo-derived area remains Architecture Reasoning, specifically turning component-local packet
-evidence into stronger causal what-breaks explanations without over-claiming runtime verification.
+The current slice improves file-level explain intelligence for agent handoff. `rizz explain` now
+uses deterministic file content signals from exports, local functions, imports, and repeated domain
+terms before falling back to component ownership. On the DBMS UAT repo, `uiV2Contracts.ts` now
+explains itself as a `document/tenant/form/workflow` contract/runtime surface and names exports such
+as `mapDocument`, `formsAsRepositoryItems`, `nestUiV2Comments`, and
+`resolveStartWorkflowFormId`, while still marking the claim as static inspection rather than
+runtime verification. The next weakest repo-derived area remains Architecture Reasoning: exact
+consumers, component-local tests, and service causality paths still need sharper evidence.
 
 ## Capability Scorecard
 
@@ -82,7 +82,39 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
 | Review Intelligence with true blast radius | 91/100 | 9 | Tie changed files to user-visible failures with stronger causality. |
-| `rizz ask` | 92/100 | 8 | Keep gated until packet/verification confidence is stronger. |
+| `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
+
+## Latest DBMS UAT Actuals
+
+Run: fresh DBMS brain scan on `/Users/lokesh/Downloads/projects/DBMS`, branch `dev`, using
+`feature/file-explain-intelligence`.
+
+| Metric | Result |
+| --- | ---: |
+| Files scanned | 491 |
+| Components | 21 |
+| Flows | 178 |
+| Commands | 107 |
+| Tests | 43 |
+| Capability scorecard average | 93/100 |
+| Raw understanding score | 89/100 |
+
+Capability detail from `.rizz/research/understanding_score.json`:
+
+| Capability | Actual | Remaining | Notes |
+| --- | ---: | ---: | --- |
+| Flow Understanding | 95/100 | 5 | 178 high-signal flows; 170 with linked tests. |
+| Architecture Reasoning | 79/100 | 21 | Exact consumers, local test gaps, and one service causality path remain weak. |
+| Evidence Quality scoring | 98/100 | 2 | Strong evidence coverage with remaining entity/field-specific gaps. |
+| Mission Control UX | 100/100 | 0 | Component, flow, architecture, and read-first surfaces are visible. |
+| PI-Bench seed/task format | 98/100 | 2 | Needs more real-repo task seeds and deeper ground truth. |
+| Incremental Understanding metrics | 88/100 | 12 | First scan baseline; repeated-scan reuse still needs proof. |
+| Review Intelligence with true blast radius | 92/100 | 8 | Needs stronger user-visible failure causality. |
+| `rizz ask` | 93/100 | 7 | Still blocked until foundations are consistently strong. |
+
+DBMS verdict: the original app-boundary failure is fixed, and file explanations now include
+content-derived purpose. The remaining DBMS weakness is not speed; it is precision around
+architecture causality, component-local proof, and compact agent entry summaries.
 
 ## Latest 120-File UAT Actuals
 
