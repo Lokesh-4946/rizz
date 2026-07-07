@@ -29,6 +29,10 @@ import {
   serviceIdsForFiles as svcIdsForFiles,
   serviceStepsForFlow as svcStepsForFlow,
 } from './service-flow-linking.js';
+import {
+  type VerificationEvidenceScore as Ves,
+  buildVerificationEvidenceScore as bves,
+} from './verification-evidence-score.js';
 import { buildAgentVerificationPlanArtifact as bavp } from './verification-plan.js';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
@@ -1166,6 +1170,7 @@ interface ReviewEvalArtifactData {
   readonly verification_evidence_count: number;
   readonly verification_passed_count: number;
   readonly verification_failed_count: number;
+  readonly verification_evidence_score: number;
   readonly verification_plan_count: number;
   readonly verification_plan_required_count: number;
   readonly verification_plan_recommended_count: number;
@@ -1399,6 +1404,7 @@ interface ReviewSummaryData {
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
   readonly verification_status: ReviewVerificationStatusData;
   readonly verification_plan: readonly ReviewVerificationPlanItemData[];
+  readonly verification_evidence_score: Ves;
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
@@ -2181,8 +2187,8 @@ function reviewVerificationStatus(
     remaining_unknowns: artifact.remaining_unknowns,
     calibration_note:
       artifact.local_checks_passed.length > 0
-        ? 'Recorded verification evidence can reduce local regression risk, but production risk stays separate until deployment smoke evidence exists.'
-        : 'No local verification evidence has been recorded, so review risk remains based on static brain evidence.',
+        ? 'Recorded checks can reduce local risk; production risk still needs smoke evidence.'
+        : 'No local verification evidence recorded; review risk stays static.',
   };
 }
 
@@ -8776,8 +8782,7 @@ function buildToolInventoryArtifact(params: {
       surfaces.length === 0
         ? 'No tool inventory surfaces were detected.'
         : `${surfaces.length} tool surface(s), including ${highRiskCount} high-risk item(s), are available for agent inspection.`,
-    calibration_rule:
-      'Tool inventory is deterministic and metadata-only; it inventories MCP configs, agent configs, CI workflows, and package scripts without loading tools by default.',
+    calibration_rule: 'Tool inventory is metadata-only and does not load tools by default.',
   };
 }
 
@@ -9094,7 +9099,7 @@ function buildConfidenceInspectionQueue(params: {
     summary:
       items.length === 0
         ? 'No confidence inspection items were detected.'
-        : `${items.length} confidence inspection item(s), including ${highPriorityCount} high-priority item(s), should be checked before broad reuse.`,
+        : `${items.length} confidence item(s), ${highPriorityCount} high-priority, need inspection.`,
     calibration_rule:
       'Confidence inspection combines evidence gaps, architecture debt, security, tools, and stale surfaces.',
   };
@@ -9153,7 +9158,7 @@ function redactionHiddenEvidenceSummary(params: {
     impact,
     user_impact:
       impact === 'contained'
-        ? 'Some evidence is intentionally hidden behind redacted ids; inspect nearby non-sensitive files or rerun in a trusted local context before upgrading confidence.'
+        ? 'Some evidence is redacted; inspect safe nearby files before upgrading confidence.'
         : 'No redaction-hidden evidence is limiting confidence.',
   };
 }
@@ -9183,7 +9188,7 @@ function calibrationSummary(params: {
     confidence_distribution: params.confidenceDistribution,
     summary: `${params.unsupportedClaims} unsupported claim(s), ${params.weakEvidenceClaims} weak, ${params.evidenceGapCount} gap(s) limit confidence.`,
     calibration_rule:
-      'Evidence confidence is calibrated from direct evidence coverage, field-specific evidence, missing references, claim confidence, and secret-safe redaction impact.',
+      'Evidence confidence uses coverage, field evidence, missing refs, claim confidence, and redaction.',
   };
 }
 
@@ -9368,7 +9373,7 @@ function buildEvidenceQualityArtifact(params: {
   const actionabilitySummary =
     evidenceGapCount === 0
       ? 'No evidence actionability gaps were detected in local research artifacts.'
-      : `${topGaps.length} prioritized evidence gap(s), ${unbackedGroups.length} unbacked claim group(s), and ${lowConfidenceAreas.length} low-confidence area(s) need inspection.`;
+      : `${topGaps.length} prioritized evidence gap(s), ${unbackedGroups.length} unbacked group(s), ${lowConfidenceAreas.length} low-confidence area(s).`;
 
   return {
     generated_at: params.now,
@@ -9765,7 +9770,7 @@ function buildServiceIntelligenceArtifact(params: {
       ),
     ).slice(0, 12),
     scoring_notes: [
-      'Service Intelligence is deterministic static inference from service-like files, routes, jobs, storage/API/env evidence, deployment configs, and flow links.',
+      'Service Intelligence is static inference from service files, routes, jobs, storage/API/env, configs, and flows.',
       'Runtime reachability is not executed; weak or missing evidence remains visible as unknowns.',
     ],
   };
@@ -9924,7 +9929,7 @@ function routeArchitectureAssumptions(flows: readonly BrainEntity[]): Architectu
         assumption_id: `assumption:${safeText(flow.id)}:route-architecture`,
         entity_id: safeText(flow.id),
         assumption: safeText(
-          `${routePath} is treated as a Next.js ${routeType} architecture surface because the app-router entrypoint, imports, configs, tests, and confidence evidence reconstruct a route flow.`,
+          `${routePath} is a Next.js ${routeType} architecture surface from entrypoint, imports, configs, tests, and evidence.`,
         ),
         inferred_from: unique([
           'nextjs app router',
@@ -9998,10 +10003,10 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
         confidence_score: routeArchitectureScore(flow),
         assumptions: [
           `Route ${routePath} is an architecture surface because ${routeType} entrypoint evidence is present.`,
-          `Route ${routePath} behavior depends on ${components.length} component(s), ${configs.length} config artifact(s), and ${tests.length} test artifact(s).`,
+          `Route ${routePath} depends on ${components.length} component(s), ${configs.length} config(s), ${tests.length} test(s).`,
         ].map(safeText),
         tradeoffs: unique([
-          'Framework-native routes make ownership easier to find, but route behavior can be split across layouts, components, content modules, and config.',
+          'Framework-native routes make ownership easier, but behavior can split across layouts, components, content, and config.',
           ...(configs.length > 0
             ? ['Route behavior can change when shared Next.js or TypeScript configuration changes.']
             : []),
@@ -10067,7 +10072,7 @@ function routeArchitectureDesignPressures(
       entity_id: safeText(flow.id),
       pressure_type: 'flow',
       pressure: safeText(
-        `${routePath} is a Next.js ${routeType} entrypoint, so route-file changes can affect user-visible navigation, rendering, metadata, or API behavior.`,
+        `${routePath} is a Next.js ${routeType} entrypoint; changes can affect navigation, render, metadata, or API behavior.`,
       ),
       strength: routeType === 'api' || routeType === 'page' ? 'high' : 'medium',
       evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
@@ -10265,7 +10270,7 @@ function architectureDesignPressures(params: {
         entity_id: safeText(component.id),
         pressure_type: 'flow',
         pressure: safeText(
-          `${component.id} participates in ${componentFlows.length} reconstructed flow(s), so boundary changes can affect navigation through the system.`,
+          `${component.id} participates in ${componentFlows.length} flow(s); boundary changes can affect navigation.`,
         ),
         strength: pressureStrengthFromCount(componentFlows.length),
         evidence_ids: unique([
@@ -10359,7 +10364,7 @@ function architectureBoundaryRationale(params: {
         component_id: safeText(component.id),
         boundary_type: boundaryType,
         rationale: safeText(
-          `${component.id} is a ${boundaryType} boundary from ${signals.length} structure, ${componentFlows.length} linked flow(s), ${configs.length} config, and ${dependencies.length} dependency signal(s).`,
+          `${component.id}: ${boundaryType} boundary from ${signals.length} structure, ${componentFlows.length} linked flow(s), ${configs.length} config, ${dependencies.length} dependency signal(s).`,
         ),
         evidence_ids: architectureEvidenceIdsForComponent({
           component,
@@ -10398,7 +10403,7 @@ function architectureCouplingRationale(params: {
           coupling_level: coupling.level,
           coupling_score: coupling.score,
           rationale: safeText(
-            `${component.id} coupling is ${coupling.level}: ${coupling.static_import_count} static import(s), ${coupling.internal_imports.length} internal, ${coupling.external_imports.length} external.`,
+            `${component.id} coupling ${coupling.level}: ${coupling.static_import_count} static, ${coupling.internal_imports.length} internal, ${coupling.external_imports.length} external.`,
           ),
           intentional_coupling: intentionalCoupling,
           risky_coupling: riskyCoupling,
@@ -10773,7 +10778,7 @@ function buildArchitectureConfidenceDebt(params: {
       `${unsupportedAssumptions.length} unsupported assumption(s), ${inferredTradeoffs.length} inferred, ${lowConfidenceAreas.length} low-confidence, ${blockingUnknowns.length} blocking unknown(s).`,
     ),
     calibration_rule:
-      'Confidence debt is derived only from local architecture assumptions, tradeoffs, evidence gaps, confidence scores, and unknowns.',
+      'Confidence debt uses local architecture assumptions, gaps, scores, and unknowns.',
   };
 }
 
@@ -10996,7 +11001,7 @@ function tradeoffsForRouteImpact(flow: BrainEntity): string[] {
   const components = flowStringArray(flow, 'components');
   const serviceCausality = safeFlowServiceCausality(flow);
   return unique([
-    'Explicit route mapping makes handler ownership visible, but behavior can still depend on imported components, services, and config.',
+    'Route ownership is visible, but behavior can still depend on components, services, and config.',
     ...(configs.length > 0
       ? ['Config-backed routes are easier to audit, but config changes can alter runtime behavior.']
       : []),
@@ -11200,7 +11205,7 @@ function buildArchitectureServiceCausalityReasoning(params: {
       .slice(0, 10),
     unknowns: unknowns.slice(0, 20),
     calibration_rule:
-      'Service causality reasoning is deterministic static inference from flow steps, service ownership, side-effect signals, evidence IDs, and confidence.',
+      'Service causality uses flow steps, service ownership, side effects, evidence, and confidence.',
   };
 }
 
@@ -11254,7 +11259,7 @@ function buildArchitectureImpactMap(params: {
     },
     entries,
     calibration_rule:
-      'Impact map is deterministic static inference from component boundaries, route metadata, flows, graph relationships, tests, configs, coupling, and evidence IDs.',
+      'Impact map is deterministic static inference from boundaries, routes, flows, graph, tests, configs, coupling, evidence.',
   };
 }
 
@@ -11342,7 +11347,7 @@ function buildDeploymentIntelligence(flows: readonly BrainEntity[]): Record<stri
         : []),
     ]),
     calibration_rule:
-      'Deployment intelligence is deterministic static inference from deploy-like package scripts, deployment configs, flow contracts, and recorded risk evidence.',
+      'Deployment intelligence uses deploy scripts, configs, flow contracts, and risk evidence.',
   };
 }
 
@@ -11401,7 +11406,7 @@ function buildServiceArchitectureIntelligence(
       ),
     ).slice(0, 12),
     calibration_rule:
-      'Service architecture intelligence is deterministic static inference from service entities, flow links, storage/API/env evidence, configs, and unknowns.',
+      'Service architecture uses service entities, flows, storage/API/env, configs, and unknowns.',
   };
 }
 
@@ -12137,7 +12142,7 @@ function buildArchitectureReasoningArtifact(params: {
   if (services.length > 0) {
     reviewHints.push({
       reason:
-        'Service-level changes should be reviewed with routes, flows, storage, env vars, external APIs, deployment configs, and smoke checks.',
+        'Review service changes with routes, flows, storage, env, APIs, deploy configs, and smoke checks.',
       affected_services: services.map((service) => safeText(service.id)),
       affected_flows: unique(
         services.flatMap((service) => serviceDataStringArray(service, 'related_flows')),
@@ -12274,7 +12279,7 @@ function buildArchitectureReasoningArtifact(params: {
       top_design_pressures: highPressures.slice(0, 10).map((pressure) => pressure.pressure_id),
       top_risky_couplings: riskyCouplings.slice(0, 10).map((rationale) => rationale.component_id),
       summary:
-        'Architecture reasoning is deterministic static inference; risky/intentional coupling reflects import, flow, config, dependency, and test evidence.',
+        'Architecture reasoning is static; coupling reflects import, flow, config, dependency, and test evidence.',
     },
     assumption_confidence: architectureAssumptionConfidenceSummary(architectureAssumptions),
     confidence_debt: confidenceDebt,
@@ -17291,14 +17296,28 @@ function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
   if (!isRecord(status)) {
     return '<p class="muted">Agent plan: <code>.rizz/research/verification_plan.json</code>.</p>';
   }
+  const proof = status.verification_evidence_score;
+  const proofCard = isRecord(proof)
+    ? `<article class="card compact">
+      <div class="badge">${recordString(proof, 'status', 'needs_evidence')}</div>
+      <h3>Proof Score</h3>
+      ${renderList([
+        `${recordNumber(proof, 'score')}/100`,
+        `${recordNumber(proof, 'covered_required_count')}/${recordNumber(proof, 'required_count')} required covered`,
+        `${recordNumber(proof, 'missing_required_count')} required missing`,
+      ])}
+    </article>`
+    : '';
   const plan = recordArray(status, 'verification_plan').filter(isRecord);
   if (plan.length === 0) {
-    return '<p class="muted">No review verification plan recorded.</p>';
+    return `${proofCard}<p class="muted">No review verification plan recorded.</p>`;
   }
   const required = plan.filter((item) => recordString(item, 'priority', '') === 'required');
   const recommended = plan.filter((item) => recordString(item, 'priority', '') === 'recommended');
+  const missing = recordArray(proof, 'missing_items').filter(isRecord).slice(0, 5);
   const topItems = [...required, ...recommended, ...plan].slice(0, 5);
   return `<div class="grid">
+    ${proofCard}
     <article class="card compact">
       <div class="badge">${required.length} required</div>
       <h3>Verification Summary</h3>
@@ -17309,9 +17328,9 @@ function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
       ])}
     </article>
     <article class="card compact">
-      <h3>Top Checks</h3>
+      <h3>Missing Proof</h3>
       ${renderList(
-        topItems.map((item) => {
+        (missing.length > 0 ? missing : topItems).map((item) => {
           const priority = recordString(item, 'priority', 'recommended');
           const type = recordString(item, 'verification_type', 'manual');
           const reason = recordString(item, 'reason', 'Verify affected behavior.');
@@ -19332,8 +19351,7 @@ function renderReport(params: {
   });
   const architectureObject = renderObjectDetails({
     title: 'Architecture',
-    summary:
-      'Reasoning from relationships, component pressure, coupling, boundaries, and evidence gaps.',
+    summary: 'Reasoning from relationships, coupling, boundaries, and evidence gaps.',
     posture: understandingPosture,
     body: `<p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
       ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning, evidenceById)}
@@ -19363,7 +19381,7 @@ function renderReport(params: {
   });
   const reviewObject = renderObjectDetails({
     title: 'Review Readiness',
-    summary: 'Latest review posture, affected flows, risk areas, and attention queue.',
+    summary: 'Review posture, flows, risks, attention.',
     posture: reviewReadiness.posture,
     body: `<h3><span>Review Blast Radius</span></h3>
       ${renderLatestReview(params.latest)}
@@ -19386,7 +19404,7 @@ function renderReport(params: {
   });
   const evidenceQualityObject = renderObjectDetails({
     title: 'Evidence Quality',
-    summary: 'Evidence scores, calibration, redaction safety, actionability, and gaps.',
+    summary: 'Evidence scores, redaction, actionability, gaps.',
     posture: evidenceQuality.posture,
     body: `<h3>Evidence Quality Inspect</h3>
       ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
@@ -19400,7 +19418,7 @@ function renderReport(params: {
   });
   const dependencyRuntimeObject = renderObjectDetails({
     title: 'Review Dependency Runtime Impact',
-    summary: 'Latest review dependency/package/config runtime impact and verification focus.',
+    summary: 'Review dependency/config impact and verification focus.',
     posture: reviewReadiness.posture,
     body: `<h3>Review/Dependency Runtime Impact</h3>
       <h3>Dependency Runtime Inspect</h3>
@@ -20501,6 +20519,7 @@ export async function reviewProjectChanges(
         review_evidence_summary: review.review_evidence_summary,
         verification_status: review.verification_status,
         verification_plan: review.verification_plan,
+        verification_evidence_score: review.verification_evidence_score,
         verification_plan_summary: verificationPlanSummary(review.verification_plan),
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
@@ -23504,6 +23523,10 @@ function buildReview(params: {
     requiredTests,
     verificationStatus,
   });
+  const verificationEvidenceScore = bves({
+    planItems: verificationPlan,
+    evidenceItems: params.verificationEvidence.items,
+  });
   const surgicalityScore = scoreSurgicality(
     reviewableChangedFiles.length,
     affectedComponents.length + dependentComponents.length,
@@ -23558,6 +23581,7 @@ function buildReview(params: {
     },
     verification_status: verificationStatus,
     verification_plan: verificationPlan,
+    verification_evidence_score: verificationEvidenceScore,
     findings,
     overall_risk: overallRisk,
     surgicality_score: surgicalityScore,
@@ -24196,6 +24220,7 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     verification_evidence_count: review.verification_status.total_checks,
     verification_passed_count: review.verification_status.passed_checks.length,
     verification_failed_count: review.verification_status.failed_checks.length,
+    verification_evidence_score: review.verification_evidence_score.score,
     verification_plan_count: review.verification_plan.length,
     verification_plan_required_count: review.verification_plan.filter(
       (item) => item.priority === 'required',
@@ -26068,9 +26093,12 @@ function renderReviewReport(review: ReviewSummaryData): string {
         <article class="card"><h2>Recorded Checks</h2><p>${review.verification_status.total_checks}</p></article>
         <article class="card"><h2>Passed</h2><p>${review.verification_status.passed_checks.length}</p></article>
         <article class="card"><h2>Failed</h2><p>${review.verification_status.failed_checks.length}</p></article>
-        <article class="card"><h2>Production Smoke</h2><p>${review.verification_status.production_checks_passed.length}</p></article>
+        <article class="card"><h2>Proof Score</h2><p>${review.verification_evidence_score.score}/100</p></article>
       </div>
       <p class="muted">${htmlEscape(review.verification_status.calibration_note)}</p>
+      <p class="muted">${htmlEscape(review.verification_evidence_score.approval_summary)}</p>
+      <h3>Missing Proof</h3>
+      ${renderList(review.verification_evidence_score.agent_next_actions)}
       <h3>Risks Reduced</h3>
       ${renderList(review.verification_status.risks_reduced)}
       <h3>Remaining Unknowns</h3>

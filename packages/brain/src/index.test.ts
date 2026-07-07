@@ -499,11 +499,22 @@ describe('project brain generation', () => {
       expect(review.value.review.verification_status.passed_checks).toContain(
         'unit tests: pnpm test',
       );
+      expect(review.value.review.verification_evidence_score).toMatchObject({
+        recorded_count: 1,
+        passed_count: 1,
+        failed_count: 0,
+        score: expect.any(Number),
+      });
       expect(review.value.reviewEval).toMatchObject({
         verification_evidence_count: 1,
         verification_passed_count: 1,
         verification_failed_count: 0,
+        verification_evidence_score: expect.any(Number),
       });
+      const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(reviewReport).toContain('Proof Score');
+      expect(missionControl).toContain('Proof Score');
     });
   });
 
@@ -9017,10 +9028,17 @@ describe('project brain generation', () => {
         }),
       );
       expect(result.value.review.review_evidence_summary.verification_evidence_ids).toHaveLength(2);
+      expect(result.value.review.verification_evidence_score).toMatchObject({
+        recorded_count: 2,
+        passed_count: 2,
+        failed_count: 0,
+        score: expect.any(Number),
+      });
       expect(result.value.reviewEval).toMatchObject({
         verification_evidence_count: 2,
         verification_passed_count: 2,
         verification_failed_count: 0,
+        verification_evidence_score: expect.any(Number),
       });
 
       const artifact = await readJson<{
@@ -9037,6 +9055,7 @@ describe('project brain generation', () => {
 
       const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(reviewReport).toContain('Verification Calibration');
+      expect(reviewReport).toContain('Proof Score');
       expect(reviewReport).toContain('Local syntax/build/test regression risk reduced');
     });
   });
