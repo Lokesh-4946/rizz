@@ -41,6 +41,11 @@ interface VerificationProofCoverage {
 export interface VerificationEvidenceScore {
   readonly score: number;
   readonly status: 'ready' | 'needs_evidence' | 'blocked';
+  readonly approval_state:
+    | 'ready_for_human_approval'
+    | 'needs_agent_repair'
+    | 'blocked_by_failed_evidence'
+    | 'needs_verification_plan';
   readonly plan_count: number;
   readonly required_count: number;
   readonly recorded_count: number;
@@ -52,6 +57,9 @@ export interface VerificationEvidenceScore {
   readonly missing_recommended_count: number;
   readonly covered_items: readonly VerificationProofCoverage[];
   readonly missing_items: readonly VerificationProofGap[];
+  readonly covered_summary: readonly string[];
+  readonly missing_summary: readonly string[];
+  readonly score_explanation: readonly string[];
   readonly approval_summary: string;
   readonly agent_next_actions: readonly string[];
   readonly confidence: Confidence;
@@ -95,6 +103,19 @@ function priorityGap(item: VerificationPlanItem): VerificationProofGap {
   };
 }
 
+function commandSummary(item: VerificationPlanItem): string {
+  if (item.commands.length > 0) return item.commands[0] ?? '';
+  return item.manual_checks[0] ?? item.verification_type;
+}
+
+function coveredSummary(item: VerificationProofCoverage): string {
+  return `${item.plan_id} covered by ${item.evidence_name}: ${item.command}`;
+}
+
+function missingSummary(item: VerificationProofGap): string {
+  return `${item.priority} ${item.verification_type}: ${item.reason} (${commandSummary(item)})`;
+}
+
 export function buildVerificationEvidenceScore(params: {
   readonly planItems: readonly VerificationPlanItem[];
   readonly evidenceItems: readonly VerificationEvidenceItem[];
@@ -106,6 +127,7 @@ export function buildVerificationEvidenceScore(params: {
     return {
       score: failedCount > 0 ? 35 : passedCount > 0 ? 70 : 45,
       status,
+      approval_state: failedCount > 0 ? 'blocked_by_failed_evidence' : 'needs_verification_plan',
       plan_count: 0,
       required_count: 0,
       recorded_count: params.evidenceItems.length,
@@ -117,6 +139,11 @@ export function buildVerificationEvidenceScore(params: {
       missing_recommended_count: 0,
       covered_items: [],
       missing_items: [],
+      covered_summary: [],
+      missing_summary: [],
+      score_explanation: [
+        'No targeted verification plan was available, so proof coverage cannot be scored against planned checks.',
+      ],
       approval_summary:
         passedCount > 0
           ? 'Verification evidence is recorded, but no review plan was available to score coverage.'
@@ -171,9 +198,16 @@ export function buildVerificationEvidenceScore(params: {
       : missingRecommended.length > 0 || score < 85
         ? 'needs_evidence'
         : 'ready';
+  const approvalState =
+    failedCount > 0
+      ? 'blocked_by_failed_evidence'
+      : status === 'ready'
+        ? 'ready_for_human_approval'
+        : 'needs_agent_repair';
   return {
     score,
     status,
+    approval_state: approvalState,
     plan_count: params.planItems.length,
     required_count: required.length,
     recorded_count: params.evidenceItems.length,
@@ -185,6 +219,13 @@ export function buildVerificationEvidenceScore(params: {
     missing_recommended_count: missingRecommended.length,
     covered_items: covered.slice(0, 12),
     missing_items: missing.slice(0, 12),
+    covered_summary: covered.slice(0, 8).map(coveredSummary),
+    missing_summary: missing.slice(0, 8).map(missingSummary),
+    score_explanation: [
+      `${coveredRequired.length}/${required.length} required check(s) have passing evidence.`,
+      `${covered.length}/${params.planItems.length} planned check(s) have passing evidence.`,
+      `${failedCount} failed recorded check(s), ${missingRequired.length} missing required check(s).`,
+    ],
     approval_summary:
       status === 'ready'
         ? `Verification proof is ready: ${covered.length}/${params.planItems.length} planned check(s) have passing evidence.`
