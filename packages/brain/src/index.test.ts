@@ -503,6 +503,7 @@ describe('project brain generation', () => {
         recorded_count: 1,
         passed_count: 1,
         failed_count: 0,
+        approval_state: expect.any(String),
         score: expect.any(Number),
       });
       expect(review.value.reviewEval).toMatchObject({
@@ -514,7 +515,10 @@ describe('project brain generation', () => {
       const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(reviewReport).toContain('Proof Score');
+      expect(reviewReport).toContain('Approval State');
+      expect(reviewReport).toContain('Covered Proof');
       expect(missionControl).toContain('Proof Score');
+      expect(missionControl).toContain('Covered Proof');
     });
   });
 
@@ -9032,6 +9036,7 @@ describe('project brain generation', () => {
         recorded_count: 2,
         passed_count: 2,
         failed_count: 0,
+        approval_state: expect.any(String),
         score: expect.any(Number),
       });
       expect(result.value.reviewEval).toMatchObject({
@@ -9056,6 +9061,8 @@ describe('project brain generation', () => {
       const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(reviewReport).toContain('Verification Calibration');
       expect(reviewReport).toContain('Proof Score');
+      expect(reviewReport).toContain('Approval State');
+      expect(reviewReport).toContain('Covered Proof');
       expect(reviewReport).toContain('Local syntax/build/test regression risk reduced');
     });
   });

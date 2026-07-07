@@ -17249,7 +17249,7 @@ function renderUnknowns(params: {
       )}" data-kind="unknown" data-confidence="uncertain">
         <div class="badge">needs confirmation</div>
         <h3>${htmlEscape(unknown)}</h3>
-        <p class="muted">Unknowns are work queues for better project intelligence. Verify with evidence before relying on inferred facts.</p>
+        <p class="muted">Verify unknowns with evidence before relying on inferred facts.</p>
       </article>`,
     )
     .join('');
@@ -17303,6 +17303,7 @@ function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
       <h3>Proof Score</h3>
       ${renderList([
         `${recordNumber(proof, 'score')}/100`,
+        recordString(proof, 'approval_state', 'needs_agent_repair'),
         `${recordNumber(proof, 'covered_required_count')}/${recordNumber(proof, 'required_count')} required covered`,
         `${recordNumber(proof, 'missing_required_count')} required missing`,
       ])}
@@ -17314,6 +17315,8 @@ function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
   }
   const required = plan.filter((item) => recordString(item, 'priority', '') === 'required');
   const recommended = plan.filter((item) => recordString(item, 'priority', '') === 'recommended');
+  const missingSummary = isRecord(proof) ? asStringArray(proof.missing_summary).slice(0, 5) : [];
+  const coveredSummary = isRecord(proof) ? asStringArray(proof.covered_summary).slice(0, 5) : [];
   const missing = recordArray(proof, 'missing_items').filter(isRecord).slice(0, 5);
   const topItems = [...required, ...recommended, ...plan].slice(0, 5);
   return `<div class="grid">
@@ -17330,14 +17333,17 @@ function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
     <article class="card compact">
       <h3>Missing Proof</h3>
       ${renderList(
-        (missing.length > 0 ? missing : topItems).map((item) => {
-          const priority = recordString(item, 'priority', 'recommended');
-          const type = recordString(item, 'verification_type', 'manual');
-          const reason = recordString(item, 'reason', 'Verify affected behavior.');
-          return `${priority} ${type}: ${reason}`;
-        }),
+        missingSummary.length > 0
+          ? missingSummary
+          : (missing.length > 0 ? missing : topItems).map((item) => {
+              const priority = recordString(item, 'priority', 'recommended');
+              const type = recordString(item, 'verification_type', 'manual');
+              const reason = recordString(item, 'reason', 'Verify affected behavior.');
+              return `${priority} ${type}: ${reason}`;
+            }),
       )}
     </article>
+    <article class="card compact"><h3>Covered Proof</h3>${renderList(coveredSummary)}</article>
   </div>`;
 }
 
@@ -18489,7 +18495,7 @@ function nestedRecord(value: unknown, key: string): Record<string, unknown> {
 
 function renderAskReadinessLine(value: unknown): string {
   if (!isRecord(value)) {
-    return '<article class="card compact"><h3>Ask readiness</h3><p class="muted">No future-question readiness gate is available yet.</p></article>';
+    return '<article class="card compact"><h3>Ask readiness</h3><p class="muted">No readiness gate yet.</p></article>';
   }
   const score = recordNumber(value, 'score');
   const status = recordString(value, 'status', scoreBand(score));
@@ -18747,7 +18753,7 @@ function renderFlagshipSummary(params: {
 
   return `<section class="flagship-summary">
     <h3>Flagship Summary</h3>
-    <p class="muted">Fast local answer to what Rizz understands, what changed, what to inspect first, and where confidence is weak.</p>
+    <p class="muted">Fast local answer to what Rizz understands.</p>
     <div class="flagship-grid">
       <article class="card compact">
         <h3>Understanding Level</h3>
@@ -19300,7 +19306,7 @@ function renderReport(params: {
   const serviceObject = renderObjectDetails({
     title: 'Service Intelligence',
     summary:
-      'Runtime services reconstructed from service-like files, routes, jobs, storage, env vars, external APIs, deployment configs, and related flows.',
+      'Runtime services from service files, routes, jobs, storage, env, APIs, deploy configs, and flows.',
     count: params.buckets.services.length,
     posture: params.buckets.services.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderServiceCards(params.buckets.services, evidenceById)}</div>`,
@@ -19317,7 +19323,7 @@ function renderReport(params: {
   const journeyObject = renderObjectDetails({
     title: 'Journey Intelligence',
     summary:
-      'Product and user journeys inferred from routes, handlers, files, configs, tests, commands, runtime surfaces, and review impact.',
+      'Journeys inferred from routes, handlers, files, configs, tests, commands, runtime, and review impact.',
     count: params.buckets.flows.filter((flow) => flowJourneySummaryData(flow) !== undefined).length,
     posture:
       params.buckets.flows.filter((flow) => flowJourneySummaryData(flow) !== undefined).length === 0
@@ -19381,7 +19387,7 @@ function renderReport(params: {
   });
   const reviewObject = renderObjectDetails({
     title: 'Review Readiness',
-    summary: 'Review posture, flows, risks, attention.',
+    summary: 'Review posture and risks.',
     posture: reviewReadiness.posture,
     body: `<h3><span>Review Blast Radius</span></h3>
       ${renderLatestReview(params.latest)}
@@ -19404,7 +19410,7 @@ function renderReport(params: {
   });
   const evidenceQualityObject = renderObjectDetails({
     title: 'Evidence Quality',
-    summary: 'Evidence scores, redaction, actionability, gaps.',
+    summary: 'Evidence scores and gaps.',
     posture: evidenceQuality.posture,
     body: `<h3>Evidence Quality Inspect</h3>
       ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
@@ -19418,7 +19424,7 @@ function renderReport(params: {
   });
   const dependencyRuntimeObject = renderObjectDetails({
     title: 'Review Dependency Runtime Impact',
-    summary: 'Review dependency/config impact and verification focus.',
+    summary: 'Dep focus.',
     posture: reviewReadiness.posture,
     body: `<h3>Review/Dependency Runtime Impact</h3>
       <h3>Dependency Runtime Inspect</h3>
@@ -19462,7 +19468,7 @@ function renderReport(params: {
   <title>Mission Control · ${htmlEscape(params.projectName)}</title>
   <style>
     :root { color-scheme: light dark; --bg: #101114; --panel: #17191f; --text: #f2efe7; --muted: #aaa59a; --line: #30333b; --accent: #e3b341; --ok: #5fb3a1; --warn: #fbbf24; --danger: #d98a7a; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 1120px; margin: 0 auto; padding: 28px 18px 56px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
     h1 { font-size: 34px; margin: 0 0 8px; letter-spacing: 0; }
@@ -19478,7 +19484,7 @@ function renderReport(params: {
     .metric-value { font-size: 42px; line-height: 1; margin: 0; font-weight: 750; }
     .metric-posture { margin: 8px 0; text-transform: lowercase; color: var(--accent); }
     .compact { padding: 12px; }
-    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .badge.warn { color: var(--warn); }
     .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
     .objects { display: grid; gap: 12px; margin-top: 18px; }
@@ -19505,8 +19511,8 @@ function renderReport(params: {
     summary { cursor: pointer; font-weight: 700; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
     @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .flagship-grid { grid-template-columns: 1fr; } .artifact-links { columns: 1; } }
-    @media (max-width: 560px) { main { padding: 20px 12px 48px; } h1 { font-size: 28px; } .metrics { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } .metric-value { font-size: 36px; } }
-    @media print { body { background: #fff; color: #000; } .card, details, .metric { break-inside: avoid; border-color: #999; } a { color: #000; } }
+    @media (max-width: 560px) { main { padding: 20px 12px 48px; } .metrics { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
+    @media print { body { background: #fff; color: #000; } .card, details, .metric { break-inside: avoid; } }
   </style>
 </head>
 <body>
@@ -19516,7 +19522,7 @@ function renderReport(params: {
       <h1>Mission Control · ${htmlEscape(params.projectName)}</h1>
       <p class="muted">Static local view generated from <code>.rizz/brain</code>. No server. No network. No model call.</p>
       <p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      <p class="muted">Generated ${htmlEscape(generatedAt)} · Project Intelligence Store · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
+      <p class="muted">${htmlEscape(generatedAt)} · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
       <div class="metrics" aria-label="Mission Control scorecard">
         ${metricCard({
           label: 'Understanding Score',
@@ -21283,13 +21289,13 @@ function renderAskReport(answer: AskProjectQuestionAnswer): string {
   <title>rizz ask · ${htmlEscape(answer.intent)}</title>
   <style>
     :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
     h1 { font-size: clamp(30px, 5vw, 48px); margin: 0 0 8px; letter-spacing: 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
     .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .muted { color: var(--muted); }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
     a { color: var(--accent); overflow-wrap: anywhere; }
@@ -21863,11 +21869,11 @@ function buildFlowExplanation(params: {
         ? []
         : [`Explains the ${journey.name} with ${journeySteps.length} normalized journey step(s).`]),
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
-      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime surface(s), ${dataDependencies.length} state/data, ${files.length} file(s), ${tests.length} test(s), ${configs.length} config(s).`,
+      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime, ${dataDependencies.length} state/data, ${files.length} file(s), ${tests.length} test(s), ${configs.length} config(s).`,
       ...serviceCausality.map((item) => item.cause),
       ...dataDependencies.map(
         (dependency) =>
-          `Tracks ${dependency.label} as ${dependency.kind} evidence with ${dependency.operations.join(', ') || 'unknown'} operation signal(s).`,
+          `Tracks ${dependency.label} as ${dependency.kind} with ${dependency.operations.join(', ') || 'unknown'} operation signal(s).`,
       ),
       ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
@@ -22307,13 +22313,13 @@ function renderExplainReport(
   <title>rizz explain · ${htmlEscape(explanation.resolved_entity_id)}</title>
   <style>
     :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
     h1 { font-size: clamp(32px, 6vw, 56px); margin: 0 0 8px; letter-spacing: 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
     .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .muted { color: var(--muted); }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
     a { color: var(--accent); overflow-wrap: anywhere; }
@@ -23207,7 +23213,7 @@ function buildReview(params: {
       confidence: hasLocalVerification ? 'inferred' : 'verified',
       recommendation: hasLocalVerification
         ? 'Use the recorded checks as local regression evidence, then add focused tests if the behavior changed.'
-        : 'Run the existing quality gate and add focused tests for the changed behavior or document why existing coverage is sufficient.',
+        : 'Run the quality gate and add focused tests or document sufficient existing coverage.',
     });
   }
 
@@ -23230,7 +23236,7 @@ function buildReview(params: {
       ),
       confidence: 'inferred',
       recommendation:
-        'Verify the generator, lockfile, or source artifact that produced this output instead of reviewing generated churn as product logic.',
+        'Verify the generator, lockfile, or source artifact instead of generated churn.',
     });
   }
 
@@ -23254,7 +23260,7 @@ function buildReview(params: {
       affected_entities: graphAffectedEntities,
       confidence: 'verified',
       recommendation:
-        'Use the changed tests to calibrate confidence, and only require runtime blast-radius review if source, config, dependency, or generated source inputs changed.',
+        'Use changed tests to calibrate confidence; require runtime review only for source/config/dependency inputs.',
     });
   }
 
@@ -26097,8 +26103,18 @@ function renderReviewReport(review: ReviewSummaryData): string {
       </div>
       <p class="muted">${htmlEscape(review.verification_status.calibration_note)}</p>
       <p class="muted">${htmlEscape(review.verification_evidence_score.approval_summary)}</p>
+      <h3>Approval State</h3>
+      ${renderList([
+        review.verification_evidence_score.approval_state,
+        ...review.verification_evidence_score.score_explanation,
+      ])}
       <h3>Missing Proof</h3>
-      ${renderList(review.verification_evidence_score.agent_next_actions)}
+      ${renderList([
+        ...review.verification_evidence_score.missing_summary,
+        ...review.verification_evidence_score.agent_next_actions,
+      ])}
+      <h3>Covered Proof</h3>
+      ${renderList(review.verification_evidence_score.covered_summary)}
       <h3>Risks Reduced</h3>
       ${renderList(review.verification_status.risks_reduced)}
       <h3>Remaining Unknowns</h3>

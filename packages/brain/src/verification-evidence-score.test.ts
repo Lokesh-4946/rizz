@@ -7,6 +7,7 @@ describe('verification evidence scoring', () => {
 
     expect(score).toMatchObject({
       status: 'needs_evidence',
+      approval_state: 'needs_verification_plan',
       score: 45,
       plan_count: 0,
       recorded_count: 0,
