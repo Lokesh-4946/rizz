@@ -31,7 +31,7 @@ Current loop readiness:
 | Human intent | 75/100 | 25 | Intent can enter through CLI/review/explain flows, but mission-contract capture is still lightweight. |
 | rizz mission contract, project intelligence, and inspect-first context | 91/100 | 9 | Project intelligence, Mission Control, confidence queues, file-level explain, security/tool inventory, unified repair packets, and UAT artifacts are strong; mission-contract packaging can be sharper. |
 | Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
-| rizz review | 91/100 | 9 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, and deterministic review artifacts. |
+| rizz review | 93/100 | 7 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, scope drift, generated noise, and repeated changed code. |
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 77/100 | 23 | Repair instructions are packetized and less duplicative for agents, but agent-specific apply/repair loops are not yet first-class. |
 | rizz verification | 91/100 | 9 | rizz now scores recorded proof, approval state, covered proof, and missing required evidence in review/Mission Control. |
@@ -59,11 +59,11 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice deepens recorded verification inspection. `verification_evidence_score` now
-includes approval state, score explanation, covered proof summaries, and missing proof summaries;
-Mission Control/review show both covered and missing proof so agents can repair faster and humans
-can approve with less artifact-hunting. This is still not a runtime scanner: rizz judges recorded
-evidence while the coding agent runs approved commands.
+The current slice adds a review-governance packet to `rizz review`. Review now records Git basis,
+working-tree hygiene, branch freshness, reviewable vs generated artifacts, scope clusters, mission
+scope drift signals, repeated changed-code signals, and agent next actions. This is deterministic
+PR governance, not a semantic guarantee: duplicate and unrelated-work signals remain heuristics for
+agents/humans to inspect.
 
 ## Capability Scorecard
 
@@ -78,27 +78,27 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
-| Review Intelligence with true blast radius | 91/100 | 9 | Tie changed files to user-visible failures with stronger causality. |
+| Review Intelligence with true blast radius | 93/100 | 7 | Strengthen mission-contract comparison and AST-level duplicate detection. |
 | Verification Plan + Evidence Ingest | 91/100 | 9 | Add explicit signoff packet/state and reuse proof status across repeated agent repair loops. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `feature/verification-proof-drilldowns`, local gate on the rizz repo.
+Run: `feature/review-governance-packet`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused verification-evidence tests | 3/3 passed |
-| Full unit suite | 357/357 passed |
+| Focused review-governance tests | 2/2 passed |
+| Full unit suite | 358/358 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
-| Footprint | cold start 53ms / 250ms, core 195KB / 200KB |
+| Footprint | cold start 48ms / 250ms, core 195KB / 200KB |
 
-Current verdict: rizz is closer to human approval because agents and reviewers can now see proof
-score, approval state, covered proof, and missing proof in one place. Remaining distance is explicit
-human signoff state and tighter repair-loop reuse of the score.
+Current verdict: rizz review is closer to a useful agent-facing PR gate. It now says not only what
+the diff might break, but whether the review basis itself is clean enough for approval and which
+scope/duplication signals need an agent or human to inspect.
 
 ## Latest DBMS UAT Actuals
 

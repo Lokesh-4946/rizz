@@ -8194,8 +8194,21 @@ describe('project brain generation', () => {
         affected_tests: expect.arrayContaining(['packages/cli/src/index.test.ts']),
         affected_configs: expect.arrayContaining(['packages/cli/package.json']),
       });
+      expect(result.value.review.review_governance).toMatchObject({
+        status: 'needs_attention',
+        git: expect.objectContaining({ diff_basis: 'working_tree', working_tree_dirty: true }),
+        reviewable_changed_files: ['packages/cli/src/index.ts'],
+        generated_artifacts: [],
+        scope_clusters: ['packages/cli'],
+      });
       expect(result.value.review.findings).toContainEqual(
         expect.objectContaining({ category: 'Missing tests', severity: 'medium' }),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Version-control hygiene needs attention',
+          category: 'Correctness',
+        }),
       );
       expect(result.value.review.findings).toContainEqual(
         expect.objectContaining({
@@ -8237,6 +8250,8 @@ describe('project brain generation', () => {
         surgicality_score: result.value.review.surgicality_score,
         blast_radius_actionability_status: expect.stringMatching(/^(strong|partial|weak)$/),
         review_precision_status: expect.stringMatching(/^(strong|partial|weak)$/),
+        review_governance_status: 'needs_attention',
+        version_control_warning_count: expect.any(Number),
         blast_radius_actionability: {
           changed_file_count: 1,
           affected_journey_count: expect.any(Number),
@@ -8255,6 +8270,10 @@ describe('project brain generation', () => {
             'test_evidence_preserved',
             'architecture_what_breaks_context_preserved',
           ]),
+        },
+        review_governance: {
+          git: expect.objectContaining({ diff_basis: 'working_tree' }),
+          scope_clusters: ['packages/cli'],
         },
         secret_safety: {
           unsafe_sensitive_reference_count: 0,
@@ -8412,6 +8431,10 @@ describe('project brain generation', () => {
             readonly review_eval?: string;
             readonly review_claim_evidence?: string;
           };
+          readonly review_governance?: {
+            readonly status?: string;
+            readonly scope_clusters?: string[];
+          };
         };
         latest_research_artifacts?: {
           readonly review_eval?: string;
@@ -8434,6 +8457,10 @@ describe('project brain generation', () => {
             ]),
           }),
         ],
+        review_governance: {
+          status: 'needs_attention',
+          scope_clusters: ['packages/cli'],
+        },
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
           review_claim_evidence: '.rizz/research/review_claim_evidence.json',
@@ -8469,6 +8496,8 @@ describe('project brain generation', () => {
         overall_risk: string;
         surgicality_score: number;
         review_readiness_score: number;
+        review_governance_score: number;
+        review_governance_status: string;
         secret_safety: {
           redaction_applied: boolean;
           redacted_reference_count: number;
@@ -8499,6 +8528,8 @@ describe('project brain generation', () => {
         blast_radius: 'moderate',
         overall_risk: 'medium',
         surgicality_score: result.value.review.surgicality_score,
+        review_governance_score: result.value.review.review_governance.score,
+        review_governance_status: 'needs_attention',
         secret_safety: {
           unsafe_sensitive_reference_count: 0,
           output_secret_safe: true,
@@ -8610,6 +8641,8 @@ describe('project brain generation', () => {
       expect(report).toContain('flow:packages--cli--check');
       expect(report).toContain('packages/cli/package.json');
       expect(report).toContain('Missing tests');
+      expect(report).toContain('Review Governance');
+      expect(report).toContain('Version-Control Warnings');
       expect(report).toContain('review_claim_evidence.json');
       const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
       expect(missionControl).toContain('Architecture Impact Claims');
@@ -8620,6 +8653,66 @@ describe('project brain generation', () => {
       expect(missionControl).toContain('packages/cli/src/index.ts');
       expect(missionControl).toContain('component:packages--cli changes can affect');
       expect(missionControl).toContain('review_claim_evidence.json');
+    });
+  });
+
+  it('reports review governance for scope drift and repeated changed code', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'api', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'web', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'README.md'), '# sample\n');
+      await writeFile(join(dir, 'packages', 'api', 'src', 'auth.ts'), 'export const api = 1;\n');
+      await writeFile(join(dir, 'packages', 'web', 'src', 'auth.ts'), 'export const web = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:48:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      const repeatedLine = 'export function duplicatedGuard() { return "same behavior"; }\n';
+      await writeFile(join(dir, 'packages', 'api', 'src', 'auth.ts'), repeatedLine);
+      await writeFile(join(dir, 'packages', 'web', 'src', 'auth.ts'), repeatedLine);
+      await writeFile(join(dir, 'README.md'), '# sample\n\nChanged behavior docs.\n');
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'sample-app', scripts: { test: 'vitest run', check: 'tsc -b' } }),
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:49:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.review_governance).toMatchObject({
+        status: 'needs_attention',
+        git: expect.objectContaining({ diff_basis: 'working_tree', working_tree_dirty: true }),
+        scope_clusters: expect.arrayContaining(['packages/api', 'packages/web', 'root']),
+      });
+      expect(result.value.review.review_governance.scope_drift_signals).toContainEqual(
+        expect.stringContaining('Source, docs, and config/package files changed together'),
+      );
+      expect(result.value.review.review_governance.duplicate_change_signals).toContainEqual(
+        expect.stringContaining('Repeated changed line across 2 file(s)'),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({ title: 'Diff may include extra mission scope' }),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Repeated changed code may be duplicate implementation work',
+        }),
+      );
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Review Governance');
+      expect(report).toContain('Possible Duplication');
     });
   });
 

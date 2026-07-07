@@ -1,12 +1,19 @@
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, readFileSync, statSync } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
 import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
+import {
+  type ReviewGitBasisData,
+  type ReviewGovernanceData,
+  type ReviewGovernanceStatus,
+  buildReviewGovernance,
+  readReviewGitChanges,
+  renderReviewGovernance,
+} from './review-governance.js';
 import {
   commandTargetPaths,
   commandTargetSteps,
@@ -1194,6 +1201,12 @@ interface ReviewEvalArtifactData {
   readonly false_negative_signal_count: number;
   readonly precision_gap_count: number;
   readonly precision_calibration: ReviewPrecisionCalibrationData;
+  readonly review_governance_score: number;
+  readonly review_governance_status: ReviewGovernanceStatus;
+  readonly version_control_warning_count: number;
+  readonly scope_drift_signal_count: number;
+  readonly duplicate_change_signal_count: number;
+  readonly review_governance: ReviewGovernanceData;
   readonly secret_safety: {
     readonly redaction_applied: boolean;
     readonly redacted_reference_count: number;
@@ -1401,6 +1414,7 @@ interface ReviewSummaryData {
   readonly dependency_runtime_impact: ReviewDependencyRuntimeImpactData | null;
   readonly affected_entities: readonly string[];
   readonly blast_radius_reasons: readonly string[];
+  readonly review_governance: ReviewGovernanceData;
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
   readonly verification_status: ReviewVerificationStatusData;
   readonly verification_plan: readonly ReviewVerificationPlanItemData[];
@@ -20421,7 +20435,11 @@ export async function reviewProjectChanges(
       (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
       {};
     const entitySets = await readReviewEntitySets(entitiesDir);
-    const gitChanges = readGitChanges(rootDir);
+    const gitChanges = readReviewGitChanges({
+      rootDir,
+      shouldSkipPath: (path) => shouldSkipRelativePath(path, []),
+      sanitizeText: safeText,
+    });
     if (!gitChanges.ok) return { ok: false, error: gitChanges.error };
     const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now);
 
@@ -20433,6 +20451,7 @@ export async function reviewProjectChanges(
       entitySets,
       changedFiles: gitChanges.value.changedFiles,
       diffText: gitChanges.value.diffText,
+      git: gitChanges.value.git,
       verificationEvidence,
     });
     const reviewEval = buildReviewEvalArtifact(review);
@@ -20522,6 +20541,7 @@ export async function reviewProjectChanges(
             redacted_evidence_count: claim.redacted_evidence_count,
           })),
         dependency_runtime_impact: review.dependency_runtime_impact,
+        review_governance: review.review_governance,
         review_evidence_summary: review.review_evidence_summary,
         verification_status: review.verification_status,
         verification_plan: review.verification_plan,
@@ -22574,125 +22594,6 @@ function dropEntitiesByIds(
   return entities.filter((entity) => !ids.has(entity.id));
 }
 
-function runGit(
-  rootDir: string,
-  args: readonly string[],
-): { readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly error: string } {
-  const result = spawnSync('git', args, {
-    cwd: rootDir,
-    encoding: 'utf8',
-    maxBuffer: 5_000_000,
-  });
-  if (result.status === 0) return { ok: true, stdout: result.stdout };
-  return { ok: false, error: result.stderr.trim() || result.stdout.trim() || 'git command failed' };
-}
-
-function changedPathsFromNameStatusLine(line: string): string[] {
-  const trimmed = line.trim();
-  if (trimmed === '') return [];
-  const parts = trimmed.split(/\t+/).filter((part) => part.trim() !== '');
-  if (parts.length === 1) return [parts[0] ?? ''];
-  const status = parts[0] ?? '';
-  const paths = parts.slice(1);
-  if (/^[RC]/.test(status)) return paths;
-  return paths.slice(-1);
-}
-
-function readGitChanges(rootDir: string):
-  | {
-      readonly ok: true;
-      readonly value: { readonly changedFiles: readonly string[]; readonly diffText: string };
-    }
-  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
-  const inside = runGit(rootDir, ['rev-parse', '--is-inside-work-tree']);
-  if (!inside.ok || inside.stdout.trim() !== 'true') {
-    return {
-      ok: false,
-      error: { code: 'GIT_REQUIRED', message: 'rizz review needs to run inside a git worktree.' },
-    };
-  }
-
-  const worktreeFiles = runGit(rootDir, ['diff', '--name-status', '--find-renames', 'HEAD', '--']);
-  if (!worktreeFiles.ok) {
-    return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: worktreeFiles.error } };
-  }
-  const untrackedFiles = runGit(rootDir, ['ls-files', '--others', '--exclude-standard']);
-  const worktreeChanged = unique(
-    [
-      ...worktreeFiles.stdout.split(/\r?\n/),
-      ...(untrackedFiles.ok ? untrackedFiles.stdout.split(/\r?\n/) : []),
-    ]
-      .flatMap(changedPathsFromNameStatusLine)
-      .filter((line) => line.trim() !== ''),
-  );
-  if (worktreeChanged.length > 0) {
-    const diff = runGit(rootDir, ['diff', '--no-ext-diff', '--find-renames', 'HEAD', '--']);
-    const untrackedDiffText = untrackedFiles.ok
-      ? readUntrackedFileText(rootDir, untrackedFiles.stdout)
-      : '';
-    return {
-      ok: true,
-      value: {
-        changedFiles: worktreeChanged,
-        diffText: `${diff.ok ? diff.stdout : ''}\n${untrackedDiffText}`,
-      },
-    };
-  }
-
-  const base = runGit(rootDir, ['merge-base', 'HEAD', 'origin/develop']);
-  if (base.ok && base.stdout.trim() !== '') {
-    const baseSha = base.stdout.trim();
-    const branchFiles = runGit(rootDir, [
-      'diff',
-      '--name-status',
-      '--find-renames',
-      baseSha,
-      'HEAD',
-      '--',
-    ]);
-    if (!branchFiles.ok) {
-      return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: branchFiles.error } };
-    }
-    const branchChanged = unique(
-      branchFiles.stdout
-        .split(/\r?\n/)
-        .flatMap(changedPathsFromNameStatusLine)
-        .filter((line) => line.trim() !== ''),
-    );
-    const diff = runGit(rootDir, [
-      'diff',
-      '--no-ext-diff',
-      '--find-renames',
-      baseSha,
-      'HEAD',
-      '--',
-    ]);
-    return {
-      ok: true,
-      value: { changedFiles: branchChanged, diffText: diff.ok ? diff.stdout : '' },
-    };
-  }
-
-  return { ok: true, value: { changedFiles: [], diffText: '' } };
-}
-
-function readUntrackedFileText(rootDir: string, stdout: string): string {
-  const chunks: string[] = [];
-  const files = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !shouldSkipRelativePath(line, []));
-  for (const file of files) {
-    try {
-      const absolutePath = join(rootDir, file);
-      const fileStat = statSync(absolutePath);
-      if (!fileStat.isFile() || fileStat.size > 1_000_000) continue;
-      chunks.push(readFileSync(absolutePath, 'utf8'));
-    } catch {}
-  }
-  return chunks.join('\n');
-}
-
 function parseConfidence(value: unknown): Confidence {
   if (value === 'verified' || value === 'inferred' || value === 'uncertain') return value;
   return 'uncertain';
@@ -22894,6 +22795,7 @@ function buildReview(params: {
   readonly entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>;
   readonly changedFiles: readonly string[];
   readonly diffText: string;
+  readonly git: ReviewGitBasisData;
   readonly verificationEvidence: VerificationEvidenceArtifactData;
 }): ReviewSummaryData {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
@@ -22912,6 +22814,17 @@ function buildReview(params: {
       !isDependencyPath(file) &&
       hasRuntimeRelevantSourceDiff(file, params.diffText),
   );
+  const reviewGovernance = buildReviewGovernance({
+    git: params.git,
+    changedFiles,
+    reviewableChangedFiles,
+    generatedArtifacts: changedGeneratedArtifactFiles,
+    diffText: params.diffText,
+    isSourceFile,
+    isConfigPath,
+    isDependencyPath,
+    sanitizeText: safeText,
+  });
   const affectedComponents = affectedComponentEntities(
     reviewableChangedFiles,
     params.entitySets.components,
@@ -23137,6 +23050,51 @@ function buildReview(params: {
       affected_entities: [],
       confidence: 'verified',
       recommendation: 'Run rizz review on a branch or with local changes before merge review.',
+    });
+  }
+
+  if (reviewGovernance.version_control_warnings.length > 0) {
+    addFinding({
+      slug: 'version-control-hygiene',
+      severity: reviewGovernance.git.branch_behind > 0 ? 'medium' : 'low',
+      category: 'Correctness',
+      title: 'Version-control hygiene needs attention',
+      description: safeText(reviewGovernance.version_control_warnings.join(' ')),
+      affected_files: publicChangedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'verified',
+      recommendation:
+        'Rebase, commit, stash, or isolate local work before treating this review as approval-ready.',
+    });
+  }
+
+  if (reviewGovernance.scope_drift_signals.length > 0) {
+    addFinding({
+      slug: 'mission-scope-drift',
+      severity: reviewGovernance.scope_clusters.length > 3 ? 'medium' : 'low',
+      category: 'Overengineering',
+      title: 'Diff may include extra mission scope',
+      description: safeText(reviewGovernance.scope_drift_signals.join(' ')),
+      affected_files: publicChangedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Confirm every changed scope belongs to the same requested task, or split unrelated work.',
+    });
+  }
+
+  if (reviewGovernance.duplicate_change_signals.length > 0) {
+    addFinding({
+      slug: 'possible-duplication',
+      severity: 'low',
+      category: 'Maintainability',
+      title: 'Repeated changed code may be duplicate implementation work',
+      description: safeText(reviewGovernance.duplicate_change_signals.join(' ')),
+      affected_files: publicChangedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Inspect repeated edits and prefer a shared helper only when the repeated behavior is intentional across callers.',
     });
   }
 
@@ -23553,6 +23511,7 @@ function buildReview(params: {
     dependency_runtime_impact: dependencyRuntimeImpact,
     affected_entities: graphAffectedEntities,
     blast_radius_reasons: blastRadiusReasons,
+    review_governance: reviewGovernance,
     review_evidence_summary: {
       changed_files: changedFiles.length,
       generated_artifacts: changedGeneratedArtifactFiles.map(safeText),
@@ -24260,6 +24219,12 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     false_negative_signal_count: precisionCalibration.false_negative_signal_count,
     precision_gap_count: precisionCalibration.precision_gap_count,
     precision_calibration: precisionCalibration,
+    review_governance_score: review.review_governance.score,
+    review_governance_status: review.review_governance.status,
+    version_control_warning_count: review.review_governance.version_control_warnings.length,
+    scope_drift_signal_count: review.review_governance.scope_drift_signals.length,
+    duplicate_change_signal_count: review.review_governance.duplicate_change_signals.length,
+    review_governance: review.review_governance,
     secret_safety: {
       redaction_applied: redactedCount > 0,
       redacted_reference_count: redactedCount,
@@ -26088,6 +26053,10 @@ function renderReviewReport(review: ReviewSummaryData): string {
     <section>
       <h2>Review Precision Calibration</h2>
       ${renderReviewPrecisionCalibration(precisionCalibration)}
+    </section>
+    <section>
+      <h2>Review Governance</h2>
+      ${renderReviewGovernance(review.review_governance)}
     </section>
     <section>
       <h2>Architecture Impact Evidence</h2>
