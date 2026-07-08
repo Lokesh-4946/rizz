@@ -250,6 +250,105 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('links Flask routes through service modules to SQLAlchemy models in review', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'app', 'routes'), { recursive: true });
+      await mkdir(join(dir, 'app', 'services'), { recursive: true });
+      await mkdir(join(dir, 'app', 'models'), { recursive: true });
+      await writeFile(
+        join(dir, 'requirements.txt'),
+        ['Flask==3.0.0', 'Flask-SQLAlchemy==3.1.1', 'pytest==8.0.0'].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', '__init__.py'),
+        [
+          'from flask import Flask',
+          'from app.routes.wallet_routes import wallet_bp',
+          'def create_app():',
+          '    app = Flask(__name__)',
+          '    app.register_blueprint(wallet_bp)',
+          '    return app',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'routes', 'wallet_routes.py'),
+        [
+          'from flask import Blueprint, jsonify',
+          'from app.services.wallet_service import get_wallet',
+          'wallet_bp = Blueprint("wallets", __name__)',
+          '@wallet_bp.get("/wallets/<int:wallet_id>")',
+          'def wallet_detail(wallet_id):',
+          '    return jsonify(get_wallet(wallet_id))',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'services', 'wallet_service.py'),
+        [
+          'from app.models.wallet import Wallet',
+          'def get_wallet(wallet_id):',
+          '    return Wallet.query.filter_by(id=wallet_id).first()',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'models', 'wallet.py'),
+        [
+          'from flask_sqlalchemy import SQLAlchemy',
+          'db = SQLAlchemy()',
+          'class Wallet(db.Model):',
+          '    __tablename__ = "wallets"',
+          '    id = db.Column(db.Integer, primary_key=True)',
+          '    balance = db.Column(db.Integer, default=0)',
+        ].join('\n'),
+      );
+
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:25:00.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'app', 'models', 'wallet.py'),
+        [
+          'from flask_sqlalchemy import SQLAlchemy',
+          'db = SQLAlchemy()',
+          'class Wallet(db.Model):',
+          '    __tablename__ = "wallets"',
+          '    id = db.Column(db.Integer, primary_key=True)',
+          '    balance_cents = db.Column(db.Integer, default=0)',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:26:00.000Z'),
+      });
+
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      const routePaths = review.value.review.affected_flows.map((flow) => flow.route_path);
+      expect(routePaths).toContain('/wallets/<int:wallet_id>');
+      const walletFlow = review.value.review.affected_flows.find(
+        (flow) => flow.route_path === '/wallets/<int:wallet_id>',
+      );
+      expect(walletFlow?.framework).toBe('flask');
+      expect(walletFlow?.changed_files).toContain('app/models/wallet.py');
+      expect(walletFlow?.service_causality.map((item) => item.service_id)).toEqual(
+        expect.arrayContaining(['service:app--services', 'service:app--models']),
+      );
+      expect(review.value.review.affected_services.map((service) => service.id)).toEqual(
+        expect.arrayContaining(['service:app--services', 'service:app--models']),
+      );
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual(
+        expect.arrayContaining(['orm/database', 'database/table:app--models--wallet.py-wallets']),
+      );
+      expect(review.value.review.review_evidence_summary.affected_state_operations).toEqual(
+        expect.arrayContaining(['schema']),
+      );
+    });
+  });
+
   it('writes explain reports per target so parallel explains do not collide', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'src'), { recursive: true });

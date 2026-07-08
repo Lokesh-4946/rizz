@@ -59,11 +59,10 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens DBMS service causality. rizz now promotes SQLAlchemy models and Alembic
-tables into `database/table` entities, filters noisy Mongoose schema option keys from field lists,
-recognizes controller/model folders as service/data surfaces, scopes required test commands to the
-changed backend/frontend package, detects ODM query reads in controllers, and writes target-specific
-explain reports so parallel agents do not race on one report file.
+The current slice hardens Python/Flask DBMS causality. rizz now recognizes Flask route decorators,
+links Flask route handlers through statically used Python service imports into SQLAlchemy model
+files, carries exact `database/table:*` IDs into flow data dependencies, and keeps DBMS text
+heuristics in the helper module so the brain entry file stays under the lightweight size budget.
 
 ## Capability Scorecard
 
@@ -72,8 +71,8 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
-| Flow Understanding | 93/100 | 7 | Deepen route, service, and journey reconstruction on larger Python/Node DBMS repos. |
-| Architecture Reasoning | 86/100 | 14 | Reduce weak component boundary assumptions and add richer DB relationship evidence. |
+| Flow Understanding | 94/100 | 6 | Deepen multi-file Python route/service journeys and add more real Flask/FastAPI UAT seeds. |
+| Architecture Reasoning | 87/100 | 13 | Reduce weak component boundary assumptions and add richer cross-table relationship evidence. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
@@ -84,29 +83,29 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/dbms-service-causality`, local gate on the rizz repo.
+Run: `feature/flask-sqlalchemy-causality`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 3/3 passed |
+| Focused DBMS hardening tests | 4/4 passed |
 | Focused brain regression file | 68/68 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
-| Full unit suite | 370/370 passed |
+| Full unit suite | 371/371 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
-| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
+| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
-| rizz self-review | Needs attention: conservative security-sensitive-surface finding; direct diff scan found no literal credential, only a deleted helper context and runbook prose |
+| rizz self-review | Needs attention: no critical findings; duplicate-code warning is from moving DBMS heuristics out of `index.ts` into the helper |
 
-Current verdict: rizz is more useful on real DBMS repos, not just fixture-shaped ones. Agents should
-now get SQLAlchemy/Alembic schema surfaces, cleaner Mongoose field lists, backend-scoped
-verification suggestions, controller/model service causality, ORM read detection in controllers, and
-parallel-safe explain reports. Remaining work is deeper Python route-to-service causality and
-post-merge UAT on the two public DBMS repos that exposed these gaps.
+Current verdict: rizz is more useful on Python DBMS repos where the important path is
+route/controller -> service -> SQLAlchemy model/table. Agents should now see a changed Flask model
+as an affected route/service/data surface with exact table evidence instead of a generic Python
+component warning. Remaining work is broader UAT on real Flask/FastAPI repos and relationship
+parsing between SQLAlchemy models.
 
 ## Latest DBMS-Like UAT Agent Results
 
@@ -117,12 +116,12 @@ Run: QA sidecar on public DBMS-style repos, using fresh rizz `develop` and temp 
 | `iampranavdhar/Library-Management-System-MERN` | 66 files, 2 components, 26 flows, 5 commands, 0 tests; backend/frontend split was useful. | 7/10 | 3-4x orientation speedup | Addressed this baton: nested package manager, Mongoose model entities, route review breadth, unusable test suggestions. Remaining: backend/frontend test ownership precision. |
 | `manascb1344/Online-Auction-System` | 69 files, 3 components, 32 flows, 7 commands, 0 tests; client/server/database split and read-first paths were useful. | 6/10 | 2.5-3.5x orientation speedup | Addressed this baton: nested package manager, SQL table entities, controller review breadth, unusable test suggestions. Remaining: generic component wording and deeper SQL relationship parsing. |
 | `Yogndrr/MERN-School-Management-System` | 101 scanned files, 2 components, 61 flows, 7 commands, 0 tests; nested npm and 7 Mongoose models detected. | 7/10 | 2-3x orientation speedup | Addressed this baton: frontend test leakage on backend diffs, controller service linking, noisy Mongoose option keys, parallel explain race. Remaining: exact controller-to-route handler semantics. |
-| `sreyas-b-anand/dbms-mini-project` | 108 scanned files, 2 components, 15 flows, 4 commands, 0 tests; nested npm worked and wallet route review was narrow. | 6/10 | 2x orientation speedup | Addressed this baton: SQLAlchemy/Alembic entities, MySQL vs SQLite labeling, parallel explain race. Remaining: Flask route-to-service/model causality needs deeper Python import handling. |
+| `sreyas-b-anand/dbms-mini-project` | 108 scanned files, 2 components, 15 flows, 4 commands, 0 tests; nested npm worked and wallet route review was narrow. | 6/10 | 2x orientation speedup | Addressed this baton: SQLAlchemy/Alembic entities, MySQL vs SQLite labeling, parallel explain race, Flask route-to-service/model causality. Remaining: deeper Python package edge cases and SQLAlchemy relationship parsing. |
 
 UAT verdict: rizz is now a useful agent cold-start accelerator on DBMS-style repos, mostly for
 boundary mapping, read-first orientation, route inventory, command ownership, and schema/entity
-inspection. The next DBMS usefulness baton is deeper Python/Flask service causality: route handler
-to service/controller to SQLAlchemy model/table paths with fewer broad architecture warnings.
+inspection. The next DBMS usefulness baton is SQLAlchemy relationship precision: relationship(),
+ForeignKey, back_populates/backref, and cross-table blast radius for route/service flows.
 
 ## Latest DBMS UAT Actuals
 
