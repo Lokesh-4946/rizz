@@ -1,5 +1,8 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildHumanApprovalPacket } from './human-approval.js';
+import { buildHumanApprovalPacket, recordHumanSignoff } from './human-approval.js';
 
 describe('human approval packet', () => {
   it('keeps agent evidence readiness separate from human signoff', () => {
@@ -43,5 +46,93 @@ describe('human approval packet', () => {
       signoff_source: '.rizz/human-signoff.json',
       signoff_summary: 'Human approved release.',
     });
+  });
+
+  it('records human signoff with history only after rizz marks review ready', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rizz-human-signoff-'));
+    try {
+      await mkdir(join(dir, '.rizz', 'research'), { recursive: true });
+      await writeFile(
+        join(dir, '.rizz', 'research', 'human_approval.json'),
+        JSON.stringify({
+          schema_version: 1,
+          review_id: 'review:ready',
+          state: 'awaiting_human_signoff',
+          next_actions: ['Human signs off.'],
+        }),
+      );
+
+      const first = await recordHumanSignoff({
+        rootDir: dir,
+        summary: 'Approved after reviewing evidence.',
+        approver: 'Lokesh',
+        now: new Date('2026-06-28T11:00:00.000Z'),
+      });
+
+      expect(first).toMatchObject({
+        ok: true,
+        value: {
+          record: {
+            status: 'signed_off',
+            summary: 'Approved after reviewing evidence.',
+            approver: 'Lokesh',
+            review_id: 'review:ready',
+            agent_self_approval_allowed: false,
+            history: [{ review_id: 'review:ready' }],
+          },
+          nextActions: expect.arrayContaining([
+            'Agents must treat this as a recorded human decision, not self-approval.',
+          ]),
+        },
+      });
+
+      const second = await recordHumanSignoff({
+        rootDir: dir,
+        summary: 'Approved after final smoke proof.',
+        approver: 'Lokesh',
+        now: new Date('2026-06-28T11:05:00.000Z'),
+      });
+
+      expect(second.ok).toBe(true);
+      const written = JSON.parse(
+        await readFile(join(dir, '.rizz', 'human-signoff.json'), 'utf8'),
+      ) as {
+        readonly summary: string;
+        readonly history: readonly unknown[];
+      };
+      expect(written.summary).toBe('Approved after final smoke proof.');
+      expect(written.history).toHaveLength(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks signoff when agent repair or evidence remains', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rizz-human-signoff-blocked-'));
+    try {
+      await mkdir(join(dir, '.rizz', 'research'), { recursive: true });
+      await writeFile(
+        join(dir, '.rizz', 'research', 'human_approval.json'),
+        JSON.stringify({
+          schema_version: 1,
+          review_id: 'review:blocked',
+          state: 'awaiting_agent_repair',
+        }),
+      );
+
+      await expect(
+        recordHumanSignoff({
+          rootDir: dir,
+          summary: 'Approved anyway.',
+          approver: 'Lokesh',
+          now: new Date('2026-06-28T11:10:00.000Z'),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'SIGNOFF_NOT_READY' },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export type HumanApprovalState =
@@ -25,6 +25,42 @@ export interface HumanApprovalPacket {
   readonly artifacts: readonly string[];
   readonly calibration_rule: string;
 }
+
+export interface HumanSignoffHistoryItem {
+  readonly status: 'signed_off';
+  readonly summary: string;
+  readonly approver: string;
+  readonly recorded_at: string;
+  readonly review_id: string;
+  readonly human_approval_state: HumanApprovalState;
+  readonly source: 'rizz approve signoff';
+}
+
+export interface HumanSignoffRecord {
+  readonly schema_version: number;
+  readonly status: 'signed_off';
+  readonly summary: string;
+  readonly approver: string;
+  readonly recorded_at: string;
+  readonly review_id: string;
+  readonly human_approval_state: HumanApprovalState;
+  readonly source: 'rizz approve signoff';
+  readonly agent_self_approval_allowed: false;
+  readonly history: readonly HumanSignoffHistoryItem[];
+}
+
+export interface RecordHumanSignoffSummary {
+  readonly rootDir: string;
+  readonly signoffPath: string;
+  readonly humanApprovalPath: string;
+  readonly record: HumanSignoffRecord;
+  readonly latestState: HumanApprovalState;
+  readonly nextActions: readonly string[];
+}
+
+export type RecordHumanSignoffResult =
+  | { readonly ok: true; readonly value: RecordHumanSignoffSummary }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -53,6 +89,38 @@ function asStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+function asHumanApprovalState(value: string): HumanApprovalState | undefined {
+  if (
+    value === 'blocked_by_failed_evidence' ||
+    value === 'awaiting_agent_repair' ||
+    value === 'awaiting_verification_evidence' ||
+    value === 'awaiting_human_signoff' ||
+    value === 'signed_off'
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function signoffHistory(value: unknown): HumanSignoffHistoryItem[] {
+  return recordArray(value, 'history')
+    .filter(isRecord)
+    .map((item) => {
+      const state = asHumanApprovalState(recordString(item, 'human_approval_state'));
+      if (state === undefined) return undefined;
+      return {
+        status: 'signed_off' as const,
+        summary: recordString(item, 'summary', 'Human signed off this review.'),
+        approver: recordString(item, 'approver', 'unknown-human'),
+        recorded_at: recordString(item, 'recorded_at'),
+        review_id: recordString(item, 'review_id', 'unknown-review'),
+        human_approval_state: state,
+        source: 'rizz approve signoff' as const,
+      };
+    })
+    .filter((item): item is HumanSignoffHistoryItem => item !== undefined);
+}
+
 function unique(values: readonly string[]): string[] {
   return [...new Set(values.filter((value) => value.trim() !== ''))];
 }
@@ -79,6 +147,126 @@ export async function readHumanSignoffRecord(rootDir: string): Promise<unknown> 
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+export async function recordHumanSignoff(options: {
+  readonly rootDir: string;
+  readonly summary: string;
+  readonly approver: string;
+  readonly now?: Date;
+}): Promise<RecordHumanSignoffResult> {
+  try {
+    const summary = options.summary.trim();
+    const approver = options.approver.trim();
+    if (summary === '') {
+      return {
+        ok: false,
+        error: { code: 'SIGNOFF_SUMMARY_REQUIRED', message: 'Human signoff needs a summary.' },
+      };
+    }
+    if (approver === '') {
+      return {
+        ok: false,
+        error: { code: 'SIGNOFF_APPROVER_REQUIRED', message: 'Human signoff needs an approver.' },
+      };
+    }
+    const humanApprovalPath = join(options.rootDir, '.rizz', 'research', 'human_approval.json');
+    let packet: unknown;
+    try {
+      packet = JSON.parse(await readFile(humanApprovalPath, 'utf8'));
+    } catch {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_PACKET_MISSING',
+          message: 'Run rizz review first so human signoff can attach to a review packet.',
+        },
+      };
+    }
+    if (!isRecord(packet)) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_PACKET_INVALID',
+          message: '.rizz/research/human_approval.json is not a valid approval packet.',
+        },
+      };
+    }
+    const state = asHumanApprovalState(recordString(packet, 'state'));
+    if (state === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_PACKET_INVALID',
+          message: '.rizz/research/human_approval.json has no recognized approval state.',
+        },
+      };
+    }
+    if (state !== 'awaiting_human_signoff') {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_NOT_READY',
+          message: `Human signoff is blocked because approval state is ${state}. Resolve agent repair/evidence blockers first.`,
+        },
+      };
+    }
+    const now = (options.now ?? new Date()).toISOString();
+    const reviewId = recordString(packet, 'review_id', 'unknown-review');
+    const previous = await readHumanSignoffRecord(options.rootDir);
+    const item: HumanSignoffHistoryItem = {
+      status: 'signed_off',
+      summary,
+      approver,
+      recorded_at: now,
+      review_id: reviewId,
+      human_approval_state: state,
+      source: 'rizz approve signoff',
+    };
+    const record: HumanSignoffRecord = {
+      schema_version: 1,
+      status: 'signed_off',
+      summary,
+      approver,
+      recorded_at: now,
+      review_id: reviewId,
+      human_approval_state: state,
+      source: 'rizz approve signoff',
+      agent_self_approval_allowed: false,
+      history: [...signoffHistory(previous), item],
+    };
+    const signoffPath = join(options.rootDir, '.rizz', 'human-signoff.json');
+    await mkdir(join(options.rootDir, '.rizz'), { recursive: true });
+    const contents = `${JSON.stringify(record, null, 2)}\n`;
+    await writeFile(signoffPath, contents, 'utf8');
+    const verified = await readFile(signoffPath, 'utf8');
+    if (verified !== contents) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_WRITE_VERIFY_FAILED',
+          message: 'Human signoff was written but could not be verified byte-for-byte.',
+        },
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        rootDir: options.rootDir,
+        signoffPath,
+        humanApprovalPath,
+        record,
+        latestState: state,
+        nextActions: [
+          'Rerun rizz review so .rizz/research/human_approval.json ingests the signoff.',
+          'Agents must treat this as a recorded human decision, not self-approval.',
+        ],
+      },
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'SIGNOFF_FAILED', message } };
   }
 }
 

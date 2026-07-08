@@ -13,6 +13,7 @@ import {
   renderHumanApprovalPacket,
   renderLatestVerificationPlan,
 } from './human-approval.js';
+export { recordHumanSignoff } from './human-approval.js';
 import {
   type ReviewGitBasisData,
   type ReviewGovernanceData,
