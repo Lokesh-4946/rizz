@@ -12,6 +12,8 @@ import {
   isRouteOrControllerFile,
   requiredTestCommands,
   routeChangedFileMatchesRoutePath,
+  stateOperationsFromText,
+  storageDependenciesFromText,
 } from './dbms-usefulness.js';
 import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
 import {
@@ -448,7 +450,7 @@ type NextAppRouteType = 'api' | 'layout' | 'metadata' | 'page';
 
 type HttpRouteMethod = 'ALL' | 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT';
 
-type HttpRouteFramework = 'express-fastify-http' | 'fastapi' | 'hono';
+type HttpRouteFramework = 'express-fastify-http' | 'fastapi' | 'flask' | 'hono';
 
 type FlowStepType =
   | 'route'
@@ -5008,26 +5010,6 @@ function dataDependencyKindForLabel(label: string): FlowDataDependencyKind {
   return 'state_module';
 }
 
-function stateOperationsFromText(text: string): string[] {
-  const operations = new Set<string>();
-  const checks: ReadonlyArray<readonly [RegExp, string]> = [
-    [
-      /select|findMany|findUnique|findFirst|findOne|findById|\bfind\b|\bget\b|read|query|search|lookup/i,
-      'read',
-    ],
-    [/insert|create|save|write|setItem|set\(|append|push/i, 'write'],
-    [/update|upsert|mutate|patch|replace/i, 'update'],
-    [/delete|remove|destroy|drop|truncate/i, 'delete'],
-    [/schema|model|table|migration|migrate|prisma|zod|interface|type\s+\w+/i, 'schema'],
-    [/redis|cache|ttl|expire|session/i, 'cache/session'],
-    [/transaction|commit|rollback/i, 'transaction'],
-  ];
-  for (const [pattern, label] of checks) {
-    if (pattern.test(text)) operations.add(label);
-  }
-  return [...operations].sort((a, b) => a.localeCompare(b));
-}
-
 function isDataDependencySourceFile(path: string): boolean {
   if (isTestPath(path) || isConfigPath(path) || isTypeOnlySupportFile(path)) return false;
   const lower = path.toLowerCase();
@@ -5116,6 +5098,17 @@ function inferFlowDataDependencies(params: {
     for (const operation of operations) existing.operations.add(safeText(operation));
     grouped.set(key, existing);
   };
+  const databaseTableLabelsByFile = new Map<string, string[]>();
+  for (const table of inferDatabaseTables(
+    params.rootDir,
+    params.intelligence.files.map((relativePath) => ({ relativePath })),
+  )) {
+    const label = entityId('database/table', `${table.sourceFile}:${table.name}`);
+    databaseTableLabelsByFile.set(table.sourceFile, [
+      ...(databaseTableLabelsByFile.get(table.sourceFile) ?? []),
+      label,
+    ]);
+  }
 
   for (const file of params.intelligence.files) {
     if (!isDataDependencySourceFile(file)) continue;
@@ -5124,6 +5117,7 @@ function inferFlowDataDependencies(params: {
     const labels = unique([
       ...storageDependenciesFromText(text),
       ...pathStateDependencyLabels(file),
+      ...(databaseTableLabelsByFile.get(file) ?? []),
     ]);
     for (const label of labels) {
       add(label, file, operations.length > 0 ? operations : ['state dependency']);
@@ -6122,6 +6116,9 @@ const HONO_APP_DECLARATION_PATTERN = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s
 const FASTAPI_ROUTE_DECLARATION_PATTERN =
   /@\s*([A-Za-z_][\w]*)\s*\.\s*(get|post|put|patch|delete|head|options|api_route|route)\s*\(\s*(['"])([^'"]+)\3/g;
 
+const FLASK_ROUTE_DECLARATION_PATTERN =
+  /@\s*([A-Za-z_][\w]*)\s*\.\s*(route|get|post|put|patch|delete|head|options)\s*\(\s*(['"])([^'"]+)\3/g;
+
 function maskCommentsForStaticScan(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, ' '))
@@ -6156,6 +6153,7 @@ function honoRouteReceivers(text: string): ReadonlySet<string> {
 
 function httpRouteFrameworkLabel(framework: HttpRouteFramework): string {
   if (framework === 'fastapi') return 'FastAPI';
+  if (framework === 'flask') return 'Flask';
   if (framework === 'hono') return 'Hono';
   return 'HTTP';
 }
@@ -6187,9 +6185,11 @@ function httpRouteDeclarationsForFile(params: {
   const masked = maskCommentsForStaticScan(text);
   const isFastApiPythonFile =
     params.file.relativePath.endsWith('.py') && /FastAPI|APIRouter|fastapi/i.test(masked);
+  const isFlaskPythonFile =
+    params.file.relativePath.endsWith('.py') && /\bFlask\b|Blueprint|flask/i.test(masked);
   const honoReceivers = honoRouteReceivers(masked);
   const declarations = new Map<string, HttpRouteDeclaration>();
-  if (!isFastApiPythonFile) {
+  if (!isFastApiPythonFile && !isFlaskPythonFile) {
     for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
       const receiver = match[1];
       const rawMethod = match[2];
@@ -6206,6 +6206,29 @@ function httpRouteDeclarationsForFile(params: {
       const source = `${receiver}.${rawMethod}`;
       declarations.set(`${framework}:${method}:${routePath}:${line}:${source}`, {
         framework,
+        receiver,
+        method,
+        routePath,
+        line,
+        source,
+      });
+    }
+  }
+  if (isFlaskPythonFile) {
+    for (const match of masked.matchAll(FLASK_ROUTE_DECLARATION_PATTERN)) {
+      const receiver = match[1];
+      const rawMethod = match[2];
+      const rawRoutePath = match[4];
+      if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) {
+        continue;
+      }
+      const routePath = normalizeHttpRoutePath(rawRoutePath);
+      if (routePath === undefined) continue;
+      const method = httpRouteMethod(rawMethod);
+      const line = lineNumberAtOffset(masked, match.index ?? 0);
+      const source = `@${receiver}.${rawMethod}`;
+      declarations.set(`flask:${method}:${routePath}:${line}:${source}`, {
+        framework: 'flask',
         receiver,
         method,
         routePath,
@@ -11517,27 +11540,6 @@ function envVarsFromText(text: string): string[] {
     }
   }
   return [...vars].sort((a, b) => a.localeCompare(b));
-}
-
-function storageDependenciesFromText(text: string): string[] {
-  const storage = new Set<string>();
-  const checks: ReadonlyArray<readonly [RegExp, string]> = [
-    [/postgres|pg\.|psycopg|DATABASE_URL/i, 'postgres/database'],
-    [/mysql|pymysql|mysqlclient/i, 'mysql/database'],
-    [/sqlite|\.db\b/i, 'sqlite/database'],
-    [/redis|ioredis/i, 'redis/cache'],
-    [
-      /SQLAlchemy|create_engine|prisma|typeorm|mongoose|sequelize|findOne|findById|findMany|\.save\(|\.create\(|\.update|\.delete|\.remove/i,
-      'orm/database',
-    ],
-    [/chroma|pinecone|qdrant|weaviate|vector/i, 'vector/search store'],
-    [/\/tmp\b|tmp\/|tempfile|NamedTemporaryFile/i, 'temporary filesystem'],
-    [/writeFile|appendFile|fs\.|open\(|Path\(|pathlib/i, 'filesystem'],
-  ];
-  for (const [pattern, label] of checks) {
-    if (pattern.test(text)) storage.add(label);
-  }
-  return [...storage].sort((a, b) => a.localeCompare(b));
 }
 
 function externalServicesFromText(text: string, imports: readonly string[]): string[] {

@@ -54,7 +54,8 @@ export function isRouteOrControllerFile(path: string): boolean {
   const lower = path.toLowerCase();
   return (
     /(^|\/)(routes?|controllers?|handlers?)\//.test(lower) ||
-    /(?:route|controller|handler)\.[cm]?[jt]sx?$/.test(lower)
+    /(?:route|controller|handler)\.[cm]?[jt]sx?$/.test(lower) ||
+    /(?:route|controller|handler|views?)\.py$/.test(lower)
   );
 }
 
@@ -126,6 +127,47 @@ export function requiredTestCommands(
   return changedFiles.some(isSourceLikePath)
     ? ['Run the project test command; none was detected in the brain.']
     : ['Review-only change: verify docs/report output manually.'];
+}
+
+export function stateOperationsFromText(text: string): string[] {
+  const operations = new Set<string>();
+  const checks: ReadonlyArray<readonly [RegExp, string]> = [
+    [
+      /select|findMany|findUnique|findFirst|findOne|findById|\bfind\b|\bget\b|read|query|search|lookup/i,
+      'read',
+    ],
+    [/insert|create|save|write|setItem|set\(|append|push/i, 'write'],
+    [/update|upsert|mutate|patch|replace/i, 'update'],
+    [/delete|remove|destroy|drop|truncate/i, 'delete'],
+    [/schema|model|table|migration|migrate|prisma|zod|interface|type\s+\w+/i, 'schema'],
+    [/redis|cache|ttl|expire|session/i, 'cache/session'],
+    [/transaction|commit|rollback/i, 'transaction'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(text)) operations.add(label);
+  }
+  return [...operations].sort((a, b) => a.localeCompare(b));
+}
+
+export function storageDependenciesFromText(text: string): string[] {
+  const storage = new Set<string>();
+  const checks: ReadonlyArray<readonly [RegExp, string]> = [
+    [/postgres|pg\.|psycopg|DATABASE_URL/i, 'postgres/database'],
+    [/mysql|pymysql|mysqlclient/i, 'mysql/database'],
+    [/sqlite|\.db\b/i, 'sqlite/database'],
+    [/redis|ioredis/i, 'redis/cache'],
+    [
+      /SQLAlchemy|create_engine|prisma|typeorm|mongoose|sequelize|findOne|findById|findMany|\.save\(|\.create\(|\.update|\.delete|\.remove/i,
+      'orm/database',
+    ],
+    [/chroma|pinecone|qdrant|weaviate|vector/i, 'vector/search store'],
+    [/\/tmp\b|tmp\/|tempfile|NamedTemporaryFile/i, 'temporary filesystem'],
+    [/writeFile|appendFile|fs\.|open\(|Path\(|pathlib/i, 'filesystem'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(text)) storage.add(label);
+  }
+  return [...storage].sort((a, b) => a.localeCompare(b));
 }
 
 export function detectPackageManagerFromFiles(files: readonly DbmsFileFact[]): string {
