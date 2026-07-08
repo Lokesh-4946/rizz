@@ -33,6 +33,8 @@ Usage:
   rizz explain service <x>
                      explain a detected service from the project brain
   rizz verify add    record verification evidence for review calibration
+  rizz approve signoff
+                     record human signoff after rizz marks review ready
   rizz review        review current git diff with the project brain
                     optional: --mission <text|json>, --mission-file <path>
   rizz chat          launch model TUI
@@ -282,6 +284,39 @@ async function runVerifyAddCommand(options: {
     for (const unknown of result.value.artifact.remaining_unknowns.slice(0, 4)) {
       process.stdout.write(`    - ${unknown}\n`);
     }
+  }
+  return 0;
+}
+
+async function runApproveSignoffCommand(options: {
+  readonly summary: string;
+  readonly approver: string;
+  readonly json: boolean;
+}): Promise<number> {
+  const { recordHumanSignoff } = await import('@valoir/rizz-brain');
+  const result = await recordHumanSignoff({
+    rootDir: process.cwd(),
+    summary: options.summary,
+    approver: options.approver,
+  });
+  if (!result.ok) {
+    if (options.json) {
+      await writeJsonStdout(result);
+    } else {
+      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    }
+    return result.error.code === 'SIGNOFF_NOT_READY' ? 1 : 2;
+  }
+  if (options.json) {
+    await writeJsonStdout(result.value);
+    return 0;
+  }
+  process.stdout.write('rizz recorded human signoff\n');
+  process.stdout.write(`  approver: ${result.value.record.approver}\n`);
+  process.stdout.write(`  review: ${result.value.record.review_id}\n`);
+  process.stdout.write(`  artifact: ${displayLocalPath(result.value.signoffPath)}\n`);
+  for (const action of result.value.nextActions) {
+    process.stdout.write(`  next: ${action}\n`);
   }
   return 0;
 }
@@ -754,6 +789,39 @@ async function main(argv: readonly string[]): Promise<number> {
       status: status.value,
       ...(summary.value !== undefined ? { summary: summary.value } : {}),
       areas: areas.values,
+      json: wantsJson,
+    });
+  }
+  if (c.rest[0] === 'approve') {
+    const approveArgs = c.rest.slice(1);
+    if (approveArgs[0] !== 'signoff') {
+      process.stderr.write(
+        'rizz: approve currently supports \'signoff\'\nTry \'rizz approve signoff --approver "Human" --summary "Approved for merge"\'.\n',
+      );
+      return 2;
+    }
+    const wantsJson = approveArgs.includes('--json');
+    const approver = extractFlag(approveArgs.slice(1), '--approver');
+    const summary = extractFlag(approver.rest, '--summary');
+    const allowed = new Set(['--json']);
+    const unknown = summary.rest.find((arg) => !allowed.has(arg));
+    if (approver.missingValue || summary.missingValue) {
+      process.stderr.write('rizz: approve signoff flags need values\n');
+      return 2;
+    }
+    if (unknown !== undefined) {
+      process.stderr.write(`rizz: unknown approve option '${unknown}'\nTry 'rizz --help'.\n`);
+      return 2;
+    }
+    if (approver.value === undefined || summary.value === undefined) {
+      process.stderr.write(
+        "rizz: approve signoff needs --approver and --summary\nTry 'rizz --help'.\n",
+      );
+      return 2;
+    }
+    return runApproveSignoffCommand({
+      approver: approver.value,
+      summary: summary.value,
       json: wantsJson,
     });
   }

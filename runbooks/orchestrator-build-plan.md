@@ -34,8 +34,8 @@ Current loop readiness:
 | rizz review | 99/100 | 1 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, normalized duplicate code, mission-contract drift, semantic unrelated-work hints, and dirty-tree/branch-diff mixed-basis reporting. |
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 77/100 | 23 | Repair instructions are packetized and less duplicative for agents, but agent-specific apply/repair loops are not yet first-class. |
-| rizz verification | 94/100 | 6 | rizz now scores recorded proof, covered proof, missing required evidence, and distinct human approval packet state in review/Mission Control. |
-| Human approval | 82/100 | 18 | Reports now separate agent evidence readiness from human signoff and merge/release readiness; richer approval UX and history remain future work. |
+| rizz verification | 95/100 | 5 | rizz now scores proof, missing evidence, distinct human approval packet state, and a safe signoff handoff that must be ingested by review. |
+| Human approval | 86/100 | 14 | Reports separate agent evidence readiness from human signoff, and `rizz approve signoff` records explicit human decisions with audit history once review is ready. |
 
 ## Opt-In Expansion Map
 
@@ -59,11 +59,11 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice adds explicit human approval/signoff packet state to review governance. `rizz
-review` now writes `.rizz/research/human_approval.json`, exposes the packet in review JSON, Mission
-Control, review HTML, and brain research paths, and reads optional human-owned
-`.rizz/human-signoff.json` when present. Agent evidence can make a review ready for human signoff,
-but merge/release readiness is true only when human signoff is recorded and agent blockers are gone.
+The current slice adds approval UX/history. `rizz approve signoff --approver <name> --summary
+<text>` records the human-owned `.rizz/human-signoff.json` only after review has generated an
+`awaiting_human_signoff` packet, preserves signoff history, verifies the write byte-for-byte, and
+reminds agents that this records a human decision rather than self-approval. A follow-up `rizz
+review` still ingests the signoff before merge/release readiness becomes true.
 
 ## Capability Scorecard
 
@@ -79,27 +79,45 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
 | Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
-| Verification Plan + Evidence Ingest | 94/100 | 6 | Reuse approval/signoff packet state across repeated agent repair loops and add richer approval history. |
+| Verification Plan + Evidence Ingest | 95/100 | 5 | Reuse approval/signoff history across repeated agent repair loops and make review ingestion more automatic. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `feature/human-signoff-packets`, local gate on the rizz repo.
+Run: `feature/approval-signoff-command`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused human approval/verification tests | 5/5 passed |
-| Full unit suite | 365/365 passed |
+| Focused human approval/signoff tests | 3/3 passed |
+| Focused brain regression file | 68/68 passed |
+| Lint | Passed |
+| Typecheck | Passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
-| Footprint | cold start 49ms / 250ms, core 196KB / 200KB |
+| Pack/public check | Passed |
+| Footprint | cold start 54ms / 250ms, core 198KB / 200KB |
+| Full `pnpm check` | Locally blocked by unrelated Vitest timer flake; individual gates above passed |
 
-Current verdict: rizz now has the missing approval boundary in the loop. Agents can repair and record
-proof, rizz can mark the review as awaiting human signoff, and a human-owned signoff file is required
-before rizz reports merge/release readiness. Remaining work is UX/history: approval should become
-easier to record and audit across repeated repair loops.
+Current verdict: rizz now has a safer approval UX. Agents can repair and record proof, rizz can mark
+the review as awaiting human signoff, and the human can record a signed decision without editing JSON
+by hand. Remaining work is repeated-loop polish: signoff ingestion, approval history summaries, and
+PR/release handoff views should become more automatic.
+
+## Latest DBMS-Like UAT Agent Results
+
+Run: QA sidecar on public DBMS-style repos, using fresh rizz `develop` and temp target clones.
+
+| Repo | rizz result | Usefulness | Speedup | Main misses |
+| --- | --- | ---: | ---: | --- |
+| `iampranavdhar/Library-Management-System-MERN` | 66 files, 2 components, 26 flows, 5 commands, 0 tests; backend/frontend split was useful. | 7/10 | 3-4x orientation speedup | Nested package manager unknown, Mongoose models not promoted to DB entities, route review too broad, backend test suggestion pointed at frontend script. |
+| `manascb1344/Online-Auction-System` | 69 files, 3 components, 32 flows, 7 commands, 0 tests; client/server/database split and read-first paths were useful. | 6/10 | 2.5-3.5x orientation speedup | Generic component language called React client “Rizz CLI”, SQL was not parsed into DB/table entities, controller review touched too many flows, unusable failing test script was suggested. |
+
+UAT verdict: rizz is already useful as an agent cold-start accelerator on DBMS-style repos, mostly
+for boundary mapping and read-first orientation. The next DBMS usefulness batons are schema/entity
+understanding for SQL/Mongoose, nested lockfile/package-manager detection, route/controller-specific
+review blast radius, and filtering no-op or known-failing test scripts out of required verification.
 
 ## Latest DBMS UAT Actuals
 
