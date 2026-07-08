@@ -34,8 +34,8 @@ Current loop readiness:
 | rizz review | 99/100 | 1 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, normalized duplicate code, mission-contract drift, semantic unrelated-work hints, and dirty-tree/branch-diff mixed-basis reporting. |
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 77/100 | 23 | Repair instructions are packetized and less duplicative for agents, but agent-specific apply/repair loops are not yet first-class. |
-| rizz verification | 91/100 | 9 | rizz now scores recorded proof, approval state, covered proof, and missing required evidence in review/Mission Control. |
-| Human approval | 73/100 | 27 | Reports expose proof score, approval state, covered proof, and missing-evidence actions; explicit signoff state is still thin. |
+| rizz verification | 94/100 | 6 | rizz now scores recorded proof, covered proof, missing required evidence, and distinct human approval packet state in review/Mission Control. |
+| Human approval | 82/100 | 18 | Reports now separate agent evidence readiness from human signoff and merge/release readiness; richer approval UX and history remain future work. |
 
 ## Opt-In Expansion Map
 
@@ -59,13 +59,11 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice adds semantic unrelated-work detection plus dirty-tree/branch-diff mixed-basis
-reporting to review governance. `rizz review` now records selected working-tree files, committed
-branch files, branch-only files, working-tree-only files, and a mixed-basis flag so agents can see
-when local edits may hide or distort the actual PR scope. Mission-contract drift also gets bounded
-lexical hints when an out-of-mission path has no overlap with the requested intent. This is still
-deterministic PR governance, not semantic approval: vague or missing mission contracts, dirty local
-work, and unrelated-work signals remain prompts for agents/humans to inspect.
+The current slice adds explicit human approval/signoff packet state to review governance. `rizz
+review` now writes `.rizz/research/human_approval.json`, exposes the packet in review JSON, Mission
+Control, review HTML, and brain research paths, and reads optional human-owned
+`.rizz/human-signoff.json` when present. Agent evidence can make a review ready for human signoff,
+but merge/release readiness is true only when human signoff is recorded and agent blockers are gone.
 
 ## Capability Scorecard
 
@@ -81,28 +79,27 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | PI-Bench seed/task format | 97/100 | 3 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
 | Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
-| Verification Plan + Evidence Ingest | 91/100 | 9 | Add explicit signoff packet/state and reuse proof status across repeated agent repair loops. |
+| Verification Plan + Evidence Ingest | 94/100 | 6 | Reuse approval/signoff packet state across repeated agent repair loops and add richer approval history. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `feature/review-mixed-basis-reporting`, local gate on the rizz repo.
+Run: `feature/human-signoff-packets`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused review-governance/mission tests | 4/4 passed |
-| Full unit suite | 363/363 passed |
+| Focused human approval/verification tests | 5/5 passed |
+| Full unit suite | 365/365 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
-| Footprint | cold start 50ms / 250ms, core 196KB / 200KB |
+| Footprint | cold start 49ms / 250ms, core 196KB / 200KB |
 
-Current verdict: rizz review is now sharper as an agent-facing PR gate. It exposes when the selected
-review diff is a dirty working tree while committed branch scope exists separately, and it gives
-agents a precise branch-only/working-tree-only checklist before human approval. Remaining risk is
-semantic: lexical unrelated-work hints can prioritize inspection, but rizz still will not claim a
-diff fulfills human intent unless the contract provides inspectable boundaries and proof.
+Current verdict: rizz now has the missing approval boundary in the loop. Agents can repair and record
+proof, rizz can mark the review as awaiting human signoff, and a human-owned signoff file is required
+before rizz reports merge/release readiness. Remaining work is UX/history: approval should become
+easier to record and audit across repeated repair loops.
 
 ## Latest DBMS UAT Actuals
 
