@@ -5,6 +5,13 @@ import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
+import {
+  detectPackageManagerFromFiles,
+  inferDatabaseTables,
+  isRouteOrControllerFile,
+  isUsableQualityCommand,
+  routeChangedFileMatchesRoutePath,
+} from './dbms-usefulness.js';
 import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
 import {
   type HumanApprovalPacket,
@@ -2594,12 +2601,7 @@ function makeEntity(params: {
 }
 
 function detectPackageManager(files: readonly FileFact[]): string {
-  const names = new Set(files.map((file) => file.relativePath));
-  if (names.has('pnpm-lock.yaml')) return 'pnpm';
-  if (names.has('yarn.lock')) return 'yarn';
-  if (names.has('package-lock.json')) return 'npm';
-  if (names.has('bun.lockb') || names.has('bun.lock')) return 'bun';
-  return 'unknown';
+  return detectPackageManagerFromFiles(files);
 }
 
 function detectTechStack(
@@ -19842,6 +19844,33 @@ function buildBrain(params: {
     ]);
   }
 
+  for (const table of inferDatabaseTables(params.rootDir, params.files)) {
+    const tableId = entityId('database/table', `${table.sourceFile}:${table.name}`);
+    const tableEntity = makeEntity({
+      id: tableId,
+      type: 'database/table',
+      name: safeText(table.name),
+      description:
+        table.kind === 'sql_table'
+          ? `SQL table ${table.name} inferred from ${safeText(table.sourceFile)}.`
+          : `Mongoose model ${table.name} inferred from ${safeText(table.sourceFile)}.`,
+      now: params.now,
+      confidence: 'verified',
+      evidenceIds: [evidenceId(table.sourceFile)],
+      sourceFiles: [table.sourceFile],
+      data: {
+        kind: table.kind,
+        declaration: safeText(table.declaration),
+        fields: table.fields.map(safeText),
+      },
+    });
+    buckets.databaseTables.push(tableEntity);
+    addRelation(relationships, projectId, 'owns', tableId, [evidenceId(table.sourceFile)]);
+    addRelation(relationships, entityId('file', table.sourceFile), 'exposes', tableId, [
+      evidenceId(table.sourceFile),
+    ]);
+  }
+
   for (const pkg of params.packageFacts) {
     const pkgEvidence = evidenceId(pkg.relativePath);
     for (const [name, version] of Object.entries({ ...pkg.dependencies, ...pkg.devDependencies })) {
@@ -25131,7 +25160,13 @@ function affectedFlowEntities(
     const componentChangedFiles = flowComponents.some((componentId) =>
       affectedComponentIds.has(componentId),
     )
-      ? changedFiles.filter((file) => affectedComponentFiles.has(file))
+      ? changedFiles
+          .filter((file) => affectedComponentFiles.has(file))
+          .filter(
+            (file) =>
+              !isRouteOrControllerFile(file) ||
+              routeChangedFileMatchesRoutePath(file, stringData(flow, 'route_path')),
+          )
       : [];
     const matchedChangedFiles = unique([...directChangedFiles, ...componentChangedFiles]);
     if (matchedChangedFiles.length === 0) return [];
@@ -25433,9 +25468,7 @@ function requiredTestCommands(
       return text === undefined ? undefined : safeText(`${command.name}: ${text}`);
     })
     .filter((command): command is string => command !== undefined);
-  const quality = commandTexts.filter((command) =>
-    /test|check|lint|typecheck|vitest/i.test(command),
-  );
+  const quality = commandTexts.filter(isUsableQualityCommand);
   if (quality.length > 0) return quality.slice(0, 5);
   if (changedFiles.some(isSourceFile))
     return ['Run the project test command; none was detected in the brain.'];
