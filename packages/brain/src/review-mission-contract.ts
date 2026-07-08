@@ -28,6 +28,7 @@ export interface ReviewMissionContractLoad {
   readonly path?: string;
   readonly contract: ReviewMissionContract | null;
   readonly warnings: readonly string[];
+  readonly normalization_notes: readonly string[];
 }
 
 export interface ReviewMissionComparisonData {
@@ -49,6 +50,7 @@ export interface ReviewMissionComparisonData {
   readonly generated_artifact_violations: readonly string[];
   readonly version_control_mismatches: readonly string[];
   readonly required_checks: readonly string[];
+  readonly normalization_notes: readonly string[];
   readonly warnings: readonly string[];
   readonly agent_next_actions: readonly string[];
 }
@@ -73,12 +75,20 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
+function splitListText(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+}
+
 function stringArrayValue(value: unknown): string[] {
+  if (typeof value === 'string') return unique(splitListText(value));
   if (!Array.isArray(value)) return [];
   return unique(
     value
       .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
+      .flatMap(splitListText)
       .filter((item) => item !== ''),
   );
 }
@@ -96,44 +106,186 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function contractFromRecord(value: Record<string, unknown>): ReviewMissionContract {
-  const id = stringValue(value.id);
-  const summary = stringValue(value.summary);
-  const targetBranch = stringValue(value.target_branch);
-  const allowedPathPrefixes = stringArrayValue(value.allowed_path_prefixes).map(normalizePath);
-  const allowedFiles = stringArrayValue(value.allowed_files).map(normalizePath);
-  const forbiddenPathPrefixes = stringArrayValue(value.forbidden_path_prefixes).map(normalizePath);
-  const expectedScopeClusters = stringArrayValue(value.expected_scope_clusters).map(normalizePath);
-  const expectedComponents = stringArrayValue(value.expected_components);
-  const expectedServices = stringArrayValue(value.expected_services);
-  const expectedFlows = stringArrayValue(value.expected_flows);
-  const allowGeneratedArtifacts = booleanValue(value.allow_generated_artifacts);
-  const maxReviewableFiles = positiveIntegerValue(value.max_reviewable_files);
-  const maxScopeClusters = positiveIntegerValue(value.max_scope_clusters);
-  const requiredChecks = stringArrayValue(value.required_checks);
+function fieldValue(
+  value: Record<string, unknown>,
+  canonical: string,
+  aliases: readonly string[],
+): { readonly value: unknown; readonly source: string } | undefined {
+  for (const key of [canonical, ...aliases]) {
+    if (Object.hasOwn(value, key)) return { value: value[key], source: key };
+  }
+  return undefined;
+}
+
+function normalizationNote(canonical: string, source: string): string[] {
+  return source === canonical ? [] : [`Normalized ${source} to ${canonical}.`];
+}
+
+function contractFromRecord(value: Record<string, unknown>): {
+  readonly contract: ReviewMissionContract;
+  readonly normalizationNotes: readonly string[];
+} {
+  const notes: string[] = [];
+  const idField = fieldValue(value, 'id', ['mission_id', 'missionId']);
+  const summaryField = fieldValue(value, 'summary', ['intent', 'goal', 'mission']);
+  const targetBranchField = fieldValue(value, 'target_branch', [
+    'targetBranch',
+    'base_ref',
+    'baseRef',
+  ]);
+  const allowedPathField = fieldValue(value, 'allowed_path_prefixes', [
+    'allowed_paths',
+    'allowedPaths',
+    'path_prefixes',
+    'paths',
+  ]);
+  const allowedFilesField = fieldValue(value, 'allowed_files', ['allowedFiles', 'files']);
+  const forbiddenPathField = fieldValue(value, 'forbidden_path_prefixes', [
+    'forbidden_paths',
+    'forbiddenPaths',
+    'blocked_paths',
+  ]);
+  const scopeField = fieldValue(value, 'expected_scope_clusters', [
+    'expectedScopes',
+    'scope_clusters',
+    'scopes',
+  ]);
+  const componentField = fieldValue(value, 'expected_components', [
+    'expectedComponents',
+    'components',
+  ]);
+  const serviceField = fieldValue(value, 'expected_services', ['expectedServices', 'services']);
+  const flowField = fieldValue(value, 'expected_flows', ['expectedFlows', 'flows']);
+  const generatedField = fieldValue(value, 'allow_generated_artifacts', [
+    'allowGeneratedArtifacts',
+    'allow_generated',
+  ]);
+  const maxFilesField = fieldValue(value, 'max_reviewable_files', [
+    'maxReviewableFiles',
+    'max_files',
+  ]);
+  const maxScopesField = fieldValue(value, 'max_scope_clusters', [
+    'maxScopeClusters',
+    'max_scopes',
+  ]);
+  const checksField = fieldValue(value, 'required_checks', ['requiredChecks', 'checks']);
+  for (const [canonical, field] of [
+    ['id', idField],
+    ['summary', summaryField],
+    ['target_branch', targetBranchField],
+    ['allowed_path_prefixes', allowedPathField],
+    ['allowed_files', allowedFilesField],
+    ['forbidden_path_prefixes', forbiddenPathField],
+    ['expected_scope_clusters', scopeField],
+    ['expected_components', componentField],
+    ['expected_services', serviceField],
+    ['expected_flows', flowField],
+    ['allow_generated_artifacts', generatedField],
+    ['max_reviewable_files', maxFilesField],
+    ['max_scope_clusters', maxScopesField],
+    ['required_checks', checksField],
+  ] as const) {
+    if (field !== undefined) notes.push(...normalizationNote(canonical, field.source));
+  }
+  const id = idField === undefined ? undefined : stringValue(idField.value);
+  const summary = summaryField === undefined ? undefined : stringValue(summaryField.value);
+  const targetBranch =
+    targetBranchField === undefined ? undefined : stringValue(targetBranchField.value);
+  const allowedPathPrefixes =
+    allowedPathField === undefined
+      ? []
+      : stringArrayValue(allowedPathField.value).map(normalizePath);
+  const allowedFiles =
+    allowedFilesField === undefined
+      ? []
+      : stringArrayValue(allowedFilesField.value).map(normalizePath);
+  const forbiddenPathPrefixes =
+    forbiddenPathField === undefined
+      ? []
+      : stringArrayValue(forbiddenPathField.value).map(normalizePath);
+  const expectedScopeClusters =
+    scopeField === undefined ? [] : stringArrayValue(scopeField.value).map(normalizePath);
+  const expectedComponents =
+    componentField === undefined ? [] : stringArrayValue(componentField.value);
+  const expectedServices = serviceField === undefined ? [] : stringArrayValue(serviceField.value);
+  const expectedFlows = flowField === undefined ? [] : stringArrayValue(flowField.value);
+  const allowGeneratedArtifacts =
+    generatedField === undefined ? undefined : booleanValue(generatedField.value);
+  const maxReviewableFiles =
+    maxFilesField === undefined ? undefined : positiveIntegerValue(maxFilesField.value);
+  const maxScopeClusters =
+    maxScopesField === undefined ? undefined : positiveIntegerValue(maxScopesField.value);
+  const requiredChecks = checksField === undefined ? [] : stringArrayValue(checksField.value);
   return {
-    ...(id !== undefined ? { id } : {}),
-    ...(summary !== undefined ? { summary } : {}),
-    ...(targetBranch !== undefined ? { target_branch: targetBranch } : {}),
-    ...(allowedPathPrefixes.length > 0 ? { allowed_path_prefixes: allowedPathPrefixes } : {}),
-    ...(allowedFiles.length > 0 ? { allowed_files: allowedFiles } : {}),
-    ...(forbiddenPathPrefixes.length > 0 ? { forbidden_path_prefixes: forbiddenPathPrefixes } : {}),
-    ...(expectedScopeClusters.length > 0 ? { expected_scope_clusters: expectedScopeClusters } : {}),
-    ...(expectedComponents.length > 0 ? { expected_components: expectedComponents } : {}),
-    ...(expectedServices.length > 0 ? { expected_services: expectedServices } : {}),
-    ...(expectedFlows.length > 0 ? { expected_flows: expectedFlows } : {}),
-    ...(allowGeneratedArtifacts !== undefined
-      ? { allow_generated_artifacts: allowGeneratedArtifacts }
-      : {}),
-    ...(maxReviewableFiles !== undefined ? { max_reviewable_files: maxReviewableFiles } : {}),
-    ...(maxScopeClusters !== undefined ? { max_scope_clusters: maxScopeClusters } : {}),
-    ...(requiredChecks.length > 0 ? { required_checks: requiredChecks } : {}),
+    contract: {
+      ...(id !== undefined ? { id } : {}),
+      ...(summary !== undefined ? { summary } : {}),
+      ...(targetBranch !== undefined ? { target_branch: targetBranch } : {}),
+      ...(allowedPathPrefixes.length > 0 ? { allowed_path_prefixes: allowedPathPrefixes } : {}),
+      ...(allowedFiles.length > 0 ? { allowed_files: allowedFiles } : {}),
+      ...(forbiddenPathPrefixes.length > 0
+        ? { forbidden_path_prefixes: forbiddenPathPrefixes }
+        : {}),
+      ...(expectedScopeClusters.length > 0
+        ? { expected_scope_clusters: expectedScopeClusters }
+        : {}),
+      ...(expectedComponents.length > 0 ? { expected_components: expectedComponents } : {}),
+      ...(expectedServices.length > 0 ? { expected_services: expectedServices } : {}),
+      ...(expectedFlows.length > 0 ? { expected_flows: expectedFlows } : {}),
+      ...(allowGeneratedArtifacts !== undefined
+        ? { allow_generated_artifacts: allowGeneratedArtifacts }
+        : {}),
+      ...(maxReviewableFiles !== undefined ? { max_reviewable_files: maxReviewableFiles } : {}),
+      ...(maxScopeClusters !== undefined ? { max_scope_clusters: maxScopeClusters } : {}),
+      ...(requiredChecks.length > 0 ? { required_checks: requiredChecks } : {}),
+    },
+    normalizationNotes: notes,
+  };
+}
+
+function contractFromPlainText(text: string): {
+  readonly contract: ReviewMissionContract;
+  readonly normalizationNotes: readonly string[];
+} {
+  const record: Record<string, unknown> = { summary: text.split(/\r?\n/)[0]?.trim() ?? text };
+  const notes: string[] = ['Parsed plain-text mission contract sections.'];
+  const patterns: Array<readonly [string, RegExp]> = [
+    ['allowed_paths', /^(?:allowed\s+paths?|paths?|path\s+prefixes?)\s*:\s*(.+)$/i],
+    ['allowed_files', /^(?:allowed\s+files?|files?)\s*:\s*(.+)$/i],
+    ['forbidden_paths', /^(?:forbidden|blocked|out\s+of\s+scope)\s+paths?\s*:\s*(.+)$/i],
+    ['expectedScopes', /^(?:scope|scopes|scope\s+clusters?)\s*:\s*(.+)$/i],
+    ['components', /^(?:components?|expected\s+components?)\s*:\s*(.+)$/i],
+    ['services', /^(?:services?|expected\s+services?)\s*:\s*(.+)$/i],
+    ['flows', /^(?:flows?|expected\s+flows?)\s*:\s*(.+)$/i],
+    ['checks', /^(?:checks?|required\s+checks?)\s*:\s*(.+)$/i],
+    ['targetBranch', /^(?:target\s+branch|base)\s*:\s*(.+)$/i],
+    ['max_files', /^max\s+(?:reviewable\s+)?files?\s*:\s*(\d+)$/i],
+    ['max_scopes', /^max\s+(?:scope\s+)?clusters?\s*:\s*(\d+)$/i],
+  ];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim().replace(/^[-*]\s+/, '');
+    for (const [field, pattern] of patterns) {
+      const match = pattern.exec(trimmed);
+      if (match === null) continue;
+      record[field] = match[1] ?? '';
+      break;
+    }
+  }
+  const generated = /^(?:allow\s+generated|generated\s+artifacts?)\s*:\s*(true|false)$/im.exec(
+    text,
+  );
+  if (generated !== null) record.allowGeneratedArtifacts = generated[1] === 'true';
+  const parsed = contractFromRecord(record);
+  return {
+    contract: parsed.contract,
+    normalizationNotes: unique([...notes, ...parsed.normalizationNotes]),
   };
 }
 
 function parseMissionText(text: string): {
   readonly contract: ReviewMissionContract | null;
   readonly warning?: string;
+  readonly normalizationNotes?: readonly string[];
 } {
   const trimmed = text.trim();
   if (trimmed === '') return { contract: null, warning: 'Mission contract input was empty.' };
@@ -143,14 +295,18 @@ function parseMissionText(text: string): {
       if (!isRecord(parsed)) {
         return { contract: null, warning: 'Mission contract JSON must be an object.' };
       }
-      return { contract: contractFromRecord(parsed) };
+      const contract = contractFromRecord(parsed);
+      return { contract: contract.contract, normalizationNotes: contract.normalizationNotes };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       return { contract: null, warning: `Mission contract JSON could not be parsed: ${message}` };
     }
   }
+  const plainTextContract = contractFromPlainText(trimmed);
+  if (hasDeterministicBoundary(plainTextContract.contract)) return plainTextContract;
   return {
     contract: { id: 'inline-mission', summary: trimmed },
+    normalizationNotes: plainTextContract.normalizationNotes,
     warning:
       'Inline mission text has no deterministic path or entity boundaries; add allowed_path_prefixes, allowed_files, or expected_scope_clusters for scope comparison.',
   };
@@ -174,6 +330,7 @@ export function loadReviewMissionContract(params: {
       status: parsed.contract === null ? 'invalid' : 'loaded',
       contract: parsed.contract,
       warnings: parsed.warning === undefined ? [] : [params.sanitizeText(parsed.warning)],
+      normalization_notes: (parsed.normalizationNotes ?? []).map(params.sanitizeText),
     };
   }
   const filePath =
@@ -183,7 +340,13 @@ export function loadReviewMissionContract(params: {
         ? join(params.rootDir, '.rizz', 'mission-contract.json')
         : undefined;
   if (filePath === undefined) {
-    return { source: 'none', status: 'absent', contract: null, warnings: [] };
+    return {
+      source: 'none',
+      status: 'absent',
+      contract: null,
+      warnings: [],
+      normalization_notes: [],
+    };
   }
   const absolutePath = isAbsolute(filePath) ? filePath : join(params.rootDir, filePath);
   try {
@@ -194,6 +357,7 @@ export function loadReviewMissionContract(params: {
       path: params.sanitizeText(displayMissionPath(params.rootDir, absolutePath)),
       contract: parsed.contract,
       warnings: parsed.warning === undefined ? [] : [params.sanitizeText(parsed.warning)],
+      normalization_notes: (parsed.normalizationNotes ?? []).map(params.sanitizeText),
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -203,6 +367,7 @@ export function loadReviewMissionContract(params: {
       path: params.sanitizeText(displayMissionPath(params.rootDir, absolutePath)),
       contract: null,
       warnings: [params.sanitizeText(`Mission contract file could not be read: ${message}`)],
+      normalization_notes: [],
     };
   }
 }
@@ -285,6 +450,7 @@ export function compareReviewMissionContract(params: {
       generated_artifact_violations: [],
       version_control_mismatches: [],
       required_checks: [],
+      normalization_notes: params.mission.normalization_notes,
       warnings: invalidWarnings,
       agent_next_actions:
         params.mission.status === 'invalid'
@@ -407,6 +573,7 @@ export function compareReviewMissionContract(params: {
     generated_artifact_violations: unique(generatedArtifactViolations.map(params.sanitizeText)),
     version_control_mismatches: unique(versionControlMismatches.map(params.sanitizeText)),
     required_checks: (contract.required_checks ?? []).map(params.sanitizeText),
+    normalization_notes: params.mission.normalization_notes.map(params.sanitizeText),
     warnings: warnings.map(params.sanitizeText),
     agent_next_actions: unique([
       ...violatingPaths.map(

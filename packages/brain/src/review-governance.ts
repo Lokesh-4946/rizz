@@ -77,6 +77,9 @@ export function renderReviewGovernance(governance: ReviewGovernanceData): string
     ...(governance.mission_contract.compared_fields.length === 0
       ? ['Compared fields: none']
       : [`Compared fields: ${governance.mission_contract.compared_fields.join(', ')}`]),
+    ...(governance.mission_contract.normalization_notes.length === 0
+      ? []
+      : [`Normalization: ${governance.mission_contract.normalization_notes.join(' ')}`]),
   ])}
   <h3>Mission Scope Signals</h3>
   ${renderList([
@@ -446,7 +449,7 @@ function duplicateChangeSignals(params: {
       repeated.set(line, files);
     }
   }
-  return [...repeated.entries()]
+  const repeatedLineSignals = [...repeated.entries()]
     .filter(([, files]) => files.size > 1)
     .slice(0, 5)
     .map(([line, files]) =>
@@ -454,6 +457,131 @@ function duplicateChangeSignals(params: {
         `Repeated changed line across ${files.size} file(s): ${[...files]
           .slice(0, 4)
           .join(', ')} :: ${line.slice(0, 120)}`,
+      ),
+    );
+  return unique([...repeatedLineSignals, ...duplicateBlockSignals(params)]).slice(0, 6);
+}
+
+const DUPLICATE_NORMALIZED_KEYWORDS = new Set([
+  'async',
+  'await',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'default',
+  'else',
+  'export',
+  'false',
+  'finally',
+  'for',
+  'from',
+  'function',
+  'if',
+  'import',
+  'in',
+  'let',
+  'new',
+  'null',
+  'return',
+  'switch',
+  'throw',
+  'true',
+  'try',
+  'undefined',
+  'while',
+]);
+
+interface DuplicateBlockCandidate {
+  readonly path: string;
+  readonly normalized: string;
+  readonly preview: string;
+  readonly lineCount: number;
+}
+
+function isDuplicateBlockStart(line: string): boolean {
+  return (
+    /^(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(/.test(line.trim()) ||
+    /^(?:export\s+)?const\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>/.test(line.trim())
+  );
+}
+
+function braceDelta(line: string): number {
+  return (line.match(/{/g) ?? []).length - (line.match(/}/g) ?? []).length;
+}
+
+function normalizeDuplicateCodeBlock(lines: readonly string[]): string {
+  return lines
+    .join('\n')
+    .replace(/\/\/.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(['"`])(?:\\.|(?!\1)[\s\S])*\1/g, 'STR')
+    .replace(/\b\d+(?:\.\d+)?\b/g, 'NUM')
+    .replace(/\b[A-Za-z_$][\w$]*\b/g, (word) =>
+      DUPLICATE_NORMALIZED_KEYWORDS.has(word) ? word : 'ID',
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function duplicateBlockCandidates(path: string, change: DiffFileChange): DuplicateBlockCandidate[] {
+  if (!/\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php)$/i.test(path)) return [];
+  const candidates: DuplicateBlockCandidate[] = [];
+  for (let index = 0; index < change.addedLines.length; index += 1) {
+    const firstLine = change.addedLines[index] ?? '';
+    if (!isDuplicateBlockStart(firstLine)) continue;
+    const block: string[] = [];
+    let balance = 0;
+    let sawBrace = false;
+    for (let lineIndex = index; lineIndex < change.addedLines.length; lineIndex += 1) {
+      const line = change.addedLines[lineIndex] ?? '';
+      block.push(line);
+      balance += braceDelta(line);
+      sawBrace = sawBrace || line.includes('{');
+      if ((sawBrace && balance <= 0) || block.length >= 80) {
+        index = lineIndex;
+        break;
+      }
+    }
+    const normalized = normalizeDuplicateCodeBlock(block);
+    if (normalized.length < 80 || !/\breturn\b|\bif\b|\bawait\b|\bthrow\b|=>/.test(normalized)) {
+      continue;
+    }
+    candidates.push({
+      path,
+      normalized,
+      preview: block.join(' ').trim().slice(0, 140),
+      lineCount: block.length,
+    });
+  }
+  return candidates;
+}
+
+function duplicateBlockSignals(params: {
+  readonly diffText: string;
+  readonly sanitizeText: (value: string) => string;
+}): string[] {
+  const grouped = new Map<string, DuplicateBlockCandidate[]>();
+  for (const [path, change] of parseDiffFileChanges(params.diffText)) {
+    for (const candidate of duplicateBlockCandidates(path, change)) {
+      const candidates = grouped.get(candidate.normalized) ?? [];
+      candidates.push(candidate);
+      grouped.set(candidate.normalized, candidates);
+    }
+  }
+  return [...grouped.values()]
+    .filter((candidates) => new Set(candidates.map((candidate) => candidate.path)).size > 1)
+    .sort((a, b) => b.length - a.length || (b[0]?.lineCount ?? 0) - (a[0]?.lineCount ?? 0))
+    .slice(0, 3)
+    .map((candidates) =>
+      params.sanitizeText(
+        `Repeated normalized function block across ${
+          new Set(candidates.map((candidate) => candidate.path)).size
+        } file(s): ${unique(candidates.map((candidate) => candidate.path))
+          .slice(0, 4)
+          .join(', ')} :: ${candidates[0]?.preview ?? ''}`,
       ),
     );
 }
