@@ -522,6 +522,95 @@ describe('project brain generation', () => {
     });
   });
 
+  it('separates agent verification readiness from human signoff state', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await mkdir(join(dir, '.rizz'), { recursive: true });
+      await writeFile(join(dir, '.gitignore'), '.rizz\n');
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'signoff-app',
+          scripts: { test: 'vitest run' },
+          devDependencies: { vitest: '^2.0.0' },
+        }),
+      );
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const value = 1;\n');
+      await writeFile(join(dir, 'src', 'index.test.ts'), 'import { it } from "vitest";\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:37:30.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await git(dir, ['update-ref', 'refs/remotes/origin/develop', 'HEAD']);
+
+      await writeFile(join(dir, 'src', 'index.ts'), 'export const value = 2;\n');
+      await writeFile(join(dir, 'src', 'index.test.ts'), 'import { it, expect } from "vitest";\n');
+      await git(dir, ['add', 'src/index.ts', 'src/index.test.ts']);
+      await git(dir, ['commit', '-m', 'update value with test']);
+
+      const added = await addVerificationEvidence({
+        rootDir: dir,
+        name: 'vitest run',
+        command: 'pnpm test',
+        status: 'passed',
+        affectedConfidenceAreas: ['local'],
+        now: new Date('2026-06-28T10:38:00.000Z'),
+      });
+      expect(added.ok).toBe(true);
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:39:00.000Z'),
+      });
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.human_approval).toMatchObject({
+        human_signoff_recorded: false,
+        merge_release_ready: false,
+      });
+      expect(review.value.reviewEval).toMatchObject({
+        human_signoff_recorded: false,
+        merge_release_ready: false,
+      });
+      expect(review.value.humanApprovalPath).toBe(
+        join(dir, '.rizz', 'research', 'human_approval.json'),
+      );
+      const approval = await readJson<{
+        state: string;
+        artifacts: string[];
+        calibration_rule: string;
+      }>(join(dir, '.rizz', 'research', 'human_approval.json'));
+      expect(approval).toMatchObject({
+        artifacts: expect.arrayContaining(['.rizz/research/human_approval.json']),
+      });
+      expect(approval.calibration_rule).toContain('human_signoff_recorded');
+
+      await writeFile(
+        join(dir, '.rizz', 'human-signoff.json'),
+        JSON.stringify({ status: 'signed_off', summary: 'Human approved this branch.' }),
+      );
+      const signed = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:40:00.000Z'),
+      });
+      expect(signed.ok).toBe(true);
+      if (!signed.ok) return;
+      expect(signed.value.review.human_approval).toMatchObject({
+        human_signoff_recorded: true,
+        signoff_source: '.rizz/human-signoff.json',
+      });
+      const reviewReport = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      const missionControl = await readFile(join(dir, '.rizz', 'reports', 'index.html'), 'utf8');
+      expect(reviewReport).toContain('Human Signoff');
+      expect(reviewReport).toContain('Human signoff recorded: true');
+      expect(missionControl).toContain('Human Approval');
+      expect(missionControl).toContain('Human signoff recorded: true');
+    });
+  });
+
   it('preserves stable file ids and marks removed files as stale on later scans', async () => {
     await withTempProject(async (dir) => {
       const packagePath = join(dir, 'package.json');

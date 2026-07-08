@@ -7,6 +7,13 @@ import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confi
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
 import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
 import {
+  type HumanApprovalPacket,
+  buildHumanApprovalPacket,
+  readHumanSignoffRecord,
+  renderHumanApprovalPacket,
+  renderLatestVerificationPlan,
+} from './human-approval.js';
+import {
   type ReviewGitBasisData,
   type ReviewGovernanceData,
   type ReviewGovernanceStatus,
@@ -1183,6 +1190,9 @@ interface ReviewEvalArtifactData {
   readonly verification_plan_required_count: number;
   readonly verification_plan_recommended_count: number;
   readonly verification_plan_optional_count: number;
+  readonly human_approval_state: string;
+  readonly human_signoff_recorded: boolean;
+  readonly merge_release_ready: boolean;
   readonly architecture_affected_test_count: number;
   readonly architecture_affected_config_count: number;
   readonly required_test_count: number;
@@ -1420,6 +1430,7 @@ interface ReviewSummaryData {
   readonly verification_status: ReviewVerificationStatusData;
   readonly verification_plan: readonly ReviewVerificationPlanItemData[];
   readonly verification_evidence_score: Ves;
+  readonly human_approval?: HumanApprovalPacket;
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
@@ -1625,6 +1636,8 @@ export interface ReviewProjectChangesSummary {
   readonly review: ReviewSummaryData;
   readonly reviewEval: ReviewEvalArtifactData;
   readonly reviewClaimEvidence: ReviewClaimEvidenceArtifactData;
+  readonly humanApprovalPath: string;
+  readonly humanApproval: HumanApprovalPacket;
 }
 
 export type ReviewProjectChangesResult =
@@ -17307,62 +17320,6 @@ function renderReviewStatusValue(value: unknown): string {
   return htmlEscape(String(value));
 }
 
-function renderLatestVerificationPlan(latest: Record<string, unknown>): string {
-  const status = latest.latest_review_status;
-  if (!isRecord(status)) {
-    return '<p class="muted">Agent plan: <code>.rizz/research/verification_plan.json</code>.</p>';
-  }
-  const proof = status.verification_evidence_score;
-  const proofCard = isRecord(proof)
-    ? `<article class="card compact">
-      <div class="badge">${recordString(proof, 'status', 'needs_evidence')}</div>
-      <h3>Proof Score</h3>
-      ${renderList([
-        `${recordNumber(proof, 'score')}/100`,
-        recordString(proof, 'approval_state', 'needs_agent_repair'),
-        `${recordNumber(proof, 'covered_required_count')}/${recordNumber(proof, 'required_count')} required covered`,
-        `${recordNumber(proof, 'missing_required_count')} required missing`,
-      ])}
-    </article>`
-    : '';
-  const plan = recordArray(status, 'verification_plan').filter(isRecord);
-  if (plan.length === 0) {
-    return `${proofCard}<p class="muted">No review verification plan recorded.</p>`;
-  }
-  const required = plan.filter((item) => recordString(item, 'priority', '') === 'required');
-  const recommended = plan.filter((item) => recordString(item, 'priority', '') === 'recommended');
-  const missingSummary = isRecord(proof) ? asStringArray(proof.missing_summary).slice(0, 5) : [];
-  const coveredSummary = isRecord(proof) ? asStringArray(proof.covered_summary).slice(0, 5) : [];
-  const missing = recordArray(proof, 'missing_items').filter(isRecord).slice(0, 5);
-  const topItems = [...required, ...recommended, ...plan].slice(0, 5);
-  return `<div class="grid">
-    ${proofCard}
-    <article class="card compact">
-      <div class="badge">${required.length} required</div>
-      <h3>Verification Summary</h3>
-      ${renderList([
-        `${plan.length} targeted check(s)`,
-        `${required.length} required`,
-        `${recommended.length} recommended`,
-      ])}
-    </article>
-    <article class="card compact">
-      <h3>Missing Proof</h3>
-      ${renderList(
-        missingSummary.length > 0
-          ? missingSummary
-          : (missing.length > 0 ? missing : topItems).map((item) => {
-              const priority = recordString(item, 'priority', 'recommended');
-              const type = recordString(item, 'verification_type', 'manual');
-              const reason = recordString(item, 'reason', 'Verify affected behavior.');
-              return `${priority} ${type}: ${reason}`;
-            }),
-      )}
-    </article>
-    <article class="card compact"><h3>Covered Proof</h3>${renderList(coveredSummary)}</article>
-  </div>`;
-}
-
 function renderLatestReviewRouteFlows(
   latest: Record<string, unknown>,
   flows: readonly BrainEntity[],
@@ -20451,7 +20408,7 @@ export async function reviewProjectChanges(
     });
     const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now);
 
-    const review = buildReview({
+    const reviewBase = buildReview({
       rootDir,
       now,
       latest,
@@ -20463,6 +20420,12 @@ export async function reviewProjectChanges(
       missionContract,
       verificationEvidence,
     });
+    const humanApproval = buildHumanApprovalPacket({
+      generatedAt: now,
+      review: reviewBase,
+      signoffRecord: await readHumanSignoffRecord(rootDir),
+    });
+    const review: ReviewSummaryData = { ...reviewBase, human_approval: humanApproval };
     const reviewEval = buildReviewEvalArtifact(review);
     const reviewClaimEvidence = buildReviewClaimEvidenceArtifact(review);
     const agentRepairPackets = buildAgentRepairPacketsArtifact({
@@ -20555,11 +20518,12 @@ export async function reviewProjectChanges(
         verification_status: review.verification_status,
         verification_plan: review.verification_plan,
         verification_evidence_score: review.verification_evidence_score,
-        verification_plan_summary: verificationPlanSummary(review.verification_plan),
+        human_approval: humanApproval,
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
           review_claim_evidence: '.rizz/research/review_claim_evidence.json',
           verification_evidence: '.rizz/research/verification_evidence.json',
+          human_approval: '.rizz/research/human_approval.json',
         },
       },
       latest_research_artifacts: {
@@ -20567,6 +20531,7 @@ export async function reviewProjectChanges(
         review_eval: '.rizz/research/review_eval.json',
         review_claim_evidence: '.rizz/research/review_claim_evidence.json',
         verification_evidence: '.rizz/research/verification_evidence.json',
+        human_approval: '.rizz/research/human_approval.json',
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
       latest_open_questions: mergeStrings(latest.latest_open_questions, [
@@ -20600,11 +20565,16 @@ export async function reviewProjectChanges(
       join(researchDir, 'agent_repair_packets.json'),
       jsonString(safeResearchValue(agentRepairPackets)),
     );
+    await writeVerifiedFile(
+      join(researchDir, 'human_approval.json'),
+      jsonString(safeResearchValue(humanApproval)),
+    );
     await updateBrainIndexResearchPaths(join(brainDir, 'index.json'), {
       review_eval: '.rizz/research/review_eval.json',
       review_claim_evidence: '.rizz/research/review_claim_evidence.json',
       verification_evidence: '.rizz/research/verification_evidence.json',
       agent_repair_packets: '.rizz/research/agent_repair_packets.json',
+      human_approval: '.rizz/research/human_approval.json',
     });
 
     const reviewReport = renderReviewReport(review);
@@ -20648,6 +20618,8 @@ export async function reviewProjectChanges(
         review,
         reviewEval,
         reviewClaimEvidence,
+        humanApprovalPath: join(researchDir, 'human_approval.json'),
+        humanApproval,
       },
     };
   } catch (error: unknown) {
@@ -24210,6 +24182,9 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     verification_plan_optional_count: review.verification_plan.filter(
       (item) => item.priority === 'optional',
     ).length,
+    human_approval_state: review.human_approval?.state ?? 'awaiting_agent_repair',
+    human_signoff_recorded: review.human_approval?.human_signoff_recorded ?? false,
+    merge_release_ready: review.human_approval?.merge_release_ready ?? false,
     architecture_affected_test_count: unique(
       review.architecture_impact_map.flatMap((entry) => entry.affected_tests),
     ).length,
@@ -25019,20 +24994,6 @@ function reviewVerificationPlan(params: {
         a.id.localeCompare(b.id),
     )
     .slice(0, 12);
-}
-
-function verificationPlanSummary(plan: readonly ReviewVerificationPlanItemData[]): {
-  readonly total: number;
-  readonly required: number;
-  readonly recommended: number;
-  readonly optional: number;
-} {
-  return {
-    total: plan.length,
-    required: plan.filter((item) => item.priority === 'required').length,
-    recommended: plan.filter((item) => item.priority === 'recommended').length,
-    optional: plan.filter((item) => item.priority === 'optional').length,
-  };
 }
 
 function reviewAffectedComponents(params: {
@@ -26089,6 +26050,8 @@ function renderReviewReport(review: ReviewSummaryData): string {
         review.verification_evidence_score.approval_state,
         ...review.verification_evidence_score.score_explanation,
       ])}
+      <h3>Human Signoff</h3>
+      ${renderHumanApprovalPacket(review.human_approval)}
       <h3>Missing Proof</h3>
       ${renderList([
         ...review.verification_evidence_score.missing_summary,
@@ -26143,6 +26106,7 @@ function renderReviewReport(review: ReviewSummaryData): string {
         '.rizz/research/review_eval.json',
         '.rizz/research/review_claim_evidence.json',
         '.rizz/research/verification_evidence.json',
+        '.rizz/research/human_approval.json',
       ])}
     </section>
     <section>
