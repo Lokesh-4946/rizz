@@ -8776,6 +8776,59 @@ describe('project brain generation', () => {
     });
   });
 
+  it('normalizes plain-text mission contracts into deterministic review scope', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'cli', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'mission-text', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'packages', 'cli', 'src', 'index.ts'), 'export const cli = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:52:30.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(join(dir, 'packages', 'cli', 'src', 'index.ts'), 'export const cli = 2;\n');
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:52:45.000Z'),
+        mission: [
+          'Keep the CLI review change tight.',
+          'allowed paths: packages/cli',
+          'scope clusters: packages/cli',
+          'components: component:packages--cli',
+          'checks: pnpm check, pnpm pack:check',
+          'max files: 1',
+        ].join('\n'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.review_governance.mission_contract).toMatchObject({
+        status: 'matched',
+        source: 'inline',
+        matched_paths: ['packages/cli/src/index.ts'],
+        violating_paths: [],
+        required_checks: ['pnpm check', 'pnpm pack:check'],
+        normalization_notes: expect.arrayContaining([
+          'Parsed plain-text mission contract sections.',
+          'Normalized allowed_paths to allowed_path_prefixes.',
+          'Normalized expectedScopes to expected_scope_clusters.',
+          'Normalized components to expected_components.',
+          'Normalized checks to required_checks.',
+          'Normalized max_files to max_reviewable_files.',
+        ]),
+      });
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Normalization: Parsed plain-text mission contract sections.');
+    });
+  });
+
   it('flags mission-contract mismatches as review governance findings', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
@@ -8849,6 +8902,69 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('Out-of-mission path: packages/web/src/index.ts');
       expect(report).toContain('Forbidden path: packages/web/src/index.ts');
+    });
+  });
+
+  it('detects structurally duplicated changed function blocks across files', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'api', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'web', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'normalized-duplicate', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'packages', 'api', 'src', 'guard.ts'), 'export const api = 1;\n');
+      await writeFile(join(dir, 'packages', 'web', 'src', 'guard.ts'), 'export const web = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:54:30.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+
+      await writeFile(
+        join(dir, 'packages', 'api', 'src', 'guard.ts'),
+        [
+          'export function ensureApiUser(request: ApiRequest) {',
+          '  const current = request.user;',
+          '  if (!current) {',
+          '    throw new Error("missing user");',
+          '  }',
+          '  return current.id;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'packages', 'web', 'src', 'guard.ts'),
+        [
+          'export function ensureWebAccount(context: WebContext) {',
+          '  const account = context.account;',
+          '  if (!account) {',
+          '    throw new Error("missing account");',
+          '  }',
+          '  return account.id;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:54:45.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.review_governance.duplicate_change_signals).toContainEqual(
+        expect.stringContaining('Repeated normalized function block across 2 file(s)'),
+      );
+      expect(result.value.review.findings).toContainEqual(
+        expect.objectContaining({
+          title: 'Repeated changed code may be duplicate implementation work',
+        }),
+      );
     });
   });
 
