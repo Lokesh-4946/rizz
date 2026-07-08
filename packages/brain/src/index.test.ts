@@ -8887,6 +8887,7 @@ describe('project brain generation', () => {
           expect.stringContaining(
             'Mission contract: Move or justify out-of-mission file: packages/web/src/index.ts',
           ),
+          expect.stringContaining('Possible unrelated work: packages/web/src/index.ts'),
         ]),
       );
       expect(result.value.review.findings).toContainEqual(
@@ -8902,6 +8903,73 @@ describe('project brain generation', () => {
       const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
       expect(report).toContain('Out-of-mission path: packages/web/src/index.ts');
       expect(report).toContain('Forbidden path: packages/web/src/index.ts');
+    });
+  });
+
+  it('reports mixed branch and dirty-tree review basis without hiding branch scope', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'packages', 'api', 'src'), { recursive: true });
+      await mkdir(join(dir, 'packages', 'web', 'src'), { recursive: true });
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'mixed-basis', scripts: { test: 'vitest run' } }),
+      );
+      await writeFile(join(dir, 'packages', 'api', 'src', 'index.ts'), 'export const api = 1;\n');
+      await writeFile(join(dir, 'packages', 'web', 'src', 'index.ts'), 'export const web = 1;\n');
+      await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:54:15.000Z'),
+      });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await git(dir, ['update-ref', 'refs/remotes/origin/develop', 'HEAD']);
+
+      await writeFile(join(dir, 'packages', 'api', 'src', 'index.ts'), 'export const api = 2;\n');
+      await git(dir, ['add', 'packages/api/src/index.ts']);
+      await git(dir, ['commit', '-m', 'api branch change']);
+      await writeFile(
+        join(dir, 'packages', 'web', 'src', 'local.ts'),
+        'export const localWebNoise = true;\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:54:20.000Z'),
+        mission: JSON.stringify({
+          id: 'api-only',
+          summary: 'Update API contract behavior only.',
+          allowed_path_prefixes: ['packages/api'],
+          expected_scope_clusters: ['packages/api'],
+        }),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.review_governance.git).toMatchObject({
+        diff_basis: 'working_tree',
+        working_tree_dirty: true,
+        mixed_basis: true,
+        working_tree_changed_files: ['packages/web/src/local.ts'],
+        branch_changed_files: ['packages/api/src/index.ts'],
+        working_tree_only_files: ['packages/web/src/local.ts'],
+        branch_only_files: ['packages/api/src/index.ts'],
+      });
+      expect(result.value.review.review_governance.version_control_warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Review has mixed basis'),
+          expect.stringContaining('branch-only file(s) are outside the selected working_tree diff'),
+          expect.stringContaining('working-tree-only file(s) are not in the committed branch diff'),
+        ]),
+      );
+      expect(result.value.review.review_governance.mission_contract).toMatchObject({
+        status: 'mismatch',
+        violating_paths: ['packages/web/src/local.ts'],
+      });
+      const report = await readFile(join(dir, '.rizz', 'reports', 'review.html'), 'utf8');
+      expect(report).toContain('Diff Basis Details');
+      expect(report).toContain('Branch-only: packages/api/src/index.ts');
+      expect(report).toContain('Working-tree-only: packages/web/src/local.ts');
     });
   });
 

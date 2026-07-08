@@ -18,6 +18,11 @@ export interface ReviewGitBasisData {
   readonly diff_basis: ReviewDiffBasis;
   readonly working_tree_dirty: boolean;
   readonly untracked_files: readonly string[];
+  readonly working_tree_changed_files: readonly string[];
+  readonly branch_changed_files: readonly string[];
+  readonly working_tree_only_files: readonly string[];
+  readonly branch_only_files: readonly string[];
+  readonly mixed_basis: boolean;
   readonly branch_ahead: number;
   readonly branch_behind: number;
   readonly merge_base_found: boolean;
@@ -61,6 +66,18 @@ export function renderReviewGovernance(governance: ReviewGovernanceData): string
     <article class="card"><h2>Scope Clusters</h2><p>${governance.scope_clusters.length}</p></article>
     <article class="card"><h2>Duplicate Signals</h2><p>${governance.duplicate_change_signals.length}</p></article>
   </div>
+  <h3>Diff Basis Details</h3>
+  ${renderList([
+    `Selected basis: ${governance.git.diff_basis}`,
+    `Working-tree changed files: ${governance.git.working_tree_changed_files.length}`,
+    `Branch changed files: ${governance.git.branch_changed_files.length}`,
+    ...(governance.git.working_tree_only_files.length === 0
+      ? []
+      : [`Working-tree-only: ${governance.git.working_tree_only_files.slice(0, 8).join(', ')}`]),
+    ...(governance.git.branch_only_files.length === 0
+      ? []
+      : [`Branch-only: ${governance.git.branch_only_files.slice(0, 8).join(', ')}`]),
+  ])}
   <h3>Mission Contract</h3>
   ${renderList([
     `Source: ${governance.mission_contract.source}`,
@@ -175,12 +192,23 @@ function parseAheadBehind(stdout: string): { readonly ahead: number; readonly be
   };
 }
 
+function changedPathsFromNameStatus(stdout: string): string[] {
+  return unique(
+    stdout
+      .split(/\r?\n/)
+      .flatMap(changedPathsFromNameStatusLine)
+      .filter((line) => line.trim() !== ''),
+  );
+}
+
 function gitBasis(params: {
   readonly rootDir: string;
   readonly baseRef: string;
   readonly diffBasis: ReviewDiffBasis;
   readonly baseSha: string | null;
   readonly untrackedFiles: readonly string[];
+  readonly workingTreeChangedFiles: readonly string[];
+  readonly branchChangedFiles: readonly string[];
   readonly workingTreeDirty: boolean;
   readonly sanitizeText: (value: string) => string;
 }): ReviewGitBasisData {
@@ -193,6 +221,10 @@ function gitBasis(params: {
     `HEAD...${params.baseRef}`,
   ]);
   const counts = aheadBehind.ok ? parseAheadBehind(aheadBehind.stdout) : { ahead: 0, behind: 0 };
+  const workingTreeChangedFiles = unique(params.workingTreeChangedFiles).map(params.sanitizeText);
+  const branchChangedFiles = unique(params.branchChangedFiles).map(params.sanitizeText);
+  const branchChangedSet = new Set(branchChangedFiles);
+  const workingTreeChangedSet = new Set(workingTreeChangedFiles);
   return {
     base_ref: params.baseRef,
     base_sha: params.baseSha,
@@ -201,6 +233,11 @@ function gitBasis(params: {
     diff_basis: params.diffBasis,
     working_tree_dirty: params.workingTreeDirty,
     untracked_files: params.untrackedFiles.map(params.sanitizeText),
+    working_tree_changed_files: workingTreeChangedFiles,
+    branch_changed_files: branchChangedFiles,
+    working_tree_only_files: workingTreeChangedFiles.filter((file) => !branchChangedSet.has(file)),
+    branch_only_files: branchChangedFiles.filter((file) => !workingTreeChangedSet.has(file)),
+    mixed_basis: params.workingTreeDirty && branchChangedFiles.length > 0,
     branch_ahead: counts.ahead,
     branch_behind: counts.behind,
     merge_base_found: params.baseSha !== null,
@@ -259,14 +296,23 @@ export function readReviewGitChanges(params: {
         .map((line) => line.trim())
         .filter((line) => line !== '')
     : [];
-  const worktreeChanged = unique(
-    [...worktreeFiles.stdout.split(/\r?\n/), ...untrackedFileList]
-      .flatMap(changedPathsFromNameStatusLine)
-      .filter((line) => line.trim() !== ''),
-  );
+  const worktreeChanged = unique([
+    ...changedPathsFromNameStatus(worktreeFiles.stdout),
+    ...untrackedFileList,
+  ]);
+  const base = runGit(params.rootDir, ['merge-base', 'HEAD', baseRef]);
+  const baseSha = base.ok && base.stdout.trim() !== '' ? base.stdout.trim() : null;
+  const branchFiles =
+    baseSha === null
+      ? undefined
+      : runGit(params.rootDir, ['diff', '--name-status', '--find-renames', baseSha, 'HEAD', '--']);
+  if (branchFiles !== undefined && !branchFiles.ok) {
+    return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: branchFiles.error } };
+  }
+  const branchChanged =
+    branchFiles?.ok === true ? changedPathsFromNameStatus(branchFiles.stdout) : [];
   if (worktreeChanged.length > 0) {
     const diff = runGit(params.rootDir, ['diff', '--no-ext-diff', '--find-renames', 'HEAD', '--']);
-    const base = runGit(params.rootDir, ['merge-base', 'HEAD', baseRef]);
     const untrackedDiffText = untrackedFiles.ok
       ? readUntrackedFileText({
           rootDir: params.rootDir,
@@ -283,8 +329,10 @@ export function readReviewGitChanges(params: {
           rootDir: params.rootDir,
           baseRef,
           diffBasis: 'working_tree',
-          baseSha: base.ok && base.stdout.trim() !== '' ? base.stdout.trim() : null,
+          baseSha,
           untrackedFiles: untrackedFileList,
+          workingTreeChangedFiles: worktreeChanged,
+          branchChangedFiles: branchChanged,
           workingTreeDirty: true,
           sanitizeText: params.sanitizeText,
         }),
@@ -292,26 +340,7 @@ export function readReviewGitChanges(params: {
     };
   }
 
-  const base = runGit(params.rootDir, ['merge-base', 'HEAD', baseRef]);
-  if (base.ok && base.stdout.trim() !== '') {
-    const baseSha = base.stdout.trim();
-    const branchFiles = runGit(params.rootDir, [
-      'diff',
-      '--name-status',
-      '--find-renames',
-      baseSha,
-      'HEAD',
-      '--',
-    ]);
-    if (!branchFiles.ok) {
-      return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: branchFiles.error } };
-    }
-    const branchChanged = unique(
-      branchFiles.stdout
-        .split(/\r?\n/)
-        .flatMap(changedPathsFromNameStatusLine)
-        .filter((line) => line.trim() !== ''),
-    );
+  if (baseSha !== null) {
     const diff = runGit(params.rootDir, [
       'diff',
       '--no-ext-diff',
@@ -331,6 +360,8 @@ export function readReviewGitChanges(params: {
           diffBasis: branchChanged.length > 0 ? 'branch' : 'none',
           baseSha,
           untrackedFiles: [],
+          workingTreeChangedFiles: [],
+          branchChangedFiles: branchChanged,
           workingTreeDirty: false,
           sanitizeText: params.sanitizeText,
         }),
@@ -349,6 +380,8 @@ export function readReviewGitChanges(params: {
         diffBasis: 'none',
         baseSha: null,
         untrackedFiles: [],
+        workingTreeChangedFiles: [],
+        branchChangedFiles: [],
         workingTreeDirty: false,
         sanitizeText: params.sanitizeText,
       }),
@@ -434,6 +467,88 @@ function scopeDriftSignals(params: {
     );
   }
   return signals.map(params.sanitizeText);
+}
+
+const MISSION_TOKEN_STOP_WORDS = new Set([
+  'and',
+  'app',
+  'apps',
+  'change',
+  'changes',
+  'code',
+  'component',
+  'components',
+  'file',
+  'files',
+  'fix',
+  'for',
+  'from',
+  'index',
+  'lib',
+  'mission',
+  'package',
+  'packages',
+  'review',
+  'scope',
+  'src',
+  'test',
+  'tests',
+  'the',
+  'this',
+  'update',
+  'work',
+]);
+
+function semanticTokens(value: string): string[] {
+  return unique(
+    value
+      .toLowerCase()
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .split(/[^a-z0-9]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !MISSION_TOKEN_STOP_WORDS.has(token)),
+  );
+}
+
+function missionIntentTokens(mission: ReviewMissionContractLoad): string[] {
+  const contract = mission.contract;
+  if (contract === null) return [];
+  return unique(
+    [
+      contract.summary ?? '',
+      ...(contract.allowed_files ?? []),
+      ...(contract.allowed_path_prefixes ?? []),
+      ...(contract.expected_scope_clusters ?? []),
+      ...(contract.expected_components ?? []),
+      ...(contract.expected_services ?? []),
+      ...(contract.expected_flows ?? []),
+    ].flatMap(semanticTokens),
+  );
+}
+
+function semanticUnrelatedWorkSignals(params: {
+  readonly mission: ReviewMissionContractLoad;
+  readonly missionComparison: ReviewMissionComparisonData;
+  readonly sanitizeText: (value: string) => string;
+}): string[] {
+  const intentTokens = missionIntentTokens(params.mission);
+  if (intentTokens.length < 2) return [];
+  const intentTokenSet = new Set(intentTokens);
+  const targets = unique([
+    ...params.missionComparison.violating_paths,
+    ...params.missionComparison.forbidden_paths,
+    ...params.missionComparison.unexpected_scope_clusters,
+  ]);
+  return targets
+    .filter((target) => semanticTokens(target).every((token) => !intentTokenSet.has(token)))
+    .slice(0, 4)
+    .map((target) =>
+      params.sanitizeText(
+        `Possible unrelated work: ${target} has no lexical overlap with mission intent tokens (${intentTokens
+          .slice(0, 6)
+          .join(', ')}); inspect before approval.`,
+      ),
+    );
 }
 
 function duplicateChangeSignals(params: {
@@ -608,6 +723,25 @@ export function buildReviewGovernance(params: {
           'Review is based on working-tree changes; commit or stash unrelated edits before PR approval.',
         ]
       : []),
+    ...(params.git.mixed_basis
+      ? [
+          `Review has mixed basis: selected working-tree diff has ${params.git.working_tree_changed_files.length} file(s), while committed branch diff has ${params.git.branch_changed_files.length} file(s) against ${params.git.base_ref}.`,
+        ]
+      : []),
+    ...(params.git.branch_only_files.length > 0
+      ? [
+          `${params.git.branch_only_files.length} branch-only file(s) are outside the selected ${params.git.diff_basis} diff: ${params.git.branch_only_files
+            .slice(0, 6)
+            .join(', ')}.`,
+        ]
+      : []),
+    ...(params.git.working_tree_only_files.length > 0 && params.git.branch_changed_files.length > 0
+      ? [
+          `${params.git.working_tree_only_files.length} working-tree-only file(s) are not in the committed branch diff: ${params.git.working_tree_only_files
+            .slice(0, 6)
+            .join(', ')}.`,
+        ]
+      : []),
     ...(params.git.branch_behind > 0
       ? [
           `Branch is ${params.git.branch_behind} commit(s) behind ${params.git.base_ref}; rebase or merge before final approval.`,
@@ -658,7 +792,16 @@ export function buildReviewGovernance(params: {
           params.sanitizeText(`Mission contract: ${action}`),
         )
       : [];
-  const allScopeSignals = unique([...scopeSignals, ...missionScopeSignals]);
+  const semanticMissionSignals = semanticUnrelatedWorkSignals({
+    mission: params.missionContract,
+    missionComparison,
+    sanitizeText: params.sanitizeText,
+  });
+  const allScopeSignals = unique([
+    ...scopeSignals,
+    ...missionScopeSignals,
+    ...semanticMissionSignals,
+  ]);
   const issueCount =
     versionControlWarnings.length +
     allScopeSignals.length +
