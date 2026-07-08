@@ -4008,7 +4008,7 @@ describe('project brain generation', () => {
           expect.objectContaining({ type: 'read_write_storage' }),
         ]),
       });
-      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const explainReport = await readFile(explained.value.reportPath, 'utf8');
       const missionControlReport = await readFile(
         join(dir, '.rizz', 'reports', 'index.html'),
         'utf8',
@@ -4539,10 +4539,7 @@ describe('project brain generation', () => {
         ]),
         outputs: expect.arrayContaining(['HTTP/API response.']),
       });
-      const flowExplainReport = await readFile(
-        join(dir, '.rizz', 'reports', 'explain.html'),
-        'utf8',
-      );
+      const flowExplainReport = await readFile(explained.value.reportPath, 'utf8');
       expect(flowExplainReport).toContain('POST /orders');
       expect(flowExplainReport).toContain('HTTP POST /orders route enters src/server.ts');
       expect(flowExplainReport).toContain('service:src--orders');
@@ -4564,10 +4561,7 @@ describe('project brain generation', () => {
         framework: 'express-fastify-http',
         related_flows: expect.arrayContaining(['flow:http--post--orders--src--server.ts']),
       });
-      const serviceExplainReport = await readFile(
-        join(dir, '.rizz', 'reports', 'explain.html'),
-        'utf8',
-      );
+      const serviceExplainReport = await readFile(serviceExplained.value.reportPath, 'utf8');
       expect(serviceExplainReport).toContain('Service Runtime');
       expect(serviceExplainReport).toContain('Related Flows');
       expect(serviceExplainReport).toContain('flow:http--post--orders--src--server.ts');
@@ -5343,7 +5337,7 @@ describe('project brain generation', () => {
         outputs: expect.arrayContaining(['HTTP/API response.']),
         confidence_reasons: expect.arrayContaining(['Signal: hono route app.']),
       });
-      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const explainReport = await readFile(explained.value.reportPath, 'utf8');
       expect(explainReport).toContain('POST /sessions');
       expect(explainReport).toContain('Hono POST /sessions route enters src/api.ts');
       expect(explainReport).not.toContain(dir);
@@ -5934,7 +5928,7 @@ describe('project brain generation', () => {
           'Next.js app-router file maps to route path /docs/[slug].',
         ]),
       });
-      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const explainReport = await readFile(explained.value.reportPath, 'utf8');
       expect(explainReport).toContain('Next.js app-router file maps to route path /docs/[slug].');
       expect(explainReport).toContain('Rendered React route output.');
       expect(explainReport).not.toContain(dir);
@@ -7192,7 +7186,7 @@ describe('project brain generation', () => {
           '.rizz/research/flow_understanding.json',
         ]),
       );
-      const flowReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const flowReport = await readFile(flow.value.reportPath, 'utf8');
       expect(flowReport).toContain('Flow Steps');
       expect(flowReport).toContain('flow:packages--brain--test');
       expect(flowReport).toContain('Evidence Summary');
@@ -7241,7 +7235,7 @@ describe('project brain generation', () => {
       });
       if (!ambiguous.ok) expect(ambiguous.error.message).toContain('file:packages--brain--src');
 
-      const report = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const report = await readFile(fuzzy.value.reportPath, 'utf8');
       expect(report).toContain('rizz explain');
       expect(report).toContain('component:packages--brain');
       expect(report).toContain('Component Boundary');
@@ -7536,7 +7530,7 @@ describe('project brain generation', () => {
       if (!result.ok) return;
       const output = JSON.stringify(result.value.explanation);
       expect(output).not.toContain('sk-or-v1-brainsecret');
-      const report = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const report = await readFile(result.value.reportPath, 'utf8');
       expect(report).not.toContain('sk-or-v1-brainsecret');
       const research = await readTreeText(join(dir, '.rizz', 'research'));
       expect(research).not.toContain('sk-or-v1-brainsecret');
@@ -7754,12 +7748,15 @@ describe('project brain generation', () => {
         'brain/entities/evidence.json',
         'reports/index.html',
         'reports/review.html',
-        'reports/explain.html',
       ]) {
         expectNoLeaks(label, files.get(label) ?? '');
       }
       for (const [label, text] of files) {
-        if (label.startsWith('brain/entities/') || label.startsWith('research/')) {
+        if (
+          label.startsWith('brain/entities/') ||
+          label.startsWith('research/') ||
+          label.startsWith('reports/explain-')
+        ) {
           expectNoLeaks(label, text);
         }
       }
@@ -9943,7 +9940,7 @@ describe('project brain generation', () => {
           expect.objectContaining({ label: 'data schema/model', kind: 'schema' }),
         ]),
       );
-      const explainReport = await readFile(join(dir, '.rizz', 'reports', 'explain.html'), 'utf8');
+      const explainReport = await readFile(explain.value.reportPath, 'utf8');
       expect(explainReport).toContain('State/Data Dependencies');
       expect(explainReport).toContain('data schema/model');
 

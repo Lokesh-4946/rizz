@@ -895,12 +895,14 @@ function assertExpectedArtifacts(task, repoDir) {
 function assertArtifactContracts(task, repoDir) {
   const errors = [];
   for (const assertion of task.artifact_assertions) {
-    const artifactPath = safeJoin(repoDir, assertion.path);
-    if (!existsSync(artifactPath)) {
+    const artifactPaths = artifactPathsForAssertion(repoDir, assertion.path);
+    if (artifactPaths.length === 0) {
       errors.push(`missing asserted artifact ${assertion.path}`);
       continue;
     }
-    const artifactText = readFileSync(artifactPath, 'utf8');
+    const artifactText = artifactPaths
+      .map((artifactPath) => readFileSync(artifactPath, 'utf8'))
+      .join('\n');
     for (const substring of assertion.required_substrings ?? []) {
       if (!artifactText.includes(substring)) {
         errors.push(`${assertion.path} missing substring ${substring}`);
@@ -940,6 +942,25 @@ function assertArtifactContracts(task, repoDir) {
     }
   }
   return errors;
+}
+
+function artifactPathsForAssertion(repoDir, assertionPath) {
+  if (!assertionPath.includes('*')) {
+    const artifactPath = safeJoin(repoDir, assertionPath);
+    return existsSync(artifactPath) ? [artifactPath] : [];
+  }
+  const normalized = assertionPath.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf('/');
+  const dir = slash < 0 ? '.' : normalized.slice(0, slash);
+  const pattern = slash < 0 ? normalized : normalized.slice(slash + 1);
+  const starIndex = pattern.indexOf('*');
+  const prefix = pattern.slice(0, starIndex);
+  const suffix = pattern.slice(starIndex + 1);
+  const fullDir = safeJoin(repoDir, dir);
+  if (!existsSync(fullDir)) return [];
+  return readdirSync(fullDir)
+    .filter((entry) => entry.startsWith(prefix) && entry.endsWith(suffix))
+    .map((entry) => join(fullDir, entry));
 }
 
 function assertArchitectureImpactClaimEvidence(json, artifactPath) {
@@ -3293,7 +3314,9 @@ async function runHeadlessSmoke() {
             'explain missed read-first file',
           );
           assert(
-            existsSync(join(dir, '.rizz', 'reports', 'explain.html')),
+            readdirSync(join(dir, '.rizz', 'reports')).some(
+              (entry) => entry.startsWith('explain-') && entry.endsWith('.html'),
+            ),
             'missing explain report',
           );
 

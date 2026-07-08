@@ -6,10 +6,11 @@ import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
 import {
+  databaseTableDescription,
   detectPackageManagerFromFiles,
   inferDatabaseTables,
   isRouteOrControllerFile,
-  isUsableQualityCommand,
+  requiredTestCommands,
   routeChangedFileMatchesRoutePath,
 } from './dbms-usefulness.js';
 import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
@@ -5010,7 +5011,10 @@ function dataDependencyKindForLabel(label: string): FlowDataDependencyKind {
 function stateOperationsFromText(text: string): string[] {
   const operations = new Set<string>();
   const checks: ReadonlyArray<readonly [RegExp, string]> = [
-    [/select|findMany|findUnique|findFirst|\bfind\b|\bget\b|read|query|search|lookup/i, 'read'],
+    [
+      /select|findMany|findUnique|findFirst|findOne|findById|\bfind\b|\bget\b|read|query|search|lookup/i,
+      'read',
+    ],
     [/insert|create|save|write|setItem|set\(|append|push/i, 'write'],
     [/update|upsert|mutate|patch|replace/i, 'update'],
     [/delete|remove|destroy|drop|truncate/i, 'delete'],
@@ -11454,14 +11458,19 @@ function isServiceLikeSourceFile(file: FileFact): boolean {
   const name = basename(lower);
   return (
     /(^|\/)(services?|adapters?|repositories?|workers?|jobs?|integrations?)\//i.test(lower) ||
-    /(^|[-_.])(service|adapter|repository|worker|job|ingest|processor|client)([-_.]|$)/i.test(name)
+    /(^|\/)(controllers?|models?|schemas?)\//i.test(lower) ||
+    /(^|[-_.])(service|adapter|repository|controller|model|schema|worker|job|ingest|processor|client)([-_.]|$)/i.test(
+      name,
+    )
   );
 }
 
 function serviceRootForFile(path: string): string {
   const parts = path.split('/');
   const serviceIndex = parts.findIndex((part) =>
-    /^(services?|adapters?|repositories?|workers?|jobs?|integrations?)$/i.test(part),
+    /^(services?|adapters?|repositories?|controllers?|models?|schemas?|workers?|jobs?|integrations?)$/i.test(
+      part,
+    ),
   );
   if (serviceIndex >= 0) return parts.slice(0, serviceIndex + 1).join('/');
   return dirname(path).split(sep).join('/');
@@ -11513,10 +11522,14 @@ function envVarsFromText(text: string): string[] {
 function storageDependenciesFromText(text: string): string[] {
   const storage = new Set<string>();
   const checks: ReadonlyArray<readonly [RegExp, string]> = [
-    [/sqlite|\.db\b|SQLAlchemy|create_engine/i, 'sqlite/database'],
     [/postgres|pg\.|psycopg|DATABASE_URL/i, 'postgres/database'],
+    [/mysql|pymysql|mysqlclient/i, 'mysql/database'],
+    [/sqlite|\.db\b/i, 'sqlite/database'],
     [/redis|ioredis/i, 'redis/cache'],
-    [/prisma|typeorm|mongoose|sequelize/i, 'orm/database'],
+    [
+      /SQLAlchemy|create_engine|prisma|typeorm|mongoose|sequelize|findOne|findById|findMany|\.save\(|\.create\(|\.update|\.delete|\.remove/i,
+      'orm/database',
+    ],
     [/chroma|pinecone|qdrant|weaviate|vector/i, 'vector/search store'],
     [/\/tmp\b|tmp\/|tempfile|NamedTemporaryFile/i, 'temporary filesystem'],
     [/writeFile|appendFile|fs\.|open\(|Path\(|pathlib/i, 'filesystem'],
@@ -11637,6 +11650,7 @@ function inferServices(params: {
   readonly components: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
+  readonly databaseTables: readonly BrainEntity[];
 }): BrainEntity[] {
   const serviceFilesByRoot = new Map<string, FileFact[]>();
   for (const file of params.files.filter(isServiceLikeSourceFile)) {
@@ -11689,7 +11703,15 @@ function inferServices(params: {
       packageFacts: params.packageFacts,
     });
     const envVars = envVarsFromText(allText);
-    const storageDependencies = storageDependenciesFromText(allText);
+    const tableDependencies = params.databaseTables.filter((table) =>
+      table.source_files.some((file) =>
+        files.some((serviceFile) => serviceFile.relativePath === file),
+      ),
+    );
+    const storageDependencies = unique([
+      ...storageDependenciesFromText(allText),
+      ...tableDependencies.map((table) => table.id),
+    ]);
     const externalServices = externalServicesFromText(allText, importContext.importedSpecifiers);
     const deploymentConfigs = serviceDeploymentConfigs({ root, files: params.files });
     const risks = unique([
@@ -11741,7 +11763,8 @@ function inferServices(params: {
         .filter(
           (file) => storageDependenciesFromText(textByFile.get(file.relativePath) ?? '').length > 0,
         )
-        .map((file) => evidenceId(file.relativePath)),
+        .map((file) => evidenceId(file.relativePath))
+        .concat(tableDependencies.flatMap((table) => table.evidence_ids)),
       environment_variables: files
         .filter((file) => envVarsFromText(textByFile.get(file.relativePath) ?? '').length > 0)
         .map((file) => evidenceId(file.relativePath)),
@@ -19850,10 +19873,7 @@ function buildBrain(params: {
       id: tableId,
       type: 'database/table',
       name: safeText(table.name),
-      description:
-        table.kind === 'sql_table'
-          ? `SQL table ${table.name} inferred from ${safeText(table.sourceFile)}.`
-          : `Mongoose model ${table.name} inferred from ${safeText(table.sourceFile)}.`,
+      description: safeText(databaseTableDescription(table)),
       now: params.now,
       confidence: 'verified',
       evidenceIds: [evidenceId(table.sourceFile)],
@@ -19940,6 +19960,7 @@ function buildBrain(params: {
       components: buckets.components,
       tests: buckets.tests,
       configs: buckets.configs,
+      databaseTables: buckets.databaseTables,
     }),
   );
   for (const service of buckets.services) {
@@ -20718,7 +20739,10 @@ export async function explainProjectTarget(
     });
     const reportsDir = join(rootDir, '.rizz', 'reports');
     await mkdir(reportsDir, { recursive: true });
-    const reportPath = join(reportsDir, 'explain.html');
+    const reportPath = join(
+      reportsDir,
+      `explain-${stableSlug(explanation.resolved_entity_id)}.html`,
+    );
     await writeVerifiedFile(reportPath, renderExplainReport(explanation, entitySets.evidence));
 
     return {
@@ -25456,23 +25480,6 @@ function reviewFlowEntrypointLabels(flow: BrainEntity): string[] {
 
 function containsSecretLikeValue(value: string): boolean {
   return safeText(value) !== value;
-}
-
-function requiredTestCommands(
-  commands: readonly BrainEntity[],
-  changedFiles: readonly string[],
-): string[] {
-  const commandTexts = commands
-    .map((command) => {
-      const text = typeof command.data?.command === 'string' ? command.data.command : undefined;
-      return text === undefined ? undefined : safeText(`${command.name}: ${text}`);
-    })
-    .filter((command): command is string => command !== undefined);
-  const quality = commandTexts.filter(isUsableQualityCommand);
-  if (quality.length > 0) return quality.slice(0, 5);
-  if (changedFiles.some(isSourceFile))
-    return ['Run the project test command; none was detected in the brain.'];
-  return ['Review-only change: verify docs/report output manually.'];
 }
 
 function classifyBlastRadius(fileCount: number, componentCount: number): BlastRadius {

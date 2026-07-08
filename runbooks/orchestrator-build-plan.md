@@ -29,11 +29,11 @@ Current loop readiness:
 | Stage | Readiness | Remaining | Notes |
 | --- | ---: | ---: | --- |
 | Human intent | 76/100 | 24 | Intent can enter through CLI/review/explain flows, and review can now warn when dirty local work may distort the requested task scope; capture UX is still lightweight. |
-| rizz mission contract, project intelligence, and inspect-first context | 98/100 | 2 | Project intelligence, Mission Control, confidence queues, file-level explain, DBMS schema/model entities, security/tool inventory, unified repair packets, UAT artifacts, review-time mission-contract comparison, mission-contract normalization, and lexical unrelated-work hints are strong; explicit mission capture UX can still be sharper. |
+| rizz mission contract, project intelligence, and inspect-first context | 99/100 | 1 | Project intelligence, Mission Control, confidence queues, file-level explain, DBMS schema/model entities including SQLAlchemy/Alembic, security/tool inventory, unified repair packets, UAT artifacts, review-time mission-contract comparison, mission-contract normalization, and lexical unrelated-work hints are strong; explicit mission capture UX can still be sharper. |
 | Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
 | rizz review | 99/100 | 1 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, normalized duplicate code, mission-contract drift, semantic unrelated-work hints, and dirty-tree/branch-diff mixed-basis reporting. |
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
-| Coding agent repair | 77/100 | 23 | Repair instructions are packetized and less duplicative for agents, but agent-specific apply/repair loops are not yet first-class. |
+| Coding agent repair | 78/100 | 22 | Repair instructions are packetized and less duplicative for agents, and backend-scoped verification suggestions reduce agent churn, but agent-specific apply/repair loops are not yet first-class. |
 | rizz verification | 95/100 | 5 | rizz now scores proof, missing evidence, distinct human approval packet state, and a safe signoff handoff that must be ingested by review. |
 | Human approval | 86/100 | 14 | Reports separate agent evidence readiness from human signoff, and `rizz approve signoff` records explicit human decisions with audit history once review is ready. |
 
@@ -59,10 +59,11 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens DBMS-style repo usefulness. rizz now detects nested lockfile package
-managers, promotes SQL tables and Mongoose models into `database/table` entities, narrows
-route/controller review blast radius with route-local token matching, and filters no-op/failing test
-scripts out of required verification suggestions.
+The current slice hardens DBMS service causality. rizz now promotes SQLAlchemy models and Alembic
+tables into `database/table` entities, filters noisy Mongoose schema option keys from field lists,
+recognizes controller/model folders as service/data surfaces, scopes required test commands to the
+changed backend/frontend package, detects ODM query reads in controllers, and writes target-specific
+explain reports so parallel agents do not race on one report file.
 
 ## Capability Scorecard
 
@@ -71,41 +72,41 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
-| Flow Understanding | 92/100 | 8 | Deepen route, service, and journey reconstruction on larger DBMS/MVC repos. |
-| Architecture Reasoning | 85/100 | 15 | Reduce weak component boundary assumptions and add richer DB relationship evidence. |
+| Flow Understanding | 93/100 | 7 | Deepen route, service, and journey reconstruction on larger Python/Node DBMS repos. |
+| Architecture Reasoning | 86/100 | 14 | Reduce weak component boundary assumptions and add richer DB relationship evidence. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
-| PI-Bench seed/task format | 98/100 | 2 | Broaden deterministic task coverage and UAT fixtures. |
+| PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
 | Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
-| Verification Plan + Evidence Ingest | 95/100 | 5 | Reuse approval/signoff history across repeated agent repair loops and make review ingestion more automatic. |
+| Verification Plan + Evidence Ingest | 96/100 | 4 | Reuse approval/signoff history across repeated agent repair loops and make review ingestion more automatic. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `feature/dbms-usefulness-hardening`, local gate on the rizz repo.
+Run: `feature/dbms-service-causality`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 2/2 passed |
+| Focused DBMS hardening tests | 3/3 passed |
 | Focused brain regression file | 68/68 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
-| Full unit suite | 369/369 passed |
+| Full unit suite | 370/370 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
-| Footprint | cold start 48ms / 250ms, core 198KB / 200KB |
+| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
-| rizz self-review | Investigate, 0 critical findings |
+| rizz self-review | Needs attention: conservative security-sensitive-surface finding; direct diff scan found no literal credential, only a deleted helper context and runbook prose |
 
-Current verdict: rizz is less misleading on DBMS-style repos. Agents should now get real
-SQL/Mongoose schema surfaces, nested npm workspaces no longer look package-manager unknown, route
-controller changes produce narrower affected-flow lists, and unusable `npm test` placeholders are
-not presented as required proof. Remaining work is richer schema relationships and larger public
-repo UAT after merge.
+Current verdict: rizz is more useful on real DBMS repos, not just fixture-shaped ones. Agents should
+now get SQLAlchemy/Alembic schema surfaces, cleaner Mongoose field lists, backend-scoped
+verification suggestions, controller/model service causality, ORM read detection in controllers, and
+parallel-safe explain reports. Remaining work is deeper Python route-to-service causality and
+post-merge UAT on the two public DBMS repos that exposed these gaps.
 
 ## Latest DBMS-Like UAT Agent Results
 
@@ -115,11 +116,13 @@ Run: QA sidecar on public DBMS-style repos, using fresh rizz `develop` and temp 
 | --- | --- | ---: | ---: | --- |
 | `iampranavdhar/Library-Management-System-MERN` | 66 files, 2 components, 26 flows, 5 commands, 0 tests; backend/frontend split was useful. | 7/10 | 3-4x orientation speedup | Addressed this baton: nested package manager, Mongoose model entities, route review breadth, unusable test suggestions. Remaining: backend/frontend test ownership precision. |
 | `manascb1344/Online-Auction-System` | 69 files, 3 components, 32 flows, 7 commands, 0 tests; client/server/database split and read-first paths were useful. | 6/10 | 2.5-3.5x orientation speedup | Addressed this baton: nested package manager, SQL table entities, controller review breadth, unusable test suggestions. Remaining: generic component wording and deeper SQL relationship parsing. |
+| `Yogndrr/MERN-School-Management-System` | 101 scanned files, 2 components, 61 flows, 7 commands, 0 tests; nested npm and 7 Mongoose models detected. | 7/10 | 2-3x orientation speedup | Addressed this baton: frontend test leakage on backend diffs, controller service linking, noisy Mongoose option keys, parallel explain race. Remaining: exact controller-to-route handler semantics. |
+| `sreyas-b-anand/dbms-mini-project` | 108 scanned files, 2 components, 15 flows, 4 commands, 0 tests; nested npm worked and wallet route review was narrow. | 6/10 | 2x orientation speedup | Addressed this baton: SQLAlchemy/Alembic entities, MySQL vs SQLite labeling, parallel explain race. Remaining: Flask route-to-service/model causality needs deeper Python import handling. |
 
-UAT verdict: rizz is already useful as an agent cold-start accelerator on DBMS-style repos, mostly
-for boundary mapping and read-first orientation. The next DBMS usefulness batons are schema/entity
-understanding for SQL/Mongoose, nested lockfile/package-manager detection, route/controller-specific
-review blast radius, and filtering no-op or known-failing test scripts out of required verification.
+UAT verdict: rizz is now a useful agent cold-start accelerator on DBMS-style repos, mostly for
+boundary mapping, read-first orientation, route inventory, command ownership, and schema/entity
+inspection. The next DBMS usefulness baton is deeper Python/Flask service causality: route handler
+to service/controller to SQLAlchemy model/table paths with fewer broad architecture warnings.
 
 ## Latest DBMS UAT Actuals
 
