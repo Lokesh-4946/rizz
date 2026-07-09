@@ -363,6 +363,176 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('detects multi-column raw SQL and Alembic foreign keys', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'database', 'migrations'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'composite-fk-app' }));
+      await writeFile(
+        join(dir, 'database', 'schema.sql'),
+        [
+          'CREATE TABLE public.accounts (',
+          '  account_id INTEGER,',
+          '  region_id INTEGER,',
+          '  PRIMARY KEY (account_id, region_id)',
+          ');',
+          'CREATE TABLE wallets (',
+          '  account_id INTEGER,',
+          '  region_id INTEGER,',
+          '  FOREIGN KEY (account_id, region_id) REFERENCES public.accounts(account_id, region_id)',
+          ');',
+          'CREATE TABLE wallet_events (',
+          '  account_id INTEGER,',
+          '  region_id INTEGER',
+          ');',
+          'ALTER TABLE wallet_events ADD CONSTRAINT fk_wallet_events_wallets FOREIGN KEY (account_id, region_id) REFERENCES wallets(account_id, region_id);',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'database', 'migrations', '002_composite.py'),
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          '',
+          'def upgrade():',
+          '    op.create_table(',
+          '        "tenant_accounts",',
+          '        sa.Column("account_id", sa.Integer()),',
+          '        sa.Column("region_id", sa.Integer()),',
+          '    )',
+          '    op.create_table(',
+          '        "invoices",',
+          '        sa.Column("tenant_account_id", sa.Integer()),',
+          '        sa.Column("tenant_region_id", sa.Integer()),',
+          '        sa.ForeignKeyConstraint(',
+          '            ["tenant_account_id", "tenant_region_id"],',
+          '            ["tenant_accounts.account_id", "tenant_accounts.region_id"],',
+          '        ),',
+          '    )',
+          '    op.create_table(',
+          '        "payments",',
+          '        sa.Column("invoice_id", sa.Integer()),',
+          '        sa.Column("tenant_region_id", sa.Integer()),',
+          '    )',
+          '    op.create_foreign_key(',
+          '        None,',
+          '        "payments",',
+          '        "invoices",',
+          '        ["invoice_id", "tenant_region_id"],',
+          '        ["id", "tenant_region_id"],',
+          '        source_schema="billing",',
+          '        referent_schema="billing",',
+          '    )',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:41:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const databaseTables = await readJson<{
+        entities: Array<{
+          id: string;
+          name: string;
+          data?: { fields?: string[]; relationships?: unknown[] };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'database_tables.json'));
+      expect(databaseTables.entities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'database/table:database--schema.sql-wallets',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'account_id',
+                  target_table: 'accounts',
+                  target_field: 'account_id',
+                }),
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'region_id',
+                  target_table: 'accounts',
+                  target_field: 'region_id',
+                }),
+              ]),
+            }),
+          }),
+          expect.objectContaining({
+            id: 'database/table:database--schema.sql-wallet_events',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'region_id',
+                  target_table: 'wallets',
+                  target_field: 'region_id',
+                }),
+              ]),
+            }),
+          }),
+          expect.objectContaining({
+            id: 'database/table:database--migrations--002_composite.py-invoices',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'tenant_account_id',
+                  target_table: 'tenant_accounts',
+                  target_field: 'account_id',
+                }),
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'tenant_region_id',
+                  target_table: 'tenant_accounts',
+                  target_field: 'region_id',
+                }),
+              ]),
+            }),
+          }),
+          expect.objectContaining({
+            id: 'database/table:database--migrations--002_composite.py-payments',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'invoice_id',
+                  target_table: 'invoices',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'tenant_region_id',
+                  target_table: 'invoices',
+                  target_field: 'tenant_region_id',
+                }),
+              ]),
+            }),
+          }),
+        ]),
+      );
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: 'database/table:database--schema.sql-wallets',
+            relation: 'depends_on',
+            to: 'database/table:database--schema.sql-accounts',
+          }),
+          expect.objectContaining({
+            from: 'database/table:database--migrations--002_composite.py-payments',
+            relation: 'depends_on',
+            to: 'database/table:database--migrations--002_composite.py-invoices',
+          }),
+        ]),
+      );
+    });
+  });
+
   it('keeps controller review blast radius route-local and filters unusable test scripts', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
