@@ -547,15 +547,15 @@ function sqlCreateTableRelationships(body: string): DatabaseTableRelationshipInf
       );
     }
     const tableConstraint =
-      /(?:constraint\s+[`"[]?\w+[`"\]]?\s+)?foreign\s+key\s*\(\s*([`"[]?\w+[`"\]]?)\s*\)\s+references\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(\s*([`"[]?\w+[`"\]]?)\s*\))?/i.exec(
+      /(?:constraint\s+[`"[]?\w+[`"\]]?\s+)?foreign\s+key\s*\(([^)]+)\)\s+references\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(([^)]+)\))?/i.exec(
         part,
       );
     if (tableConstraint === null) continue;
     relationships.push(
-      sqlForeignKeyRelationship(
-        stripSqlIdentifier(tableConstraint[1] ?? 'unknown_field'),
+      ...sqlForeignKeyRelationships(
+        sqlIdentifierList(tableConstraint[1]),
         tableConstraint[2],
-        tableConstraint[3],
+        sqlIdentifierList(tableConstraint[3]),
         part,
       ),
     );
@@ -568,18 +568,30 @@ function sqlAlterTableRelationships(
 ): Map<string, DatabaseTableRelationshipInference[]> {
   const byTable = new Map<string, DatabaseTableRelationshipInference[]>();
   for (const match of text.matchAll(
-    /alter\s+table\s+([`"[]?[\w.-]+[`"\]]?)[\s\S]{0,400}?foreign\s+key\s*\(\s*([`"[]?\w+[`"\]]?)\s*\)\s+references\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(\s*([`"[]?\w+[`"\]]?)\s*\))?/gi,
+    /alter\s+table\s+([`"[]?[\w.-]+[`"\]]?)[\s\S]{0,400}?foreign\s+key\s*\(([^)]+)\)\s+references\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(([^)]+)\))?/gi,
   )) {
     const table = dbEntityName(match[1] ?? 'unknown_table');
-    const relationship = sqlForeignKeyRelationship(
-      stripSqlIdentifier(match[2] ?? 'unknown_field'),
+    const relationships = sqlForeignKeyRelationships(
+      sqlIdentifierList(match[2]),
       match[3],
-      match[4],
+      sqlIdentifierList(match[4]),
       match[0] ?? '',
     );
-    byTable.set(table, [...(byTable.get(table) ?? []), relationship]);
+    byTable.set(table, [...(byTable.get(table) ?? []), ...relationships]);
   }
   return byTable;
+}
+
+function sqlForeignKeyRelationships(
+  sourceFields: readonly string[],
+  targetTable: string | undefined,
+  targetFields: readonly string[],
+  declaration: string,
+): DatabaseTableRelationshipInference[] {
+  const normalizedSourceFields = sourceFields.length === 0 ? ['unknown_field'] : sourceFields;
+  return normalizedSourceFields.map((sourceField, index) =>
+    sqlForeignKeyRelationship(sourceField, targetTable, targetFields[index], declaration),
+  );
 }
 
 function sqlForeignKeyRelationship(
@@ -595,6 +607,13 @@ function sqlForeignKeyRelationship(
     ...(targetField !== undefined ? { targetField: stripSqlIdentifier(targetField) } : {}),
     declaration: declaration.trim().slice(0, 160),
   };
+}
+
+function sqlIdentifierList(value: string | undefined): string[] {
+  if (value === undefined) return [];
+  return splitSqlList(value)
+    .map(stripSqlIdentifier)
+    .filter((item) => item !== '');
 }
 
 const SQL_TABLE_CONSTRAINT_PREFIXES = new Set([
@@ -615,6 +634,7 @@ function sqlLeadingIdentifier(part: string): string | undefined {
 function splitSqlList(value: string): string[] {
   const parts: string[] = [];
   let depth = 0;
+  let bracketDepth = 0;
   let quote: '"' | "'" | '`' | undefined;
   let start = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -630,7 +650,9 @@ function splitSqlList(value: string): string[] {
     }
     if (char === '(') depth += 1;
     if (char === ')') depth -= 1;
-    if (char !== ',' || depth !== 0) continue;
+    if (char === '[') bracketDepth += 1;
+    if (char === ']') bracketDepth -= 1;
+    if (char !== ',' || depth !== 0 || bracketDepth !== 0) continue;
     parts.push(value.slice(start, index).trim());
     start = index + 1;
   }
@@ -759,12 +781,12 @@ function inferAlembicTables(sourceFile: string, text: string): DatabaseTableInfe
     table.relationships.push(...alembicColumnForeignKeys(call));
   }
   for (const call of alembicOperationCalls(text, 'create_foreign_key')) {
-    const relationship = alembicCreateForeignKeyRelationship(call);
-    if (relationship === undefined) continue;
+    const relationships = alembicCreateForeignKeyRelationships(call);
+    if (relationships === undefined) continue;
     ensureTable(
-      relationship.sourceTable,
-      `op.create_foreign_key(${relationship.sourceTable})`,
-    ).relationships.push(relationship.relationship);
+      relationships.sourceTable,
+      `op.create_foreign_key(${relationships.sourceTable})`,
+    ).relationships.push(...relationships.relationships);
   }
   return [...byName.entries()].map(([name, table]) => ({
     name,
@@ -822,49 +844,81 @@ function alembicColumnForeignKeys(call: string): DatabaseTableRelationshipInfere
 }
 
 function alembicForeignKeyConstraints(call: string): DatabaseTableRelationshipInference[] {
-  return [
-    ...call.matchAll(
-      /ForeignKeyConstraint\s*\(\s*\[\s*['"]([^'"]+)['"]\s*\]\s*,\s*\[\s*['"]([^'"]+)['"]\s*\]/g,
-    ),
-  ].map((match) => {
-    const target = sqlAlchemyForeignKeyTarget(match[2] ?? 'unknown_table');
-    return {
-      kind: 'foreign_key',
-      sourceField: match[1] ?? 'unknown_field',
-      targetTable: target.table,
-      ...(target.field !== undefined ? { targetField: target.field } : {}),
-      declaration: (match[0] ?? '').trim().slice(0, 160),
-    };
-  });
+  return [...call.matchAll(/ForeignKeyConstraint\s*\(\s*(\[[^\]]+\])\s*,\s*(\[[^\]]+\])/g)].flatMap(
+    (match) => {
+      const sourceFields = quotedListValues(match[1] ?? '');
+      const targetReferences = quotedListValues(match[2] ?? '');
+      return alembicForeignKeyListRelationships(sourceFields, targetReferences, match[0] ?? '');
+    },
+  );
 }
 
-function alembicCreateForeignKeyRelationship(call: string):
+function alembicCreateForeignKeyRelationships(call: string):
   | {
       readonly sourceTable: string;
-      readonly relationship: DatabaseTableRelationshipInference;
+      readonly relationships: readonly DatabaseTableRelationshipInference[];
     }
   | undefined {
-  const quoted = [...call.matchAll(/['"]([^'"]+)['"]/g)].map((match) => match[1] ?? '');
-  const sourceTable = quoted[1];
-  const targetTable = quoted[2];
-  const columnLists = [...call.matchAll(/\[\s*['"]([^'"]+)['"]\s*\]/g)].map(
-    (match) => match[1] ?? '',
-  );
-  const sourceField = columnLists[0];
-  const targetField = columnLists[1];
-  if (sourceTable === undefined || targetTable === undefined || sourceField === undefined) {
+  const args = functionCallArguments(call);
+  const sourceTable =
+    firstQuotedString(args[1] ?? '') ?? /source_table\s*=\s*['"]([^'"]+)['"]/.exec(call)?.[1];
+  const targetTable =
+    firstQuotedString(args[2] ?? '') ?? /referent_table\s*=\s*['"]([^'"]+)['"]/.exec(call)?.[1];
+  const positionalSourceFields = quotedListValues(args[3] ?? '');
+  const positionalTargetFields = quotedListValues(args[4] ?? '');
+  const sourceFields =
+    positionalSourceFields.length > 0
+      ? positionalSourceFields
+      : quotedListValues(/local_cols\s*=\s*(\[[^\]]+\])/.exec(call)?.[1] ?? '');
+  const targetFields =
+    positionalTargetFields.length > 0
+      ? positionalTargetFields
+      : quotedListValues(/remote_cols\s*=\s*(\[[^\]]+\])/.exec(call)?.[1] ?? '');
+  if (sourceTable === undefined || targetTable === undefined || sourceFields.length === 0) {
     return undefined;
   }
   return {
     sourceTable,
-    relationship: {
+    relationships: sourceFields.map((sourceField, index) => ({
       kind: 'foreign_key',
       sourceField,
-      targetTable,
-      ...(targetField !== undefined ? { targetField } : {}),
+      targetTable: dbEntityName(targetTable),
+      ...(targetFields[index] !== undefined
+        ? { targetField: dbEntityName(targetFields[index] ?? '') }
+        : {}),
       declaration: call.trim().slice(0, 160),
-    },
+    })),
   };
+}
+
+function alembicForeignKeyListRelationships(
+  sourceFields: readonly string[],
+  targetReferences: readonly string[],
+  declaration: string,
+): DatabaseTableRelationshipInference[] {
+  const firstTarget = sqlAlchemyForeignKeyTarget(targetReferences[0] ?? 'unknown_table');
+  return sourceFields.map((sourceField, index) => {
+    const target = sqlAlchemyForeignKeyTarget(targetReferences[index] ?? '');
+    return {
+      kind: 'foreign_key',
+      sourceField,
+      targetTable: target.table === '' ? firstTarget.table : target.table,
+      ...(target.field !== undefined ? { targetField: target.field } : {}),
+      declaration: declaration.trim().slice(0, 160),
+    };
+  });
+}
+
+function functionCallArguments(call: string): string[] {
+  const open = call.indexOf('(');
+  const close = open < 0 ? -1 : findMatchingSqlParen(call, open);
+  if (open < 0) return [];
+  const body = close < 0 ? call.slice(open + 1) : call.slice(open + 1, close);
+  return splitSqlList(body);
+}
+
+function quotedListValues(value: string): string[] {
+  return [...value.matchAll(/['"]([^'"]+)['"]/g)].map((match) => match[1] ?? '');
 }
 
 function alembicColumnCalls(call: string): string[] {
