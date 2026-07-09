@@ -6,9 +6,15 @@ import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
 import {
-  databaseTableDescription,
+  type DatabaseTableInference as Dti,
+  databaseTableDependencyLabels as dbDepLabels,
+  databaseTableDescription as dbDesc,
+  databaseTableFlowLabels as dbFlowLabels,
+  databaseTableGraphIndex as dbGraphIndex,
+  databaseTableRelationshipEdges as dbRelEdges,
+  databaseTableEntityData as dbTableData,
   detectPackageManagerFromFiles,
-  inferDatabaseTables,
+  inferDatabaseTables as inferDbTables,
   isRouteOrControllerFile,
   requiredTestCommands,
   routeChangedFileMatchesRoutePath,
@@ -5075,6 +5081,7 @@ function pathStateDependencyLabels(path: string): string[] {
 function inferFlowDataDependencies(params: {
   readonly rootDir: string;
   readonly intelligence: FlowIntelligence;
+  readonly dbs: readonly Dti[];
 }): FlowDataDependency[] {
   const grouped = new Map<
     string,
@@ -5085,7 +5092,7 @@ function inferFlowDataDependencies(params: {
       readonly evidenceIds: Set<string>;
     }
   >();
-  const add = (label: string, file: string, operations: readonly string[]): void => {
+  const add = (label: string, files: readonly string[], operations: readonly string[]): void => {
     const key = stableSlug(label);
     const existing = grouped.get(key) ?? {
       label,
@@ -5093,22 +5100,18 @@ function inferFlowDataDependencies(params: {
       operations: new Set<string>(),
       evidenceIds: new Set<string>(),
     };
-    existing.files.add(safeText(file));
-    existing.evidenceIds.add(evidenceId(file));
+    for (const file of files) {
+      existing.files.add(safeText(file));
+      existing.evidenceIds.add(evidenceId(file));
+    }
     for (const operation of operations) existing.operations.add(safeText(operation));
     grouped.set(key, existing);
   };
-  const databaseTableLabelsByFile = new Map<string, string[]>();
-  for (const table of inferDatabaseTables(
-    params.rootDir,
-    params.intelligence.files.map((relativePath) => ({ relativePath })),
-  )) {
-    const label = entityId('database/table', `${table.sourceFile}:${table.name}`);
-    databaseTableLabelsByFile.set(table.sourceFile, [
-      ...(databaseTableLabelsByFile.get(table.sourceFile) ?? []),
-      label,
-    ]);
-  }
+  const dbLabels = dbFlowLabels({
+    tables: params.dbs,
+    flowFiles: params.intelligence.files,
+    entityIdForTable: entityId,
+  });
 
   for (const file of params.intelligence.files) {
     if (!isDataDependencySourceFile(file)) continue;
@@ -5117,10 +5120,11 @@ function inferFlowDataDependencies(params: {
     const labels = unique([
       ...storageDependenciesFromText(text),
       ...pathStateDependencyLabels(file),
-      ...(databaseTableLabelsByFile.get(file) ?? []),
+      ...(dbLabels.labelsByFile.get(file) ?? []),
     ]);
     for (const label of labels) {
-      add(label, file, operations.length > 0 ? operations : ['state dependency']);
+      const depFiles = unique([file, dbLabels.sourceByLabel.get(label) ?? file]);
+      add(label, depFiles, operations.length > 0 ? operations : ['state dependency']);
     }
   }
 
@@ -6950,11 +6954,12 @@ function buildFlowEntity(
   intelligence: FlowIntelligence,
   rootDir: string,
   now: string,
+  dbs: readonly Dti[],
   createdAt?: string,
 ): BrainEntity {
   const withDataDependencies: FlowIntelligence = {
     ...intelligence,
-    data_dependencies: inferFlowDataDependencies({ rootDir, intelligence }),
+    data_dependencies: inferFlowDataDependencies({ rootDir, intelligence, dbs }),
   };
   const enriched = enrichFlowWithJourney(withDataDependencies);
   const confidence = flowConfidenceFor({
@@ -7002,6 +7007,7 @@ function reconstructFlows(params: {
   readonly previousFlows: ReadonlyMap<string, BrainEntity>;
 }): void {
   const changedFileSet = new Set(params.changedFiles);
+  const dbs = inferDbTables(params.rootDir, params.files);
   const flowIntelligence: FlowIntelligence[] = [];
   for (const pkg of params.packageFacts) {
     for (const [scriptName, command] of Object.entries(pkg.scripts)) {
@@ -7113,7 +7119,7 @@ function reconstructFlows(params: {
 
   for (const flow of sorted([...byId.values()], (item) => item.flow_id)) {
     const previous = params.previousFlows.get(flow.flow_id);
-    const entity = buildFlowEntity(flow, params.rootDir, params.now, previous?.created_at);
+    const entity = buildFlowEntity(flow, params.rootDir, params.now, dbs, previous?.created_at);
     params.buckets.flows.push(entity);
     for (const componentId of flow.components) {
       addRelation(
@@ -19869,28 +19875,43 @@ function buildBrain(params: {
     ]);
   }
 
-  for (const table of inferDatabaseTables(params.rootDir, params.files)) {
+  const dbs = inferDbTables(params.rootDir, params.files);
+  const dbi = dbGraphIndex(dbs, entityId);
+  for (const table of dbs) {
     const tableId = entityId('database/table', `${table.sourceFile}:${table.name}`);
     const tableEntity = makeEntity({
       id: tableId,
       type: 'database/table',
       name: safeText(table.name),
-      description: safeText(databaseTableDescription(table)),
+      description: safeText(dbDesc(table)),
       now: params.now,
       confidence: 'verified',
       evidenceIds: [evidenceId(table.sourceFile)],
       sourceFiles: [table.sourceFile],
-      data: {
-        kind: table.kind,
-        declaration: safeText(table.declaration),
-        fields: table.fields.map(safeText),
-      },
+      data: dbTableData({
+        table,
+        graphIndex: dbi,
+        sanitizeText: safeText,
+      }),
     });
     buckets.databaseTables.push(tableEntity);
     addRelation(relationships, projectId, 'owns', tableId, [evidenceId(table.sourceFile)]);
     addRelation(relationships, entityId('file', table.sourceFile), 'exposes', tableId, [
       evidenceId(table.sourceFile),
     ]);
+  }
+  for (const edge of dbRelEdges({
+    tables: dbs,
+    graphIndex: dbi,
+  })) {
+    addRelation(
+      relationships,
+      edge.from,
+      edge.relation,
+      edge.to,
+      [evidenceId(edge.evidenceFile)],
+      edge.confidence,
+    );
   }
 
   for (const pkg of params.packageFacts) {
@@ -22913,6 +22934,7 @@ function buildReview(params: {
     ...affectedComponentIds,
     ...affectedFlowIds,
     ...affectedServiceIds,
+    ...dbDepLabels(affectedFlows),
     ...params.entitySets.configs
       .filter((config) => config.source_files.some((file) => reviewableChangedFileSet.has(file)))
       .map((config) => config.id),
@@ -25178,6 +25200,7 @@ function affectedFlowEntities(
       ...flowStringArray(flow, 'files'),
       ...flowStringArray(flow, 'configs'),
       ...flowStringArray(flow, 'tests'),
+      ...safeFlowDataDependencies(flow).flatMap((dependency) => dependency.files),
       ...flow.source_files,
     ]);
     const flowComponents = flowStringArray(flow, 'components');

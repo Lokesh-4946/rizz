@@ -349,6 +349,145 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('links SQLAlchemy relationships to cross-table route blast radius', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await mkdir(join(dir, 'app', 'routes'), { recursive: true });
+      await mkdir(join(dir, 'app', 'services'), { recursive: true });
+      await mkdir(join(dir, 'app', 'models'), { recursive: true });
+      await writeFile(
+        join(dir, 'requirements.txt'),
+        ['Flask==3.0.0', 'Flask-SQLAlchemy==3.1.1', 'pytest==8.0.0'].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'routes', 'wallet_routes.py'),
+        [
+          'from flask import Blueprint, jsonify',
+          'from app.services.wallet_service import get_wallet',
+          'wallet_bp = Blueprint("wallets", __name__)',
+          '@wallet_bp.get("/wallets/<int:wallet_id>")',
+          'def wallet_detail(wallet_id):',
+          '    return jsonify(get_wallet(wallet_id))',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'services', 'wallet_service.py'),
+        [
+          'from app.models.wallet import Wallet',
+          'def get_wallet(wallet_id):',
+          '    return Wallet.query.filter_by(id=wallet_id).first()',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'models', 'wallet.py'),
+        [
+          'from app.models.user import User',
+          'from app.models.user import db',
+          'class Wallet(db.Model):',
+          '    __tablename__ = "wallets"',
+          '    id = db.Column(db.Integer, primary_key=True)',
+          '    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)',
+          '    balance_cents = db.Column(db.Integer, default=0)',
+          '    user = db.relationship("User", back_populates="wallets")',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'app', 'models', 'user.py'),
+        [
+          'from flask_sqlalchemy import SQLAlchemy',
+          'db = SQLAlchemy()',
+          'class User(db.Model):',
+          '    __tablename__ = "users"',
+          '    id = db.Column(db.Integer, primary_key=True)',
+          '    email = db.Column(db.String(255), nullable=False)',
+          '    wallets = db.relationship("Wallet", back_populates="user")',
+        ].join('\n'),
+      );
+
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:27:00.000Z'),
+      });
+
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+      const databaseTables = await readJson<{
+        entities: Array<{ id: string; name: string; data?: { relationships?: unknown[] } }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'database_tables.json'));
+      expect(databaseTables.entities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'database/table:app--models--wallet.py-wallets',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'user_id',
+                  target_table: 'users',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  kind: 'relationship',
+                  source_field: 'user',
+                  target_table: 'users',
+                  target_model: 'User',
+                  inverse_field: 'wallets',
+                }),
+              ]),
+            }),
+          }),
+        ]),
+      );
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'database/table:app--models--wallet.py-wallets',
+          relation: 'depends_on',
+          to: 'database/table:app--models--user.py-users',
+        }),
+      );
+
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'app', 'models', 'user.py'),
+        [
+          'from flask_sqlalchemy import SQLAlchemy',
+          'db = SQLAlchemy()',
+          'class User(db.Model):',
+          '    __tablename__ = "users"',
+          '    id = db.Column(db.Integer, primary_key=True)',
+          '    email_address = db.Column(db.String(255), nullable=False)',
+          '    wallets = db.relationship("Wallet", back_populates="user")',
+        ].join('\n'),
+      );
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:28:00.000Z'),
+      });
+
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      const walletFlow = review.value.review.affected_flows.find(
+        (flow) => flow.route_path === '/wallets/<int:wallet_id>',
+      );
+      expect(walletFlow?.changed_files).toContain('app/models/user.py');
+      expect(review.value.review.review_evidence_summary.affected_data_dependencies).toEqual(
+        expect.arrayContaining(['database/table:app--models--user.py-users']),
+      );
+      expect(review.value.review.affected_relationships).toContainEqual(
+        expect.objectContaining({
+          from: 'database/table:app--models--wallet.py-wallets',
+          relation: 'depends_on',
+          to: 'database/table:app--models--user.py-users',
+        }),
+      );
+    });
+  });
+
   it('writes explain reports per target so parallel explains do not collide', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'src'), { recursive: true });

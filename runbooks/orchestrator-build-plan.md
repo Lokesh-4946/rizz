@@ -71,8 +71,8 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
-| Flow Understanding | 94/100 | 6 | Deepen multi-file Python route/service journeys and add more real Flask/FastAPI UAT seeds. |
-| Architecture Reasoning | 87/100 | 13 | Reduce weak component boundary assumptions and add richer cross-table relationship evidence. |
+| Flow Understanding | 95/100 | 5 | Broaden real Flask/FastAPI UAT seeds and verify more multi-file Python route/service journeys. |
+| Architecture Reasoning | 89/100 | 11 | Reduce weak component boundary assumptions and broaden cross-table relationship evidence beyond SQLAlchemy. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
@@ -83,29 +83,30 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/flask-sqlalchemy-causality`, local gate on the rizz repo.
+Run: `feature/sqlalchemy-relationship-precision`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 4/4 passed |
-| Focused brain regression file | 68/68 passed |
+| Focused DBMS hardening tests | 5/5 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
-| Full unit suite | 371/371 passed |
+| Full unit suite | 372/372 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
-| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
+| Diff whitespace check | Passed |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,520 bytes |
+| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
-| rizz self-review | Needs attention: no critical findings; duplicate-code warning is from moving DBMS heuristics out of `index.ts` into the helper |
 
-Current verdict: rizz is more useful on Python DBMS repos where the important path is
-route/controller -> service -> SQLAlchemy model/table. Agents should now see a changed Flask model
-as an affected route/service/data surface with exact table evidence instead of a generic Python
-component warning. Remaining work is broader UAT on real Flask/FastAPI repos and relationship
-parsing between SQLAlchemy models.
+Current verdict: rizz now records SQLAlchemy `ForeignKey(...)`, `relationship(...)`,
+`back_populates`, and `backref` evidence on exact `database/table:*` entities. Flask route/service
+flows that touch one SQLAlchemy model now carry one-hop related table dependencies, so a related
+table model edit can surface the route, exact data dependency, and table-to-table blast-radius
+relationship instead of stopping at the directly imported model. Remaining work is broader UAT on
+real Flask/FastAPI repos and relationship parsing for raw SQL/migration-only schemas.
 
 ## Latest DBMS-Like UAT Agent Results
 
