@@ -72,7 +72,7 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
 | Flow Understanding | 95/100 | 5 | Broaden real Flask/FastAPI UAT seeds and verify more multi-file Python route/service journeys. |
-| Architecture Reasoning | 89/100 | 11 | Reduce weak component boundary assumptions and broaden cross-table relationship evidence beyond SQLAlchemy. |
+| Architecture Reasoning | 90/100 | 10 | Reduce weak component boundary assumptions and validate SQL relationship precision on real migration-heavy repos. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
@@ -83,14 +83,15 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/sqlalchemy-relationship-precision`, local gate on the rizz repo.
+Run: `feature/sql-relationship-precision`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 5/5 passed |
+| Focused DBMS hardening tests | 6/6 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
-| Full unit suite | 372/372 passed |
+| Lint | Passed |
+| Full unit suite | 373/373 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
@@ -98,15 +99,15 @@ Run: `feature/sqlalchemy-relationship-precision`, local gate on the rizz repo.
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,520 bytes |
-| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
+| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: rizz now records SQLAlchemy `ForeignKey(...)`, `relationship(...)`,
-`back_populates`, and `backref` evidence on exact `database/table:*` entities. Flask route/service
-flows that touch one SQLAlchemy model now carry one-hop related table dependencies, so a related
-table model edit can surface the route, exact data dependency, and table-to-table blast-radius
-relationship instead of stopping at the directly imported model. Remaining work is broader UAT on
-real Flask/FastAPI repos and relationship parsing for raw SQL/migration-only schemas.
+Current verdict: rizz now records raw SQL column fields and foreign-key relationships from
+`CREATE TABLE` inline `REFERENCES`, table-level `FOREIGN KEY`, and `ALTER TABLE ... FOREIGN KEY`
+statements. Those relationships reuse the exact `database/table:*` graph machinery from the
+SQLAlchemy baton, so migration-only schemas now expose cross-table blast-radius evidence instead of
+flat table inventory. Remaining work is real-repo UAT on raw SQL migration-heavy projects and
+dialect-specific relationship forms.
 
 ## Latest DBMS-Like UAT Agent Results
 
