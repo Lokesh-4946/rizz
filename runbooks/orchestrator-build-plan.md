@@ -72,7 +72,7 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
 | Flow Understanding | 95/100 | 5 | Broaden real Flask/FastAPI UAT seeds and verify more multi-file Python route/service journeys. |
-| Architecture Reasoning | 90/100 | 10 | Reduce weak component boundary assumptions and validate SQL relationship precision on real migration-heavy repos. |
+| Architecture Reasoning | 91/100 | 9 | Reduce weak component boundary assumptions and validate SQL/Alembic relationship precision on real migration-heavy repos. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
@@ -83,15 +83,15 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/sql-relationship-precision`, local gate on the rizz repo.
+Run: `feature/alembic-foreign-key-precision`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 6/6 passed |
+| Focused DBMS hardening tests | 7/7 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 373/373 passed |
+| Full unit suite | 374/374 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
@@ -100,14 +100,15 @@ Run: `feature/sql-relationship-precision`, local gate on the rizz repo.
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,520 bytes |
 | Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
-| Full `pnpm check` | Passed |
+| Full `pnpm check` | Passed on rerun; the first run hit transient Vitest timeouts in three long integration tests |
 
-Current verdict: rizz now records raw SQL column fields and foreign-key relationships from
-`CREATE TABLE` inline `REFERENCES`, table-level `FOREIGN KEY`, and `ALTER TABLE ... FOREIGN KEY`
-statements. Those relationships reuse the exact `database/table:*` graph machinery from the
-SQLAlchemy baton, so migration-only schemas now expose cross-table blast-radius evidence instead of
-flat table inventory. Remaining work is real-repo UAT on raw SQL migration-heavy projects and
-dialect-specific relationship forms.
+Current verdict: rizz now records Alembic foreign-key relationships from `op.create_table`
+`sa.ForeignKey(...)`, `sa.ForeignKeyConstraint(...)`, `op.add_column(...)`, and
+`op.create_foreign_key(...)`. Repeated migration operations are merged by table, and the inferred
+relationships reuse the exact `database/table:*` graph machinery from the SQLAlchemy/raw SQL batons,
+so migration-only schemas expose cross-table blast-radius evidence instead of flat table inventory.
+Remaining work is real-repo UAT on migration-heavy projects and dialect-specific multi-column or
+schema-qualified relationship forms.
 
 ## Latest DBMS-Like UAT Agent Results
 

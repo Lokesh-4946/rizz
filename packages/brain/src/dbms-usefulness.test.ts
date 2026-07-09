@@ -244,6 +244,125 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('detects Alembic foreign keys and cross-table graph relationships', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'database', 'migrations'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'alembic-schema-app' }));
+      await writeFile(
+        join(dir, 'database', 'migrations', '001_wallets.py'),
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          '',
+          'def upgrade():',
+          '    op.create_table(',
+          '        "users",',
+          '        sa.Column("id", sa.Integer(), primary_key=True),',
+          '        sa.Column("email", sa.String()),',
+          '    )',
+          '    op.create_table(',
+          '        "ledgers",',
+          '        sa.Column("id", sa.Integer(), primary_key=True),',
+          '        sa.Column("wallet_id", sa.Integer()),',
+          '    )',
+          '    op.create_table(',
+          '        "wallets",',
+          '        sa.Column("id", sa.Integer(), primary_key=True),',
+          '        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id")),',
+          '        sa.Column("ledger_id", sa.Integer()),',
+          '        sa.ForeignKeyConstraint(["ledger_id"], ["ledgers.id"]),',
+          '    )',
+          '    op.add_column(',
+          '        "wallets",',
+          '        sa.Column("backup_ledger_id", sa.Integer(), sa.ForeignKey("ledgers.id")),',
+          '    )',
+          '    op.create_foreign_key(',
+          '        "fk_ledger_wallet",',
+          '        "ledgers",',
+          '        "wallets",',
+          '        ["wallet_id"],',
+          '        ["id"],',
+          '    )',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:34:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const databaseTables = await readJson<{
+        entities: Array<{
+          id: string;
+          name: string;
+          data?: { fields?: string[]; relationships?: unknown[] };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'database_tables.json'));
+      expect(databaseTables.entities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'database/table:database--migrations--001_wallets.py-wallets',
+            data: expect.objectContaining({
+              fields: expect.arrayContaining(['id', 'user_id', 'ledger_id', 'backup_ledger_id']),
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'user_id',
+                  target_table: 'users',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'ledger_id',
+                  target_table: 'ledgers',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'backup_ledger_id',
+                  target_table: 'ledgers',
+                  target_field: 'id',
+                }),
+              ]),
+            }),
+          }),
+          expect.objectContaining({
+            id: 'database/table:database--migrations--001_wallets.py-ledgers',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'wallet_id',
+                  target_table: 'wallets',
+                  target_field: 'id',
+                }),
+              ]),
+            }),
+          }),
+        ]),
+      );
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: 'database/table:database--migrations--001_wallets.py-wallets',
+            relation: 'depends_on',
+            to: 'database/table:database--migrations--001_wallets.py-users',
+          }),
+          expect.objectContaining({
+            from: 'database/table:database--migrations--001_wallets.py-ledgers',
+            relation: 'depends_on',
+            to: 'database/table:database--migrations--001_wallets.py-wallets',
+          }),
+        ]),
+      );
+    });
+  });
+
   it('keeps controller review blast radius route-local and filters unusable test scripts', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
