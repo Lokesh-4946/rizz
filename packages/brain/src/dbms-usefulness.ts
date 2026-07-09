@@ -256,19 +256,8 @@ export function inferDatabaseTables(
     if (!/\.(sql|ts|tsx|js|jsx|mjs|cjs|py)$/.test(lower)) continue;
     const text = readTextIfAvailable(rootDir, file.relativePath) ?? '';
     if (lower.endsWith('.sql')) {
-      for (const match of text.matchAll(
-        /create\s+table\s+(?:if\s+not\s+exists\s+)?([`"[]?[\w.-]+[`"\]]?)/gi,
-      )) {
-        const name = dbEntityName(match[1] ?? 'unknown_table');
-        tables.push({
-          name,
-          kind: 'sql_table',
-          sourceFile: file.relativePath,
-          declaration: (match[0] ?? `CREATE TABLE ${name}`).slice(0, 120),
-          fields: [],
-          relationships: [],
-        });
-      }
+      tables.push(...inferSqlTables(file.relativePath, text));
+      continue;
     }
     if (lower.endsWith('.py')) {
       tables.push(...inferSqlAlchemyTables(file.relativePath, text));
@@ -484,6 +473,191 @@ function stripSqlIdentifier(value: string): string {
 function dbEntityName(value: string): string {
   const parts = stripSqlIdentifier(value).split('.');
   return parts[parts.length - 1] ?? value;
+}
+
+function inferSqlTables(sourceFile: string, text: string): DatabaseTableInference[] {
+  const alterRelationships = sqlAlterTableRelationships(text);
+  return sqlCreateTableBlocks(text).map((block) => {
+    const relationships = uniqueBy(
+      [...sqlCreateTableRelationships(block.body), ...(alterRelationships.get(block.name) ?? [])],
+      (relationship) =>
+        `${relationship.kind}:${relationship.sourceField}:${relationship.targetTable}:${
+          relationship.targetField ?? ''
+        }`,
+    );
+    return {
+      name: block.name,
+      kind: 'sql_table',
+      sourceFile,
+      declaration: block.declaration.slice(0, 120),
+      fields: sqlCreateTableFields(block.body),
+      relationships,
+    };
+  });
+}
+
+function sqlCreateTableBlocks(
+  text: string,
+): Array<{ readonly name: string; readonly body: string; readonly declaration: string }> {
+  const blocks: Array<{
+    readonly name: string;
+    readonly body: string;
+    readonly declaration: string;
+  }> = [];
+  for (const match of text.matchAll(
+    /create\s+table\s+(?:if\s+not\s+exists\s+)?([`"[]?[\w.-]+[`"\]]?)\s*\(/gi,
+  )) {
+    const name = dbEntityName(match[1] ?? 'unknown_table');
+    const bodyStart = (match.index ?? 0) + (match[0]?.length ?? 0);
+    const bodyEnd = findMatchingSqlParen(text, bodyStart - 1);
+    const statementEnd = bodyEnd < 0 ? text.indexOf(';', bodyStart) : text.indexOf(';', bodyEnd);
+    const end =
+      statementEnd < 0 ? (bodyEnd < 0 ? bodyStart + 1200 : bodyEnd + 1) : statementEnd + 1;
+    blocks.push({
+      name,
+      body: bodyEnd < 0 ? text.slice(bodyStart, end) : text.slice(bodyStart, bodyEnd),
+      declaration: text.slice(match.index ?? 0, end),
+    });
+  }
+  return blocks;
+}
+
+function sqlCreateTableFields(body: string): string[] {
+  return unique(
+    splitSqlList(body)
+      .map((part) => sqlLeadingIdentifier(part))
+      .filter((field): field is string => field !== undefined)
+      .filter((field) => !SQL_TABLE_CONSTRAINT_PREFIXES.has(field.toLowerCase())),
+  );
+}
+
+function sqlCreateTableRelationships(body: string): DatabaseTableRelationshipInference[] {
+  const relationships: DatabaseTableRelationshipInference[] = [];
+  for (const part of splitSqlList(body)) {
+    const field = sqlLeadingIdentifier(part);
+    const inlineReference =
+      /\breferences\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(\s*([`"[]?\w+[`"\]]?)\s*\))?/i.exec(part);
+    if (
+      field !== undefined &&
+      !SQL_TABLE_CONSTRAINT_PREFIXES.has(field.toLowerCase()) &&
+      inlineReference !== null
+    ) {
+      relationships.push(
+        sqlForeignKeyRelationship(field, inlineReference[1], inlineReference[2], part),
+      );
+    }
+    const tableConstraint =
+      /(?:constraint\s+[`"[]?\w+[`"\]]?\s+)?foreign\s+key\s*\(\s*([`"[]?\w+[`"\]]?)\s*\)\s+references\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(\s*([`"[]?\w+[`"\]]?)\s*\))?/i.exec(
+        part,
+      );
+    if (tableConstraint === null) continue;
+    relationships.push(
+      sqlForeignKeyRelationship(
+        stripSqlIdentifier(tableConstraint[1] ?? 'unknown_field'),
+        tableConstraint[2],
+        tableConstraint[3],
+        part,
+      ),
+    );
+  }
+  return relationships;
+}
+
+function sqlAlterTableRelationships(
+  text: string,
+): Map<string, DatabaseTableRelationshipInference[]> {
+  const byTable = new Map<string, DatabaseTableRelationshipInference[]>();
+  for (const match of text.matchAll(
+    /alter\s+table\s+([`"[]?[\w.-]+[`"\]]?)[\s\S]{0,400}?foreign\s+key\s*\(\s*([`"[]?\w+[`"\]]?)\s*\)\s+references\s+([`"[]?[\w.-]+[`"\]]?)\s*(?:\(\s*([`"[]?\w+[`"\]]?)\s*\))?/gi,
+  )) {
+    const table = dbEntityName(match[1] ?? 'unknown_table');
+    const relationship = sqlForeignKeyRelationship(
+      stripSqlIdentifier(match[2] ?? 'unknown_field'),
+      match[3],
+      match[4],
+      match[0] ?? '',
+    );
+    byTable.set(table, [...(byTable.get(table) ?? []), relationship]);
+  }
+  return byTable;
+}
+
+function sqlForeignKeyRelationship(
+  sourceField: string,
+  targetTable: string | undefined,
+  targetField: string | undefined,
+  declaration: string,
+): DatabaseTableRelationshipInference {
+  return {
+    kind: 'foreign_key',
+    sourceField: stripSqlIdentifier(sourceField),
+    targetTable: dbEntityName(targetTable ?? 'unknown_table'),
+    ...(targetField !== undefined ? { targetField: stripSqlIdentifier(targetField) } : {}),
+    declaration: declaration.trim().slice(0, 160),
+  };
+}
+
+const SQL_TABLE_CONSTRAINT_PREFIXES = new Set([
+  'check',
+  'constraint',
+  'foreign',
+  'key',
+  'primary',
+  'unique',
+]);
+
+function sqlLeadingIdentifier(part: string): string | undefined {
+  const match = /^\s*([`"[]?\w+[`"\]]?)/.exec(part);
+  const value = match?.[1];
+  return value === undefined ? undefined : stripSqlIdentifier(value);
+}
+
+function splitSqlList(value: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === undefined) continue;
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    if (char === ')') depth -= 1;
+    if (char !== ',' || depth !== 0) continue;
+    parts.push(value.slice(start, index).trim());
+    start = index + 1;
+  }
+  parts.push(value.slice(start).trim());
+  return parts.filter((part) => part !== '');
+}
+
+function findMatchingSqlParen(value: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  for (let index = openIndex; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === undefined) continue;
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    if (char !== ')') continue;
+    depth -= 1;
+    if (depth === 0) return index;
+  }
+  return -1;
 }
 
 function mongooseSchemaFields(text: string, schemaName: string): string[] {

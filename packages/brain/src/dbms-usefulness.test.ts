@@ -148,6 +148,102 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('detects raw SQL foreign keys and cross-table graph relationships', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'database'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'raw-sql-schema-app' }));
+      await writeFile(
+        join(dir, 'database', 'schema.sql'),
+        [
+          'CREATE TABLE users (',
+          '  id INTEGER PRIMARY KEY,',
+          '  email TEXT NOT NULL',
+          ');',
+          'CREATE TABLE wallets (',
+          '  id INTEGER PRIMARY KEY,',
+          '  user_id INTEGER REFERENCES users(id),',
+          '  balance_cents INTEGER NOT NULL,',
+          '  FOREIGN KEY (id) REFERENCES ledgers(wallet_id)',
+          ');',
+          'CREATE TABLE ledgers (',
+          '  wallet_id INTEGER PRIMARY KEY,',
+          '  updated_at TEXT',
+          ');',
+          'ALTER TABLE ledgers ADD CONSTRAINT fk_ledger_user FOREIGN KEY (wallet_id) REFERENCES wallets(id);',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:29:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const databaseTables = await readJson<{
+        entities: Array<{
+          id: string;
+          name: string;
+          data?: { fields?: string[]; relationships?: unknown[] };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'database_tables.json'));
+      expect(databaseTables.entities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'database/table:database--schema.sql-wallets',
+            data: expect.objectContaining({
+              fields: expect.arrayContaining(['id', 'user_id', 'balance_cents']),
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'user_id',
+                  target_table: 'users',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'id',
+                  target_table: 'ledgers',
+                  target_field: 'wallet_id',
+                }),
+              ]),
+            }),
+          }),
+          expect.objectContaining({
+            id: 'database/table:database--schema.sql-ledgers',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  kind: 'foreign_key',
+                  source_field: 'wallet_id',
+                  target_table: 'wallets',
+                  target_field: 'id',
+                }),
+              ]),
+            }),
+          }),
+        ]),
+      );
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: 'database/table:database--schema.sql-wallets',
+            relation: 'depends_on',
+            to: 'database/table:database--schema.sql-users',
+          }),
+          expect.objectContaining({
+            from: 'database/table:database--schema.sql-ledgers',
+            relation: 'depends_on',
+            to: 'database/table:database--schema.sql-wallets',
+          }),
+        ]),
+      );
+    });
+  });
+
   it('keeps controller review blast radius route-local and filters unusable test scripts', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
