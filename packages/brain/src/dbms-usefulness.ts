@@ -719,23 +719,167 @@ function inferSqlAlchemyTables(sourceFile: string, text: string): DatabaseTableI
       modelName: block.className,
     });
   }
-  for (const match of text.matchAll(/op\.create_table\(\s*['"]([^'"]+)['"]/g)) {
-    const name = match[1] ?? 'unknown_table';
-    const start = match.index ?? 0;
-    const tableText = text.slice(start, start + 1200);
-    const fields = unique(
-      [...tableText.matchAll(/sa\.Column\(\s*['"]([^'"]+)['"]/g)].map((item) => item[1] ?? ''),
-    );
-    tables.push({
-      name,
-      kind: 'alembic_table',
-      sourceFile,
-      declaration: `op.create_table(${name})`,
-      fields,
-      relationships: [],
-    });
-  }
+  tables.push(...inferAlembicTables(sourceFile, text));
   return tables;
+}
+
+function inferAlembicTables(sourceFile: string, text: string): DatabaseTableInference[] {
+  const byName = new Map<
+    string,
+    {
+      readonly fields: Set<string>;
+      readonly relationships: DatabaseTableRelationshipInference[];
+      declaration: string;
+    }
+  >();
+  const ensureTable = (name: string, declaration: string) => {
+    const current = byName.get(name);
+    if (current !== undefined) return current;
+    const table = {
+      fields: new Set<string>(),
+      relationships: [],
+      declaration,
+    };
+    byName.set(name, table);
+    return table;
+  };
+  for (const call of alembicOperationCalls(text, 'create_table')) {
+    const name = firstQuotedString(call) ?? 'unknown_table';
+    const table = ensureTable(name, `op.create_table(${name})`);
+    for (const field of alembicColumnFields(call)) table.fields.add(field);
+    table.relationships.push(
+      ...alembicColumnForeignKeys(call),
+      ...alembicForeignKeyConstraints(call),
+    );
+  }
+  for (const call of alembicOperationCalls(text, 'add_column')) {
+    const tableName = firstQuotedString(call) ?? 'unknown_table';
+    const table = ensureTable(tableName, `op.add_column(${tableName})`);
+    for (const field of alembicColumnFields(call)) table.fields.add(field);
+    table.relationships.push(...alembicColumnForeignKeys(call));
+  }
+  for (const call of alembicOperationCalls(text, 'create_foreign_key')) {
+    const relationship = alembicCreateForeignKeyRelationship(call);
+    if (relationship === undefined) continue;
+    ensureTable(
+      relationship.sourceTable,
+      `op.create_foreign_key(${relationship.sourceTable})`,
+    ).relationships.push(relationship.relationship);
+  }
+  return [...byName.entries()].map(([name, table]) => ({
+    name,
+    kind: 'alembic_table',
+    sourceFile,
+    declaration: table.declaration,
+    fields: [...table.fields],
+    relationships: uniqueBy(
+      table.relationships,
+      (relationship) =>
+        `${relationship.kind}:${relationship.sourceField}:${relationship.targetTable}:${
+          relationship.targetField ?? ''
+        }`,
+    ),
+  }));
+}
+
+function alembicOperationCalls(text: string, operation: string): string[] {
+  const calls: string[] = [];
+  for (const match of text.matchAll(new RegExp(`op\\.${operation}\\s*\\(`, 'g'))) {
+    const start = match.index ?? 0;
+    const open = text.indexOf('(', start);
+    const close = findMatchingSqlParen(text, open);
+    calls.push(close < 0 ? text.slice(start, start + 1200) : text.slice(start, close + 1));
+  }
+  return calls;
+}
+
+function alembicColumnFields(call: string): string[] {
+  return unique(
+    alembicColumnCalls(call)
+      .map((column) => firstQuotedString(column))
+      .filter((field): field is string => field !== undefined),
+  );
+}
+
+function alembicColumnForeignKeys(call: string): DatabaseTableRelationshipInference[] {
+  return alembicColumnCalls(call).flatMap((column) => {
+    const sourceField = firstQuotedString(column);
+    const target = /(?:sa\.|db\.|sqlalchemy\.)?ForeignKey\s*\(\s*['"]([^'"]+)['"]/.exec(
+      column,
+    )?.[1];
+    if (sourceField === undefined || target === undefined) return [];
+    const targetParts = sqlAlchemyForeignKeyTarget(target);
+    return [
+      {
+        kind: 'foreign_key',
+        sourceField,
+        targetTable: targetParts.table,
+        ...(targetParts.field !== undefined ? { targetField: targetParts.field } : {}),
+        declaration: column.trim().slice(0, 160),
+      },
+    ];
+  });
+}
+
+function alembicForeignKeyConstraints(call: string): DatabaseTableRelationshipInference[] {
+  return [
+    ...call.matchAll(
+      /ForeignKeyConstraint\s*\(\s*\[\s*['"]([^'"]+)['"]\s*\]\s*,\s*\[\s*['"]([^'"]+)['"]\s*\]/g,
+    ),
+  ].map((match) => {
+    const target = sqlAlchemyForeignKeyTarget(match[2] ?? 'unknown_table');
+    return {
+      kind: 'foreign_key',
+      sourceField: match[1] ?? 'unknown_field',
+      targetTable: target.table,
+      ...(target.field !== undefined ? { targetField: target.field } : {}),
+      declaration: (match[0] ?? '').trim().slice(0, 160),
+    };
+  });
+}
+
+function alembicCreateForeignKeyRelationship(call: string):
+  | {
+      readonly sourceTable: string;
+      readonly relationship: DatabaseTableRelationshipInference;
+    }
+  | undefined {
+  const quoted = [...call.matchAll(/['"]([^'"]+)['"]/g)].map((match) => match[1] ?? '');
+  const sourceTable = quoted[1];
+  const targetTable = quoted[2];
+  const columnLists = [...call.matchAll(/\[\s*['"]([^'"]+)['"]\s*\]/g)].map(
+    (match) => match[1] ?? '',
+  );
+  const sourceField = columnLists[0];
+  const targetField = columnLists[1];
+  if (sourceTable === undefined || targetTable === undefined || sourceField === undefined) {
+    return undefined;
+  }
+  return {
+    sourceTable,
+    relationship: {
+      kind: 'foreign_key',
+      sourceField,
+      targetTable,
+      ...(targetField !== undefined ? { targetField } : {}),
+      declaration: call.trim().slice(0, 160),
+    },
+  };
+}
+
+function alembicColumnCalls(call: string): string[] {
+  const columns: string[] = [];
+  for (const match of call.matchAll(/(?:sa\.|db\.|sqlalchemy\.)?Column\s*\(/g)) {
+    const start = match.index ?? 0;
+    const open = call.indexOf('(', start);
+    const close = findMatchingSqlParen(call, open);
+    columns.push(close < 0 ? call.slice(start) : call.slice(start, close + 1));
+  }
+  return columns;
+}
+
+function firstQuotedString(value: string): string | undefined {
+  return /['"]([^'"]+)['"]/.exec(value)?.[1];
 }
 
 function sqlAlchemyClassBlocks(text: string): SqlAlchemyClassBlock[] {
