@@ -11,6 +11,55 @@ export interface DatabaseTableInference {
   readonly sourceFile: string;
   readonly declaration: string;
   readonly fields: readonly string[];
+  readonly relationships: readonly DatabaseTableRelationshipInference[];
+  readonly modelName?: string;
+}
+
+export interface DatabaseTableRelationshipInference {
+  readonly kind: 'foreign_key' | 'relationship';
+  readonly sourceField: string;
+  readonly targetTable: string;
+  readonly targetField?: string;
+  readonly targetModel?: string;
+  readonly inverseField?: string;
+  readonly declaration: string;
+}
+
+export interface DatabaseTableRelationshipData {
+  readonly kind: 'foreign_key' | 'relationship';
+  readonly source_field: string;
+  readonly target_table: string;
+  readonly target_field?: string;
+  readonly target_model?: string;
+  readonly inverse_field?: string;
+  readonly declaration: string;
+}
+
+export interface DatabaseTableGraphIndex {
+  readonly idsByName: ReadonlyMap<string, readonly string[]>;
+  readonly nameById: ReadonlyMap<string, string>;
+  readonly idByTableKey: ReadonlyMap<string, string>;
+}
+
+export interface DatabaseTableFlowLabels {
+  readonly labelsByFile: ReadonlyMap<string, readonly string[]>;
+  readonly sourceByLabel: ReadonlyMap<string, string>;
+}
+
+export interface DatabaseTableRelationshipEdge {
+  readonly from: string;
+  readonly relation: 'depends_on' | 'used_by';
+  readonly to: string;
+  readonly evidenceFile: string;
+  readonly confidence: 'verified' | 'inferred';
+}
+
+export interface DatabaseTableEntityData {
+  readonly [key: string]: unknown;
+  readonly kind: DatabaseTableInference['kind'];
+  readonly declaration: string;
+  readonly fields: readonly string[];
+  readonly relationships: readonly DatabaseTableRelationshipData[];
 }
 
 export interface DbmsCommandFact {
@@ -217,6 +266,7 @@ export function inferDatabaseTables(
           sourceFile: file.relativePath,
           declaration: (match[0] ?? `CREATE TABLE ${name}`).slice(0, 120),
           fields: [],
+          relationships: [],
         });
       }
     }
@@ -243,6 +293,7 @@ export function inferDatabaseTables(
         sourceFile: file.relativePath,
         declaration: `mongoose.model(${modelName})`,
         fields: mongooseSchemaFields(text, schemaName),
+        relationships: [],
       });
       schemaNames.delete(schemaName);
     }
@@ -255,10 +306,175 @@ export function inferDatabaseTables(
         sourceFile: file.relativePath,
         declaration: `Mongoose schema ${schemaName}`,
         fields: mongooseSchemaFields(text, schemaName),
+        relationships: [],
       });
     }
   }
   return uniqueBy(tables, (table) => `${table.kind}:${table.sourceFile}:${table.name}`);
+}
+
+export function databaseTableLookupKeys(table: DatabaseTableInference): string[] {
+  return unique([table.name, ...(table.modelName === undefined ? [] : [table.modelName])]);
+}
+
+export function databaseTableGraphIndex(
+  tables: readonly DatabaseTableInference[],
+  entityIdForTable: (type: 'database/table', key: string) => string,
+): DatabaseTableGraphIndex {
+  const idsByName = new Map<string, string[]>();
+  const nameById = new Map<string, string>();
+  const idByTableKey = new Map<string, string>();
+  for (const table of tables) {
+    const tableId = databaseTableEntityId(table, entityIdForTable);
+    idByTableKey.set(databaseTableKey(table), tableId);
+    nameById.set(tableId, table.name);
+    for (const key of databaseTableLookupKeys(table)) {
+      idsByName.set(key, [...(idsByName.get(key) ?? []), tableId]);
+    }
+  }
+  return { idsByName, nameById, idByTableKey };
+}
+
+export function databaseTableTargetIds(
+  idsByName: ReadonlyMap<string, readonly string[]>,
+  relationship: DatabaseTableRelationshipInference,
+): string[] {
+  return unique([
+    ...(idsByName.get(relationship.targetTable) ?? []),
+    ...(relationship.targetModel === undefined
+      ? []
+      : (idsByName.get(relationship.targetModel) ?? [])),
+  ]);
+}
+
+export function databaseTableRelationshipData(params: {
+  readonly table: DatabaseTableInference;
+  readonly idsByName: ReadonlyMap<string, readonly string[]>;
+  readonly nameById: ReadonlyMap<string, string>;
+  readonly sanitizeText: (value: string) => string;
+}): DatabaseTableRelationshipData[] {
+  return params.table.relationships.map((relationship) => {
+    const targetTableId = databaseTableTargetIds(params.idsByName, relationship)[0];
+    const targetTable =
+      targetTableId === undefined
+        ? relationship.targetTable
+        : (params.nameById.get(targetTableId) ?? relationship.targetTable);
+    return {
+      kind: relationship.kind,
+      source_field: params.sanitizeText(relationship.sourceField),
+      target_table: params.sanitizeText(targetTable),
+      ...(relationship.targetField !== undefined
+        ? { target_field: params.sanitizeText(relationship.targetField) }
+        : {}),
+      ...(relationship.targetModel !== undefined
+        ? { target_model: params.sanitizeText(relationship.targetModel) }
+        : {}),
+      ...(relationship.inverseField !== undefined
+        ? { inverse_field: params.sanitizeText(relationship.inverseField) }
+        : {}),
+      declaration: params.sanitizeText(relationship.declaration),
+    };
+  });
+}
+
+export function databaseTableEntityData(params: {
+  readonly table: DatabaseTableInference;
+  readonly graphIndex: DatabaseTableGraphIndex;
+  readonly sanitizeText: (value: string) => string;
+}): DatabaseTableEntityData {
+  return {
+    kind: params.table.kind,
+    declaration: params.sanitizeText(params.table.declaration),
+    fields: params.table.fields.map(params.sanitizeText),
+    relationships: databaseTableRelationshipData({
+      table: params.table,
+      idsByName: params.graphIndex.idsByName,
+      nameById: params.graphIndex.nameById,
+      sanitizeText: params.sanitizeText,
+    }),
+  };
+}
+
+export function databaseTableDependencyLabels(
+  flows: readonly { readonly data_dependencies: readonly { readonly label: string }[] }[],
+): string[] {
+  return unique(
+    flows
+      .flatMap((flow) => flow.data_dependencies)
+      .map((dependency) => dependency.label)
+      .filter((label) => label.startsWith('database/table:')),
+  );
+}
+
+export function databaseTableFlowLabels(params: {
+  readonly tables: readonly DatabaseTableInference[];
+  readonly flowFiles: readonly string[];
+  readonly entityIdForTable: (type: 'database/table', key: string) => string;
+}): DatabaseTableFlowLabels {
+  const graphIndex = databaseTableGraphIndex(params.tables, params.entityIdForTable);
+  const labelsByFile = new Map<string, string[]>();
+  const sourceByLabel = new Map<string, string>();
+  for (const table of params.tables) {
+    sourceByLabel.set(databaseTableEntityId(table, params.entityIdForTable), table.sourceFile);
+  }
+  const flowFileSet = new Set(params.flowFiles);
+  for (const table of params.tables.filter((item) => flowFileSet.has(item.sourceFile))) {
+    const label = databaseTableEntityId(table, params.entityIdForTable);
+    const relationshipLabels = table.relationships.flatMap((relationship) =>
+      databaseTableTargetIds(graphIndex.idsByName, relationship),
+    );
+    labelsByFile.set(table.sourceFile, [
+      ...(labelsByFile.get(table.sourceFile) ?? []),
+      label,
+      ...relationshipLabels,
+    ]);
+  }
+  return { labelsByFile, sourceByLabel };
+}
+
+export function databaseTableRelationshipEdges(params: {
+  readonly tables: readonly DatabaseTableInference[];
+  readonly graphIndex: DatabaseTableGraphIndex;
+}): DatabaseTableRelationshipEdge[] {
+  const edges: DatabaseTableRelationshipEdge[] = [];
+  for (const table of params.tables) {
+    const tableId = params.graphIndex.idByTableKey.get(databaseTableKey(table));
+    if (tableId === undefined) continue;
+    for (const relationship of table.relationships) {
+      for (const targetTableId of databaseTableTargetIds(
+        params.graphIndex.idsByName,
+        relationship,
+      )) {
+        if (targetTableId === tableId) continue;
+        edges.push({
+          from: tableId,
+          relation: 'depends_on',
+          to: targetTableId,
+          evidenceFile: table.sourceFile,
+          confidence: 'verified',
+        });
+        edges.push({
+          from: targetTableId,
+          relation: 'used_by',
+          to: tableId,
+          evidenceFile: table.sourceFile,
+          confidence: 'inferred',
+        });
+      }
+    }
+  }
+  return uniqueBy(edges, (edge) => `${edge.from}:${edge.relation}:${edge.to}:${edge.evidenceFile}`);
+}
+
+function databaseTableKey(table: DatabaseTableInference): string {
+  return `${table.sourceFile}:${table.name}`;
+}
+
+function databaseTableEntityId(
+  table: DatabaseTableInference,
+  entityIdForTable: (type: 'database/table', key: string) => string,
+): string {
+  return entityIdForTable('database/table', databaseTableKey(table));
 }
 
 function stripSqlIdentifier(value: string): string {
@@ -296,28 +512,37 @@ const MONGOOSE_OPTION_KEYS = new Set([
   'validate',
 ]);
 
+interface SqlAlchemyClassBlock {
+  readonly className: string;
+  readonly tableName: string;
+  readonly classText: string;
+}
+
 function inferSqlAlchemyTables(sourceFile: string, text: string): DatabaseTableInference[] {
   const tables: DatabaseTableInference[] = [];
-  for (const match of text.matchAll(
-    /class\s+([A-Za-z_]\w*)\s*\((?:[^)]*\.)?(?:Model|DeclarativeBase|Base)\)\s*:/g,
-  )) {
-    const className = match[1] ?? 'UnknownModel';
-    const classStart = match.index ?? 0;
-    const nextClass = text.slice(classStart + 1).search(/\nclass\s+[A-Za-z_]\w*\s*\(/);
-    const classText =
-      nextClass < 0 ? text.slice(classStart) : text.slice(classStart, classStart + 1 + nextClass);
-    const tableName = /__tablename__\s*=\s*['"]([^'"]+)['"]/.exec(classText)?.[1] ?? className;
+  const classBlocks = sqlAlchemyClassBlocks(text);
+  const tableNameByClass = new Map(classBlocks.map((block) => [block.className, block.tableName]));
+  for (const block of classBlocks) {
     const fields = unique(
-      [...classText.matchAll(/^\s*([A-Za-z_]\w*)\s*=\s*(?:db\.)?(?:Column|mapped_column)\s*\(/gm)]
+      [
+        ...block.classText.matchAll(
+          /^\s*([A-Za-z_]\w*)\s*=\s*(?:db\.)?(?:Column|mapped_column)\s*\(/gm,
+        ),
+        ...block.classText.matchAll(
+          /^\s*([A-Za-z_]\w*)\s*=\s*(?:db\.|sqlalchemy\.orm\.)?relationship\s*\(/gm,
+        ),
+      ]
         .map((item) => item[1] ?? '')
         .filter((field) => !field.startsWith('_')),
     );
     tables.push({
-      name: tableName,
+      name: block.tableName,
       kind: 'sqlalchemy_model',
       sourceFile,
-      declaration: `class ${className}`,
+      declaration: `class ${block.className}`,
       fields,
+      relationships: sqlAlchemyRelationships(block, tableNameByClass),
+      modelName: block.className,
     });
   }
   for (const match of text.matchAll(/op\.create_table\(\s*['"]([^'"]+)['"]/g)) {
@@ -333,9 +558,128 @@ function inferSqlAlchemyTables(sourceFile: string, text: string): DatabaseTableI
       sourceFile,
       declaration: `op.create_table(${name})`,
       fields,
+      relationships: [],
     });
   }
   return tables;
+}
+
+function sqlAlchemyClassBlocks(text: string): SqlAlchemyClassBlock[] {
+  return [
+    ...text.matchAll(
+      /class\s+([A-Za-z_]\w*)\s*\((?:[^)]*\.)?(?:Model|DeclarativeBase|Base)\)\s*:/g,
+    ),
+  ].map((match) => {
+    const className = match[1] ?? 'UnknownModel';
+    const classStart = match.index ?? 0;
+    const nextClass = text.slice(classStart + 1).search(/\nclass\s+[A-Za-z_]\w*\s*\(/);
+    const classText =
+      nextClass < 0 ? text.slice(classStart) : text.slice(classStart, classStart + 1 + nextClass);
+    const tableName = /__tablename__\s*=\s*['"]([^'"]+)['"]/.exec(classText)?.[1] ?? className;
+    return { className, tableName, classText };
+  });
+}
+
+function sqlAlchemyRelationships(
+  block: SqlAlchemyClassBlock,
+  tableNameByClass: ReadonlyMap<string, string>,
+): DatabaseTableRelationshipInference[] {
+  const relationships: DatabaseTableRelationshipInference[] = [];
+  for (const assignment of sqlAlchemyAssignments(block.classText)) {
+    const foreignKeyTarget = /(?:db\.)?ForeignKey\s*\(\s*['"]([^'"]+)['"]/.exec(
+      assignment.declaration,
+    )?.[1];
+    if (foreignKeyTarget !== undefined) {
+      const target = sqlAlchemyForeignKeyTarget(foreignKeyTarget);
+      relationships.push({
+        kind: 'foreign_key',
+        sourceField: assignment.field,
+        targetTable: target.table,
+        ...(target.field !== undefined ? { targetField: target.field } : {}),
+        declaration: assignment.declaration.slice(0, 160),
+      });
+    }
+    if (!/(?:db\.|sqlalchemy\.orm\.)?relationship\s*\(/.test(assignment.declaration)) continue;
+    const targetModel = /relationship\s*\(\s*['"]([^'"]+)['"]/.exec(assignment.declaration)?.[1];
+    if (targetModel === undefined) continue;
+    const inverseField = sqlAlchemyInverseRelationshipField(assignment.declaration);
+    relationships.push({
+      kind: 'relationship',
+      sourceField: assignment.field,
+      targetTable: tableNameByClass.get(targetModel) ?? targetModel,
+      targetModel,
+      ...(inverseField !== undefined ? { inverseField } : {}),
+      declaration: assignment.declaration.slice(0, 160),
+    });
+  }
+  return uniqueBy(
+    relationships,
+    (relationship) =>
+      `${relationship.kind}:${relationship.sourceField}:${relationship.targetTable}:${
+        relationship.targetField ?? ''
+      }:${relationship.inverseField ?? ''}`,
+  );
+}
+
+function sqlAlchemyAssignments(
+  text: string,
+): Array<{ readonly field: string; readonly declaration: string }> {
+  const lines = text.split(/\r?\n/);
+  const assignments: Array<{ readonly field: string; readonly declaration: string }> = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const match = /^\s*([A-Za-z_]\w*)\s*=\s*(.*)$/.exec(line);
+    if (match === null) continue;
+    const field = match[1] ?? '';
+    if (field.startsWith('_')) continue;
+    const declarationLines = [line.trim()];
+    let parenBalance = countChar(line, '(') - countChar(line, ')');
+    for (
+      let lookahead = index + 1;
+      lookahead < lines.length && lookahead <= index + 8;
+      lookahead += 1
+    ) {
+      if (parenBalance <= 0) break;
+      const nextLine = lines[lookahead] ?? '';
+      if (/^\s*[A-Za-z_]\w*\s*=/.test(nextLine)) break;
+      declarationLines.push(nextLine.trim());
+      parenBalance += countChar(nextLine, '(') - countChar(nextLine, ')');
+    }
+    const declaration = declarationLines.join(' ');
+    if (/ForeignKey\s*\(|relationship\s*\(/.test(declaration)) {
+      assignments.push({ field, declaration });
+    }
+  }
+  return assignments;
+}
+
+function sqlAlchemyForeignKeyTarget(value: string): {
+  readonly table: string;
+  readonly field?: string;
+} {
+  const parts = stripSqlIdentifier(value)
+    .split('.')
+    .filter((part) => part !== '');
+  if (parts.length >= 2) {
+    const field = parts[parts.length - 1];
+    return {
+      table: parts[parts.length - 2] ?? value,
+      ...(field !== undefined ? { field } : {}),
+    };
+  }
+  return { table: dbEntityName(value) };
+}
+
+function sqlAlchemyInverseRelationshipField(declaration: string): string | undefined {
+  return (
+    /back_populates\s*=\s*['"]([^'"]+)['"]/.exec(declaration)?.[1] ??
+    /backref\s*=\s*['"]([^'"]+)['"]/.exec(declaration)?.[1] ??
+    /backref\s*\(\s*['"]([^'"]+)['"]/.exec(declaration)?.[1]
+  );
+}
+
+function countChar(value: string, char: string): number {
+  return [...value].filter((item) => item === char).length;
 }
 
 function packageScope(manifest: string | undefined): string | undefined {
