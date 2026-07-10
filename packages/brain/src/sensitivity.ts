@@ -8,6 +8,7 @@ export interface SensitivePathClassification {
 }
 
 const REDACTED_PREFIX = 'redacted:sensitive-file:';
+const REDACTED_REFERENCE_PATTERN = /redacted:sensitive-file:[a-f0-9]{12}/g;
 
 const SECRET_VALUE_PATTERNS = [
   /\bsk-or-v1-[a-z0-9]{16,}\b/gi,
@@ -183,8 +184,7 @@ export function redactSecretValues(value: string): string {
   );
 }
 
-export function redactSensitiveText(value: string): string {
-  if (value.startsWith(REDACTED_PREFIX)) return value;
+function redactSensitiveTextSegment(value: string): string {
   const normalized = normalizeSensitivePath(value);
   if (!/\s/.test(normalized)) {
     if (isPublicSecurityTerm(normalized)) return value;
@@ -206,6 +206,23 @@ export function redactSensitiveText(value: string): string {
       : match;
   });
   return redactSecretValues(pathRedacted);
+}
+
+export function redactSensitiveText(value: string): string {
+  let redacted = '';
+  let cursor = 0;
+  for (const match of value.matchAll(REDACTED_REFERENCE_PATTERN)) {
+    const index = match.index;
+    redacted += redactSensitiveTextSegment(value.slice(cursor, index));
+    redacted += match[0];
+    cursor = index + match[0].length;
+  }
+  redacted += redactSensitiveTextSegment(value.slice(cursor));
+  return redacted;
+}
+
+export function redactSensitiveSet(values: readonly string[]): string[] {
+  return [...new Set(values.map(redactSensitiveText))].sort((a, b) => a.localeCompare(b));
 }
 
 export function sensitiveIdentityKey(value: string): string {
