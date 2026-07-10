@@ -42,8 +42,10 @@ const SENSITIVE_SEGMENT_PATTERN =
 const PRIVATE_ABSOLUTE_PATH_PATTERN =
   /^(?:\/Users\/|\/home\/|\/private\/|\/tmp\/|\/var\/folders\/)/i;
 
-const SENSITIVE_TEXT_CANDIDATE =
-  /(?:\/Users\/[^\s"'<>]+|\/home\/[^\s"'<>]+|\/private\/[^\s"'<>]+|\/tmp\/[^\s"'<>]+|\/var\/folders\/[^\s"'<>]+|(?:[A-Za-z0-9@._~+:-]+\/)*[A-Za-z0-9@._~+:-]*(?:sk-or-v1-[A-Za-z0-9]+|secret|secrets|credential|credentials|token|tokens|password|passwords|passwd|client_secret|service-account|private-key|id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env(?:\.[A-Za-z0-9_-]+)?|\.npmrc|\.netrc|[A-Za-z0-9_.-]+\.(?:pem|key|cert|crt|cer|p12|pfx))[A-Za-z0-9@._~+:-]*)/gi;
+const SENSITIVE_TEXT_TOKEN = /[A-Za-z0-9@._~+/\\-]+/g;
+
+const SENSITIVE_TEXT_TRIGGER =
+  /(?:^\/+(?:(?:Users|home|private|tmp)\/|var\/folders\/)|sk-or-v1-|secret|credential|token|password|passwd|client_secret|service-account|private-key|id_rsa|id_dsa|id_ecdsa|id_ed25519|\.env|\.npmrc|\.netrc|\.(?:pem|key|cert|crt|cer|p12|pfx)\b)/i;
 
 const TRAILING_CANDIDATE_PUNCTUATION = /[),.;!?]+$/;
 const LEADING_CANDIDATE_PUNCTUATION = /^[([{'"`]+/;
@@ -189,8 +191,9 @@ export function redactSensitiveText(value: string): string {
     const classification = classifySensitivePath(normalized);
     if (classification.isSensitive) return classification.redactedId;
   }
-  const pathRedacted = value.replace(SENSITIVE_TEXT_CANDIDATE, (match, offset, text) => {
+  const pathRedacted = value.replace(SENSITIVE_TEXT_TOKEN, (match, offset, text) => {
     if (match.startsWith(REDACTED_PREFIX)) return match;
+    if (!SENSITIVE_TEXT_TRIGGER.test(match)) return match;
     const { prefix, candidate, suffix } = splitCandidate(match);
     const nextCharacter = text.slice(offset + match.length, offset + match.length + 1);
     const previousText = text.slice(Math.max(0, offset - 16), offset);
