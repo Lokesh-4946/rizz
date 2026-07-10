@@ -72,7 +72,7 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
 | Flow Understanding | 95/100 | 5 | Broaden real Flask/FastAPI UAT seeds and verify more multi-file Python route/service journeys. |
-| Architecture Reasoning | 93/100 | 7 | Reduce weak component boundary assumptions and validate SQL/Alembic relationship precision on real migration-heavy repos. |
+| Architecture Reasoning | 94/100 | 6 | Reduce weak component boundary assumptions and improve full-repo analysis scaling on migration-heavy projects. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
@@ -83,15 +83,16 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/alembic-keyword-relationship-precision`, local gate on the rizz repo.
+Run: `feature/alembic-real-repo-uat`, local gate plus public migration-repo UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 9/9 passed |
+| Focused DBMS hardening tests | 10/10 passed |
+| Focused UAT harness tests | 2/2 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 376/376 passed |
+| Full unit suite | 379/379 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
@@ -99,15 +100,27 @@ Run: `feature/alembic-keyword-relationship-precision`, local gate on the rizz re
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,520 bytes |
-| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
+| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: rizz now handles positional, mixed, and keyword-heavy Alembic relationship calls
-through one deterministic top-level argument reader. `sa.ForeignKeyConstraint(columns=...,
-refcolumns=...)`, `sa.ForeignKey(column=...)`, and fully named `op.create_foreign_key(...)` calls
-produce the same per-column relationships and cross-table graph edges as positional migrations.
-The existing `database/table:*` graph contract and lightweight dependency footprint stay unchanged.
-Remaining work is real-repo UAT on migration-heavy projects.
+Current verdict: real-repo UAT confirmed exact Alembic foreign-key extraction and exposed duplicate
+migration snapshots inflating 77 relationships into 675 graph dependencies. Rizz now prefers runtime
+table entities when available and otherwise links repeated Alembic references to one deterministic
+`create_table` target, reducing the Tasking Manager migration graph to 66 canonical dependencies
+with zero unknown targets. The UAT harness now preserves reports when a scan times out, accepts the
+pnpm argument separator, and the root test command excludes generated `.rizz` UAT repositories.
+Remaining work is full-repo graph-analysis scaling and stronger component boundary reasoning.
+
+## Latest Alembic Real-Repo UAT
+
+Run: fresh scans from `feature/alembic-real-repo-uat`, no provider calls.
+
+| Target | Result | DBMS evidence |
+| --- | --- | --- |
+| `miguelgrinberg/microblog` | 72 files in 3.1s; 3 components, 23 flows; capability average 87/100, Architecture Reasoning 61/100. | 16 table entities, including 11 Alembic and 5 SQLAlchemy entities; 7 foreign-key relationships, 0 unknown targets. |
+| `fastapi/full-stack-fastapi-template` | 217 files in 14.7s; 6 components, 49 flows, 11 commands, 29 tests; capability average 87/100, Architecture Reasoning 61/100. | 7 Alembic table entities; 3 foreign-key relationships, 0 unknown targets. |
+| `hotosm/tasking-manager` migrations | All 102 migration files in 1.03s; migration-only capability average 59/100 because the slice intentionally has no routes or tests. | 102 Alembic entities; 77 foreign-key relationships, 0 unknown targets; canonical dependency edges reduced from 675 to 66. |
+| `hotosm/tasking-manager` full repo | All 1,515 files scanned, then the bounded 180s UAT timed out during analysis; the harness retained an explicit timed-out report. | Relationship correctness is covered by the complete migration slice; full-repo analysis scaling remains open. |
 
 ## Latest DBMS-Like UAT Agent Results
 

@@ -39,6 +39,7 @@ export interface DatabaseTableGraphIndex {
   readonly idsByName: ReadonlyMap<string, readonly string[]>;
   readonly nameById: ReadonlyMap<string, string>;
   readonly idByTableKey: ReadonlyMap<string, string>;
+  readonly alembicTableIds: ReadonlySet<string>;
 }
 
 export interface DatabaseTableFlowLabels {
@@ -313,37 +314,51 @@ export function databaseTableGraphIndex(
   const idsByName = new Map<string, string[]>();
   const nameById = new Map<string, string>();
   const idByTableKey = new Map<string, string>();
-  for (const table of tables) {
+  const alembicTableIds = new Set<string>();
+  const orderedTables = [...tables].sort((left, right) =>
+    databaseTableReferenceSortKey(left).localeCompare(databaseTableReferenceSortKey(right)),
+  );
+  for (const table of orderedTables) {
     const tableId = databaseTableEntityId(table, entityIdForTable);
     idByTableKey.set(databaseTableKey(table), tableId);
     nameById.set(tableId, table.name);
+    if (table.kind === 'alembic_table') alembicTableIds.add(tableId);
     for (const key of databaseTableLookupKeys(table)) {
       idsByName.set(key, [...(idsByName.get(key) ?? []), tableId]);
     }
   }
-  return { idsByName, nameById, idByTableKey };
+  return { idsByName, nameById, idByTableKey, alembicTableIds };
 }
 
 export function databaseTableTargetIds(
   idsByName: ReadonlyMap<string, readonly string[]>,
   relationship: DatabaseTableRelationshipInference,
+  alembicTableIds?: ReadonlySet<string>,
 ): string[] {
-  return unique([
+  const targetIds = unique([
     ...(idsByName.get(relationship.targetTable) ?? []),
     ...(relationship.targetModel === undefined
       ? []
       : (idsByName.get(relationship.targetModel) ?? [])),
   ]);
+  if (alembicTableIds === undefined) return targetIds;
+  const runtimeTargetIds = targetIds.filter((id) => !alembicTableIds.has(id));
+  return runtimeTargetIds.length > 0 ? runtimeTargetIds : targetIds.slice(0, 1);
 }
 
 export function databaseTableRelationshipData(params: {
   readonly table: DatabaseTableInference;
   readonly idsByName: ReadonlyMap<string, readonly string[]>;
   readonly nameById: ReadonlyMap<string, string>;
+  readonly alembicTableIds: ReadonlySet<string>;
   readonly sanitizeText: (value: string) => string;
 }): DatabaseTableRelationshipData[] {
   return params.table.relationships.map((relationship) => {
-    const targetTableId = databaseTableTargetIds(params.idsByName, relationship)[0];
+    const targetTableId = databaseTableTargetIds(
+      params.idsByName,
+      relationship,
+      params.alembicTableIds,
+    )[0];
     const targetTable =
       targetTableId === undefined
         ? relationship.targetTable
@@ -379,6 +394,7 @@ export function databaseTableEntityData(params: {
       table: params.table,
       idsByName: params.graphIndex.idsByName,
       nameById: params.graphIndex.nameById,
+      alembicTableIds: params.graphIndex.alembicTableIds,
       sanitizeText: params.sanitizeText,
     }),
   };
@@ -410,7 +426,7 @@ export function databaseTableFlowLabels(params: {
   for (const table of params.tables.filter((item) => flowFileSet.has(item.sourceFile))) {
     const label = databaseTableEntityId(table, params.entityIdForTable);
     const relationshipLabels = table.relationships.flatMap((relationship) =>
-      databaseTableTargetIds(graphIndex.idsByName, relationship),
+      databaseTableTargetIds(graphIndex.idsByName, relationship, graphIndex.alembicTableIds),
     );
     labelsByFile.set(table.sourceFile, [
       ...(labelsByFile.get(table.sourceFile) ?? []),
@@ -433,6 +449,7 @@ export function databaseTableRelationshipEdges(params: {
       for (const targetTableId of databaseTableTargetIds(
         params.graphIndex.idsByName,
         relationship,
+        params.graphIndex.alembicTableIds,
       )) {
         if (targetTableId === tableId) continue;
         edges.push({
@@ -457,6 +474,14 @@ export function databaseTableRelationshipEdges(params: {
 
 function databaseTableKey(table: DatabaseTableInference): string {
   return `${table.sourceFile}:${table.name}`;
+}
+
+function databaseTableReferenceSortKey(table: DatabaseTableInference): string {
+  let priority = 0;
+  if (table.kind === 'alembic_table') {
+    priority = table.declaration.startsWith('op.create_table') ? 1 : 2;
+  }
+  return `${priority}:${table.sourceFile}:${table.name}`;
 }
 
 function databaseTableEntityId(

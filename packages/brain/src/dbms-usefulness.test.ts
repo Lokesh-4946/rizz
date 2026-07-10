@@ -653,6 +653,84 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('links repeated Alembic table references to one canonical graph target', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'database', 'migrations'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'migration-history-app' }));
+      await writeFile(
+        join(dir, 'database', 'models.py'),
+        [
+          'from flask_sqlalchemy import SQLAlchemy',
+          'db = SQLAlchemy()',
+          'class Account(db.Model):',
+          '    __tablename__ = "accounts"',
+          '    id = db.Column(db.Integer, primary_key=True)',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'database', 'migrations', '001_users.py'),
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          'def upgrade():',
+          '    op.create_table("users", sa.Column("id", sa.Integer(), primary_key=True))',
+          '    op.create_table("accounts", sa.Column("id", sa.Integer(), primary_key=True))',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'database', 'migrations', '002_users.py'),
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          'def upgrade():',
+          '    op.add_column("users", sa.Column("email", sa.String()))',
+          '    op.add_column("accounts", sa.Column("name", sa.String()))',
+        ].join('\n'),
+      );
+      await writeFile(
+        join(dir, 'database', 'migrations', '003_audit.py'),
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          'def upgrade():',
+          '    op.create_table(',
+          '        "audit_log",',
+          '        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id")),',
+          '        sa.Column("account_id", sa.Integer(), sa.ForeignKey("accounts.id")),',
+          '    )',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:47:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      const auditDependencies = graph.relationships.filter(
+        (relationship) =>
+          relationship.from === 'database/table:database--migrations--003_audit.py-audit_log' &&
+          relationship.relation === 'depends_on' &&
+          relationship.to.startsWith('database/table:'),
+      );
+      expect(auditDependencies).toHaveLength(2);
+      expect(auditDependencies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            to: 'database/table:database--migrations--001_users.py-users',
+          }),
+          expect.objectContaining({
+            to: 'database/table:database--models.py-accounts',
+          }),
+        ]),
+      );
+    });
+  });
+
   it('keeps controller review blast radius route-local and filters unusable test scripts', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
