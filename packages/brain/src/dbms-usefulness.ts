@@ -826,9 +826,10 @@ function alembicColumnFields(call: string): string[] {
 function alembicColumnForeignKeys(call: string): DatabaseTableRelationshipInference[] {
   return alembicColumnCalls(call).flatMap((column) => {
     const sourceField = firstQuotedString(column);
-    const target = /(?:sa\.|db\.|sqlalchemy\.)?ForeignKey\s*\(\s*['"]([^'"]+)['"]/.exec(
-      column,
-    )?.[1];
+    const target =
+      /(?:sa\.|db\.|sqlalchemy\.)?ForeignKey\s*\(\s*(?:column\s*=\s*)?['"]([^'"]+)['"]/.exec(
+        column,
+      )?.[1];
     if (sourceField === undefined || target === undefined) return [];
     const targetParts = sqlAlchemyForeignKeyTarget(target);
     return [
@@ -844,11 +845,13 @@ function alembicColumnForeignKeys(call: string): DatabaseTableRelationshipInfere
 }
 
 function alembicForeignKeyConstraints(call: string): DatabaseTableRelationshipInference[] {
-  return [...call.matchAll(/ForeignKeyConstraint\s*\(\s*(\[[^\]]+\])\s*,\s*(\[[^\]]+\])/g)].flatMap(
-    (match) => {
-      const sourceFields = quotedListValues(match[1] ?? '');
-      const targetReferences = quotedListValues(match[2] ?? '');
-      return alembicForeignKeyListRelationships(sourceFields, targetReferences, match[0] ?? '');
+  return pythonCalls(call, /(?:sa\.|db\.|sqlalchemy\.)?ForeignKeyConstraint\s*\(/g).flatMap(
+    (constraint) => {
+      const sourceFields = quotedListValues(pythonCallArgument(constraint, 0, 'columns') ?? '');
+      const targetReferences = quotedListValues(
+        pythonCallArgument(constraint, 1, 'refcolumns') ?? '',
+      );
+      return alembicForeignKeyListRelationships(sourceFields, targetReferences, constraint);
     },
   );
 }
@@ -859,21 +862,10 @@ function alembicCreateForeignKeyRelationships(call: string):
       readonly relationships: readonly DatabaseTableRelationshipInference[];
     }
   | undefined {
-  const args = functionCallArguments(call);
-  const sourceTable =
-    firstQuotedString(args[1] ?? '') ?? /source_table\s*=\s*['"]([^'"]+)['"]/.exec(call)?.[1];
-  const targetTable =
-    firstQuotedString(args[2] ?? '') ?? /referent_table\s*=\s*['"]([^'"]+)['"]/.exec(call)?.[1];
-  const positionalSourceFields = quotedListValues(args[3] ?? '');
-  const positionalTargetFields = quotedListValues(args[4] ?? '');
-  const sourceFields =
-    positionalSourceFields.length > 0
-      ? positionalSourceFields
-      : quotedListValues(/local_cols\s*=\s*(\[[^\]]+\])/.exec(call)?.[1] ?? '');
-  const targetFields =
-    positionalTargetFields.length > 0
-      ? positionalTargetFields
-      : quotedListValues(/remote_cols\s*=\s*(\[[^\]]+\])/.exec(call)?.[1] ?? '');
+  const sourceTable = firstQuotedString(pythonCallArgument(call, 1, 'source_table') ?? '');
+  const targetTable = firstQuotedString(pythonCallArgument(call, 2, 'referent_table') ?? '');
+  const sourceFields = quotedListValues(pythonCallArgument(call, 3, 'local_cols') ?? '');
+  const targetFields = quotedListValues(pythonCallArgument(call, 4, 'remote_cols') ?? '');
   if (sourceTable === undefined || targetTable === undefined || sourceFields.length === 0) {
     return undefined;
   }
@@ -915,6 +907,31 @@ function functionCallArguments(call: string): string[] {
   if (open < 0) return [];
   const body = close < 0 ? call.slice(open + 1) : call.slice(open + 1, close);
   return splitSqlList(body);
+}
+
+function pythonCallArgument(
+  call: string,
+  positionalIndex: number,
+  keyword: string,
+): string | undefined {
+  const args = functionCallArguments(call);
+  const keywordPattern = new RegExp(`^\\s*${keyword}\\s*=\\s*([\\s\\S]+)$`);
+  for (const argument of args) {
+    const value = keywordPattern.exec(argument)?.[1];
+    if (value !== undefined) return value;
+  }
+  return args.filter((argument) => !/^\s*[A-Za-z_]\w*\s*=/.test(argument))[positionalIndex];
+}
+
+function pythonCalls(text: string, pattern: RegExp): string[] {
+  const calls: string[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    const open = text.indexOf('(', start);
+    const close = findMatchingSqlParen(text, open);
+    calls.push(close < 0 ? text.slice(start) : text.slice(start, close + 1));
+  }
+  return calls;
 }
 
 function quotedListValues(value: string): string[] {

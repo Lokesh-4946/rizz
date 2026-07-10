@@ -533,6 +533,126 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('detects keyword-form Alembic foreign keys', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'database', 'migrations'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'keyword-fk-app' }));
+      await writeFile(
+        join(dir, 'database', 'migrations', '003_keywords.py'),
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          '',
+          'def upgrade():',
+          '    op.create_table(',
+          '        "accounts",',
+          '        sa.Column("id", sa.Integer()),',
+          '        sa.Column("region_id", sa.Integer()),',
+          '    )',
+          '    op.create_table(',
+          '        "invoices",',
+          '        sa.Column("account_id", sa.Integer()),',
+          '        sa.Column("region_id", sa.Integer()),',
+          '        sa.ForeignKeyConstraint(',
+          '            columns=["account_id", "region_id"],',
+          '            refcolumns=["accounts.id", "accounts.region_id"],',
+          '        ),',
+          '    )',
+          '    op.add_column(',
+          '        "invoices",',
+          '        sa.Column("backup_account_id", sa.Integer(), sa.ForeignKey(column="accounts.id")),',
+          '    )',
+          '    op.create_table(',
+          '        "payments",',
+          '        sa.Column("invoice_id", sa.Integer()),',
+          '        sa.Column("region_id", sa.Integer()),',
+          '    )',
+          '    op.create_foreign_key(',
+          '        constraint_name=None,',
+          '        source_table="payments",',
+          '        referent_table="invoices",',
+          '        local_cols=["invoice_id", "region_id"],',
+          '        remote_cols=["id", "region_id"],',
+          '    )',
+        ].join('\n'),
+      );
+
+      const result = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:44:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const databaseTables = await readJson<{
+        entities: Array<{
+          id: string;
+          data?: { relationships?: unknown[] };
+        }>;
+      }>(join(dir, '.rizz', 'brain', 'entities', 'database_tables.json'));
+      expect(databaseTables.entities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'database/table:database--migrations--003_keywords.py-invoices',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  source_field: 'account_id',
+                  target_table: 'accounts',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  source_field: 'region_id',
+                  target_table: 'accounts',
+                  target_field: 'region_id',
+                }),
+                expect.objectContaining({
+                  source_field: 'backup_account_id',
+                  target_table: 'accounts',
+                  target_field: 'id',
+                }),
+              ]),
+            }),
+          }),
+          expect.objectContaining({
+            id: 'database/table:database--migrations--003_keywords.py-payments',
+            data: expect.objectContaining({
+              relationships: expect.arrayContaining([
+                expect.objectContaining({
+                  source_field: 'invoice_id',
+                  target_table: 'invoices',
+                  target_field: 'id',
+                }),
+                expect.objectContaining({
+                  source_field: 'region_id',
+                  target_table: 'invoices',
+                  target_field: 'region_id',
+                }),
+              ]),
+            }),
+          }),
+        ]),
+      );
+      const graph = await readJson<{
+        relationships: Array<{ from: string; relation: string; to: string }>;
+      }>(join(dir, '.rizz', 'brain', 'graph.json'));
+      expect(graph.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: 'database/table:database--migrations--003_keywords.py-invoices',
+            relation: 'depends_on',
+            to: 'database/table:database--migrations--003_keywords.py-accounts',
+          }),
+          expect.objectContaining({
+            from: 'database/table:database--migrations--003_keywords.py-payments',
+            relation: 'depends_on',
+            to: 'database/table:database--migrations--003_keywords.py-invoices',
+          }),
+        ]),
+      );
+    });
+  });
+
   it('keeps controller review blast radius route-local and filters unusable test scripts', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
