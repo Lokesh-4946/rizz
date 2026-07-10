@@ -64,6 +64,7 @@ function parseArgs(argv) {
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === '--') continue;
     if (arg === '--help') {
       process.stdout.write(usage());
       process.exit(0);
@@ -354,7 +355,7 @@ function stringOrNull(value) {
 }
 
 function weakestCapability(scorecard) {
-  if (scorecard === undefined) return undefined;
+  if (scorecard === undefined || scorecard === null) return undefined;
   return scorecard.capabilities
     .filter((capability) => capability.score !== null)
     .sort((left, right) => left.score - right.score)[0];
@@ -583,8 +584,12 @@ async function main() {
   if (repos.some((repo) => repo.status !== 0 || repo.timed_out)) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`uat-large-repos: ${message}\n`);
-  process.exitCode = 1;
-});
+export { parseArgs, weakestCapability };
+
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`uat-large-repos: ${message}\n`);
+    process.exitCode = 1;
+  });
+}
