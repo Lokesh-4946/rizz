@@ -72,7 +72,7 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
 | Flow Understanding | 95/100 | 5 | Broaden real Flask/FastAPI UAT seeds and verify more multi-file Python route/service journeys. |
-| Architecture Reasoning | 92/100 | 8 | Reduce weak component boundary assumptions and validate SQL/Alembic relationship precision on real migration-heavy repos. |
+| Architecture Reasoning | 93/100 | 7 | Reduce weak component boundary assumptions and validate SQL/Alembic relationship precision on real migration-heavy repos. |
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
@@ -83,15 +83,15 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/dbms-multicolumn-relationship-precision`, local gate on the rizz repo.
+Run: `feature/alembic-keyword-relationship-precision`, local gate on the rizz repo.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS hardening tests | 8/8 passed |
+| Focused DBMS hardening tests | 9/9 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 375/375 passed |
+| Full unit suite | 376/376 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
@@ -99,16 +99,15 @@ Run: `feature/dbms-multicolumn-relationship-precision`, local gate on the rizz r
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,520 bytes |
-| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
+| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: rizz now records one deterministic relationship per column pair for composite raw
-SQL and Alembic foreign keys. Raw SQL table-level and `ALTER TABLE` constraints can map
-`FOREIGN KEY (a, b) REFERENCES schema.target(x, y)`, while Alembic can map multi-column
-`sa.ForeignKeyConstraint(...)` and `op.create_foreign_key(...)`, including `None` constraint names
-and schema-qualified target references. The existing `database/table:*` graph stays unchanged while
-composite migration-only schemas gain precise cross-table blast-radius evidence. Remaining work is
-real-repo UAT on migration-heavy projects and keyword-heavy Alembic variants.
+Current verdict: rizz now handles positional, mixed, and keyword-heavy Alembic relationship calls
+through one deterministic top-level argument reader. `sa.ForeignKeyConstraint(columns=...,
+refcolumns=...)`, `sa.ForeignKey(column=...)`, and fully named `op.create_foreign_key(...)` calls
+produce the same per-column relationships and cross-table graph edges as positional migrations.
+The existing `database/table:*` graph contract and lightweight dependency footprint stay unchanged.
+Remaining work is real-repo UAT on migration-heavy projects.
 
 ## Latest DBMS-Like UAT Agent Results
 
