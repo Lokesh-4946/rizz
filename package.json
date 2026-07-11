@@ -1,6 +1,6 @@
 {
   "name": "@valoir/rizz-workspace",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "rizz — local Project Intelligence Engineering for understanding repositories before changing them.",
   "type": "module",

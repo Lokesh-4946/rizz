@@ -35,7 +35,7 @@ Current loop readiness:
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 78/100 | 22 | Repair instructions are packetized and less duplicative for agents, and backend-scoped verification suggestions reduce agent churn, but agent-specific apply/repair loops are not yet first-class. |
 | rizz verification | 100/100 | 0 | rizz scores proof and missing evidence, binds approval to a deterministic review fingerprint, and safely reuses exact-match signoff history across repeated repair reviews. |
-| Human approval | 94/100 | 6 | Reports separate agent evidence readiness from human signoff, and `rizz approve signoff` records fingerprint-bound decisions with audit history; explicit revoke and expiry UX remain. |
+| Human approval | 100/100 | 0 | Fingerprint-bound signoff now supports explicit ISO expiry and auditable revocation while preserving agent/human separation. |
 
 ## Opt-In Expansion Map
 
@@ -59,9 +59,9 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens repeated-review approval precision. Reviews persist a deterministic
-fingerprint of the Git basis, changed files, mission comparison, and exact diff; signoff history is
-reused only when that fingerprint matches, while repaired or amended diffs require fresh approval.
+The current slice completes explicit human-approval lifecycle controls. Signoff can carry an exact
+ISO expiry, expired approvals cannot make a review release-ready, and `rizz approve revoke` records
+a human-authored reason while preserving signed and revoked audit history.
 
 ## Capability Scorecard
 
@@ -76,38 +76,36 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 100/100 | 0 | Preserve exact reuse and relationship-delta accounting across broader real-repo scans. |
-| Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
+| Review Intelligence with true blast radius | 100/100 | 0 | Preserve authored/generated separation and credential precision across broader real-repo reviews. |
 | Verification Plan + Evidence Ingest | 100/100 | 0 | Preserve fingerprint-bound evidence and signoff reuse while keeping ingestion deterministic and local. |
-| `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
+| `rizz ask` | 95/100 | 5 | Narrow broad component evidence and improve confidence calibration for exact file questions. |
 
 ## Latest Baton Result
 
-Run: `feature/verification-signoff-reuse`, local gate plus compiled CLI review/signoff lifecycle UAT.
+Run: `feature/approval-revoke-expiry`, focused approval lifecycle tests plus compiled CLI
+signoff/expiry/revoke UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused human approval and review integration tests | Passed |
+| Focused human-approval lifecycle tests | 6/6 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 383/383 passed |
+| Full unit suite | 391/391 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 10/10 passed |
+| CLI process smoke | 11/11 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,547 bytes |
-| Footprint | Passed: 56ms cold start, 198KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,050 bytes |
+| Footprint | Passed: 51ms cold start, 199KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: a generated review plan accepts exact verification evidence and becomes ready for
-human approval. After `rizz approve signoff`, a repeated review of the same committed branch diff
-gets a new review ID but keeps the same fingerprint and safely reuses the recorded signoff. Amending
-the reviewed commit changes the fingerprint, invalidates the prior signoff, preserves its audit
-history, and blocks merge readiness until a new signoff is recorded. The second decision is then
-reused on another unchanged review, with both fingerprint-scoped history entries retained. Branch
-diff reviews also no longer report their own committed branch files as mixed-basis contamination.
+Current verdict: a ready fingerprint can receive a human signoff with `--expires-at`; the exact
+expiry instant returns the packet to `awaiting_human_signoff`, and `rizz approve revoke` immediately
+invalidates the active decision. Both transitions preserve audit history, stable error codes, and
+byte-for-byte verified local writes. Agents remain unable to self-approve.
 
 ## Latest Alembic Real-Repo UAT
 

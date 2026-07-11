@@ -3257,6 +3257,63 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz approve records expiry and revokes active human signoff',
+      run() {
+        withTempDirSync('rizz-approve-lifecycle-', (dir) => {
+          mkdirSync(join(dir, '.rizz', 'research'), { recursive: true });
+          writeFileSync(
+            join(dir, '.rizz', 'research', 'human_approval.json'),
+            JSON.stringify({
+              schema_version: 1,
+              review_id: 'review:cli-lifecycle',
+              review_fingerprint: 'e'.repeat(64),
+              state: 'awaiting_human_signoff',
+            }),
+          );
+          const signoff = runCliInCwdSync(
+            dir,
+            [
+              'approve',
+              'signoff',
+              '--approver',
+              'Release Owner',
+              '--summary',
+              'Approved for the release window.',
+              '--expires-at',
+              '2099-01-01T00:00:00.000Z',
+              '--json',
+            ],
+            '',
+          );
+          assert(signoff.status === 0, `expected signoff exit 0, got ${signoff.status}`);
+          const signed = JSON.parse(signoff.stdout);
+          assert(signed.record.status === 'signed_off', 'signoff status mismatch');
+          assert(
+            signed.record.expires_at === '2099-01-01T00:00:00.000Z',
+            'signoff expiry mismatch',
+          );
+
+          const revoke = runCliInCwdSync(
+            dir,
+            [
+              'approve',
+              'revoke',
+              '--approver',
+              'Release Owner',
+              '--summary',
+              'Release scope changed.',
+              '--json',
+            ],
+            '',
+          );
+          assert(revoke.status === 0, `expected revoke exit 0, got ${revoke.status}`);
+          const revoked = JSON.parse(revoke.stdout);
+          assert(revoked.record.status === 'revoked', 'revoke status mismatch');
+          assert(revoked.record.history.length === 2, 'approval audit history mismatch');
+        });
+      },
+    },
+    {
       name: 'rizz explain explains a component from the local project brain',
       run() {
         withTempDirSync('rizz-explain-smoke-', (dir) => {
@@ -3389,7 +3446,7 @@ function runInstallShimSmoke() {
             version.status === 0,
             `expected installed shim --version exit 0, got ${version.status}: ${version.stderr}`,
           );
-          assert(version.stdout.trim() === '0.3.0', 'expected shim to forward --version 0.3.0');
+          assert(version.stdout.trim() === '0.3.1', 'expected shim to forward --version 0.3.1');
         });
       },
     },
