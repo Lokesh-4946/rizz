@@ -2,7 +2,7 @@
 // readiness checks). Returns structured results; never throws for expected failures; never
 // mutates orchestration state. See CLAUDE.md §Architecture.
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 
 export {
   type RizzErrorCode,
