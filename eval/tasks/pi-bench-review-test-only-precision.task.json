@@ -1,0 +1,143 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-test-only-precision",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Test-only review precision benchmark seed",
+  "prompt": "Review a test-only change and verify that Rizz preserves affected journey/test context without inventing runtime state/data impact or missing-runtime-test findings.",
+  "fixture": {
+    "root": "pi-bench-review-test-only-precision",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-test-only-precision\",\"scripts\":{\"test\":\"vitest run\"},\"dependencies\":{\"express\":\"^4.19.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { loginHandler } from \"./auth/login-handler.js\";\n\nconst app = express();\napp.post(\"/login\", loginHandler);\nexport { app };\n"
+      },
+      {
+        "path": "src/auth/login-handler.ts",
+        "contents": "import { saveSession } from \"./session-store.js\";\n\nexport async function loginHandler(req: { userId?: string }, res: { json: (value: unknown) => void }) {\n  const session = await saveSession(req.userId ?? \"guest\");\n  res.json({ ok: true, session });\n}\n"
+      },
+      {
+        "path": "src/auth/session-store.ts",
+        "contents": "const sessions = new Map<string, { id: string; userId: string }>();\n\nexport async function saveSession(userId: string) {\n  const session = { id: `session-${userId}`, userId };\n  sessions.set(session.id, session);\n  return session;\n}\n"
+      },
+      {
+        "path": "src/auth/login-handler.test.ts",
+        "contents": "import { it } from \"vitest\";\n\nit(\"covers login\", () => {});\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/auth/login-handler.test.ts",
+          "contents": "import { expect, it } from \"vitest\";\n\nit(\"covers login response\", () => expect(true).toBe(true));\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/auth/login-handler.test.ts"],
+      "affected_tests_include": ["src/auth/login-handler.test.ts"],
+      "minimum_affected_flows": 1,
+      "maximum_affected_data_dependencies": 0,
+      "maximum_affected_state_operations": 0,
+      "findings_exclude": [
+        { "category": "Missing tests" },
+        { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" }
+      ],
+      "findings_include": [
+        {
+          "category": "Correctness",
+          "title_includes": "Test evidence changed without runtime surface changes"
+        }
+      ],
+      "claim_surfaces_include": ["blast_radius_reason", "affected_flow"],
+      "minimum_review_claims": 1,
+      "require_review_claim_coverage": true,
+      "required_tests_include": ["vitest run"],
+      "blast_radius_reasons_include": ["affected flow(s) link the change"]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_flow_count",
+        "test_evidence_change_count",
+        "affected_data_dependency_count",
+        "affected_state_operation_count",
+        "review_precision_score",
+        "review_precision_status",
+        "false_positive_guard_count",
+        "false_negative_signal_count",
+        "precision_calibration.test_only_change",
+        "precision_calibration.runtime_source_change_count",
+        "precision_calibration.false_positive_guards",
+        "precision_calibration.false_negative_signals",
+        "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": [
+        "\"test_only_confidence_guard\"",
+        "\"state_data_overstatement_guard\"",
+        "\"missing_tests_overstatement_guard\"",
+        "\"affected_flow_context_preserved\"",
+        "\"test_evidence_preserved\""
+      ],
+      "expected_json_values": {
+        "test_evidence_change_count": 1,
+        "affected_data_dependency_count": 0,
+        "affected_state_operation_count": 0,
+        "precision_calibration.test_only_change": true,
+        "precision_calibration.runtime_source_change_count": 0,
+        "secret_safety.output_secret_safe": true
+      }
+    },
+    {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "required_fields": [
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.affected_flow",
+        "secret_safety.output_secret_safe",
+        "claims"
+      ],
+      "required_substrings": ["src/auth/login-handler.test.ts", "\"surface\": \"affected_flow\""],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Affected Flows",
+        "Review Precision Calibration",
+        "test_only_confidence_guard",
+        "src/auth/login-handler.test.ts"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Test-only changes retain affected journey/test context.",
+      "Test-only changes emit confidence/evidence calibration instead of runtime behavior claims.",
+      "Review does not report state/data runtime impact when only test evidence changed."
+    ],
+    "fail": [
+      "A test-only diff is treated like a runtime state/data change.",
+      "Review emits missing-runtime-test findings for a test-only diff."
+    ]
+  }
+}

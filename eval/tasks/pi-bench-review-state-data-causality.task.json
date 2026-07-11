@@ -1,0 +1,186 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-state-data-causality",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "State/data causal blast-radius benchmark seed",
+  "prompt": "Review a schema/data-contract change and verify that rizz review connects it to the user journey, affected state/data dependencies, state operations, evidence gaps, and review eval counts.",
+  "fixture": {
+    "root": "pi-bench-review-state-data-causality",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-state-data-causality\",\"scripts\":{\"test\":\"vitest run\",\"start\":\"node dist/server.js\"},\"dependencies\":{\"express\":\"^4.19.0\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { profileHandler } from \"./accounts/profile-handler.js\";\n\nconst app = express();\napp.get(\"/profile\", profileHandler);\nexport { app };\n"
+      },
+      {
+        "path": "src/accounts/profile-handler.ts",
+        "contents": "import { loadProfile, saveProfile } from \"./profile-repository.js\";\n\nexport async function profileHandler(req: { userId?: string }, res: { json: (value: unknown) => void }) {\n  const profile = await loadProfile(req.userId ?? \"guest\");\n  await saveProfile(profile.id, { lastSeen: Date.now() });\n  res.json(profile);\n}\n"
+      },
+      {
+        "path": "src/accounts/profile-repository.ts",
+        "contents": "import { profileSchema } from \"../db/schema.js\";\n\nconst profiles = new Map<string, { id: string; lastSeen?: number }>();\n\nexport async function loadProfile(id: string) {\n  const cached = profiles.get(id);\n  return cached ?? { id, schema: profileSchema.table };\n}\n\nexport async function saveProfile(id: string, update: { lastSeen: number }) {\n  profiles.set(id, { id, ...update });\n  return profiles.get(id);\n}\n"
+      },
+      {
+        "path": "src/db/schema.ts",
+        "contents": "export const profileSchema = {\n  table: \"profiles\",\n  columns: [\"id\", \"lastSeen\"]\n};\n"
+      },
+      {
+        "path": "src/accounts/profile-handler.test.ts",
+        "contents": "import { it } from \"vitest\";\n\nit(\"loads profile\", () => {});\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/db/schema.ts",
+          "contents": "export const profileSchema = {\n  table: \"profiles\",\n  columns: [\"id\", \"lastSeen\", \"plan\"]\n};\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/db/schema.ts"],
+      "minimum_affected_flows": 1,
+      "minimum_affected_data_dependencies": 1,
+      "minimum_affected_state_operations": 1,
+      "minimum_verification_plan_items": 2,
+      "minimum_verification_plan_required": 1,
+      "minimum_review_claims": 1,
+      "affected_data_dependencies_include": ["data schema/model"],
+      "affected_state_operations_include": ["schema"],
+      "verification_plan_types_include": ["data", "test"],
+      "verification_plan_priorities_include": ["required"],
+      "claim_surfaces_include": [
+        "blast_radius_reason",
+        "finding",
+        "affected_flow",
+        "verification_plan"
+      ],
+      "require_review_claim_coverage": true,
+      "verification_plan_reasons_include": [
+        "state/data dependency",
+        "Runtime/source files changed"
+      ],
+      "affected_tests_include": ["src/accounts/profile-handler.test.ts"],
+      "blast_radius_reasons_include": [
+        "affected flow(s) link the change",
+        "graph relationship(s) touch the review blast radius"
+      ],
+      "findings_include": [
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" },
+        { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" }
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/index.html",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": [
+        "flows_with_data_dependencies",
+        "data_dependencies",
+        "data_dependencies_by_kind",
+        "state_operations_by_type",
+        "data_dependency_flows"
+      ],
+      "required_substrings": ["data schema/model", "state repository/module", "schema"]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_data_dependency_count",
+        "affected_state_operation_count",
+        "verification_plan_count",
+        "verification_plan_required_count",
+        "verification_plan_recommended_count",
+        "user_visible_failure_mode_count",
+        "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": [
+        "\"affected_data_dependency_count\"",
+        "\"affected_state_operation_count\"",
+        "\"verification_plan_count\""
+      ],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true
+      }
+    },
+    {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "required_fields": [
+        "review_id",
+        "total_claims",
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.finding",
+        "claims_by_surface.affected_flow",
+        "claims_by_surface.verification_plan",
+        "secret_safety.output_secret_safe",
+        "claims"
+      ],
+      "required_substrings": [
+        "\"surface\": \"blast_radius_reason\"",
+        "\"surface\": \"finding\"",
+        "\"surface\": \"affected_flow\"",
+        "\"surface\": \"verification_plan\"",
+        "data schema/model",
+        "state/data dependency"
+      ],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
+      "path": ".rizz/reports/index.html",
+      "type": "file",
+      "required_substrings": [
+        "Journey Intelligence",
+        "Targeted Verification",
+        "Verification Summary",
+        "State/data",
+        "data schema/model",
+        "review_claim_evidence.json"
+      ]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "State/Data Impact",
+        "Targeted Verification",
+        "State/data dependency overlaps the diff",
+        "data schema/model"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Detects transitive route-to-schema state/data dependency evidence.",
+      "Review connects schema diff to affected journey/flow and state operation.",
+      "Mission Control and review report expose state/data impact without provider calls.",
+      "Review emits a targeted verification plan for data/state and test checks.",
+      "Review eval emits deterministic state/data count fields for research tracking."
+    ],
+    "fail": [
+      "The task requires network access or provider calls.",
+      "The schema change is reported only as a generic file change without state/data causality.",
+      "Review output lacks targeted verification plan items for the affected state/data surface.",
+      "Review eval omits state/data dependency count fields."
+    ]
+  }
+}

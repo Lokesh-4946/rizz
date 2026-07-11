@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifySensitivePath,
+  redactSensitiveSet,
   redactSensitiveText,
   redactedSensitiveReference,
   sensitiveIdentityKey,
@@ -54,12 +55,24 @@ describe('sensitive path classification', () => {
 
   it('redacts sensitive paths embedded in user-facing text', () => {
     const output = redactSensitiveText(
-      'File evidence from src/sk-or-v1-pathsecret0000000000000000.ts and client_secret.json.',
+      'File evidence from src/sk-or-v1-pathsecret0000000000000000.ts, client_secret.json, and file:///tmp/public-build/output.json.',
     );
 
     expect(output).not.toContain('sk-or-v1-pathsecret');
     expect(output).not.toContain('client_secret');
+    expect(output).not.toContain('/tmp/public-build');
     expect(output).toContain('redacted:sensitive-file:');
+  });
+
+  it('preserves embedded redacted references across repeated sanitization', () => {
+    const reference = redactedSensitiveReference('/tmp/private-secret/config.json');
+    const input = `Evidence ${reference}; inspect /tmp/another-private-secret/config.json.`;
+    const output = redactSensitiveText(input);
+
+    expect(output).toContain(reference);
+    expect(output).not.toContain('/tmp/another-private-secret');
+    expect(redactSensitiveText(output)).toBe(output);
+    expect(redactSensitiveSet(['/tmp/private-secret/config.json', reference])).toEqual([reference]);
   });
 
   it('keeps command structure while redacting secret values', () => {
@@ -77,5 +90,15 @@ describe('sensitive path classification', () => {
     const output = redactSensitiveText('Configuration artifact detected at .env.example.');
 
     expect(output).toBe('Configuration artifact detected at .env.example.');
+  });
+
+  it('scans long benign text without candidate backtracking', () => {
+    const input = `${'a'.repeat(2_000)} /tmp/private-secret/config.json`;
+    const startedAt = performance.now();
+    const output = redactSensitiveText(input);
+
+    expect(performance.now() - startedAt).toBeLessThan(250);
+    expect(output).not.toContain('/tmp/private-secret');
+    expect(output).toContain('redacted:sensitive-file:');
   });
 });

@@ -19,7 +19,7 @@ import {
 } from '@valoir/rizz-core';
 import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-providers';
 
-const VERSION = '0.2.1';
+const VERSION = '0.3.0';
 
 const USAGE = `rizz - understand a software system
 
@@ -30,7 +30,13 @@ Usage:
   rizz explain <x>   explain a component or file from the project brain
   rizz explain flow <id>
                      explain a reconstructed flow from the project brain
+  rizz explain service <x>
+                     explain a detected service from the project brain
+  rizz verify add    record verification evidence for review calibration
+  rizz approve signoff
+                     record human signoff after rizz marks review ready
   rizz review        review current git diff with the project brain
+                    optional: --mission <text|json>, --mission-file <path>
   rizz chat          launch model TUI
   rizz setup         choose model route
   rizz doctor        readiness check
@@ -46,6 +52,30 @@ function displayLocalPath(path: string): string {
   const local = relative(process.cwd(), path).replace(/\\/g, '/');
   if (local === '') return '.';
   return local.startsWith('..') ? path : local;
+}
+
+function writeStdout(text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => {
+      process.stdout.off('drain', onDrain);
+      reject(error);
+    };
+    const onDrain = (): void => {
+      process.stdout.off('error', onError);
+      resolve();
+    };
+    process.stdout.once('error', onError);
+    if (process.stdout.write(text)) {
+      process.stdout.off('error', onError);
+      resolve();
+      return;
+    }
+    process.stdout.once('drain', onDrain);
+  });
+}
+
+async function writeJsonStdout(value: unknown): Promise<void> {
+  await writeStdout(`${JSON.stringify(value)}\n`);
 }
 
 type StartTuiOptions = ResolvedProvider & {
@@ -85,7 +115,22 @@ async function startTuiLazy(options: StartTuiOptions): Promise<void> {
 
 async function runBrainCommand(): Promise<number> {
   const { generateProjectBrain } = await import('@valoir/rizz-brain');
-  const result = await generateProjectBrain({ rootDir: process.cwd() });
+  const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
+  if (maxFiles.ok === false) {
+    process.stderr.write(`rizz: ${maxFiles.error}\n`);
+    return 2;
+  }
+  const result = await generateProjectBrain({
+    rootDir: process.cwd(),
+    ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
+    onProgress: (progress) => {
+      const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
+      const detail = progress.detail === undefined ? '' : `/${progress.detail}`;
+      process.stderr.write(
+        `[rizz brain] ${progress.phase}${detail}: ${progress.message}${elapsed}\n`,
+      );
+    },
+  });
   if (!result.ok) {
     process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     return 1;
@@ -104,19 +149,40 @@ async function runBrainCommand(): Promise<number> {
   return 0;
 }
 
-async function runReviewCommand(options: { readonly json: boolean }): Promise<number> {
+function parseBrainMaxFiles(
+  value: string | undefined,
+):
+  | { readonly ok: true; readonly value: number | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (value === undefined || value.trim() === '') return { ok: true, value: undefined };
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return { ok: false, error: 'RIZZ_BRAIN_MAX_FILES must be a positive integer' };
+  }
+  return { ok: true, value: parsed };
+}
+
+async function runReviewCommand(options: {
+  readonly json: boolean;
+  readonly mission?: string;
+  readonly missionFile?: string;
+}): Promise<number> {
   const { reviewProjectChanges } = await import('@valoir/rizz-brain');
-  const result = await reviewProjectChanges({ rootDir: process.cwd(), json: options.json });
+  const result = await reviewProjectChanges({
+    rootDir: process.cwd(),
+    ...(options.mission !== undefined ? { mission: options.mission } : {}),
+    ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
+  });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
     return 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value.review)}\n`);
+    await writeJsonStdout(result.value.review);
     return 0;
   }
 
@@ -129,6 +195,10 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
     `  direct/dependent components: ${summary.review.direct_affected_components.length}/${summary.review.dependent_components.length}\n`,
   );
   process.stdout.write(`  affected flows: ${summary.review.affected_flows.length}\n`);
+  process.stdout.write(`  affected services: ${summary.review.affected_services.length}\n`);
+  process.stdout.write(
+    `  mission scope: ${summary.review.review_governance.mission_contract.status} (${summary.review.review_governance.mission_contract.score}/100)\n`,
+  );
   process.stdout.write(`  findings: ${summary.findings}\n`);
   process.stdout.write(`  action: ${summary.recommendedAction}\n`);
   process.stdout.write(`  review: ${displayLocalPath(summary.reviewPath)}\n`);
@@ -147,6 +217,14 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
       );
     }
   }
+  if (summary.review.affected_services.length > 0) {
+    process.stdout.write('  affected services:\n');
+    for (const service of summary.review.affected_services.slice(0, 5)) {
+      process.stdout.write(
+        `    - ${service.id} (${service.framework}, ${service.confidence}, ${service.affected_flows.length} flow(s))\n`,
+      );
+    }
+  }
   if (summary.review.blast_radius_reasons.length > 0) {
     process.stdout.write('  blast radius evidence:\n');
     for (const reason of summary.review.blast_radius_reasons.slice(0, 4)) {
@@ -162,6 +240,87 @@ async function runReviewCommand(options: { readonly json: boolean }): Promise<nu
   return 0;
 }
 
+async function runVerifyAddCommand(options: {
+  readonly name: string;
+  readonly command: string;
+  readonly status: 'passed' | 'failed' | 'skipped' | 'unknown';
+  readonly summary?: string;
+  readonly areas: readonly string[];
+  readonly json: boolean;
+}): Promise<number> {
+  const { addVerificationEvidence } = await import('@valoir/rizz-brain');
+  const result = await addVerificationEvidence({
+    rootDir: process.cwd(),
+    name: options.name,
+    command: options.command,
+    status: options.status,
+    ...(options.summary !== undefined ? { outputSummary: options.summary } : {}),
+    affectedConfidenceAreas: options.areas,
+  });
+  if (!result.ok) {
+    if (options.json) {
+      await writeJsonStdout(result);
+    } else {
+      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    }
+    return 1;
+  }
+  if (options.json) {
+    await writeJsonStdout(result.value);
+    return 0;
+  }
+  process.stdout.write(`rizz recorded verification evidence ${result.value.item.id}\n`);
+  process.stdout.write(`  name: ${result.value.item.name}\n`);
+  process.stdout.write(`  status: ${result.value.item.status}\n`);
+  process.stdout.write(`  artifact: ${displayLocalPath(result.value.artifactPath)}\n`);
+  if (result.value.artifact.risks_reduced.length > 0) {
+    process.stdout.write('  risks reduced:\n');
+    for (const risk of result.value.artifact.risks_reduced.slice(0, 4)) {
+      process.stdout.write(`    - ${risk}\n`);
+    }
+  }
+  if (result.value.artifact.remaining_unknowns.length > 0) {
+    process.stdout.write('  remaining unknowns:\n');
+    for (const unknown of result.value.artifact.remaining_unknowns.slice(0, 4)) {
+      process.stdout.write(`    - ${unknown}\n`);
+    }
+  }
+  return 0;
+}
+
+async function runApproveSignoffCommand(options: {
+  readonly summary: string;
+  readonly approver: string;
+  readonly json: boolean;
+}): Promise<number> {
+  const { recordHumanSignoff } = await import('@valoir/rizz-brain');
+  const result = await recordHumanSignoff({
+    rootDir: process.cwd(),
+    summary: options.summary,
+    approver: options.approver,
+  });
+  if (!result.ok) {
+    if (options.json) {
+      await writeJsonStdout(result);
+    } else {
+      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    }
+    return result.error.code === 'SIGNOFF_NOT_READY' ? 1 : 2;
+  }
+  if (options.json) {
+    await writeJsonStdout(result.value);
+    return 0;
+  }
+  process.stdout.write('rizz recorded human signoff\n');
+  process.stdout.write(`  approver: ${result.value.record.approver}\n`);
+  process.stdout.write(`  review: ${result.value.record.review_id}\n`);
+  process.stdout.write(`  artifact: ${displayLocalPath(result.value.signoffPath)}\n`);
+  for (const action of result.value.nextActions) {
+    process.stdout.write(`  next: ${action}\n`);
+  }
+  return 0;
+}
+
 async function runAskCommand(options: {
   readonly question: string;
   readonly json: boolean;
@@ -170,7 +329,7 @@ async function runAskCommand(options: {
   const result = await askProjectQuestion({ rootDir: process.cwd(), question: options.question });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
@@ -181,7 +340,7 @@ async function runAskCommand(options: {
       : 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value.answer)}\n`);
+    await writeJsonStdout(result.value.answer);
     return 0;
   }
 
@@ -212,14 +371,14 @@ async function runExplainCommand(options: {
   const result = await explainProjectTarget({ rootDir: process.cwd(), target: options.target });
   if (!result.ok) {
     if (options.json) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      await writeJsonStdout(result);
     } else {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     }
     return result.error.code === 'EXPLAIN_TARGET_REQUIRED' ? 2 : 1;
   }
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result.value.explanation)}\n`);
+    await writeJsonStdout(result.value.explanation);
     return 0;
   }
 
@@ -241,6 +400,24 @@ async function runExplainCommand(options: {
     writeSection('State transitions', explanation.flow.state_transitions);
     writeSection('Required tests', explanation.flow.required_tests);
     writeSection('Confidence reasons', explanation.flow.confidence_reasons);
+    writeSection('Services', explanation.flow.services);
+    writeSection(
+      'Service causality',
+      explanation.flow.service_causality.map((item) => {
+        const effects =
+          item.effects.length === 0 ? 'no effects recorded yet' : item.effects.join(', ');
+        return `${item.service_id}: ${item.cause} Effects: ${effects}. Confidence: ${item.confidence}.`;
+      }),
+    );
+  }
+  if (explanation.service !== undefined) {
+    writeSection('Service routes', explanation.service.routes);
+    writeSection('Service jobs', explanation.service.jobs);
+    writeSection('Storage dependencies', explanation.service.storage_dependencies);
+    writeSection('Environment variables', explanation.service.environment_variables);
+    writeSection('External services/APIs', explanation.service.external_services);
+    writeSection('Deployment configs', explanation.service.deployment_configs);
+    writeSection('Service related flows', explanation.service.related_flows);
   }
   writeSection('Important files', explanation.important_files);
   writeSection('Dependencies', explanation.dependencies);
@@ -331,6 +508,30 @@ function extractFlag(
   return { value, rest };
 }
 
+function extractRepeatedFlag(
+  argv: readonly string[],
+  flag: string,
+): { values: string[]; rest: string[] } {
+  const rest = [...argv];
+  const values: string[] = [];
+  for (let i = 0; i < rest.length; ) {
+    if (rest[i] !== flag) {
+      i += 1;
+      continue;
+    }
+    const value = rest[i + 1];
+    rest.splice(i, value === undefined ? 1 : 2);
+    if (value !== undefined) values.push(value);
+  }
+  return { values, rest };
+}
+
+function isVerificationStatus(
+  value: string | undefined,
+): value is 'passed' | 'failed' | 'skipped' | 'unknown' {
+  return value === 'passed' || value === 'failed' || value === 'skipped' || value === 'unknown';
+}
+
 /** Non-TTY: prompt input runs one turn; empty input falls back to repo understanding. */
 async function runPrint(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
@@ -365,15 +566,13 @@ async function runJson(select: SelectOpts): Promise<number> {
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const input = Buffer.concat(chunks).toString('utf8').trim();
   if (input === '') {
-    process.stdout.write(
-      `${JSON.stringify({ ok: false, error: { code: 'BAD_REQUEST', message: 'empty input' } })}\n`,
-    );
+    await writeJsonStdout({ ok: false, error: { code: 'BAD_REQUEST', message: 'empty input' } });
     return 2;
   }
   const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
   const result = await runJsonTurn({ resolved, input, cwd: process.cwd() });
-  process.stdout.write(`${JSON.stringify(result)}\n`); // stdout stays pure JSON; notices go to stderr
+  await writeJsonStdout(result); // stdout stays pure JSON; notices go to stderr
   return result.ok ? 0 : 1;
 }
 
@@ -532,13 +731,99 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   if (c.rest[0] === 'review') {
     const reviewArgs = c.rest.slice(1);
+    const mission = extractFlag(reviewArgs, '--mission');
+    const missionFile = extractFlag(mission.rest, '--mission-file');
     const allowed = new Set(['--json']);
-    const unknown = reviewArgs.find((arg) => !allowed.has(arg));
+    const unknown = missionFile.rest.find((arg) => !allowed.has(arg));
+    if (mission.missingValue || missionFile.missingValue) {
+      process.stderr.write('rizz: review mission flags need values\n');
+      return 2;
+    }
     if (unknown !== undefined) {
       process.stderr.write(`rizz: unknown review option '${unknown}'\nTry 'rizz --help'.\n`);
       return 2;
     }
-    return runReviewCommand({ json: reviewArgs.includes('--json') });
+    return runReviewCommand({
+      json: missionFile.rest.includes('--json'),
+      ...(mission.value !== undefined ? { mission: mission.value } : {}),
+      ...(missionFile.value !== undefined ? { missionFile: missionFile.value } : {}),
+    });
+  }
+  if (c.rest[0] === 'verify') {
+    const verifyArgs = c.rest.slice(1);
+    if (verifyArgs[0] !== 'add') {
+      process.stderr.write(
+        "rizz: verify currently supports 'add'\nTry 'rizz verify add --name lint --command \"npm run lint\" --status passed'.\n",
+      );
+      return 2;
+    }
+    const wantsJson = verifyArgs.includes('--json');
+    const name = extractFlag(verifyArgs.slice(1), '--name');
+    const command = extractFlag(name.rest, '--command');
+    const status = extractFlag(command.rest, '--status');
+    const summary = extractFlag(status.rest, '--summary');
+    const areas = extractRepeatedFlag(summary.rest, '--area');
+    const allowed = new Set(['--json']);
+    const unknown = areas.rest.find((arg) => !allowed.has(arg));
+    if (name.missingValue || command.missingValue || status.missingValue || summary.missingValue) {
+      process.stderr.write('rizz: verify add flags need values\n');
+      return 2;
+    }
+    if (unknown !== undefined) {
+      process.stderr.write(`rizz: unknown verify option '${unknown}'\nTry 'rizz --help'.\n`);
+      return 2;
+    }
+    if (name.value === undefined || command.value === undefined) {
+      process.stderr.write("rizz: verify add needs --name and --command\nTry 'rizz --help'.\n");
+      return 2;
+    }
+    if (!isVerificationStatus(status.value)) {
+      process.stderr.write(
+        "rizz: verify add --status must be passed, failed, skipped, or unknown\nTry 'rizz --help'.\n",
+      );
+      return 2;
+    }
+    return runVerifyAddCommand({
+      name: name.value,
+      command: command.value,
+      status: status.value,
+      ...(summary.value !== undefined ? { summary: summary.value } : {}),
+      areas: areas.values,
+      json: wantsJson,
+    });
+  }
+  if (c.rest[0] === 'approve') {
+    const approveArgs = c.rest.slice(1);
+    if (approveArgs[0] !== 'signoff') {
+      process.stderr.write(
+        'rizz: approve currently supports \'signoff\'\nTry \'rizz approve signoff --approver "Human" --summary "Approved for merge"\'.\n',
+      );
+      return 2;
+    }
+    const wantsJson = approveArgs.includes('--json');
+    const approver = extractFlag(approveArgs.slice(1), '--approver');
+    const summary = extractFlag(approver.rest, '--summary');
+    const allowed = new Set(['--json']);
+    const unknown = summary.rest.find((arg) => !allowed.has(arg));
+    if (approver.missingValue || summary.missingValue) {
+      process.stderr.write('rizz: approve signoff flags need values\n');
+      return 2;
+    }
+    if (unknown !== undefined) {
+      process.stderr.write(`rizz: unknown approve option '${unknown}'\nTry 'rizz --help'.\n`);
+      return 2;
+    }
+    if (approver.value === undefined || summary.value === undefined) {
+      process.stderr.write(
+        "rizz: approve signoff needs --approver and --summary\nTry 'rizz --help'.\n",
+      );
+      return 2;
+    }
+    return runApproveSignoffCommand({
+      approver: approver.value,
+      summary: summary.value,
+      json: wantsJson,
+    });
   }
   if (c.rest[0] === 'ask') {
     const askArgs = c.rest.slice(1);
@@ -553,7 +838,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: `Unknown ask option '${unknownFlag}'.`,
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
@@ -572,7 +857,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: 'Ask needs a Project Intelligence question.',
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
@@ -594,7 +879,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: `Unknown explain option '${unknownFlag}'.`,
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,
@@ -604,11 +889,16 @@ async function main(argv: readonly string[]): Promise<number> {
     const targets = explainArgs.filter((arg) => !allowed.has(arg));
     let target = targets[0];
     const isFlowTarget = targets.length === 2 && targets[0] === 'flow';
+    const isServiceTarget = targets.length === 2 && targets[0] === 'service';
     if (isFlowTarget) {
       const flowId = targets[1] ?? '';
       target = flowId.startsWith('flow:') ? flowId : `flow:${flowId}`;
     }
-    if ((targets.length !== 1 && !isFlowTarget) || target === undefined) {
+    if (isServiceTarget) {
+      const serviceId = targets[1] ?? '';
+      target = serviceId.startsWith('service:') ? serviceId : `service ${serviceId}`;
+    }
+    if ((targets.length !== 1 && !isFlowTarget && !isServiceTarget) || target === undefined) {
       const error = {
         ok: false,
         error: {
@@ -616,7 +906,7 @@ async function main(argv: readonly string[]): Promise<number> {
           message: 'Explain needs exactly one component, file, or flow target.',
         },
       };
-      if (wantsJson) process.stdout.write(`${JSON.stringify(error)}\n`);
+      if (wantsJson) await writeJsonStdout(error);
       else
         process.stderr.write(
           `rizz: ${error.error.code}: ${error.error.message}\nTry 'rizz --help'.\n`,

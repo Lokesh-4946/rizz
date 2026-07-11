@@ -1,0 +1,153 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-config-only-precision",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Config-only review precision benchmark seed",
+  "prompt": "Review a config-only TypeScript change and verify that Rizz reports dependency/runtime impact without overstating runtime source, state/data, or missing-test blast radius.",
+  "fixture": {
+    "root": "pi-bench-review-config-only-precision",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-config-only-precision\",\"scripts\":{\"build\":\"next build\",\"test\":\"vitest run\"},\"dependencies\":{\"next\":\"^15.0.0\",\"react\":\"^19.0.0\",\"react-dom\":\"^19.0.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\",\"typescript\":\"^5.0.0\"}}\n"
+      },
+      {
+        "path": "next.config.ts",
+        "contents": "const nextConfig = { output: \"standalone\" };\nexport default nextConfig;\n"
+      },
+      {
+        "path": "src/app/page.tsx",
+        "contents": "import { loadDashboard } from \"../data/dashboard-repository.js\";\n\nexport default async function Page() {\n  const dashboard = await loadDashboard(\"home\");\n  return <main>{dashboard.title}</main>;\n}\n"
+      },
+      {
+        "path": "src/data/dashboard-repository.ts",
+        "contents": "const dashboards = new Map<string, { id: string; title: string }>();\n\nexport async function loadDashboard(id: string) {\n  return dashboards.get(id) ?? { id, title: \"Ready\" };\n}\n"
+      },
+      {
+        "path": "src/data/dashboard-repository.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { loadDashboard } from \"./dashboard-repository.js\";\n\nit(\"loads dashboard\", async () => expect((await loadDashboard(\"home\")).title).toBeTruthy());\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "next.config.ts",
+          "contents": "// Operator note: update Redis cache TTL and delete stale sessions in the runbook.\nconst nextConfig = { output: \"standalone\", poweredByHeader: false };\nexport default nextConfig;\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["next.config.ts"],
+      "affected_configs_include": ["next.config.ts"],
+      "dependency_runtime_changed_files_include": ["next.config.ts"],
+      "dependency_runtime_config_files_include": ["next.config.ts"],
+      "dependency_runtime_runtime_surfaces_include": ["configuration/runtime setup"],
+      "minimum_dependency_runtime_impacts": 1,
+      "minimum_dependency_runtime_surfaces": 1,
+      "maximum_affected_data_dependencies": 0,
+      "maximum_affected_state_operations": 0,
+      "findings_include": [
+        {
+          "category": "Architecture drift",
+          "title_includes": "Configuration or dependency surface changed"
+        }
+      ],
+      "findings_exclude": [
+        { "category": "Missing tests", "title_includes": "Runtime files changed" },
+        { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" }
+      ],
+      "claim_surfaces_include": ["blast_radius_reason", "finding", "verification_plan"],
+      "minimum_review_claims": 1,
+      "require_review_claim_coverage": true,
+      "forbidden_output_substrings": [
+        "Runtime files changed without test artifacts",
+        "State/data dependency overlaps the diff",
+        "persisted state correctly"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "dependency_runtime_impact_count",
+        "dependency_runtime_surface_count",
+        "affected_data_dependency_count",
+        "affected_state_operation_count",
+        "review_precision_score",
+        "review_precision_status",
+        "false_positive_guard_count",
+        "false_negative_signal_count",
+        "precision_calibration.dependency_or_config_only_change",
+        "precision_calibration.lockfile_only_change",
+        "precision_calibration.runtime_source_change_count",
+        "precision_calibration.false_positive_guards",
+        "precision_calibration.false_negative_signals",
+        "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": [
+        "\"dependency_config_runtime_guard\"",
+        "\"state_data_overstatement_guard\"",
+        "\"missing_tests_overstatement_guard\"",
+        "\"dependency_runtime_context_preserved\""
+      ],
+      "expected_json_values": {
+        "dependency_runtime_impact_count": 1,
+        "affected_data_dependency_count": 0,
+        "affected_state_operation_count": 0,
+        "precision_calibration.dependency_or_config_only_change": true,
+        "precision_calibration.lockfile_only_change": false,
+        "precision_calibration.runtime_source_change_count": 0,
+        "secret_safety.output_secret_safe": true
+      }
+    },
+    {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "required_fields": [
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.finding",
+        "claims_by_surface.verification_plan",
+        "secret_safety.output_secret_safe",
+        "claims"
+      ],
+      "required_substrings": ["next.config.ts", "\"surface\": \"finding\""],
+      "forbidden_substrings": ["State/data dependency overlaps the diff"],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Dependency Runtime Impact",
+        "Review Precision Calibration",
+        "dependency_config_runtime_guard",
+        "next.config.ts"
+      ],
+      "forbidden_substrings": ["State/data dependency overlaps the diff"]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Config-only TypeScript changes produce dependency/runtime review evidence.",
+      "Review does not report runtime source missing-tests or state/data impact for config-only wording."
+    ],
+    "fail": [
+      "A config-only TypeScript diff is treated like runtime source behavior.",
+      "Config comments mentioning Redis, cache, update, or delete produce state/data blast-radius findings."
+    ]
+  }
+}

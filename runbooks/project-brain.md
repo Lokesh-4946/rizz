@@ -57,8 +57,9 @@ source of truth in `entities/flows.json`; the mirrors make flow details easier f
 and other tools to consume without inventing a second brain.
 
 Use `rizz explain flow <flow-id>` to inspect one reconstructed flow before editing. The explanation
-includes static entrypoints, ordered steps, mapped files/components, tests, configs, risks,
-confidence, unknowns, and evidence. It does not claim runtime trace coverage.
+includes static entrypoints, ordered steps, journey name, normalized journey steps, mapped
+files/components, tests, configs, risks, confidence, unknowns, and evidence. It does not claim
+runtime trace coverage.
 
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
@@ -74,14 +75,23 @@ Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/res
 - `confidence.json` summarizes entity and relationship confidence counts plus component-level
   confidence and evidence IDs.
 - `evidence_quality.json` summarizes referenced evidence IDs, missing evidence references,
-  evidence-backed entities/relationships, and component field-evidence counts.
+  evidence-backed entities/relationships, component field-evidence counts, and the shared
+  confidence inspection queue for weak evidence, architecture debt, security/tool risk surfaces,
+  and stale incremental surfaces.
+- `security_scan.json` summarizes deterministic metadata-only security findings such as
+  secret-like file surfaces, package lifecycle scripts, networked shell scripts, destructive shell
+  patterns, and sensitive dependency surfaces without reading or exposing secret values.
+- `tool_inventory.json` summarizes deterministic metadata-only tool surfaces such as MCP configs,
+  agent instruction files, CI workflows, and package scripts without loading tools by default.
 - `incremental_update.json` summarizes changed, current, new, and stale files for the latest scan.
 - `flow_understanding.json`, `flow_coverage.json`, and `flow_confidence.json` summarize flow count,
-  kind distribution, test/config coverage, low-confidence flows, affected flows, and confidence
-  calibration.
+  kind distribution, journey names, normalized journey steps, test/config coverage, low-confidence
+  flows, affected flows, and confidence calibration.
 - `architecture_reasoning.json` summarizes boundary candidates, cross-component flows, risk
   concentrations, review hints, and unknowns from deterministic component, flow, relationship,
-  evidence, and confidence data.
+  evidence, and confidence data. Its `confidence_debt.inspection_queue` mirrors architecture items
+  from the shared queue so agents can inspect low-confidence assumptions without searching every
+  artifact.
 
 These artifacts are local scan output. They do not require a provider key, model call, cloud
 account, or external service.
@@ -146,6 +156,16 @@ The first scanner is intentionally conservative. It skips generated output, loca
 folders, package artifacts, binary media, private env files, key material, and TypeScript build-info
 files by default. That keeps the brain focused on source, manifests, tests, docs, and operational
 runbooks instead of local machine noise.
+
+When a repository is larger than the scan cap, traversal is deterministic and high-signal first:
+dependency manifests, package/config files, test directories, and source directories are visited
+before workflow-heavy or content-heavy trees. This keeps capped scans useful on repos such as docs
+sites and large framework monorepos where thousands of markdown, fixture, or workflow files can
+otherwise crowd out `package.json`, config, and tests.
+
+`rizz brain` emits phase progress to stderr while preserving the existing stdout summary. The
+default cap is 5,000 files. UAT and other explicit harnesses can set `RIZZ_BRAIN_MAX_FILES` to a
+positive integer for bounded runs without changing the default product path.
 
 Projects can tune scan scope with a root `.rizzignore` file. Supported patterns are intentionally
 small and dependency-free:

@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -30,6 +31,7 @@ const PI_BENCH_TASK_SUITE = 'pi-bench-seed';
 const PI_BENCH_TASK_MODE = 'local';
 const COVERAGE_TARGETS = ['component', 'flow', 'evidence', 'unknown'];
 const CLI_SMOKE_TIMEOUT_MS = 15_000;
+const CLI_OUTPUT_MAX_BUFFER = 8 * 1024 * 1024;
 const PI_BENCH_TASK_CATEGORIES = [
   'smoke',
   'research-metrics',
@@ -154,12 +156,38 @@ function validateArtifactAssertions(assertions) {
     ) {
       errors.push(`artifact_assertions[${index}].required_substrings must include strings`);
     }
+    if (assertion.expected_json_values !== undefined) {
+      if (assertion.type !== 'json') {
+        errors.push(`artifact_assertions[${index}].expected_json_values requires type json`);
+      } else if (
+        !isRecord(assertion.expected_json_values) ||
+        Object.keys(assertion.expected_json_values).length === 0
+      ) {
+        errors.push(`artifact_assertions[${index}].expected_json_values must map paths to values`);
+      } else {
+        for (const path of Object.keys(assertion.expected_json_values)) {
+          if (!isNonEmptyString(path)) {
+            errors.push(
+              `artifact_assertions[${index}].expected_json_values paths must be non-empty strings`,
+            );
+          }
+        }
+      }
+    }
     if (
       assertion.forbidden_substrings !== undefined &&
       (!isStringArray(assertion.forbidden_substrings) ||
         assertion.forbidden_substrings.length === 0)
     ) {
       errors.push(`artifact_assertions[${index}].forbidden_substrings must include strings`);
+    }
+    if (
+      assertion.validate_architecture_impact_claims !== undefined &&
+      typeof assertion.validate_architecture_impact_claims !== 'boolean'
+    ) {
+      errors.push(
+        `artifact_assertions[${index}].validate_architecture_impact_claims must be boolean`,
+      );
     }
   }
   return errors;
@@ -179,8 +207,24 @@ function validateReviewDiff(diff) {
       if (!isSafeRelativePath(file.path)) {
         errors.push(`review.diff.files[${index}].path must be a safe relative path`);
       }
-      if (typeof file.contents !== 'string') {
+      if (
+        file.rename_from !== undefined &&
+        (typeof file.rename_from !== 'string' || !isSafeRelativePath(file.rename_from))
+      ) {
+        errors.push(`review.diff.files[${index}].rename_from must be a safe relative path`);
+      }
+      if (file.delete !== undefined && typeof file.delete !== 'boolean') {
+        errors.push(`review.diff.files[${index}].delete must be a boolean`);
+      }
+      if (
+        file.delete !== true &&
+        file.rename_from === undefined &&
+        typeof file.contents !== 'string'
+      ) {
         errors.push(`review.diff.files[${index}].contents must be a string`);
+      }
+      if (file.contents !== undefined && typeof file.contents !== 'string') {
+        errors.push(`review.diff.files[${index}].contents must be a string when provided`);
       }
     }
   }
@@ -229,6 +273,24 @@ function validateReviewAssertions(assertions) {
     'affected_flows_include',
     'affected_tests_include',
     'affected_configs_include',
+    'dependency_runtime_changed_files_include',
+    'dependency_runtime_package_manifests_include',
+    'dependency_runtime_lockfiles_include',
+    'dependency_runtime_config_files_include',
+    'dependency_runtime_dependency_entities_include',
+    'dependency_runtime_runtime_surfaces_include',
+    'dependency_runtime_affected_components_include',
+    'dependency_runtime_affected_services_include',
+    'dependency_runtime_affected_flows_include',
+    'dependency_runtime_affected_tests_include',
+    'dependency_runtime_affected_configs_include',
+    'affected_data_dependencies_include',
+    'affected_state_operations_include',
+    'verification_plan_types_include',
+    'verification_plan_priorities_include',
+    'verification_plan_reasons_include',
+    'journey_missing_evidence_include',
+    'claim_surfaces_include',
     'architecture_impact_surfaces_include',
     'architecture_what_breaks_include',
     'architecture_evidence_gaps_include',
@@ -242,10 +304,30 @@ function validateReviewAssertions(assertions) {
   for (const field of [
     'minimum_direct_components',
     'minimum_dependent_components',
+    'minimum_affected_services',
     'minimum_affected_flows',
     'minimum_affected_relationships',
+    'minimum_dependency_runtime_impacts',
+    'minimum_dependency_runtime_surfaces',
+    'minimum_dependency_runtime_verification_focus',
+    'minimum_affected_data_dependencies',
+    'minimum_affected_state_operations',
+    'minimum_verification_plan_items',
+    'minimum_verification_plan_required',
+    'minimum_verification_plan_recommended',
+    'minimum_review_claims',
     'minimum_architecture_impact_surfaces',
     'minimum_architecture_confidence_gaps',
+    'maximum_direct_components',
+    'maximum_dependent_components',
+    'maximum_affected_services',
+    'maximum_affected_flows',
+    'maximum_affected_relationships',
+    'maximum_dependency_runtime_impacts',
+    'maximum_architecture_impact_surfaces',
+    'maximum_affected_data_dependencies',
+    'maximum_affected_state_operations',
+    'maximum_user_visible_failure_modes',
   ]) {
     if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
       errors.push(`review.assertions.${field} must be a non-negative number`);
@@ -257,19 +339,70 @@ function validateReviewAssertions(assertions) {
   ) {
     errors.push('review.assertions.blast_radius must be narrow, moderate, or broad');
   }
-  if (assertions.findings_include !== undefined) {
-    if (!Array.isArray(assertions.findings_include) || assertions.findings_include.length === 0) {
-      errors.push('review.assertions.findings_include must include objects');
+  if (
+    assertions.require_architecture_impact_claim_coverage !== undefined &&
+    typeof assertions.require_architecture_impact_claim_coverage !== 'boolean'
+  ) {
+    errors.push('review.assertions.require_architecture_impact_claim_coverage must be boolean');
+  }
+  for (const field of ['findings_include', 'findings_exclude']) {
+    if (assertions[field] === undefined) continue;
+    if (!Array.isArray(assertions[field]) || assertions[field].length === 0) {
+      errors.push(`review.assertions.${field} must include objects`);
     } else {
-      for (const [index, finding] of assertions.findings_include.entries()) {
+      for (const [index, finding] of assertions[field].entries()) {
         if (!isRecord(finding)) {
-          errors.push(`review.assertions.findings_include[${index}] must be an object`);
+          errors.push(`review.assertions.${field}[${index}] must be an object`);
           continue;
         }
         if (!isNonEmptyString(finding.category) && !isNonEmptyString(finding.title_includes)) {
           errors.push(
-            `review.assertions.findings_include[${index}] must include category or title_includes`,
+            `review.assertions.${field}[${index}] must include category or title_includes`,
           );
+        }
+      }
+    }
+  }
+  if (assertions.affected_services_include !== undefined) {
+    if (
+      !Array.isArray(assertions.affected_services_include) ||
+      assertions.affected_services_include.length === 0
+    ) {
+      errors.push('review.assertions.affected_services_include must include objects');
+    } else {
+      for (const [index, service] of assertions.affected_services_include.entries()) {
+        if (!isRecord(service)) {
+          errors.push(`review.assertions.affected_services_include[${index}] must be an object`);
+          continue;
+        }
+        for (const field of ['id', 'name', 'runtime', 'framework']) {
+          if (service[field] !== undefined && !isNonEmptyString(service[field])) {
+            errors.push(
+              `review.assertions.affected_services_include[${index}].${field} must be a non-empty string`,
+            );
+          }
+        }
+        for (const field of [
+          'changed_files_include',
+          'affected_flows_include',
+          'tests_include',
+          'configs_include',
+          'storage_dependencies_include',
+          'environment_variables_include',
+          'external_services_include',
+          'deployment_configs_include',
+          'risks_include',
+          'reasons_include',
+          'evidence_ids_include',
+        ]) {
+          if (
+            service[field] !== undefined &&
+            (!isStringArray(service[field]) || service[field].length === 0)
+          ) {
+            errors.push(
+              `review.assertions.affected_services_include[${index}].${field} must include strings`,
+            );
+          }
         }
       }
     }
@@ -308,6 +441,48 @@ function validateReviewAssertions(assertions) {
             );
           }
         }
+        if (flow.service_causality_include !== undefined) {
+          if (
+            !Array.isArray(flow.service_causality_include) ||
+            flow.service_causality_include.length === 0
+          ) {
+            errors.push(
+              `review.assertions.route_flows_include[${index}].service_causality_include must include objects`,
+            );
+          } else {
+            for (const [causalityIndex, causality] of flow.service_causality_include.entries()) {
+              if (!isRecord(causality)) {
+                errors.push(
+                  `review.assertions.route_flows_include[${index}].service_causality_include[${causalityIndex}] must be an object`,
+                );
+                continue;
+              }
+              for (const field of ['service_id', 'service_name', 'cause_includes', 'confidence']) {
+                if (causality[field] !== undefined && !isNonEmptyString(causality[field])) {
+                  errors.push(
+                    `review.assertions.route_flows_include[${index}].service_causality_include[${causalityIndex}].${field} must be a non-empty string`,
+                  );
+                }
+              }
+              for (const field of [
+                'files_include',
+                'step_ids_include',
+                'effects_include',
+                'evidence_ids_include',
+                'unknowns_include',
+              ]) {
+                if (
+                  causality[field] !== undefined &&
+                  (!isStringArray(causality[field]) || causality[field].length === 0)
+                ) {
+                  errors.push(
+                    `review.assertions.route_flows_include[${index}].service_causality_include[${causalityIndex}].${field} must include strings`,
+                  );
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -322,6 +497,11 @@ function validateIncrementalAssertions(assertions) {
     'changed_files_exclude',
     'evidence_delta_changed_include',
     'changed_entities_include',
+    'changed_surfaces_include',
+    'new_surfaces_include',
+    'stable_surfaces_include',
+    'stale_surfaces_include',
+    'surface_type_counts_include',
     'forbidden_output_substrings',
   ]) {
     validateOptionalStringArray(assertions, field, errors);
@@ -337,10 +517,33 @@ function validateIncrementalAssertions(assertions) {
     'minimum_reused_understanding_count',
     'minimum_recomputed_understanding_count',
     'minimum_scan_efficiency_score',
+    'minimum_changed_surface_count',
+    'minimum_new_surface_count',
+    'minimum_stable_surface_count',
+    'minimum_stale_surface_count',
+    'minimum_score_delta_count',
   ]) {
     if (assertions[field] !== undefined && !hasNonNegativeNumber(assertions[field])) {
       errors.push(`incremental.assertions.${field} must be a non-negative number`);
     }
+  }
+  for (const field of [
+    'minimum_changed_file_coverage_ratio',
+    'minimum_public_changed_file_coverage_ratio',
+    'minimum_recomputed_file_coverage_ratio',
+    'minimum_stale_avoidance_ratio',
+  ]) {
+    if (assertions[field] !== undefined && !hasRatioNumber(assertions[field])) {
+      errors.push(`incremental.assertions.${field} must be a number between 0 and 1`);
+    }
+  }
+  if (
+    assertions.minimum_reuse_to_recompute_ratio !== undefined &&
+    !hasNonNegativeNumber(assertions.minimum_reuse_to_recompute_ratio)
+  ) {
+    errors.push(
+      'incremental.assertions.minimum_reuse_to_recompute_ratio must be a non-negative number',
+    );
   }
   if (
     assertions.expected_file_reuse_ratio !== undefined &&
@@ -664,6 +867,23 @@ function getPathValue(value, path) {
   return current;
 }
 
+function jsonValuesEqual(actual, expected) {
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) {
+      return false;
+    }
+    return actual.every((value, index) => jsonValuesEqual(value, expected[index]));
+  }
+  if (isRecord(actual) || isRecord(expected)) {
+    if (!isRecord(actual) || !isRecord(expected)) return false;
+    const actualKeys = Object.keys(actual).sort();
+    const expectedKeys = Object.keys(expected).sort();
+    if (!jsonValuesEqual(actualKeys, expectedKeys)) return false;
+    return expectedKeys.every((key) => jsonValuesEqual(actual[key], expected[key]));
+  }
+  return Object.is(actual, expected);
+}
+
 function assertExpectedArtifacts(task, repoDir) {
   const errors = [];
   for (const artifact of task.expected_artifacts) {
@@ -675,12 +895,14 @@ function assertExpectedArtifacts(task, repoDir) {
 function assertArtifactContracts(task, repoDir) {
   const errors = [];
   for (const assertion of task.artifact_assertions) {
-    const artifactPath = safeJoin(repoDir, assertion.path);
-    if (!existsSync(artifactPath)) {
+    const artifactPaths = artifactPathsForAssertion(repoDir, assertion.path);
+    if (artifactPaths.length === 0) {
       errors.push(`missing asserted artifact ${assertion.path}`);
       continue;
     }
-    const artifactText = readFileSync(artifactPath, 'utf8');
+    const artifactText = artifactPaths
+      .map((artifactPath) => readFileSync(artifactPath, 'utf8'))
+      .join('\n');
     for (const substring of assertion.required_substrings ?? []) {
       if (!artifactText.includes(substring)) {
         errors.push(`${assertion.path} missing substring ${substring}`);
@@ -704,6 +926,204 @@ function assertArtifactContracts(task, repoDir) {
       if (getPathValue(json, field) === undefined) {
         errors.push(`${assertion.path} missing ${field}`);
       }
+    }
+    for (const [path, expected] of Object.entries(assertion.expected_json_values ?? {})) {
+      const actual = getPathValue(json, path);
+      if (!jsonValuesEqual(actual, expected)) {
+        errors.push(
+          `${assertion.path} expected ${path} to equal ${JSON.stringify(
+            expected,
+          )} but got ${JSON.stringify(actual)}`,
+        );
+      }
+    }
+    if (assertion.validate_architecture_impact_claims === true) {
+      errors.push(...assertArchitectureImpactClaimEvidence(json, assertion.path));
+    }
+  }
+  return errors;
+}
+
+function artifactPathsForAssertion(repoDir, assertionPath) {
+  if (!assertionPath.includes('*')) {
+    const artifactPath = safeJoin(repoDir, assertionPath);
+    return existsSync(artifactPath) ? [artifactPath] : [];
+  }
+  const normalized = assertionPath.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf('/');
+  const dir = slash < 0 ? '.' : normalized.slice(0, slash);
+  const pattern = slash < 0 ? normalized : normalized.slice(slash + 1);
+  const starIndex = pattern.indexOf('*');
+  const prefix = pattern.slice(0, starIndex);
+  const suffix = pattern.slice(starIndex + 1);
+  const fullDir = safeJoin(repoDir, dir);
+  if (!existsSync(fullDir)) return [];
+  return readdirSync(fullDir)
+    .filter((entry) => entry.startsWith(prefix) && entry.endsWith(suffix))
+    .map((entry) => join(fullDir, entry));
+}
+
+function assertArchitectureImpactClaimEvidence(json, artifactPath) {
+  const errors = [];
+  const claims = Array.isArray(json.architecture_impact_claims)
+    ? json.architecture_impact_claims
+    : [];
+  const count =
+    typeof json.architecture_impact_claim_count === 'number'
+      ? json.architecture_impact_claim_count
+      : undefined;
+  const claimCounts = isRecord(json.claim_counts) ? json.claim_counts : {};
+  const basis = isRecord(json.basis) ? json.basis : {};
+  const changedFiles = Array.isArray(json.changed_files) ? json.changed_files : [];
+  if (basis.source !== 'pre_change_project_brain_plus_git_diff') {
+    errors.push(`${artifactPath} basis.source must be pre_change_project_brain_plus_git_diff`);
+  }
+  if (
+    !Array.isArray(basis.review_fields) ||
+    !basis.review_fields.includes('architecture_impact_map')
+  ) {
+    errors.push(`${artifactPath} basis.review_fields must include architecture_impact_map`);
+  }
+  if (!Array.isArray(json.changed_files)) {
+    errors.push(`${artifactPath} changed_files must be an array`);
+  }
+  if (count !== claims.length) {
+    errors.push(
+      `${artifactPath} architecture_impact_claim_count ${String(count)} does not match ${claims.length}`,
+    );
+  }
+  if (claimCounts.architecture_impact_claims !== claims.length) {
+    errors.push(
+      `${artifactPath} claim_counts.architecture_impact_claims ${String(
+        claimCounts.architecture_impact_claims,
+      )} does not match ${claims.length}`,
+    );
+  }
+  if (
+    typeof claimCounts.total === 'number' &&
+    typeof json.total_claims === 'number' &&
+    claimCounts.total !== json.total_claims + claims.length
+  ) {
+    errors.push(
+      `${artifactPath} claim_counts.total must equal total_claims plus architecture claims`,
+    );
+  }
+  for (const [index, claim] of claims.entries()) {
+    if (!isRecord(claim)) {
+      errors.push(`${artifactPath} architecture_impact_claims[${index}] must be an object`);
+      continue;
+    }
+    const requiredStringFields = ['claim_id', 'impact_id', 'surface_type', 'claim', 'confidence'];
+    for (const field of requiredStringFields) {
+      if (!isNonEmptyString(claim[field])) {
+        errors.push(`${artifactPath} architecture_impact_claims[${index}].${field} must be string`);
+      }
+    }
+    const requiredArrayFields = [
+      'evidence_ids',
+      'source_files',
+      'affected_entities',
+      'matched_components',
+      'matched_flows',
+      'affected_flows',
+      'affected_tests',
+      'affected_configs',
+      'what_breaks',
+      'review_focus',
+      'rules',
+      'unknowns',
+    ];
+    for (const field of requiredArrayFields) {
+      if (!Array.isArray(claim[field])) {
+        errors.push(`${artifactPath} architecture_impact_claims[${index}].${field} must be array`);
+      }
+    }
+    if (
+      Array.isArray(claim.evidence_ids) &&
+      Array.isArray(claim.unknowns) &&
+      claim.evidence_ids.length === 0 &&
+      !claim.unknowns.some((unknown) => String(unknown).includes('No direct evidence IDs'))
+    ) {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}] without evidence must record an evidence unknown`,
+      );
+    }
+    if (
+      Array.isArray(claim.source_files) &&
+      changedFiles.length > 0 &&
+      !claim.source_files.some((file) => changedFiles.includes(file))
+    ) {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}] must include at least one changed file in source_files`,
+      );
+    }
+    if (!Array.isArray(claim.rules) || !claim.rules.includes('architecture_impact_map')) {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}].rules must include architecture_impact_map`,
+      );
+    }
+    if (typeof claim.redacted_evidence_count !== 'number') {
+      errors.push(
+        `${artifactPath} architecture_impact_claims[${index}].redacted_evidence_count must be number`,
+      );
+    }
+  }
+  return errors;
+}
+
+function assertArchitectureImpactClaimCoverage(review, claimLedger, artifactPath) {
+  const errors = [];
+  const impacts = reviewArray(review, 'architecture_impact_map').filter(isRecord);
+  const claims =
+    isRecord(claimLedger) && Array.isArray(claimLedger.architecture_impact_claims)
+      ? claimLedger.architecture_impact_claims.filter(isRecord)
+      : [];
+  if (claims.length !== impacts.length) {
+    errors.push(
+      `${artifactPath} architecture_impact_claims ${claims.length} does not match architecture_impact_map ${impacts.length}`,
+    );
+  }
+  for (const impact of impacts) {
+    const impactId = String(impact.impact_id ?? '');
+    const matchingClaims = claims.filter((claim) => claim.impact_id === impactId);
+    if (matchingClaims.length !== 1) {
+      errors.push(
+        `${artifactPath} expected exactly one architecture impact claim for ${impactId}, got ${matchingClaims.length}`,
+      );
+      continue;
+    }
+    const claim = matchingClaims[0];
+    if (claim.surface_type !== impact.surface_type) {
+      errors.push(`${artifactPath} ${impactId} surface_type does not match review impact`);
+    }
+    for (const [field, label] of [
+      ['evidence_ids', 'evidence_ids'],
+      ['matched_changed_files', 'source_files'],
+      ['matched_components', 'matched_components'],
+      ['matched_flows', 'matched_flows'],
+      ['affected_flows', 'affected_flows'],
+      ['affected_tests', 'affected_tests'],
+      ['affected_configs', 'affected_configs'],
+      ['what_breaks', 'what_breaks'],
+    ]) {
+      const expected = reviewArray(impact, field);
+      const actual = reviewArray(claim, label);
+      errors.push(...assertIncludesAll(actual, expected, `${artifactPath}.${impactId}.${label}`));
+    }
+    const reviewFocus = isRecord(impact.risk_reasoning)
+      ? reviewArray(impact.risk_reasoning, 'review_focus')
+      : [];
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(claim, 'review_focus'),
+        reviewFocus,
+        `${artifactPath}.${impactId}.review_focus`,
+      ),
+    );
+    const affectedEntities = reviewArray(claim, 'affected_entities');
+    const entityId = typeof impact.entity_id === 'string' ? impact.entity_id : '';
+    if (entityId !== '' && !affectedEntities.includes(entityId)) {
+      errors.push(`${artifactPath}.${impactId}.affected_entities missing ${entityId}`);
     }
   }
   return errors;
@@ -730,11 +1150,70 @@ function percent(value) {
   return `${Math.round(value * 100)}%`;
 }
 
+function roundedMetric(value) {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function safeCoverageRatio(covered, total) {
+  if (total === 0) return covered === 0 ? 1 : 0;
+  return roundedMetric(Math.min(1, covered / total));
+}
+
+function nonNegativeMetric(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function formatCoverage(key, component) {
   if (key === 'evidence') {
     return `${component.covered} claims/${component.total} records ${percent(component.ratio)}`;
   }
   return `${component.covered}/${component.total} ${percent(component.ratio)}`;
+}
+
+function formatIncrementalSummary(incremental) {
+  if (incremental === undefined) return '';
+  const depth = incremental.depthMetrics;
+  return [
+    `incremental changed ${incremental.changedFiles}`,
+    `stable entities ${incremental.stableEntities}`,
+    `reused ${incremental.reusedUnderstanding}`,
+    `recomputed ${incremental.recomputedUnderstanding}`,
+    `efficiency ${incremental.scanEfficiency}`,
+    `surfaces ${incremental.changedSurfaces} changed/${incremental.newSurfaces} new/${incremental.stableSurfaces} stable/${incremental.staleSurfaces} stale`,
+    `depth change ${percent(depth.changedFileCoverage)}`,
+    `public ${percent(depth.publicChangedFileCoverage)}`,
+    `recompute ${percent(depth.recomputedFileCoverage)}`,
+    `stale clean ${percent(depth.staleAvoidanceRatio)}`,
+    `reuse/recompute ${depth.reuseToRecomputeRatio}`,
+  ].join(', ');
+}
+
+function buildIncrementalDepthMetrics(task, incremental, changedFiles, assertions) {
+  const diffFileCount = task.incremental.diff.files.length;
+  const changedFileCount = nonNegativeMetric(incremental.changed_file_count);
+  const staleFileCount = nonNegativeMetric(incremental.stale_file_count);
+  const recomputedFiles = nonNegativeMetric(incremental.recomputed_files);
+  const reusedFiles = nonNegativeMetric(incremental.reused_files);
+  const expectedPublicChangedFiles = assertions.changed_files_include ?? [];
+  const publicChangedFilesMatched = expectedPublicChangedFiles.filter((file) =>
+    changedFiles.includes(file),
+  ).length;
+  const staleDenominator = changedFileCount + staleFileCount;
+
+  return {
+    changedFileCoverage: safeCoverageRatio(changedFileCount, diffFileCount),
+    publicChangedFileCoverage: safeCoverageRatio(
+      publicChangedFilesMatched,
+      expectedPublicChangedFiles.length,
+    ),
+    recomputedFileCoverage: safeCoverageRatio(recomputedFiles, diffFileCount),
+    staleAvoidanceRatio:
+      staleDenominator === 0
+        ? 1
+        : roundedMetric(Math.max(0, 1 - staleFileCount / staleDenominator)),
+    reuseToRecomputeRatio:
+      recomputedFiles === 0 ? reusedFiles : roundedMetric(reusedFiles / recomputedFiles),
+  };
 }
 
 function scoreBenchmarkReady(task, benchmarkReady) {
@@ -783,6 +1262,16 @@ function scoreBenchmarkReady(task, benchmarkReady) {
 function applyReviewDiff(task, repoDir) {
   for (const file of task.review.diff.files) {
     const filePath = safeJoin(repoDir, file.path);
+    if (file.delete === true) {
+      rmSync(filePath, { force: true });
+      continue;
+    }
+    if (typeof file.rename_from === 'string') {
+      const fromPath = safeJoin(repoDir, file.rename_from);
+      mkdirSync(dirname(filePath), { recursive: true });
+      renameSync(fromPath, filePath);
+      if (typeof file.contents !== 'string') continue;
+    }
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, file.contents);
   }
@@ -864,6 +1353,84 @@ function assertReviewFindings(review, expected) {
   return errors;
 }
 
+function assertReviewFindingsExcluded(review, expected) {
+  const findings = reviewArray(review, 'findings');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matched = findings.some((finding) => {
+      if (!isRecord(finding)) return false;
+      const categoryMatches =
+        item.category === undefined || String(finding.category ?? '') === item.category;
+      const titleMatches =
+        item.title_includes === undefined ||
+        String(finding.title ?? '').includes(item.title_includes);
+      return categoryMatches && titleMatches;
+    });
+    if (matched) {
+      errors.push(
+        `findings unexpectedly included ${
+          item.category ?? '(any category)'
+        } ${item.title_includes ?? ''}`.trim(),
+      );
+    }
+  }
+  return errors;
+}
+
+function assertReviewServiceCausality(flow, expected) {
+  const entries = reviewArray(flow, 'service_causality');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matchedEntry = entries.find((entry) => {
+      if (!isRecord(entry)) return false;
+      const serviceIdMatches =
+        item.service_id === undefined || String(entry.service_id ?? '') === item.service_id;
+      const serviceNameMatches =
+        item.service_name === undefined || String(entry.service_name ?? '') === item.service_name;
+      const causeMatches =
+        item.cause_includes === undefined ||
+        String(entry.cause ?? '').includes(item.cause_includes);
+      const confidenceMatches =
+        item.confidence === undefined || String(entry.confidence ?? '') === item.confidence;
+      return serviceIdMatches && serviceNameMatches && causeMatches && confidenceMatches;
+    });
+    if (matchedEntry === undefined) {
+      errors.push(
+        `affected_flows.service_causality missing ${item.service_id ?? item.service_name}`,
+      );
+      continue;
+    }
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(matchedEntry, 'files'),
+        item.files_include,
+        'affected_flows.service_causality.files',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedEntry, 'step_ids'),
+        item.step_ids_include,
+        'affected_flows.service_causality.step_ids',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedEntry, 'effects'),
+        item.effects_include,
+        'affected_flows.service_causality.effects',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedEntry, 'evidence_ids'),
+        item.evidence_ids_include,
+        'affected_flows.service_causality.evidence_ids',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedEntry, 'unknowns'),
+        item.unknowns_include,
+        'affected_flows.service_causality.unknowns',
+      ),
+    );
+  }
+  return errors;
+}
+
 function assertReviewRouteFlows(review, expected) {
   const flows = reviewArray(review, 'affected_flows');
   const errors = [];
@@ -904,6 +1471,86 @@ function assertReviewRouteFlows(review, expected) {
         item.configs_include,
         'affected_flows.configs',
       ),
+      ...assertReviewServiceCausality(matchedFlow, item.service_causality_include),
+    );
+  }
+  return errors;
+}
+
+function assertReviewAffectedServices(review, expected) {
+  const services = reviewArray(review, 'affected_services');
+  const errors = [];
+  for (const item of expected ?? []) {
+    const matchedService = services.find((service) => {
+      if (!isRecord(service)) return false;
+      const idMatches = item.id === undefined || String(service.id ?? '') === item.id;
+      const nameMatches = item.name === undefined || String(service.name ?? '') === item.name;
+      const runtimeMatches =
+        item.runtime === undefined || String(service.runtime ?? '') === item.runtime;
+      const frameworkMatches =
+        item.framework === undefined || String(service.framework ?? '') === item.framework;
+      return idMatches && nameMatches && runtimeMatches && frameworkMatches;
+    });
+    if (matchedService === undefined) {
+      errors.push(`affected_services missing service metadata for ${item.id ?? item.name}`);
+      continue;
+    }
+    errors.push(
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'changed_files'),
+        item.changed_files_include,
+        'affected_services.changed_files',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'affected_flows'),
+        item.affected_flows_include,
+        'affected_services.affected_flows',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'tests'),
+        item.tests_include,
+        'affected_services.tests',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'configs'),
+        item.configs_include,
+        'affected_services.configs',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'storage_dependencies'),
+        item.storage_dependencies_include,
+        'affected_services.storage_dependencies',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'environment_variables'),
+        item.environment_variables_include,
+        'affected_services.environment_variables',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'external_services'),
+        item.external_services_include,
+        'affected_services.external_services',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'deployment_configs'),
+        item.deployment_configs_include,
+        'affected_services.deployment_configs',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedService, 'risks'),
+        item.risks_include,
+        'affected_services.risks',
+      ),
+      ...assertSubstringMatches(
+        reviewArray(matchedService, 'reasons'),
+        item.reasons_include,
+        'affected_services.reasons',
+      ),
+      ...assertIncludesAll(
+        reviewArray(matchedService, 'evidence_ids'),
+        item.evidence_ids_include,
+        'affected_services.evidence_ids',
+      ),
     );
   }
   return errors;
@@ -922,6 +1569,7 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const errors = [];
   const directComponentIds = idsFromRows(review.direct_affected_components);
   const dependentComponentIds = idsFromRows(review.dependent_components);
+  const affectedServiceIds = idsFromRows(review.affected_services);
   const affectedFlowIds = idsFromRows(review.affected_flows);
   const architectureImpactSurfaces = impactIdsFromRows(review.architecture_impact_map);
   const affectedRelationships = reviewArray(review, 'affected_relationships');
@@ -934,6 +1582,22 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const affectedConfigs = Array.isArray(evidenceSummary.affected_configs)
     ? evidenceSummary.affected_configs
     : [];
+  const dependencyRuntimeImpact = isRecord(review.dependency_runtime_impact)
+    ? review.dependency_runtime_impact
+    : undefined;
+  const dependencyRuntimeImpactCount = dependencyRuntimeImpact === undefined ? 0 : 1;
+  const dependencyRuntimeRuntimeSurfaces =
+    dependencyRuntimeImpact !== undefined
+      ? reviewArray(dependencyRuntimeImpact, 'runtime_surfaces')
+      : [];
+  const dependencyRuntimeVerificationFocus =
+    dependencyRuntimeImpact !== undefined
+      ? reviewArray(dependencyRuntimeImpact, 'verification_focus')
+      : [];
+  const serviceCausalityPaths =
+    typeof evidenceSummary.service_causality_paths === 'number'
+      ? evidenceSummary.service_causality_paths
+      : 0;
   const architectureWhatBreaks = Array.isArray(evidenceSummary.architecture_what_breaks)
     ? evidenceSummary.architecture_what_breaks
     : [];
@@ -943,6 +1607,37 @@ function assertReviewContract(task, repoDir, review, stdout) {
   const architectureConfidenceGaps = Array.isArray(evidenceSummary.architecture_confidence_gaps)
     ? evidenceSummary.architecture_confidence_gaps
     : [];
+  const verificationPlan = reviewArray(review, 'verification_plan').filter(isRecord);
+  const verificationPlanTypes = verificationPlan
+    .map((item) => item.verification_type)
+    .filter(isNonEmptyString);
+  const verificationPlanPriorities = verificationPlan
+    .map((item) => item.priority)
+    .filter(isNonEmptyString);
+  const verificationPlanReasons = verificationPlan
+    .map((item) => item.reason)
+    .filter(isNonEmptyString);
+  const affectedDataDependencies = Array.isArray(evidenceSummary.affected_data_dependencies)
+    ? evidenceSummary.affected_data_dependencies
+    : [];
+  const affectedStateOperations = Array.isArray(evidenceSummary.affected_state_operations)
+    ? evidenceSummary.affected_state_operations
+    : [];
+  const userVisibleFailureModes = Array.isArray(evidenceSummary.user_visible_failure_modes)
+    ? evidenceSummary.user_visible_failure_modes
+    : [];
+  const journeyMissingEvidence = Array.isArray(evidenceSummary.journey_missing_evidence)
+    ? evidenceSummary.journey_missing_evidence
+    : [];
+  const claimLedgerPath = '.rizz/research/review_claim_evidence.json';
+  const claimLedger = existsSync(safeJoin(repoDir, claimLedgerPath))
+    ? readJsonArtifact(repoDir, claimLedgerPath)
+    : undefined;
+  const claimRows =
+    isRecord(claimLedger) && Array.isArray(claimLedger.claims) ? claimLedger.claims : [];
+  const claimSurfaces = claimRows
+    .map((claim) => (isRecord(claim) && typeof claim.surface === 'string' ? claim.surface : ''))
+    .filter((surface) => surface !== '');
 
   errors.push(
     ...assertIncludesAll(
@@ -965,7 +1660,92 @@ function assertReviewContract(task, repoDir, review, stdout) {
       assertions.dependent_components_include,
       'dependent_components',
     ),
+    ...assertIncludesAll(
+      affectedServiceIds,
+      assertions.affected_services_include?.map((service) => service.id).filter(isNonEmptyString),
+      'affected_services',
+    ),
     ...assertIncludesAll(affectedFlowIds, assertions.affected_flows_include, 'affected_flows'),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'changed_files'),
+      assertions.dependency_runtime_changed_files_include,
+      'dependency_runtime_impact.changed_files',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'package_manifests'),
+      assertions.dependency_runtime_package_manifests_include,
+      'dependency_runtime_impact.package_manifests',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'lockfiles'),
+      assertions.dependency_runtime_lockfiles_include,
+      'dependency_runtime_impact.lockfiles',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'config_files'),
+      assertions.dependency_runtime_config_files_include,
+      'dependency_runtime_impact.config_files',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'dependency_entities'),
+      assertions.dependency_runtime_dependency_entities_include,
+      'dependency_runtime_impact.dependency_entities',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeRuntimeSurfaces,
+      assertions.dependency_runtime_runtime_surfaces_include,
+      'dependency_runtime_impact.runtime_surfaces',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_components'),
+      assertions.dependency_runtime_affected_components_include,
+      'dependency_runtime_impact.affected_components',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_services'),
+      assertions.dependency_runtime_affected_services_include,
+      'dependency_runtime_impact.affected_services',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_flows'),
+      assertions.dependency_runtime_affected_flows_include,
+      'dependency_runtime_impact.affected_flows',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_tests'),
+      assertions.dependency_runtime_affected_tests_include,
+      'dependency_runtime_impact.affected_tests',
+    ),
+    ...assertIncludesAll(
+      dependencyRuntimeImpact === undefined
+        ? []
+        : reviewArray(dependencyRuntimeImpact, 'affected_configs'),
+      assertions.dependency_runtime_affected_configs_include,
+      'dependency_runtime_impact.affected_configs',
+    ),
+    ...assertSubstringMatches(
+      dependencyRuntimeVerificationFocus,
+      assertions.dependency_runtime_verification_focus_include,
+      'dependency_runtime_impact.verification_focus',
+    ),
     ...assertIncludesAll(
       architectureImpactSurfaces,
       assertions.architecture_impact_surfaces_include,
@@ -973,6 +1753,41 @@ function assertReviewContract(task, repoDir, review, stdout) {
     ),
     ...assertIncludesAll(affectedTests, assertions.affected_tests_include, 'affected_tests'),
     ...assertIncludesAll(affectedConfigs, assertions.affected_configs_include, 'affected_configs'),
+    ...assertSubstringMatches(
+      affectedDataDependencies,
+      assertions.affected_data_dependencies_include,
+      'affected_data_dependencies',
+    ),
+    ...assertSubstringMatches(
+      affectedStateOperations,
+      assertions.affected_state_operations_include,
+      'affected_state_operations',
+    ),
+    ...assertIncludesAll(
+      verificationPlanTypes,
+      assertions.verification_plan_types_include,
+      'verification_plan.verification_type',
+    ),
+    ...assertIncludesAll(
+      verificationPlanPriorities,
+      assertions.verification_plan_priorities_include,
+      'verification_plan.priority',
+    ),
+    ...assertSubstringMatches(
+      verificationPlanReasons,
+      assertions.verification_plan_reasons_include,
+      'verification_plan.reason',
+    ),
+    ...assertSubstringMatches(
+      journeyMissingEvidence,
+      assertions.journey_missing_evidence_include,
+      'journey_missing_evidence',
+    ),
+    ...assertIncludesAll(
+      claimSurfaces,
+      assertions.claim_surfaces_include,
+      'review_claim_evidence.claims.surface',
+    ),
     ...assertSubstringMatches(
       architectureWhatBreaks,
       assertions.architecture_what_breaks_include,
@@ -999,6 +1814,8 @@ function assertReviewContract(task, repoDir, review, stdout) {
       'blast_radius_reasons',
     ),
     ...assertReviewFindings(review, assertions.findings_include),
+    ...assertReviewFindingsExcluded(review, assertions.findings_exclude),
+    ...assertReviewAffectedServices(review, assertions.affected_services_include),
     ...assertReviewRouteFlows(review, assertions.route_flows_include),
   );
 
@@ -1019,6 +1836,14 @@ function assertReviewContract(task, repoDir, review, stdout) {
     );
   }
   if (
+    assertions.minimum_affected_services !== undefined &&
+    affectedServiceIds.length < assertions.minimum_affected_services
+  ) {
+    errors.push(
+      `affected_services ${affectedServiceIds.length} below ${assertions.minimum_affected_services}`,
+    );
+  }
+  if (
     assertions.minimum_affected_flows !== undefined &&
     affectedFlowIds.length < assertions.minimum_affected_flows
   ) {
@@ -1033,6 +1858,200 @@ function assertReviewContract(task, repoDir, review, stdout) {
     errors.push(
       `affected_relationships ${affectedRelationships.length} below ${assertions.minimum_affected_relationships}`,
     );
+  }
+  if (
+    assertions.minimum_dependency_runtime_impacts !== undefined &&
+    dependencyRuntimeImpactCount < assertions.minimum_dependency_runtime_impacts
+  ) {
+    errors.push(
+      `dependency_runtime_impact ${dependencyRuntimeImpactCount} below ${assertions.minimum_dependency_runtime_impacts}`,
+    );
+  }
+  if (
+    assertions.maximum_direct_components !== undefined &&
+    directComponentIds.length > assertions.maximum_direct_components
+  ) {
+    errors.push(
+      `direct_affected_components ${directComponentIds.length} above ${assertions.maximum_direct_components}`,
+    );
+  }
+  if (
+    assertions.maximum_dependent_components !== undefined &&
+    dependentComponentIds.length > assertions.maximum_dependent_components
+  ) {
+    errors.push(
+      `dependent_components ${dependentComponentIds.length} above ${assertions.maximum_dependent_components}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_services !== undefined &&
+    affectedServiceIds.length > assertions.maximum_affected_services
+  ) {
+    errors.push(
+      `affected_services ${affectedServiceIds.length} above ${assertions.maximum_affected_services}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_flows !== undefined &&
+    affectedFlowIds.length > assertions.maximum_affected_flows
+  ) {
+    errors.push(
+      `affected_flows ${affectedFlowIds.length} above ${assertions.maximum_affected_flows}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_relationships !== undefined &&
+    affectedRelationships.length > assertions.maximum_affected_relationships
+  ) {
+    errors.push(
+      `affected_relationships ${affectedRelationships.length} above ${assertions.maximum_affected_relationships}`,
+    );
+  }
+  if (
+    assertions.maximum_dependency_runtime_impacts !== undefined &&
+    dependencyRuntimeImpactCount > assertions.maximum_dependency_runtime_impacts
+  ) {
+    errors.push(
+      `dependency_runtime_impact ${dependencyRuntimeImpactCount} above ${assertions.maximum_dependency_runtime_impacts}`,
+    );
+  }
+  if (
+    assertions.minimum_dependency_runtime_surfaces !== undefined &&
+    dependencyRuntimeRuntimeSurfaces.length < assertions.minimum_dependency_runtime_surfaces
+  ) {
+    errors.push(
+      `dependency_runtime_impact.runtime_surfaces ${dependencyRuntimeRuntimeSurfaces.length} below ${assertions.minimum_dependency_runtime_surfaces}`,
+    );
+  }
+  if (
+    assertions.minimum_dependency_runtime_verification_focus !== undefined &&
+    dependencyRuntimeVerificationFocus.length <
+      assertions.minimum_dependency_runtime_verification_focus
+  ) {
+    errors.push(
+      `dependency_runtime_impact.verification_focus ${dependencyRuntimeVerificationFocus.length} below ${assertions.minimum_dependency_runtime_verification_focus}`,
+    );
+  }
+  if (
+    assertions.maximum_architecture_impact_surfaces !== undefined &&
+    architectureImpactSurfaces.length > assertions.maximum_architecture_impact_surfaces
+  ) {
+    errors.push(
+      `architecture_impact_map ${architectureImpactSurfaces.length} above ${assertions.maximum_architecture_impact_surfaces}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_data_dependencies !== undefined &&
+    affectedDataDependencies.length < assertions.minimum_affected_data_dependencies
+  ) {
+    errors.push(
+      `affected_data_dependencies ${affectedDataDependencies.length} below ${assertions.minimum_affected_data_dependencies}`,
+    );
+  }
+  if (
+    assertions.minimum_affected_state_operations !== undefined &&
+    affectedStateOperations.length < assertions.minimum_affected_state_operations
+  ) {
+    errors.push(
+      `affected_state_operations ${affectedStateOperations.length} below ${assertions.minimum_affected_state_operations}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_data_dependencies !== undefined &&
+    affectedDataDependencies.length > assertions.maximum_affected_data_dependencies
+  ) {
+    errors.push(
+      `affected_data_dependencies ${affectedDataDependencies.length} above ${assertions.maximum_affected_data_dependencies}`,
+    );
+  }
+  if (
+    assertions.maximum_affected_state_operations !== undefined &&
+    affectedStateOperations.length > assertions.maximum_affected_state_operations
+  ) {
+    errors.push(
+      `affected_state_operations ${affectedStateOperations.length} above ${assertions.maximum_affected_state_operations}`,
+    );
+  }
+  if (
+    assertions.maximum_user_visible_failure_modes !== undefined &&
+    userVisibleFailureModes.length > assertions.maximum_user_visible_failure_modes
+  ) {
+    errors.push(
+      `user_visible_failure_modes ${userVisibleFailureModes.length} above ${assertions.maximum_user_visible_failure_modes}`,
+    );
+  }
+  if (
+    assertions.minimum_verification_plan_items !== undefined &&
+    verificationPlan.length < assertions.minimum_verification_plan_items
+  ) {
+    errors.push(
+      `verification_plan ${verificationPlan.length} below ${assertions.minimum_verification_plan_items}`,
+    );
+  }
+  const verificationPlanRequired = verificationPlanPriorities.filter(
+    (priority) => priority === 'required',
+  ).length;
+  const verificationPlanRecommended = verificationPlanPriorities.filter(
+    (priority) => priority === 'recommended',
+  ).length;
+  if (
+    assertions.minimum_verification_plan_required !== undefined &&
+    verificationPlanRequired < assertions.minimum_verification_plan_required
+  ) {
+    errors.push(
+      `verification_plan required ${verificationPlanRequired} below ${assertions.minimum_verification_plan_required}`,
+    );
+  }
+  if (
+    assertions.minimum_verification_plan_recommended !== undefined &&
+    verificationPlanRecommended < assertions.minimum_verification_plan_recommended
+  ) {
+    errors.push(
+      `verification_plan recommended ${verificationPlanRecommended} below ${assertions.minimum_verification_plan_recommended}`,
+    );
+  }
+  if (
+    assertions.minimum_review_claims !== undefined &&
+    claimRows.length < assertions.minimum_review_claims
+  ) {
+    errors.push(
+      `review_claim_evidence claims ${claimRows.length} below ${assertions.minimum_review_claims}`,
+    );
+  }
+  if (assertions.require_review_claim_coverage === true) {
+    const coverageTargets = [
+      ['blast_radius_reason', reviewArray(review, 'blast_radius_reasons').length],
+      ['finding', reviewArray(review, 'findings').length],
+      ['affected_flow', reviewArray(review, 'affected_flows').length],
+      ['verification_plan', verificationPlan.length],
+    ];
+    for (const [surface, expectedCount] of coverageTargets) {
+      const actualCount = claimSurfaces.filter((value) => value === surface).length;
+      if (actualCount < expectedCount) {
+        errors.push(
+          `review_claim_evidence ${surface} claims ${actualCount} below ${expectedCount}`,
+        );
+      }
+    }
+    const malformedClaim = claimRows.find((claim) => {
+      if (!isRecord(claim)) return true;
+      return (
+        typeof claim.claim_id !== 'string' ||
+        typeof claim.surface !== 'string' ||
+        typeof claim.claim !== 'string' ||
+        typeof claim.confidence !== 'string' ||
+        !Array.isArray(claim.evidence_ids) ||
+        !Array.isArray(claim.unknowns)
+      );
+    });
+    if (malformedClaim !== undefined) {
+      errors.push(
+        'review_claim_evidence claims must include id, surface, claim, confidence, evidence_ids, and unknowns',
+      );
+    }
+  }
+  if (assertions.require_architecture_impact_claim_coverage === true) {
+    errors.push(...assertArchitectureImpactClaimCoverage(review, claimLedger, claimLedgerPath));
   }
   if (
     assertions.minimum_architecture_impact_surfaces !== undefined &&
@@ -1067,7 +2086,11 @@ function assertReviewContract(task, repoDir, review, stdout) {
     summary: {
       directComponents: directComponentIds.length,
       dependentComponents: dependentComponentIds.length,
+      affectedServices: affectedServiceIds.length,
       affectedFlows: affectedFlowIds.length,
+      dependencyRuntimeImpacts: dependencyRuntimeImpactCount,
+      dependencyRuntimeSurfaces: dependencyRuntimeRuntimeSurfaces.length,
+      serviceCausalityPaths,
       affectedRelationships: affectedRelationships.length,
       architectureImpactSurfaces: architectureImpactSurfaces.length,
       blastRadius: review.blast_radius,
@@ -1085,6 +2108,14 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
     .filter((id) => id !== '');
   const evidenceDelta = isRecord(incremental.evidence_delta) ? incremental.evidence_delta : {};
   const evidenceDeltaChanged = Array.isArray(evidenceDelta.changed) ? evidenceDelta.changed : [];
+  const understandingDeltas = isRecord(incremental.understanding_deltas)
+    ? incremental.understanding_deltas
+    : {};
+  const changedSurfaces = incrementalSurfaceLabels(understandingDeltas, 'changed_surfaces');
+  const newSurfaces = incrementalSurfaceLabels(understandingDeltas, 'new_surfaces');
+  const stableSurfaces = incrementalSurfaceLabels(understandingDeltas, 'stable_surfaces');
+  const staleSurfaces = incrementalSurfaceLabels(understandingDeltas, 'stale_surfaces');
+  const surfaceTypeCounts = incrementalSurfaceTypeCountLabels(understandingDeltas);
 
   errors.push(
     ...assertIncludesAll(
@@ -1106,6 +2137,31 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
       changedEntities,
       assertions.changed_entities_include,
       'incremental.changed_entities',
+    ),
+    ...assertSubstringMatches(
+      changedSurfaces,
+      assertions.changed_surfaces_include,
+      'incremental.understanding_deltas.changed_surfaces',
+    ),
+    ...assertSubstringMatches(
+      newSurfaces,
+      assertions.new_surfaces_include,
+      'incremental.understanding_deltas.new_surfaces',
+    ),
+    ...assertSubstringMatches(
+      stableSurfaces,
+      assertions.stable_surfaces_include,
+      'incremental.understanding_deltas.stable_surfaces',
+    ),
+    ...assertSubstringMatches(
+      staleSurfaces,
+      assertions.stale_surfaces_include,
+      'incremental.understanding_deltas.stale_surfaces',
+    ),
+    ...assertSubstringMatches(
+      surfaceTypeCounts,
+      assertions.surface_type_counts_include,
+      'incremental.understanding_deltas.by_surface_type',
     ),
   );
 
@@ -1152,6 +2208,67 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
         `incremental.${artifactField} ${incremental[artifactField]} below ${assertions[assertionField]}`,
       );
     }
+  }
+
+  const minimumDeltaFields = [
+    ['changed_surface_count', 'minimum_changed_surface_count'],
+    ['new_surface_count', 'minimum_new_surface_count'],
+    ['stable_surface_count', 'minimum_stable_surface_count'],
+    ['stale_surface_count', 'minimum_stale_surface_count'],
+  ];
+  for (const [artifactField, assertionField] of minimumDeltaFields) {
+    if (
+      assertions[assertionField] !== undefined &&
+      (typeof understandingDeltas[artifactField] !== 'number' ||
+        understandingDeltas[artifactField] < assertions[assertionField])
+    ) {
+      errors.push(
+        `incremental.understanding_deltas.${artifactField} ${understandingDeltas[artifactField]} below ${assertions[assertionField]}`,
+      );
+    }
+  }
+  if (
+    assertions.minimum_score_delta_count !== undefined &&
+    reviewArray(understandingDeltas, 'score_deltas').length < assertions.minimum_score_delta_count
+  ) {
+    errors.push(
+      `incremental.understanding_deltas.score_deltas ${
+        reviewArray(understandingDeltas, 'score_deltas').length
+      } below ${assertions.minimum_score_delta_count}`,
+    );
+  }
+
+  const depthMetrics = buildIncrementalDepthMetrics(task, incremental, changedFiles, assertions);
+  for (const [metricField, assertionField, label] of [
+    ['changedFileCoverage', 'minimum_changed_file_coverage_ratio', 'changed file coverage'],
+    [
+      'publicChangedFileCoverage',
+      'minimum_public_changed_file_coverage_ratio',
+      'public changed file coverage',
+    ],
+    [
+      'recomputedFileCoverage',
+      'minimum_recomputed_file_coverage_ratio',
+      'recomputed file coverage',
+    ],
+    ['staleAvoidanceRatio', 'minimum_stale_avoidance_ratio', 'stale avoidance ratio'],
+  ]) {
+    if (
+      assertions[assertionField] !== undefined &&
+      depthMetrics[metricField] < assertions[assertionField]
+    ) {
+      errors.push(
+        `incremental depth ${label} ${depthMetrics[metricField]} below ${assertions[assertionField]}`,
+      );
+    }
+  }
+  if (
+    assertions.minimum_reuse_to_recompute_ratio !== undefined &&
+    depthMetrics.reuseToRecomputeRatio < assertions.minimum_reuse_to_recompute_ratio
+  ) {
+    errors.push(
+      `incremental depth reuse-to-recompute ratio ${depthMetrics.reuseToRecomputeRatio} below ${assertions.minimum_reuse_to_recompute_ratio}`,
+    );
   }
 
   if (assertions.expected_redacted_changed_file_count !== undefined) {
@@ -1210,8 +2327,41 @@ function assertIncrementalContract(task, repoDir, incremental, outputs) {
         typeof incremental.scan_efficiency_score === 'number'
           ? incremental.scan_efficiency_score
           : 0,
+      changedSurfaces: changedSurfaces.length,
+      newSurfaces: newSurfaces.length,
+      stableSurfaces: stableSurfaces.length,
+      staleSurfaces: staleSurfaces.length,
+      depthMetrics,
     },
   };
+}
+
+function incrementalSurfaceLabels(understandingDeltas, key) {
+  return reviewArray(understandingDeltas, key)
+    .filter(isRecord)
+    .map((surface) =>
+      [
+        surface.surface_id,
+        surface.surface_type,
+        surface.status,
+        surface.name,
+        ...reviewArray(surface, 'reasons'),
+      ]
+        .filter((item) => item !== undefined && item !== null)
+        .join(' '),
+    );
+}
+
+function incrementalSurfaceTypeCountLabels(understandingDeltas) {
+  const bySurfaceType = isRecord(understandingDeltas.by_surface_type)
+    ? understandingDeltas.by_surface_type
+    : {};
+  return Object.entries(bySurfaceType).map(([surfaceType, counts]) => {
+    const record = isRecord(counts) ? counts : {};
+    return `${surfaceType}: ${record.changed ?? 0} changed ${record.new ?? 0} new ${
+      record.stable ?? 0
+    } stable ${record.stale ?? 0} stale`;
+  });
 }
 
 function readArtifactText(repoDir, relativePath) {
@@ -1503,7 +2653,7 @@ function runPiBenchTasks(loadedTasks) {
             ? ''
             : ` | understanding tasks ${result.summary.understandingTasks}`;
         console.log(
-          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, flows ${result.summary.affectedFlows}, relationships ${result.summary.affectedRelationships}${understanding}`,
+          `  ✓ ${task.id} [${task.category}] blast ${result.summary.blastRadius} | direct ${result.summary.directComponents}, dependent ${result.summary.dependentComponents}, services ${result.summary.affectedServices}, flows ${result.summary.affectedFlows}, dependency runtime ${result.summary.dependencyRuntimeImpacts}/${result.summary.dependencyRuntimeSurfaces}, service causality ${result.summary.serviceCausalityPaths}, relationships ${result.summary.affectedRelationships}${understanding}`,
         );
       } else {
         scoreTotal += result.summary.readinessScore;
@@ -1512,7 +2662,7 @@ function runPiBenchTasks(loadedTasks) {
         const incremental =
           result.summary.incremental === undefined
             ? ''
-            : ` | incremental changed ${result.summary.incremental.changedFiles}, stable entities ${result.summary.incremental.stableEntities}, reused ${result.summary.incremental.reusedUnderstanding}, recomputed ${result.summary.incremental.recomputedUnderstanding}, efficiency ${result.summary.incremental.scanEfficiency}`;
+            : ` | ${formatIncrementalSummary(result.summary.incremental)}`;
         const understanding =
           result.summary.understandingTasks === 0
             ? ''
@@ -1626,6 +2776,7 @@ function runCliSync(args, input) {
       encoding: 'utf8',
       env: isolatedEnv(home),
       timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     }),
   );
 }
@@ -1638,6 +2789,7 @@ function runCliInCwdSync(cwd, args, input) {
       encoding: 'utf8',
       env: isolatedEnv(home),
       timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     }),
   );
 }
@@ -1650,17 +2802,25 @@ function runCliInCwdWithGitSync(cwd, args, input) {
       encoding: 'utf8',
       env: isolatedEnvWithGit(home),
       timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     }),
   );
 }
 
 function gitInCwd(cwd, args) {
-  const result = spawnSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    timeout: 5_000,
-  });
-  assert(result.status === 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  const result = spawnSync(
+    'git',
+    ['-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', ...args],
+    {
+      cwd,
+      encoding: 'utf8',
+      timeout: 20_000,
+    },
+  );
+  assert(
+    result.status === 0,
+    `git ${args.join(' ')} failed: ${result.error?.message || result.stderr || result.stdout}`,
+  );
 }
 
 function setupSmokeEnv(home, secret) {
@@ -2154,7 +3314,9 @@ async function runHeadlessSmoke() {
             'explain missed read-first file',
           );
           assert(
-            existsSync(join(dir, '.rizz', 'reports', 'explain.html')),
+            readdirSync(join(dir, '.rizz', 'reports')).some(
+              (entry) => entry.startsWith('explain-') && entry.endsWith('.html'),
+            ),
             'missing explain report',
           );
 
@@ -2227,7 +3389,7 @@ function runInstallShimSmoke() {
             version.status === 0,
             `expected installed shim --version exit 0, got ${version.status}: ${version.stderr}`,
           );
-          assert(version.stdout.trim() === '0.2.1', 'expected shim to forward --version 0.2.1');
+          assert(version.stdout.trim() === '0.3.0', 'expected shim to forward --version 0.3.0');
         });
       },
     },

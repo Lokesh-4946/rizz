@@ -19,7 +19,10 @@ network access.
   changes; the runner scans once, applies the changes, scans again, and validates
   `.rizz/research/incremental_update.json` changed/stable entity counts, reused/recomputed
   understanding counts, file reuse, scan efficiency, fingerprint continuity, and secret-safe
-  changed-path output.
+  changed-path output. Incremental assertions can also set depth thresholds for changed-file
+  coverage, public changed-file coverage, recomputed-file coverage, stale avoidance, and
+  reuse-to-recompute ratio. The summary prints those values so scan efficiency regressions are
+  visible without adding provider calls.
   Understanding-task seeds may include an `understanding_tasks` block. Each item asks one narrow
   benchmark-ready repo-understanding prompt and validates the answer from an existing JSON artifact
   slice or deterministic `rizz explain --json` output. Supported source types are
@@ -34,7 +37,8 @@ Coverage targets are explicit for component, flow, evidence, and unknown surface
 `coverage.evidence.claims_with_evidence`.
 
 Artifact assertions check that required files exist, parse as JSON when requested, contain the
-expected top-level or dotted fields, include required substrings, and omit forbidden substrings.
+expected top-level or dotted fields, match optional `expected_json_values` by dotted JSON path,
+include required substrings, and omit forbidden substrings.
 The benchmark summary reports readiness score plus component, flow, evidence, and unknown coverage
 for each task.
 
@@ -45,9 +49,12 @@ dependencies or contact a provider; it asserts that local research artifacts and
 preserve route/API/render flows, mapped files/components/configs, contracts, confidence gaps, known
 unknowns, object labels, and expandable report details.
 
-The incremental-understanding seed applies a public source change and a sensitive-path change after
-the first scan. It asserts that users can trust what changed between scans without leaking the
-sensitive path or secret-like changed contents into research artifacts or reports.
+The incremental-understanding seed applies a public service source change and a sensitive-path
+change after the first scan. It asserts that users can trust what changed between scans without
+leaking the sensitive path or secret-like changed contents into research artifacts or reports, and
+that `.rizz/research/incremental_update.json` plus latest incremental status expose
+`service_causality_delta` drift, stable/recomputed/stale counts, changed evidence, affected
+services, and freshness.
 
 Review benchmark tasks use category `review-blast-radius` and add a `review` block instead of
 `coverage_targets`. The runner initializes a git fixture, runs `rizz brain`, commits the baseline,
@@ -57,11 +64,65 @@ configs, blast-radius reasons, required tests, findings, and forbidden secret-li
 JSON/report output. Review tasks also require `.rizz/research/review_eval.json`, which makes review
 quality measurable through deterministic finding counts, affected surface counts, evidence/test
 counts, risk, surgicality, review-readiness, and secret-safety/redaction indicators.
+Review tasks may also require `.rizz/research/review_claim_evidence.json`, which records a compact
+claim ledger for blast-radius reasons, findings, affected flows, and targeted verification plan
+items so review conclusions can be audited back to evidence, confidence, rules, and unknowns.
+The same artifact also includes additive `architecture_impact_claims` so architecture impact-map
+reasoning can be audited without changing the compact generic claim surfaces.
+Artifact assertions can set `validate_architecture_impact_claims: true` to verify architecture
+claim counts, basis metadata, source-file linkage, evidence/unknown shape, and required rules.
+Review assertions can set `require_architecture_impact_claim_coverage: true` to require one
+architecture claim per review impact-map row with mirrored evidence, files, tests, configs, and
+what-breaks fields.
+Mission Control assertions can require the same architecture-impact claim evidence in
+`.rizz/reports/index.html`, keeping the human portal aligned with the machine-readable review
+ledger.
+Precision review seeds can assert absent findings and maximum affected state/data counts; these
+negative checks keep test-only or confidence-only edits from being scored as runtime blast-radius
+changes.
+Test-only precision seeds also assert `test_evidence_change_count`, making confidence/evidence
+movement measurable without pretending runtime behavior changed.
+Config-only precision seeds additionally require dependency/runtime impact while forbidding
+runtime-source missing-test findings and state/data impact for TypeScript config wording.
+Comment/type-only precision seeds keep affected journey context while forbidding state/data impact
+or missing-runtime-test findings when the diff only changes comments or type-support files.
+Generated/vendor precision seeds keep artifact churn visible while forbidding authored runtime,
+flow, architecture, or state/data blast-radius claims. Lockfile precision seeds are separate:
+lockfiles remain dependency/runtime impact and must keep install-resolution verification focus.
+Precision seeds also assert `review_eval.precision_calibration`: false-positive guards, preserved
+false-negative signals, precision gaps, and change classification booleans. This makes PI-Bench
+verify why Rizz avoided an overstated blast radius instead of only checking that a bad finding is
+absent.
+Review diff entries normally use `{ "path": "...", "contents": "..." }`; rename and delete review
+seeds can additionally use `{ "path": "...", "rename_from": "...", "contents": "..." }` and
+`{ "path": "...", "delete": true }` so PI-Bench can exercise real git name-status behavior for
+blast-radius preservation.
+Journey-aware review seeds additionally assert human-readable journey names, normalized journey
+steps, affected journey counts, user-visible failure-mode counts, and review HTML drilldown output
+for auth/login, upload/ingestion, search/retrieval, webhook/background, and deployment/config risk
+fixtures. These tasks measure whether Rizz can connect changed files to product journeys without
+adding provider calls or broad `rizz ask`. They also require blast-radius actionability calibration:
+score/status, actionable signals, evidence gaps, user-visible failure modes, affected tests, and
+architecture what-breaks evidence must be present where the review claims a causal blast radius.
+Dependency/runtime review tasks additionally assert `dependency_runtime_impact` for package/config
+diffs: changed manifests/configs, dependency entities, affected flows/tests/configs, runtime
+surfaces, focused verification, and the corresponding `review_eval` dependency-runtime count fields.
+State/data causality review tasks additionally assert transitive route-to-repository/schema
+dependencies, affected data dependency labels, affected state operations, review findings, Mission
+Control drilldown output, and `review_eval` state/data count fields. These seeds measure whether
+Rizz can explain what user-visible journey may break when a schema, repository, cache/session, or
+other state surface changes.
+Targeted-verification review tasks additionally assert `verification_plan` items, priority counts,
+verification types, and report/portal rendering. These checks measure whether review intelligence
+turns blast-radius evidence into concrete local verification work without running commands or
+calling providers.
 Route-aware review tasks can additionally assert affected flow metadata with
 `route_flows_include`: flow id, framework, route path, route type, entrypoints, changed files,
-linked tests, and linked configs. The Next.js route review seed uses this to prove alias-resolved
-component, content, and config imports support review blast-radius reasoning without exposing
-secret-like fixture paths.
+linked tests, linked configs, and nested `service_causality_include` entries. Service-causality
+assertions cover the reached service, changed service files, reconstructed step IDs, effects,
+evidence IDs, confidence, and known unknowns. The Next.js route review seed uses this to prove
+alias-resolved component, content, and config imports support review blast-radius reasoning without
+exposing secret-like fixture paths.
 
 The understanding-task seed uses `understanding_tasks` to score answers a user would ask while
 orienting in a repo: what to read first, which component has review-impact evidence, which evidence

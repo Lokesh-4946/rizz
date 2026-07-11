@@ -84,8 +84,13 @@
     {
       "path": ".rizz/research/evidence_quality.json",
       "type": "json",
-      "required_fields": ["evidence_gap_count", "top_evidence_gaps"],
-      "required_substrings": ["Relationship claim has no evidence reference."],
+      "required_fields": [
+        "evidence_gap_count",
+        "top_evidence_gaps",
+        "relationships_without_evidence",
+        "relationship_evidence_coverage_ratio"
+      ],
+      "required_substrings": ["relationship_evidence_coverage_ratio"],
       "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
     },
     {

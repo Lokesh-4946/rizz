@@ -255,7 +255,7 @@
     },
     "artifact_assertions": [
       {
-        "path": ".rizz/reports/explain.html",
+        "path": ".rizz/reports/explain-*.html",
         "type": "file",
         "required_substrings": [
           "Next.js app-router file maps to route path /docs/[slug].",

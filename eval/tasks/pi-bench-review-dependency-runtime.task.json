@@ -1,0 +1,237 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-dependency-runtime",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Dependency runtime review benchmark seed",
+  "prompt": "Review deterministic package and TypeScript config changes and verify that rizz review --json reports dependency runtime impact, affected flows, tests, configs, runtime surfaces, verification focus, review eval counts, and secret-safe output.",
+  "fixture": {
+    "root": "pi-bench-review-dependency-runtime",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-dependency-runtime\",\"workspaces\":[\"packages/*\"],\"scripts\":{\"check\":\"pnpm -r check\"},\"devDependencies\":{\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "packages/cli/package.json",
+        "contents": "{\"name\":\"@fixture/cli\",\"scripts\":{\"build\":\"tsc -b packages/cli\",\"check\":\"vitest run packages/cli && tsc -b packages/cli\",\"pack\":\"pnpm pack\",\"start\":\"node dist/index.js\"},\"dependencies\":{\"commander\":\"^12.0.0\",\"zod\":\"^3.0.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "packages/cli/tsconfig.json",
+        "contents": "{\"compilerOptions\":{\"module\":\"NodeNext\",\"target\":\"ES2022\",\"strict\":true},\"include\":[\"src/**/*.ts\"]}\n"
+      },
+      {
+        "path": "packages/cli/src/index.ts",
+        "contents": "import { z } from \"zod\";\n\nexport function parseFlag(value: unknown): string {\n  return z.string().parse(value);\n}\n"
+      },
+      {
+        "path": "packages/cli/src/index.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { parseFlag } from \"./index.js\";\n\nit(\"parses flags\", () => {\n  expect(parseFlag(\"ready\")).toBe(\"ready\");\n});\n"
+      },
+      {
+        "path": "secrets/sk-or-v1-runtime-review.env",
+        "contents": "OPENROUTER_API_KEY=sk-or-v1-runtime-review-secret\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "packages/cli/package.json",
+          "contents": "{\"name\":\"@fixture/cli\",\"scripts\":{\"build\":\"tsc -b packages/cli --pretty false\",\"check\":\"vitest run packages/cli && tsc -b packages/cli\",\"pack\":\"pnpm pack\",\"start\":\"node dist/index.js\"},\"dependencies\":{\"commander\":\"^12.0.0\",\"zod\":\"^4.0.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\"}}\n"
+        },
+        {
+          "path": "packages/cli/tsconfig.json",
+          "contents": "{\"compilerOptions\":{\"module\":\"NodeNext\",\"target\":\"ES2022\",\"strict\":true,\"noUncheckedIndexedAccess\":true},\"include\":[\"src/**/*.ts\"]}\n"
+        },
+        {
+          "path": "secrets/sk-or-v1-runtime-review.env",
+          "contents": "OPENROUTER_API_KEY=sk-or-v1-runtime-review-secret-rotated\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["packages/cli/package.json", "packages/cli/tsconfig.json"],
+      "changed_files_exclude": ["secrets/sk-or-v1-runtime-review.env"],
+      "direct_components_include": ["component:packages--cli"],
+      "affected_flows_include": [
+        "flow:packages--cli--build",
+        "flow:packages--cli--check",
+        "flow:packages--cli--pack",
+        "flow:packages--cli--start"
+      ],
+      "affected_tests_include": ["packages/cli/src/index.test.ts"],
+      "affected_configs_include": ["packages/cli/package.json", "packages/cli/tsconfig.json"],
+      "dependency_runtime_changed_files_include": [
+        "packages/cli/package.json",
+        "packages/cli/tsconfig.json"
+      ],
+      "dependency_runtime_package_manifests_include": ["packages/cli/package.json"],
+      "dependency_runtime_config_files_include": [
+        "packages/cli/package.json",
+        "packages/cli/tsconfig.json"
+      ],
+      "dependency_runtime_dependency_entities_include": ["dependency:commander", "dependency:zod"],
+      "dependency_runtime_runtime_surfaces_include": [
+        "configuration/runtime setup",
+        "install/dependency resolution",
+        "package script:build",
+        "package script:pack",
+        "package script:start",
+        "package script:typecheck",
+        "reconstructed flows"
+      ],
+      "dependency_runtime_affected_components_include": ["component:packages--cli"],
+      "dependency_runtime_affected_flows_include": [
+        "flow:packages--cli--build",
+        "flow:packages--cli--check",
+        "flow:packages--cli--pack",
+        "flow:packages--cli--start"
+      ],
+      "dependency_runtime_affected_tests_include": ["packages/cli/src/index.test.ts"],
+      "dependency_runtime_affected_configs_include": [
+        "packages/cli/package.json",
+        "packages/cli/tsconfig.json"
+      ],
+      "dependency_runtime_verification_focus_include": [
+        "Validate package install",
+        "Run the config-backed build/test path",
+        "Run package script packages/cli/package.json#build",
+        "Run package script packages/cli/package.json#check",
+        "Run package script packages/cli/package.json#pack",
+        "Exercise affected flow",
+        "Run linked test artifact packages/cli/src/index.test.ts",
+        "Inspect packed package contents"
+      ],
+      "blast_radius": "moderate",
+      "minimum_direct_components": 1,
+      "minimum_affected_flows": 4,
+      "minimum_affected_relationships": 8,
+      "minimum_dependency_runtime_impacts": 1,
+      "minimum_dependency_runtime_surfaces": 7,
+      "minimum_dependency_runtime_verification_focus": 8,
+      "required_tests_include": ["vitest run"],
+      "blast_radius_reasons_include": [
+        "Dependency/runtime impact links changed package/config files",
+        "Focused dependency/runtime verification",
+        "affected flow(s) link the change",
+        "graph relationship(s) touch the review blast radius"
+      ],
+      "findings_include": [
+        {
+          "category": "Backward compatibility",
+          "title_includes": "Configuration or dependency surface changed"
+        },
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" }
+      ],
+      "forbidden_output_substrings": [
+        "sk-or-v1-runtime-review-secret",
+        "sk-or-v1-runtime-review.env",
+        "OPENROUTER_API_KEY"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/brain/entities/reviews.json",
+    ".rizz/brain/entities/findings.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/brain/entities/reviews.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": [
+        "dependency_runtime_impact",
+        "packages/cli/package.json",
+        "packages/cli/tsconfig.json",
+        "flow:packages--cli--check"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-runtime-review-secret",
+        "sk-or-v1-runtime-review.env",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
+      "path": ".rizz/brain/entities/findings.json",
+      "type": "json",
+      "required_fields": ["entities"],
+      "required_substrings": ["Configuration or dependency surface changed"]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "schema_version",
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "total_findings",
+        "findings_by_category.Backward compatibility",
+        "findings_by_category.Hidden coupling",
+        "affected_flow_count",
+        "dependency_runtime_impact_count",
+        "dependency_runtime_changed_file_count",
+        "dependency_runtime_surface_count",
+        "dependency_runtime_verification_focus_count",
+        "architecture_affected_test_count",
+        "architecture_affected_config_count",
+        "required_test_count",
+        "blast_radius",
+        "review_readiness_score",
+        "secret_safety.output_secret_safe"
+      ],
+      "expected_json_values": {
+        "deterministic": true,
+        "provider_calls_required": false,
+        "network_required": false,
+        "dependency_runtime_impact_count": 1,
+        "dependency_runtime_changed_file_count": 2,
+        "blast_radius": "moderate",
+        "secret_safety.output_secret_safe": true
+      },
+      "required_substrings": [
+        "\"dependency_runtime_surface_count\"",
+        "\"dependency_runtime_verification_focus_count\"",
+        "\"affected_flow_count\""
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-runtime-review-secret",
+        "sk-or-v1-runtime-review.env",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Dependency Runtime Impact",
+        "packages/cli/package.json#build",
+        "configuration/runtime setup",
+        "Validate package install"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-runtime-review-secret",
+        "sk-or-v1-runtime-review.env",
+        "OPENROUTER_API_KEY"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The review JSON reports dependency_runtime_impact for changed package/config files.",
+      "Affected flows, linked tests, linked configs, runtime surfaces, and verification focus are validated semantically.",
+      "review_eval exposes deterministic dependency/runtime impact counts without provider calls or network access.",
+      "Secret-like fixture path and content are omitted or redacted from review JSON and report output."
+    ],
+    "fail": [
+      "The task depends on installing fixture dependencies, contacting a provider, or using network access.",
+      "Package/config changes are treated as generic metadata with no affected flow, test, config, runtime surface, or verification focus.",
+      "review_eval omits dependency_runtime_* counts or secret-like values leak into outputs."
+    ]
+  }
+}

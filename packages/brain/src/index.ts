@@ -1,21 +1,76 @@
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, readFileSync, statSync } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, sep } from 'node:path';
+import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
+import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
+import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
+import {
+  type DatabaseTableInference as Dti,
+  databaseTableDependencyLabels as dbDepLabels,
+  databaseTableDescription as dbDesc,
+  databaseTableFlowLabels as dbFlowLabels,
+  databaseTableGraphIndex as dbGraphIndex,
+  databaseTableRelationshipEdges as dbRelEdges,
+  databaseTableEntityData as dbTableData,
+  detectPackageManagerFromFiles,
+  inferDatabaseTables as inferDbTables,
+  isRouteOrControllerFile,
+  requiredTestCommands,
+  routeChangedFileMatchesRoutePath,
+  stateOperationsFromText,
+  storageDependenciesFromText,
+} from './dbms-usefulness.js';
+import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
+import {
+  type HumanApprovalPacket,
+  buildHumanApprovalPacket,
+  readHumanSignoffRecord,
+  renderHumanApprovalPacket,
+  renderLatestVerificationPlan,
+} from './human-approval.js';
+export { recordHumanSignoff } from './human-approval.js';
+import {
+  type ReviewGitBasisData,
+  type ReviewGovernanceData,
+  type ReviewGovernanceStatus,
+  buildReviewGovernance,
+  readReviewGitChanges,
+  renderReviewGovernance,
+} from './review-governance.js';
+import { loadReviewMissionContract } from './review-mission-contract.js';
+import {
+  commandTargetPaths,
+  commandTargetSteps,
+  flowConfidenceFor,
+} from './script-flow-causality.js';
 import {
   classifySensitivePath,
   containsSensitiveReference,
   redactSensitiveText,
   redactedReferenceCount,
+  redactSensitiveSet as rs,
   sensitiveIdentityKey,
   shouldOmitSensitivePath,
   unredactedSensitiveReferenceCount,
 } from './sensitivity.js';
+import {
+  flowIntelligenceCoversFile as flowCoversFile,
+  inferServiceEntrypointFlow as inferSvcFlow,
+  serviceMatchesFlowFile as svcFile,
+  serviceEntrypointsForFlowFallback as svcFlowEntrypoints,
+  serviceIdsForFiles as svcIdsForFiles,
+  serviceStepsForFlow as svcStepsForFlow,
+} from './service-flow-linking.js';
+import {
+  type VerificationEvidenceScore as Ves,
+  buildVerificationEvidenceScore as bves,
+} from './verification-evidence-score.js';
+import { buildAgentVerificationPlanArtifact as bavp } from './verification-plan.js';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
-type ReasoningType = 'component' | 'flow' | 'architecture' | 'review';
+type ReasoningType = 'component' | 'flow' | 'architecture' | 'review' | 'service';
 
 type BenchmarkTaskCategory =
   | 'component-explanation'
@@ -249,6 +304,33 @@ interface ArchitectureConfidenceDebt {
 }
 
 type ArchitectureImpactSurfaceType = 'component' | 'route';
+type ArchitectureImpactRiskLevel = 'low' | 'medium' | 'high';
+
+interface ArchitectureServiceCausalityReasoning {
+  readonly total_services: number;
+  readonly total_paths: number;
+  readonly affected_flows: readonly string[];
+  readonly affected_services: readonly string[];
+  readonly effect_count: number;
+  readonly effects: readonly string[];
+  readonly effect_categories: readonly string[];
+  readonly route_impacts: readonly {
+    readonly flow_id: string;
+    readonly route_path: string;
+    readonly service_id: string;
+    readonly effects: readonly string[];
+    readonly what_breaks: readonly string[];
+    readonly evidence_ids: readonly string[];
+    readonly confidence: Confidence;
+  }[];
+  readonly missing_effect_paths: readonly string[];
+  readonly missing_step_link_paths: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence_distribution: Record<Confidence, number>;
+  readonly top_risky_effects: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly calibration_rule: string;
+}
 
 interface ArchitectureImpactEntry {
   readonly impact_id: string;
@@ -262,6 +344,7 @@ interface ArchitectureImpactEntry {
   readonly affected_files: readonly string[];
   readonly affected_tests: readonly string[];
   readonly affected_configs: readonly string[];
+  readonly service_causality?: readonly FlowServiceCausality[];
   readonly dependent_components: readonly string[];
   readonly coupling_level: ComponentIntelligence['coupling']['level'];
   readonly coupling_score: number;
@@ -270,6 +353,18 @@ interface ArchitectureImpactEntry {
   readonly evidence_ids: readonly string[];
   readonly evidence_gap_ids: readonly string[];
   readonly what_breaks: readonly string[];
+  readonly risk_reasoning: ArchitectureImpactRiskReasoning;
+  readonly reasons: readonly string[];
+}
+
+interface ArchitectureImpactRiskReasoning {
+  readonly risk_level: ArchitectureImpactRiskLevel;
+  readonly risk_score: number;
+  readonly criticality: string;
+  readonly coupling_level: ComponentIntelligence['coupling']['level'];
+  readonly tradeoffs: readonly string[];
+  readonly risky_surfaces: readonly string[];
+  readonly review_focus: readonly string[];
   readonly reasons: readonly string[];
 }
 
@@ -281,6 +376,13 @@ interface ArchitectureImpactMap {
     readonly high_coupling_surfaces: number;
     readonly test_backed_surfaces: number;
     readonly config_backed_surfaces: number;
+    readonly evidence_backed_surfaces: number;
+    readonly what_breaks_surfaces: number;
+    readonly dependent_component_surfaces: number;
+    readonly service_causality_paths: number;
+    readonly service_causality_effect_count: number;
+    readonly service_causality_backed_surfaces: number;
+    readonly service_causality_unknown_count: number;
     readonly top_impacted_surfaces: readonly string[];
   };
   readonly entries: readonly ArchitectureImpactEntry[];
@@ -355,7 +457,7 @@ type NextAppRouteType = 'api' | 'layout' | 'metadata' | 'page';
 
 type HttpRouteMethod = 'ALL' | 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT';
 
-type HttpRouteFramework = 'express-fastify-http' | 'hono';
+type HttpRouteFramework = 'express-fastify-http' | 'fastapi' | 'flask' | 'hono';
 
 type FlowStepType =
   | 'route'
@@ -367,12 +469,36 @@ type FlowStepType =
   | 'test'
   | 'external';
 
+type JourneyStepType =
+  | 'trigger'
+  | 'validation_auth'
+  | 'read_write_storage'
+  | 'business_logic'
+  | 'external_service_call'
+  | 'rendering_response'
+  | 'background_job_async'
+  | 'runtime_config'
+  | 'test_coverage';
+
 type FlowRiskKind =
   | 'missing_test'
   | 'missing_config'
   | 'weak_evidence'
   | 'orphan_step'
-  | 'changed_hotspot';
+  | 'changed_hotspot'
+  | 'deployment_storage'
+  | 'deployment_auth'
+  | 'deployment_cors';
+
+type FlowDataDependencyKind =
+  | 'database'
+  | 'cache'
+  | 'filesystem'
+  | 'object_storage'
+  | 'vector_store'
+  | 'orm'
+  | 'schema'
+  | 'state_module';
 
 interface FlowEntrypoint {
   readonly type: FlowEntrypointType;
@@ -390,6 +516,57 @@ interface FlowStep {
   readonly symbol: string | null;
   readonly description: string;
   readonly evidence: readonly string[];
+}
+
+interface FlowJourneySummary {
+  readonly name: string;
+  readonly category: string;
+  readonly confidence: Confidence;
+  readonly score: number;
+  readonly reasons: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly missing_evidence: readonly string[];
+}
+
+interface FlowJourneyStep {
+  readonly step_id: string;
+  readonly order: number;
+  readonly type: JourneyStepType;
+  readonly label: string;
+  readonly description: string;
+  readonly files: readonly string[];
+  readonly symbols: readonly string[];
+  readonly routes: readonly string[];
+  readonly runtime_surfaces: readonly string[];
+  readonly configs: readonly string[];
+  readonly tests: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly missing_evidence: readonly string[];
+}
+
+interface FlowServiceCausality {
+  readonly service_id: string;
+  readonly service_name: string;
+  readonly service_root: string;
+  readonly files: readonly string[];
+  readonly step_ids: readonly string[];
+  readonly cause: string;
+  readonly effects: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+  readonly unknowns: readonly string[];
+}
+
+interface FlowDataDependency {
+  readonly dependency_id: string;
+  readonly kind: FlowDataDependencyKind;
+  readonly label: string;
+  readonly files: readonly string[];
+  readonly operations: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly missing_evidence: readonly string[];
 }
 
 interface FlowRisk {
@@ -468,6 +645,10 @@ interface FlowIntelligence {
   readonly components: readonly string[];
   readonly files: readonly string[];
   readonly dependencies: readonly string[];
+  readonly runtime_surfaces: readonly string[];
+  readonly services?: readonly string[];
+  readonly service_causality?: readonly FlowServiceCausality[];
+  readonly data_dependencies?: readonly FlowDataDependency[];
   readonly configs: readonly string[];
   readonly tests: readonly string[];
   readonly risks: readonly FlowRisk[];
@@ -482,6 +663,35 @@ interface FlowIntelligence {
   readonly confidence_reasons: readonly string[];
   readonly confidence: FlowConfidence;
   readonly evidence: readonly FlowEvidence[];
+  readonly field_evidence: Readonly<Record<string, readonly string[]>>;
+  readonly unknowns: readonly string[];
+  readonly signals: readonly string[];
+  readonly journey?: FlowJourneySummary;
+  readonly journey_steps?: readonly FlowJourneyStep[];
+}
+
+type ServiceRuntime = 'node' | 'python' | 'unknown';
+
+interface ServiceIntelligence {
+  readonly service_id: string;
+  readonly name: string;
+  readonly runtime: ServiceRuntime;
+  readonly framework: string;
+  readonly service_root: string;
+  readonly files: readonly string[];
+  readonly entrypoints: readonly string[];
+  readonly routes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly storage_dependencies: readonly string[];
+  readonly environment_variables: readonly string[];
+  readonly external_services: readonly string[];
+  readonly deployment_configs: readonly string[];
+  readonly related_flows: readonly string[];
+  readonly related_components: readonly string[];
+  readonly risks: readonly string[];
+  readonly confidence: Confidence;
+  readonly confidence_score: number;
+  readonly evidence_ids: readonly string[];
   readonly field_evidence: Readonly<Record<string, readonly string[]>>;
   readonly unknowns: readonly string[];
   readonly signals: readonly string[];
@@ -517,6 +727,18 @@ interface IncrementalUnderstandingMetrics {
   readonly current_files: readonly string[];
   readonly new_files: readonly string[];
   readonly affected_flows: readonly string[];
+  readonly service_count: number;
+  readonly service_changed: number;
+  readonly service_stale: number;
+  readonly service_reused: number;
+  readonly service_recomputed: number;
+  readonly service_incremental_health: IncrementalEntityTypeHealth;
+  readonly flow_count: number;
+  readonly flow_changed: number;
+  readonly flow_stale: number;
+  readonly flow_reused: number;
+  readonly flow_recomputed: number;
+  readonly flow_incremental_health: IncrementalEntityTypeHealth;
   readonly previous_entity_count: number;
   readonly current_entity_count: number;
   readonly added_entity_count: number;
@@ -528,6 +750,7 @@ interface IncrementalUnderstandingMetrics {
   readonly changed_entities: readonly IncrementalEntityDelta[];
   readonly relationship_delta: IncrementalRelationshipDelta;
   readonly evidence_delta: IncrementalEvidenceDelta;
+  readonly service_causality_delta: IncrementalServiceCausalityDelta;
   readonly reused_understanding_count: number;
   readonly recomputed_understanding_count: number;
   readonly stale_fact_count: number;
@@ -542,11 +765,28 @@ interface IncrementalEntityDelta {
   readonly name: string;
 }
 
+interface IncrementalEntityTypeHealth {
+  readonly entity_type: 'service' | 'flow';
+  readonly total: number;
+  readonly changed: number;
+  readonly new: number;
+  readonly stale: number;
+  readonly reused: number;
+  readonly recomputed: number;
+  readonly status_counts: Readonly<Record<string, number>>;
+  readonly changed_ids: readonly string[];
+  readonly reused_ids: readonly string[];
+  readonly recomputed_ids: readonly string[];
+  readonly stale_ids: readonly string[];
+  readonly source_changed_ids: readonly string[];
+}
+
 type IncrementalUnderstandingSurfaceType =
   | 'architecture'
   | 'component'
   | 'evidence'
   | 'flow'
+  | 'service'
   | 'unknown';
 
 type IncrementalUnderstandingSurfaceStatus = 'changed' | 'new' | 'stable' | 'stale';
@@ -626,6 +866,55 @@ interface IncrementalEvidenceDelta {
   readonly changed: readonly string[];
 }
 
+type IncrementalServiceCausalityPathStatus = 'stable' | 'recomputed' | 'drifted' | 'new' | 'stale';
+
+interface IncrementalServiceCausalityDelta {
+  readonly schema_version: number;
+  readonly previous_path_count: number;
+  readonly current_path_count: number;
+  readonly total_path_count: number;
+  readonly stable_path_count: number;
+  readonly recomputed_path_count: number;
+  readonly drifted_path_count: number;
+  readonly new_path_count: number;
+  readonly stale_path_count: number;
+  readonly evidence_changed_path_count: number;
+  readonly affected_flow_count: number;
+  readonly affected_service_count: number;
+  readonly affected_flows: readonly string[];
+  readonly affected_services: readonly string[];
+  readonly changed_evidence_ids: readonly string[];
+  readonly freshness_score: number;
+  readonly path_deltas: readonly IncrementalServiceCausalityPathDelta[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
+interface IncrementalServiceCausalityPathDelta {
+  readonly path_id: string;
+  readonly flow_id: string;
+  readonly service_id: string;
+  readonly service_name: string;
+  readonly status: IncrementalServiceCausalityPathStatus;
+  readonly previous_hash: string | null;
+  readonly current_hash: string | null;
+  readonly changed_files: readonly string[];
+  readonly changed_evidence_ids: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly reasons: readonly string[];
+}
+
+interface ServiceCausalitySnapshot {
+  readonly path_id: string;
+  readonly flow_id: string;
+  readonly flow_name: string;
+  readonly service_id: string;
+  readonly service_name: string;
+  readonly files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly semantic_hash: string;
+}
+
 interface EntitySemanticValue {
   readonly id: string;
   readonly type: EntityType;
@@ -698,6 +987,182 @@ type BlastRadius = 'narrow' | 'moderate' | 'broad';
 
 type RecommendedAction = 'approve' | 'request changes' | 'investigate';
 
+export type VerificationStatus = 'passed' | 'failed' | 'skipped' | 'unknown';
+
+export interface VerificationEvidenceItem {
+  readonly id: string;
+  readonly name: string;
+  readonly command: string;
+  readonly status: VerificationStatus;
+  readonly timestamp: string;
+  readonly output_summary?: string;
+  readonly affected_confidence_areas: readonly string[];
+}
+
+export interface VerificationEvidenceArtifactData {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly project_name: string;
+  readonly items: readonly VerificationEvidenceItem[];
+  readonly status_counts: Record<VerificationStatus, number>;
+  readonly local_checks_passed: readonly string[];
+  readonly local_checks_failed: readonly string[];
+  readonly production_checks_passed: readonly string[];
+  readonly production_checks_failed: readonly string[];
+  readonly risks_reduced: readonly string[];
+  readonly remaining_unknowns: readonly string[];
+}
+
+interface ReviewVerificationStatusData {
+  readonly artifact_path: string;
+  readonly total_checks: number;
+  readonly passed_checks: readonly string[];
+  readonly failed_checks: readonly string[];
+  readonly local_checks_passed: readonly string[];
+  readonly production_checks_passed: readonly string[];
+  readonly production_checks_failed: readonly string[];
+  readonly risks_reduced: readonly string[];
+  readonly remaining_unknowns: readonly string[];
+  readonly calibration_note: string;
+}
+
+type ReviewVerificationPriority = 'required' | 'recommended' | 'optional';
+
+type ReviewVerificationType =
+  | 'test'
+  | 'smoke'
+  | 'contract'
+  | 'data'
+  | 'state'
+  | 'dependency'
+  | 'service-causality'
+  | 'manual';
+
+interface ReviewVerificationPlanItemData {
+  readonly id: string;
+  readonly priority: ReviewVerificationPriority;
+  readonly verification_type: ReviewVerificationType;
+  readonly reason: string;
+  readonly commands: readonly string[];
+  readonly manual_checks: readonly string[];
+  readonly linked_findings: readonly string[];
+  readonly linked_flows: readonly string[];
+  readonly linked_components: readonly string[];
+  readonly linked_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly confidence: Confidence;
+}
+
+type ReviewClaimEvidenceSurface =
+  | 'blast_radius_reason'
+  | 'finding'
+  | 'affected_flow'
+  | 'verification_plan';
+
+interface ReviewClaimEvidenceData {
+  readonly claim_id: string;
+  readonly surface: ReviewClaimEvidenceSurface;
+  readonly claim: string;
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly source_files: readonly string[];
+  readonly affected_entities: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly redacted_evidence_count: number;
+}
+
+interface ReviewArchitectureImpactClaimEvidenceData {
+  readonly claim_id: string;
+  readonly impact_id: string;
+  readonly surface_type: ArchitectureImpactSurfaceType;
+  readonly claim: string;
+  readonly confidence: Confidence;
+  readonly evidence_ids: readonly string[];
+  readonly source_files: readonly string[];
+  readonly affected_entities: readonly string[];
+  readonly matched_components: readonly string[];
+  readonly matched_flows: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
+  readonly what_breaks: readonly string[];
+  readonly review_focus: readonly string[];
+  readonly rules: readonly string[];
+  readonly unknowns: readonly string[];
+  readonly redacted_evidence_count: number;
+}
+
+interface ReviewClaimEvidenceArtifactData {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly review_id: string;
+  readonly basis: {
+    readonly source: 'pre_change_project_brain_plus_git_diff';
+    readonly description: string;
+    readonly review_fields: readonly string[];
+  };
+  readonly changed_files: readonly string[];
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly total_claims: number;
+  readonly architecture_impact_claim_count: number;
+  readonly claim_counts: {
+    readonly total: number;
+    readonly generic_claims: number;
+    readonly architecture_impact_claims: number;
+    readonly with_evidence: number;
+    readonly without_evidence: number;
+  };
+  readonly claims_by_surface: Record<ReviewClaimEvidenceSurface, number>;
+  readonly claims_by_confidence: Record<Confidence, number>;
+  readonly blast_radius_actionability: ReviewBlastRadiusActionabilityData;
+  readonly redacted_evidence_count: number;
+  readonly secret_safety: {
+    readonly redacted_reference_count: number;
+    readonly unsafe_sensitive_reference_count: number;
+    readonly output_secret_safe: boolean;
+  };
+  readonly claims: readonly ReviewClaimEvidenceData[];
+  readonly architecture_impact_claims: readonly ReviewArchitectureImpactClaimEvidenceData[];
+}
+
+interface ReviewBlastRadiusActionabilityData {
+  readonly score: number;
+  readonly status: 'strong' | 'partial' | 'weak';
+  readonly changed_file_count: number;
+  readonly affected_journey_count: number;
+  readonly affected_journey_step_count: number;
+  readonly user_visible_failure_mode_count: number;
+  readonly evidence_id_count: number;
+  readonly verification_plan_count: number;
+  readonly required_verification_count: number;
+  readonly architecture_what_breaks_note_count: number;
+  readonly service_causality_path_count: number;
+  readonly affected_test_count: number;
+  readonly missing_evidence_count: number;
+  readonly signals: readonly string[];
+  readonly gaps: readonly string[];
+}
+
+interface ReviewPrecisionCalibrationData {
+  readonly score: number;
+  readonly status: 'strong' | 'partial' | 'weak';
+  readonly changed_file_count: number;
+  readonly runtime_source_change_count: number;
+  readonly test_only_change: boolean;
+  readonly generated_artifact_only_change: boolean;
+  readonly dependency_or_config_only_change: boolean;
+  readonly lockfile_only_change: boolean;
+  readonly false_positive_guard_count: number;
+  readonly false_negative_signal_count: number;
+  readonly precision_gap_count: number;
+  readonly false_positive_guards: readonly string[];
+  readonly false_negative_signals: readonly string[];
+  readonly precision_gaps: readonly string[];
+}
+
 interface ReviewEvalArtifactData {
   readonly schema_version: number;
   readonly generated_at: string;
@@ -708,17 +1173,44 @@ interface ReviewEvalArtifactData {
   readonly total_findings: number;
   readonly findings_by_severity: Record<ReviewSeverity, number>;
   readonly findings_by_category: Record<ReviewCategory, number>;
+  readonly generated_artifact_count: number;
+  readonly test_evidence_change_count: number;
   readonly affected_component_count: number;
+  readonly affected_service_count: number;
   readonly direct_affected_component_count: number;
   readonly dependent_component_count: number;
   readonly affected_flow_count: number;
+  readonly dependency_runtime_impact_count: number;
+  readonly dependency_runtime_changed_file_count: number;
+  readonly dependency_runtime_surface_count: number;
+  readonly dependency_runtime_verification_focus_count: number;
+  readonly service_causality_path_count: number;
+  readonly service_causality_effect_count: number;
+  readonly affected_journey_count: number;
+  readonly affected_journey_step_count: number;
+  readonly affected_data_dependency_count: number;
+  readonly affected_state_operation_count: number;
+  readonly user_visible_failure_mode_count: number;
+  readonly journey_missing_evidence_count: number;
   readonly affected_relationship_count: number;
   readonly architecture_impact_surface_count: number;
   readonly architecture_impact_component_surface_count: number;
   readonly architecture_impact_route_surface_count: number;
   readonly architecture_what_breaks_note_count: number;
+  readonly architecture_risk_reasoning_count: number;
   readonly architecture_evidence_gap_count: number;
   readonly architecture_confidence_gap_count: number;
+  readonly verification_evidence_count: number;
+  readonly verification_passed_count: number;
+  readonly verification_failed_count: number;
+  readonly verification_evidence_score: number;
+  readonly verification_plan_count: number;
+  readonly verification_plan_required_count: number;
+  readonly verification_plan_recommended_count: number;
+  readonly verification_plan_optional_count: number;
+  readonly human_approval_state: string;
+  readonly human_signoff_recorded: boolean;
+  readonly merge_release_ready: boolean;
   readonly architecture_affected_test_count: number;
   readonly architecture_affected_config_count: number;
   readonly required_test_count: number;
@@ -727,6 +1219,23 @@ interface ReviewEvalArtifactData {
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
   readonly review_readiness_score: number;
+  readonly blast_radius_actionability_score: number;
+  readonly blast_radius_actionability_status: ReviewBlastRadiusActionabilityData['status'];
+  readonly actionable_signal_count: number;
+  readonly actionability_gap_count: number;
+  readonly blast_radius_actionability: ReviewBlastRadiusActionabilityData;
+  readonly review_precision_score: number;
+  readonly review_precision_status: ReviewPrecisionCalibrationData['status'];
+  readonly false_positive_guard_count: number;
+  readonly false_negative_signal_count: number;
+  readonly precision_gap_count: number;
+  readonly precision_calibration: ReviewPrecisionCalibrationData;
+  readonly review_governance_score: number;
+  readonly review_governance_status: ReviewGovernanceStatus;
+  readonly version_control_warning_count: number;
+  readonly scope_drift_signal_count: number;
+  readonly duplicate_change_signal_count: number;
+  readonly review_governance: ReviewGovernanceData;
   readonly secret_safety: {
     readonly redaction_applied: boolean;
     readonly redacted_reference_count: number;
@@ -758,6 +1267,8 @@ interface ReviewFindingData {
 interface AffectedFlowData {
   readonly id: string;
   readonly name: string;
+  readonly journey_name?: string;
+  readonly journey_confidence?: Confidence;
   readonly kind: string;
   readonly framework?: string;
   readonly route_path?: string;
@@ -765,11 +1276,40 @@ interface AffectedFlowData {
   readonly confidence: Confidence;
   readonly score: number;
   readonly entrypoints: readonly string[];
+  readonly affected_steps: readonly FlowJourneyStep[];
+  readonly runtime_surfaces: readonly string[];
+  readonly data_dependencies: readonly FlowDataDependency[];
+  readonly user_visible_failure_modes: readonly string[];
+  readonly missing_evidence: readonly string[];
   readonly changed_files: readonly string[];
   readonly components: readonly string[];
+  readonly services: readonly string[];
+  readonly service_causality: readonly FlowServiceCausality[];
   readonly tests: readonly string[];
   readonly configs: readonly string[];
   readonly risks: number;
+  readonly evidence_ids: readonly string[];
+  readonly reasons: readonly string[];
+}
+
+interface ReviewAffectedServiceData {
+  readonly id: string;
+  readonly name: string;
+  readonly runtime: string;
+  readonly framework: string;
+  readonly changed_files: readonly string[];
+  readonly entrypoints: readonly string[];
+  readonly routes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly storage_dependencies: readonly string[];
+  readonly environment_variables: readonly string[];
+  readonly external_services: readonly string[];
+  readonly deployment_configs: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly risks: readonly string[];
+  readonly confidence: Confidence;
   readonly evidence_ids: readonly string[];
   readonly reasons: readonly string[];
 }
@@ -796,17 +1336,70 @@ interface ReviewAffectedRelationshipData {
   readonly evidence_ids: readonly string[];
 }
 
+type ReviewPackageScriptCategory =
+  | 'build'
+  | 'test'
+  | 'typecheck'
+  | 'lint'
+  | 'pack'
+  | 'start'
+  | 'deploy'
+  | 'runtime'
+  | 'other';
+
+interface ReviewPackageScriptData {
+  readonly manifest: string;
+  readonly name: string;
+  readonly command: string;
+  readonly category: ReviewPackageScriptCategory;
+}
+
+interface ReviewDependencyRuntimeImpactData {
+  readonly changed_files: readonly string[];
+  readonly package_manifests: readonly string[];
+  readonly lockfiles: readonly string[];
+  readonly config_files: readonly string[];
+  readonly dependency_entities: readonly string[];
+  readonly package_scripts: readonly ReviewPackageScriptData[];
+  readonly runtime_surfaces: readonly string[];
+  readonly affected_components: readonly string[];
+  readonly affected_services: readonly string[];
+  readonly affected_flows: readonly string[];
+  readonly affected_tests: readonly string[];
+  readonly affected_configs: readonly string[];
+  readonly verification_focus: readonly string[];
+  readonly reasons: readonly string[];
+  readonly confidence: Confidence;
+}
+
 interface ReviewEvidenceSummaryData {
   readonly changed_files: number;
+  readonly generated_artifacts: readonly string[];
+  readonly test_evidence_changes: readonly string[];
   readonly direct_components: number;
+  readonly affected_services: number;
   readonly dependent_components: number;
   readonly affected_flows: number;
+  readonly dependency_runtime_impacts: number;
+  readonly dependency_runtime_changed_files: readonly string[];
+  readonly dependency_runtime_surfaces: readonly string[];
+  readonly dependency_runtime_verification_focus: readonly string[];
+  readonly service_causality_paths: number;
+  readonly service_causality_effects: readonly string[];
+  readonly affected_journeys: readonly string[];
+  readonly affected_journey_steps: number;
+  readonly affected_data_dependencies: readonly string[];
+  readonly affected_state_operations: readonly string[];
+  readonly user_visible_failure_modes: readonly string[];
+  readonly journey_missing_evidence: readonly string[];
   readonly architecture_impact_surfaces: number;
   readonly architecture_confidence_gaps: readonly string[];
   readonly architecture_evidence_gap_ids: readonly string[];
   readonly architecture_what_breaks: readonly string[];
+  readonly architecture_risk_reasoning: readonly string[];
   readonly affected_tests: readonly string[];
   readonly affected_configs: readonly string[];
+  readonly verification_evidence_ids: readonly string[];
   readonly evidence_ids: readonly string[];
 }
 
@@ -832,6 +1425,7 @@ interface ReviewArchitectureImpactData {
   readonly evidence_ids: readonly string[];
   readonly evidence_gap_ids: readonly string[];
   readonly what_breaks: readonly string[];
+  readonly risk_reasoning: ArchitectureImpactRiskReasoning;
   readonly reasons: readonly string[];
 }
 
@@ -840,14 +1434,21 @@ interface ReviewSummaryData {
   readonly generated_at: string;
   readonly changed_files: readonly string[];
   readonly direct_affected_components: readonly ReviewAffectedComponentData[];
+  readonly affected_services: readonly ReviewAffectedServiceData[];
   readonly dependent_components: readonly ReviewAffectedComponentData[];
   readonly affected_components: readonly string[];
   readonly affected_flows: readonly AffectedFlowData[];
   readonly affected_relationships: readonly ReviewAffectedRelationshipData[];
   readonly architecture_impact_map: readonly ReviewArchitectureImpactData[];
+  readonly dependency_runtime_impact: ReviewDependencyRuntimeImpactData | null;
   readonly affected_entities: readonly string[];
   readonly blast_radius_reasons: readonly string[];
+  readonly review_governance: ReviewGovernanceData;
   readonly review_evidence_summary: ReviewEvidenceSummaryData;
+  readonly verification_status: ReviewVerificationStatusData;
+  readonly verification_plan: readonly ReviewVerificationPlanItemData[];
+  readonly verification_evidence_score: Ves;
+  readonly human_approval?: HumanApprovalPacket;
   readonly findings: readonly ReviewFindingData[];
   readonly overall_risk: OverallRisk;
   readonly surgicality_score: number;
@@ -923,16 +1524,37 @@ interface ExplainSummaryData {
       readonly signals?: readonly string[];
     };
   };
+  readonly service?: {
+    readonly runtime: string;
+    readonly framework: string;
+    readonly service_root: string;
+    readonly entrypoints: readonly string[];
+    readonly routes: readonly string[];
+    readonly jobs: readonly string[];
+    readonly storage_dependencies: readonly string[];
+    readonly environment_variables: readonly string[];
+    readonly external_services: readonly string[];
+    readonly deployment_configs: readonly string[];
+    readonly related_flows: readonly string[];
+    readonly related_components: readonly string[];
+    readonly confidence_score: number;
+  };
   readonly flow?: {
     readonly kind: FlowKind;
+    readonly journey?: FlowJourneySummary;
+    readonly journey_steps: readonly FlowJourneyStep[];
     readonly framework?: string;
     readonly route_path?: string;
     readonly route_type?: string;
     readonly entrypoints: readonly FlowEntrypoint[];
     readonly steps: readonly FlowStep[];
     readonly components: readonly string[];
+    readonly services: readonly string[];
+    readonly service_causality: readonly FlowServiceCausality[];
+    readonly data_dependencies: readonly FlowDataDependency[];
     readonly files: readonly string[];
     readonly dependencies: readonly string[];
+    readonly runtime_surfaces: readonly string[];
     readonly tests: readonly string[];
     readonly configs: readonly string[];
     readonly risks: readonly FlowRisk[];
@@ -954,6 +1576,16 @@ export interface GenerateProjectBrainOptions {
   readonly rootDir: string;
   readonly now?: Date;
   readonly maxFiles?: number;
+  readonly onProgress?: (progress: GenerateProjectBrainProgress) => void;
+}
+
+export interface GenerateProjectBrainProgress {
+  readonly phase: 'prepare' | 'scan' | 'analyze' | 'write' | 'done';
+  readonly detail?: string;
+  readonly message: string;
+  readonly scannedFiles?: number;
+  readonly maxFiles?: number;
+  readonly elapsedMs?: number;
 }
 
 export interface GenerateProjectBrainSummary {
@@ -978,13 +1610,37 @@ export type GenerateProjectBrainResult =
 export interface ReviewProjectChangesOptions {
   readonly rootDir: string;
   readonly now?: Date;
-  readonly json?: boolean;
+  readonly mission?: string;
+  readonly missionFile?: string;
 }
+
+export interface AddVerificationEvidenceOptions {
+  readonly rootDir: string;
+  readonly name: string;
+  readonly command: string;
+  readonly status: VerificationStatus;
+  readonly now?: Date;
+  readonly outputSummary?: string;
+  readonly affectedConfidenceAreas?: readonly string[];
+}
+
+export interface AddVerificationEvidenceSummary {
+  readonly rootDir: string;
+  readonly researchDir: string;
+  readonly artifactPath: string;
+  readonly item: VerificationEvidenceItem;
+  readonly artifact: VerificationEvidenceArtifactData;
+}
+
+export type AddVerificationEvidenceResult =
+  | { readonly ok: true; readonly value: AddVerificationEvidenceSummary }
+  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
 export interface ReviewProjectChangesSummary {
   readonly rootDir: string;
   readonly reviewPath: string;
   readonly reviewEvalPath: string;
+  readonly reviewClaimEvidencePath: string;
   readonly latestPath: string;
   readonly reportPath: string;
   readonly changedFiles: number;
@@ -997,6 +1653,9 @@ export interface ReviewProjectChangesSummary {
   readonly recommendedAction: RecommendedAction;
   readonly review: ReviewSummaryData;
   readonly reviewEval: ReviewEvalArtifactData;
+  readonly reviewClaimEvidence: ReviewClaimEvidenceArtifactData;
+  readonly humanApprovalPath: string;
+  readonly humanApproval: HumanApprovalPacket;
 }
 
 export type ReviewProjectChangesResult =
@@ -1123,16 +1782,22 @@ const RESEARCH_ARTIFACT_FILES = {
   confidence: 'confidence.json',
   reasoningTraces: 'reasoning_traces.json',
   componentIntelligence: 'component_intelligence.json',
+  serviceIntelligence: 'service_intelligence.json',
   evidenceQuality: 'evidence_quality.json',
   incrementalUpdate: 'incremental_update.json',
   flowUnderstanding: 'flow_understanding.json',
   flowCoverage: 'flow_coverage.json',
   flowConfidence: 'flow_confidence.json',
   architectureReasoning: 'architecture_reasoning.json',
+  securityScan: 'security_scan.json',
+  toolInventory: 'tool_inventory.json',
   benchmarkReady: 'benchmark_ready.json',
   benchmarkTasks: 'benchmark_tasks.json',
   understandingScore: 'understanding_score.json',
   pieAcceptance: 'pie_acceptance.json',
+  verificationPlan: 'verification_plan.json',
+  verificationEvidence: 'verification_evidence.json',
+  agentRepairPackets: 'agent_repair_packets.json',
 } as const;
 
 const IGNORED_DIRS = new Set([
@@ -1141,9 +1806,15 @@ const IGNORED_DIRS = new Set([
   '.claude',
   '.codex',
   '.git',
+  '.idea',
+  '.pytest_cache',
   '.rizz',
+  '.sovereign-data',
   '.next',
   '.turbo',
+  '.vercel',
+  '.vscode',
+  '__pycache__',
   'build',
   'coverage',
   'dist',
@@ -1151,6 +1822,7 @@ const IGNORED_DIRS = new Set([
   'logs',
   'node_modules',
   'out',
+  'stitch-export',
   'target',
 ]);
 
@@ -1184,16 +1856,27 @@ const CONFIG_FILES = new Set([
   '.env.example',
   'Dockerfile',
   'Makefile',
+  'Procfile',
   'docker-compose.yml',
+  'docker-compose.yaml',
+  'fly.toml',
+  'netlify.toml',
   'package.json',
   'pnpm-lock.yaml',
   'pyproject.toml',
+  'railway.json',
+  'render.yaml',
+  'render.yml',
   'requirements.txt',
+  'serverless.yml',
+  'serverless.yaml',
+  'vercel.json',
   'next.config.js',
   'next.config.mjs',
   'next.config.ts',
   'tsconfig.json',
   'vite.config.ts',
+  'wrangler.toml',
 ]);
 
 function shouldSkipFile(name: string): boolean {
@@ -1348,6 +2031,22 @@ function unique(items: readonly string[]): string[] {
   return [...new Set(items)].sort((a, b) => a.localeCompare(b));
 }
 
+function uniqueBy<T>(items: readonly T[], keyFor: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = keyFor(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function uniqueInOrder(items: readonly string[]): string[] {
+  return [...new Set(items)];
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await access(path, constants.F_OK);
@@ -1365,22 +2064,223 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
   }
 }
 
+function verificationEvidenceArtifactPath(rootDir: string): string {
+  return join(rootDir, '.rizz', 'research', RESEARCH_ARTIFACT_FILES.verificationEvidence);
+}
+
+function reviewClaimEvidenceArtifactPath(rootDir: string): string {
+  return join(rootDir, '.rizz', 'research', 'review_claim_evidence.json');
+}
+
+function emptyVerificationEvidenceArtifact(
+  projectName: string,
+  generatedAt: string,
+): VerificationEvidenceArtifactData {
+  return buildVerificationEvidenceArtifact({
+    projectName,
+    generatedAt,
+    items: [],
+  });
+}
+
+function isVerificationStatus(value: unknown): value is VerificationStatus {
+  return value === 'passed' || value === 'failed' || value === 'skipped' || value === 'unknown';
+}
+
+function verificationItemFromRecord(value: unknown): VerificationEvidenceItem | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = typeof value.id === 'string' ? safeText(value.id) : undefined;
+  const name = typeof value.name === 'string' ? safeText(value.name) : undefined;
+  const command = typeof value.command === 'string' ? safeText(value.command) : undefined;
+  const timestamp = typeof value.timestamp === 'string' ? safeText(value.timestamp) : undefined;
+  if (
+    id === undefined ||
+    name === undefined ||
+    command === undefined ||
+    timestamp === undefined ||
+    !isVerificationStatus(value.status)
+  ) {
+    return undefined;
+  }
+  const outputSummary =
+    typeof value.output_summary === 'string' ? safeText(value.output_summary) : undefined;
+  return {
+    id,
+    name,
+    command,
+    status: value.status,
+    timestamp,
+    ...(outputSummary !== undefined && outputSummary !== ''
+      ? { output_summary: outputSummary }
+      : {}),
+    affected_confidence_areas: asStringArray(value.affected_confidence_areas).map(safeText),
+  };
+}
+
+async function readVerificationEvidenceArtifact(
+  rootDir: string,
+  generatedAt: string,
+): Promise<VerificationEvidenceArtifactData> {
+  const existing = await readJsonFile<{ readonly items?: readonly unknown[] }>(
+    verificationEvidenceArtifactPath(rootDir),
+  );
+  const items = (existing?.items ?? [])
+    .map(verificationItemFromRecord)
+    .filter((item): item is VerificationEvidenceItem => item !== undefined);
+  return buildVerificationEvidenceArtifact({ projectName: basename(rootDir), generatedAt, items });
+}
+
+function verificationStatusCounts(
+  items: readonly VerificationEvidenceItem[],
+): Record<VerificationStatus, number> {
+  return {
+    passed: items.filter((item) => item.status === 'passed').length,
+    failed: items.filter((item) => item.status === 'failed').length,
+    skipped: items.filter((item) => item.status === 'skipped').length,
+    unknown: items.filter((item) => item.status === 'unknown').length,
+  };
+}
+
+function verificationLabel(item: VerificationEvidenceItem): string {
+  return `${item.name}: ${item.command}`;
+}
+
+function commandLooksLocal(command: string): boolean {
+  return /(^|\s)(npm|pnpm|yarn|bun|pytest|vitest|jest|tsc|ruff|eslint|cargo|go)\b|lint|typecheck|build|test/i.test(
+    command,
+  );
+}
+
+function commandLooksProduction(command: string): boolean {
+  return /https?:\/\/|curl|vercel|prod|production|deploy|smoke/i.test(command);
+}
+
+function buildVerificationEvidenceArtifact(params: {
+  readonly projectName: string;
+  readonly generatedAt: string;
+  readonly items: readonly VerificationEvidenceItem[];
+}): VerificationEvidenceArtifactData {
+  const items = sorted(params.items, (item) => `${item.timestamp}:${item.id}`);
+  const localPassed = items.filter(
+    (item) =>
+      item.status === 'passed' &&
+      (item.affected_confidence_areas.includes('local') || commandLooksLocal(item.command)),
+  );
+  const localFailed = items.filter(
+    (item) =>
+      item.status === 'failed' &&
+      (item.affected_confidence_areas.includes('local') || commandLooksLocal(item.command)),
+  );
+  const productionPassed = items.filter(
+    (item) =>
+      item.status === 'passed' &&
+      (item.affected_confidence_areas.includes('production') ||
+        commandLooksProduction(item.command)),
+  );
+  const productionFailed = items.filter(
+    (item) =>
+      item.status === 'failed' &&
+      (item.affected_confidence_areas.includes('production') ||
+        commandLooksProduction(item.command)),
+  );
+  const risksReduced = unique([
+    ...(localPassed.length > 0
+      ? ['Local syntax/build/test regression risk reduced by recorded passed checks.']
+      : []),
+    ...(productionPassed.length > 0
+      ? ['Production reachability risk reduced by recorded smoke checks.']
+      : []),
+  ]);
+  return {
+    schema_version: 1,
+    generated_at: params.generatedAt,
+    project_name: params.projectName,
+    items,
+    status_counts: verificationStatusCounts(items),
+    local_checks_passed: localPassed.map(verificationLabel),
+    local_checks_failed: localFailed.map(verificationLabel),
+    production_checks_passed: productionPassed.map(verificationLabel),
+    production_checks_failed: productionFailed.map(verificationLabel),
+    risks_reduced: risksReduced,
+    remaining_unknowns: unique([
+      ...(items.length === 0 ? ['No runtime verification evidence has been recorded yet.'] : []),
+      ...(productionPassed.length === 0 && productionFailed.length === 0
+        ? ['No production or deployment smoke evidence has been recorded yet.']
+        : []),
+      ...(localFailed.length > 0 ? ['At least one local verification check failed.'] : []),
+      ...(productionFailed.length > 0 ? ['At least one production smoke check failed.'] : []),
+    ]),
+  };
+}
+
+function reviewVerificationStatus(
+  artifact: VerificationEvidenceArtifactData,
+): ReviewVerificationStatusData {
+  const passedChecks = artifact.items
+    .filter((item) => item.status === 'passed')
+    .map(verificationLabel);
+  const failedChecks = artifact.items
+    .filter((item) => item.status === 'failed')
+    .map(verificationLabel);
+  return {
+    artifact_path: `.rizz/research/${RESEARCH_ARTIFACT_FILES.verificationEvidence}`,
+    total_checks: artifact.items.length,
+    passed_checks: passedChecks,
+    failed_checks: failedChecks,
+    local_checks_passed: artifact.local_checks_passed,
+    production_checks_passed: artifact.production_checks_passed,
+    production_checks_failed: artifact.production_checks_failed,
+    risks_reduced: artifact.risks_reduced,
+    remaining_unknowns: artifact.remaining_unknowns,
+    calibration_note:
+      artifact.local_checks_passed.length > 0
+        ? 'Recorded checks can reduce local risk; production risk still needs smoke evidence.'
+        : 'No local verification evidence recorded; review risk stays static.',
+  };
+}
+
 async function writeVerifiedFile(path: string, contents: string): Promise<void> {
   await writeFile(path, contents);
   const written = await readFile(path, 'utf8');
   if (written !== contents) throw new Error(`write verification failed for ${path}`);
 }
 
+async function clearReviewDerivedArtifacts(params: {
+  readonly researchDir: string;
+  readonly reportsDir: string;
+}): Promise<void> {
+  await Promise.all([
+    rm(join(params.researchDir, 'review_eval.json'), { force: true }),
+    rm(join(params.researchDir, 'review_claim_evidence.json'), { force: true }),
+    rm(join(params.reportsDir, 'review.html'), { force: true }),
+  ]);
+}
+
 async function scanFiles(
   rootDir: string,
   maxFiles: number,
   ignorePatterns: readonly IgnorePattern[],
+  onProgress?: (progress: GenerateProjectBrainProgress) => void,
+  progressStartedAt: number = Date.now(),
 ): Promise<FileFact[]> {
   const facts: FileFact[] = [];
 
+  onProgress?.({
+    phase: 'scan',
+    message: `Scanning files with a ${maxFiles} file cap`,
+    scannedFiles: 0,
+    maxFiles,
+    elapsedMs: Date.now() - progressStartedAt,
+  });
+
   async function walk(dir: string): Promise<void> {
     if (facts.length >= maxFiles) return;
-    const entries = sorted(await readdir(dir, { withFileTypes: true }), (entry) => entry.name);
+    const entries = sorted(await readdir(dir, { withFileTypes: true }), (entry) => {
+      const absolutePath = join(dir, entry.name);
+      const rel = relative(rootDir, absolutePath).split(sep).join('/');
+      const directoryRank = entry.isDirectory() ? 1 : 0;
+      return `${scanEntryPriority(rel, entry.isDirectory())}:${directoryRank}:${entry.name}`;
+    });
     for (const entry of entries) {
       if (facts.length >= maxFiles) return;
       const absolutePath = join(dir, entry.name);
@@ -1400,11 +2300,58 @@ async function scanFiles(
         extension: extname(entry.name),
         hash: createHash('sha256').update(content).digest('hex'),
       });
+      if (facts.length % 250 === 0 || facts.length === maxFiles) {
+        onProgress?.({
+          phase: 'scan',
+          message: `Scanned ${facts.length} file(s)`,
+          scannedFiles: facts.length,
+          maxFiles,
+          elapsedMs: Date.now() - progressStartedAt,
+        });
+      }
     }
   }
 
   await walk(rootDir);
+  onProgress?.({
+    phase: 'scan',
+    message:
+      facts.length >= maxFiles
+        ? `Reached scan cap after ${facts.length} file(s)`
+        : `Completed scan after ${facts.length} file(s)`,
+    scannedFiles: facts.length,
+    maxFiles,
+    elapsedMs: Date.now() - progressStartedAt,
+  });
   return sorted(facts, (fact) => fact.relativePath);
+}
+
+function scanEntryPriority(relativePath: string, isDirectory: boolean): number {
+  const lower = relativePath.toLowerCase();
+  if (!isDirectory) {
+    if (isDependencyPath(relativePath)) return 0;
+    if (isConfigPath(relativePath)) return 1;
+    if (isTestPath(relativePath)) return 2;
+    if (isSourcePath(relativePath)) return 4;
+    if (isContentHeavyPath(relativePath)) return 8;
+    return 5;
+  }
+  if (/^(config|configs|scripts|bin)(\/|$)/.test(lower)) return 1;
+  if (/(^|\/)(__tests__|tests?|test-fixtures?)(\/|$)/.test(lower)) return 2;
+  if (/^(packages|apps|src|lib|server|client|services|api)(\/|$)/.test(lower)) return 3;
+  if (relativePath === '.github' || lower.startsWith('.github/')) return 4;
+  if (isContentHeavyPath(relativePath)) return 9;
+  return 6;
+}
+
+function isSourcePath(relativePath: string): boolean {
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php)$/.test(relativePath.toLowerCase());
+}
+
+function isContentHeavyPath(relativePath: string): boolean {
+  return /(^|\/)(content|contents|docs|documentation|examples|fixtures|static|public)(\/|$)/.test(
+    relativePath.toLowerCase(),
+  );
 }
 
 async function readPackageJsonFacts(
@@ -1570,9 +2517,9 @@ function entitySemanticValue(entity: BrainEntity): EntitySemanticValue {
     name: entity.name,
     description: entity.description,
     confidence: entity.confidence,
-    evidence_ids: unique([...entity.evidence_ids]),
-    related_entity_ids: unique([...entity.related_entity_ids]),
-    source_files: unique([...entity.source_files]),
+    evidence_ids: rs(entity.evidence_ids),
+    related_entity_ids: rs(entity.related_entity_ids),
+    source_files: rs(entity.source_files),
     data: entity.data ?? {},
   };
 }
@@ -1664,12 +2611,7 @@ function makeEntity(params: {
 }
 
 function detectPackageManager(files: readonly FileFact[]): string {
-  const names = new Set(files.map((file) => file.relativePath));
-  if (names.has('pnpm-lock.yaml')) return 'pnpm';
-  if (names.has('yarn.lock')) return 'yarn';
-  if (names.has('package-lock.json')) return 'npm';
-  if (names.has('bun.lockb') || names.has('bun.lock')) return 'bun';
-  return 'unknown';
+  return detectPackageManagerFromFiles(files);
 }
 
 function detectTechStack(
@@ -1712,8 +2654,8 @@ function componentPaths(files: readonly FileFact[]): string[] {
     const first = parts[0];
     const second = parts[1];
     if (first === undefined) continue;
-    if (first === 'packages' && second !== undefined && parts.length > 2) {
-      folders.add(`packages/${second}`);
+    if ((first === 'packages' || first === 'apps') && second !== undefined && parts.length > 2) {
+      folders.add(`${first}/${second}`);
       continue;
     }
     if (parts.length > 1 && first !== '.github') folders.add(first);
@@ -2452,6 +3394,8 @@ function importSpecifiersFromText(text: string): string[] {
     /import\s+(?:[^'"]+?\s+from\s*)?['"]([^'"]+)['"]/g,
     /import\(\s*['"]([^'"]+)['"]\s*\)/g,
     /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /^\s*from\s+([A-Za-z_][\w.]+)\s+import\s+/gm,
+    /^\s*import\s+([A-Za-z_][\w.]+)/gm,
   ];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
@@ -2462,6 +3406,119 @@ function importSpecifiersFromText(text: string): string[] {
   return [...specifiers].sort((a, b) => a.localeCompare(b));
 }
 
+interface ImportBinding {
+  readonly specifier: string;
+  readonly local_names: readonly string[];
+}
+
+function importBindingsFromText(text: string): ImportBinding[] {
+  const bindings: ImportBinding[] = [];
+  for (const match of text.matchAll(/import\s+([^'";]+?)\s+from\s+['"]([^'"]+)['"]/g)) {
+    const clause = match[1]?.trim();
+    const specifier = match[2]?.trim();
+    if (clause === undefined || specifier === undefined || specifier === '') continue;
+    const localNames = importClauseLocalNames(clause);
+    if (localNames.length > 0) {
+      bindings.push({ specifier: safeText(specifier), local_names: localNames });
+    }
+  }
+  for (const match of text.matchAll(
+    /(?:const|let|var)\s+(.+?)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g,
+  )) {
+    const clause = match[1]?.trim();
+    const specifier = match[2]?.trim();
+    if (clause === undefined || specifier === undefined || specifier === '') continue;
+    const localNames = requireClauseLocalNames(clause);
+    if (localNames.length > 0) {
+      bindings.push({ specifier: safeText(specifier), local_names: localNames });
+    }
+  }
+  for (const match of text.matchAll(/^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+([^\n#]+)/gm)) {
+    const specifier = match[1]?.trim();
+    const clause = match[2]?.trim();
+    if (specifier === undefined || specifier === '' || clause === undefined) continue;
+    const localNames = pythonImportClauseLocalNames(clause);
+    if (localNames.length > 0) {
+      bindings.push({ specifier: safeText(specifier), local_names: localNames });
+    }
+  }
+  for (const match of text.matchAll(
+    /^\s*import\s+([A-Za-z_][\w.]*)(?:\s+as\s+([A-Za-z_]\w*))?/gm,
+  )) {
+    const specifier = match[1]?.trim();
+    const alias = match[2]?.trim();
+    if (specifier === undefined || specifier === '') continue;
+    const tailName = specifier.split('.').at(-1);
+    const localName = alias === undefined || alias === '' ? tailName : alias;
+    if (localName !== undefined && /^[A-Za-z_]\w*$/.test(localName)) {
+      bindings.push({ specifier: safeText(specifier), local_names: [safeText(localName)] });
+    }
+  }
+  return bindings;
+}
+
+function importClauseLocalNames(clause: string): string[] {
+  const names: string[] = [];
+  const trimmed = clause.trim();
+  if (trimmed.startsWith('*')) {
+    const namespace = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(trimmed)?.[1];
+    return namespace === undefined ? [] : [safeText(namespace)];
+  }
+  const namedStart = trimmed.indexOf('{');
+  if (namedStart > 0) {
+    const defaultName = trimmed.slice(0, namedStart).replace(/,$/, '').trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(defaultName)) names.push(safeText(defaultName));
+  } else if (!trimmed.startsWith('{')) {
+    const defaultName = trimmed.split(',')[0]?.trim();
+    if (defaultName !== undefined && /^[A-Za-z_$][\w$]*$/.test(defaultName)) {
+      names.push(safeText(defaultName));
+    }
+  }
+  const named = /\{([^}]+)\}/.exec(trimmed)?.[1];
+  if (named !== undefined) {
+    for (const item of named.split(',')) {
+      const [rawName, alias] = item.split(/\s+as\s+/);
+      const localName = (alias ?? rawName)?.trim();
+      if (localName !== undefined && /^[A-Za-z_$][\w$]*$/.test(localName)) {
+        names.push(safeText(localName));
+      }
+    }
+  }
+  return unique(names);
+}
+
+function requireClauseLocalNames(clause: string): string[] {
+  const trimmed = clause.trim();
+  if (/^[A-Za-z_$][\w$]*$/.test(trimmed)) return [safeText(trimmed)];
+  const named = /^\{([^}]+)\}$/.exec(trimmed)?.[1];
+  if (named === undefined) return [];
+  return unique(
+    named
+      .split(',')
+      .map((item) => {
+        const [, alias] = item.split(':');
+        const localName = (alias ?? item).trim();
+        return /^[A-Za-z_$][\w$]*$/.test(localName) ? safeText(localName) : undefined;
+      })
+      .filter((item): item is string => item !== undefined),
+  );
+}
+
+function pythonImportClauseLocalNames(clause: string): string[] {
+  return unique(
+    clause
+      .split(',')
+      .map((item) => {
+        const [rawName, alias] = item.trim().split(/\s+as\s+/);
+        const localName = (alias ?? rawName)?.trim();
+        return localName !== undefined && /^[A-Za-z_]\w*$/.test(localName)
+          ? safeText(localName)
+          : undefined;
+      })
+      .filter((item): item is string => item !== undefined),
+  );
+}
+
 const RESOLVABLE_SOURCE_EXTENSIONS = [
   '.ts',
   '.tsx',
@@ -2469,6 +3526,8 @@ const RESOLVABLE_SOURCE_EXTENSIONS = [
   '.jsx',
   '.mjs',
   '.cjs',
+  '.py',
+  '.sh',
   '.json',
 ] as const;
 
@@ -2566,6 +3625,96 @@ function filesReferencedByCommand(
       return [...direct, ...filesForPathHint(files, `${baseDir}/${token}`)];
     }),
   );
+}
+
+function isDeployLikeScript(scriptName: string, command: string): boolean {
+  return /(^|[^a-z])(deploy|release|publish|vercel|netlify|flyctl|railway|render|wrangler|serverless|docker\s+push|kubectl|helm)([^a-z]|$)/i.test(
+    `${scriptName} ${command}`,
+  );
+}
+
+function isDeploymentConfigPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const name = basename(lower);
+  return (
+    lower.startsWith('.github/workflows/') ||
+    name === 'vercel.json' ||
+    name === 'netlify.toml' ||
+    name === 'fly.toml' ||
+    name === 'railway.json' ||
+    name === 'render.yaml' ||
+    name === 'render.yml' ||
+    name === 'wrangler.toml' ||
+    name === 'serverless.yml' ||
+    name === 'serverless.yaml' ||
+    name === 'procfile' ||
+    name === 'dockerfile' ||
+    name === 'docker-compose.yml' ||
+    name === 'docker-compose.yaml'
+  );
+}
+
+function deploymentConfigFilesForPackage(
+  files: readonly FileFact[],
+  pkg: PackageJsonFact,
+): FileFact[] {
+  const componentPath = packageComponentPath(pkg);
+  const deploymentConfigs = files.filter((file) => isDeploymentConfigPath(file.relativePath));
+  if (componentPath === undefined) {
+    return uniqueFileFacts(
+      deploymentConfigs.filter(
+        (file) => !file.relativePath.includes('/') || file.relativePath.startsWith('.github/'),
+      ),
+    );
+  }
+  return uniqueFileFacts(
+    deploymentConfigs.filter(
+      (file) =>
+        file.relativePath.startsWith(`${componentPath}/`) ||
+        !file.relativePath.includes('/') ||
+        file.relativePath.startsWith('.github/'),
+    ),
+  );
+}
+
+function deploymentRisksForConfigs(params: {
+  readonly rootDir: string;
+  readonly flowId: string;
+  readonly configs: readonly string[];
+}): FlowRisk[] {
+  const risks: FlowRisk[] = [];
+  for (const config of params.configs.filter(isDeploymentConfigPath)) {
+    const text = readTextIfAvailable(params.rootDir, config) ?? '';
+    const evidence = [evidenceId(config)];
+    if (/\/tmp\b|tmp\/|sqlite|\.db\b|local\s+file|filesystem/i.test(text)) {
+      risks.push({
+        risk_id: `${params.flowId}:deployment-storage:${stableSlug(config)}`,
+        kind: 'deployment_storage',
+        description:
+          'Deployment config or runtime settings suggest filesystem, SQLite, or temporary storage that may be ephemeral in serverless production.',
+        evidence,
+      });
+    }
+    if (/AUTH_ENABLED["']?\s*[:=]\s*["']?false|auth\s*[:=]\s*false/i.test(text)) {
+      risks.push({
+        risk_id: `${params.flowId}:deployment-auth:${stableSlug(config)}`,
+        kind: 'deployment_auth',
+        description:
+          'Deployment config appears to disable authentication; acceptable for demos, risky for production surfaces.',
+        evidence,
+      });
+    }
+    if (/CORS_ORIGINS["']?\s*[:=]\s*["']?\*|Access-Control-Allow-Origin.*\*/i.test(text)) {
+      risks.push({
+        risk_id: `${params.flowId}:deployment-cors:${stableSlug(config)}`,
+        kind: 'deployment_cors',
+        description:
+          'Deployment config appears to allow broad CORS access; production usage should confirm intended origins.',
+        evidence,
+      });
+    }
+  }
+  return risks;
 }
 
 function resolveRelativeImportFiles(
@@ -2713,6 +3862,11 @@ function resolveAliasImportFiles(
   return filesForPathHint(files, `src/${specifier.slice(2)}`);
 }
 
+function resolveDottedImportFiles(files: readonly FileFact[], specifier: string): FileFact[] {
+  if (!/^[A-Za-z_][\w.]+$/.test(specifier) || !specifier.includes('.')) return [];
+  return filesForPathHint(files, specifier.replace(/\./g, '/'));
+}
+
 function importContextForFiles(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -2728,7 +3882,14 @@ function importContextForFiles(params: {
   const importedFiles: FileFact[] = [];
   const importEvidence: FlowEvidence[] = [];
   const aliases = importAliasContextForConfigs(params);
-  for (const file of params.entryFiles) {
+  const queue = params.entryFiles.map((file) => ({ file, depth: 0 }));
+  const visited = new Set<string>();
+  const maxImportDepth = 4;
+  for (let index = 0; index < queue.length; index += 1) {
+    const { file, depth } = queue[index] ?? { file: undefined, depth: 0 };
+    if (file === undefined) continue;
+    if (visited.has(file.relativePath)) continue;
+    visited.add(file.relativePath);
     const text = readTextIfAvailable(params.rootDir, file.relativePath);
     if (text === undefined) continue;
     for (const specifier of importSpecifiersFromText(text)) {
@@ -2747,10 +3908,22 @@ function importContextForFiles(params: {
         specifier,
       );
       const aliasImports = resolveAliasImportFiles(params.files, specifier, aliases);
-      if (relativeImports.length > 0 || aliasImports.length > 0) {
+      const dottedImports = resolveDottedImportFiles(params.files, specifier);
+      if (relativeImports.length > 0 || aliasImports.length > 0 || dottedImports.length > 0) {
         resolvedImportSpecifiers.add(specifier);
       }
-      importedFiles.push(...relativeImports, ...aliasImports);
+      const resolvedFiles = uniqueFileFacts([
+        ...relativeImports,
+        ...aliasImports,
+        ...dottedImports,
+      ]);
+      importedFiles.push(...resolvedFiles);
+      if (depth >= maxImportDepth) continue;
+      for (const importedFile of resolvedFiles) {
+        if (!visited.has(importedFile.relativePath)) {
+          queue.push({ file: importedFile, depth: depth + 1 });
+        }
+      }
     }
   }
   return {
@@ -2832,6 +4005,55 @@ function flowNameForScript(scriptName: string, kind: FlowKind): string {
   return `${safeText(scriptName)} command`;
 }
 
+function commandRuntimeSurfaces(command: string): string[] {
+  const lower = command.toLowerCase();
+  return unique([
+    ...(lower.includes('node ') || lower.startsWith('node') ? ['runtime:node'] : []),
+    ...(lower.includes('tsx ') || lower.startsWith('tsx') || lower.includes('ts-node')
+      ? ['runtime:typescript-node']
+      : []),
+    ...(lower.includes('vitest') || lower.includes('jest') || lower.includes('pytest')
+      ? ['runtime:test-runner']
+      : []),
+    ...(lower.includes('next ') || lower.startsWith('next') ? ['runtime:nextjs'] : []),
+    ...(lower.includes('vite') ? ['runtime:vite'] : []),
+  ]);
+}
+
+function flowRuntimeSurfaces(params: {
+  readonly kind: FlowKind;
+  readonly framework?: string;
+  readonly routePath?: string;
+  readonly routeType?: string;
+  readonly scriptName?: string;
+  readonly command?: string;
+  readonly configs: readonly string[];
+  readonly serviceIds: readonly string[];
+  readonly services: readonly BrainEntity[];
+}): string[] {
+  let routeSurface: string | undefined;
+  if (params.routePath !== undefined) {
+    routeSurface =
+      params.routeType === undefined ? params.routePath : `${params.routeType} ${params.routePath}`;
+  }
+  const serviceSurfaces = params.serviceIds.flatMap((serviceId) => {
+    const service = params.services.find((item) => item.id === serviceId);
+    if (service === undefined) return [];
+    const runtime = stringData(service, 'runtime') ?? 'unknown';
+    const root = stringData(service, 'service_root') ?? service.name;
+    return [`service runtime:${runtime} ${root}`];
+  });
+  return unique([
+    `flow kind:${params.kind}`,
+    ...(params.framework === undefined ? [] : [`framework:${params.framework}`]),
+    ...(routeSurface === undefined ? [] : [`route:${routeSurface}`]),
+    ...(params.scriptName === undefined ? [] : [`package script:${params.scriptName}`]),
+    ...(params.command === undefined ? [] : commandRuntimeSurfaces(params.command)),
+    ...params.configs.map((config) => `config:${config}`),
+    ...serviceSurfaces,
+  ]);
+}
+
 function flowStepId(flowId: string, order: number): string {
   return `flow-step:${stableSlug(flowId)}:${String(order).padStart(3, '0')}`;
 }
@@ -2855,40 +4077,8 @@ function componentIdsForFiles(
   );
 }
 
-function flowConfidenceFor(
-  intelligence: Pick<FlowIntelligence, 'tests' | 'signals' | 'unknowns'>,
-): {
-  readonly confidence: Confidence;
-  readonly score: number;
-  readonly reason: string;
-} {
-  let score = 0.35;
-  if (intelligence.signals.includes('package script')) score += 0.2;
-  if (intelligence.signals.includes('static import')) score += 0.15;
-  if (intelligence.signals.includes('route file')) score += 0.15;
-  if (intelligence.tests.length > 0) score += 0.15;
-  if (intelligence.unknowns.length > 0) score -= 0.1;
-  const capped = Math.max(0.1, Math.min(0.95, Number(score.toFixed(2))));
-  if (capped >= 0.9 && intelligence.unknowns.length === 0) {
-    return {
-      confidence: 'verified',
-      score: capped,
-      reason: 'Direct entrypoint, source, and test evidence were detected.',
-    };
-  }
-  if (capped >= 0.5) {
-    return {
-      confidence: 'inferred',
-      score: capped,
-      reason:
-        'Flow is reconstructed from local static evidence; runtime reachability is not traced.',
-    };
-  }
-  return {
-    confidence: 'uncertain',
-    score: capped,
-    reason: 'Flow has weak or partial static evidence and needs confirmation before relying on it.',
-  };
+function idsEvidence(ids: readonly string[], entities: readonly BrainEntity[]): string[] {
+  return ids.flatMap((id) => entities.find((entity) => entity.id === id)?.evidence_ids ?? []);
 }
 
 function matchingEvidenceIds(params: {
@@ -2960,6 +4150,7 @@ function inferFlowContracts(params: {
   });
   const hasRouteEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'route');
   const hasCommandEntry = params.entrypoints.some((entrypoint) => entrypoint.type === 'command');
+  const isDeploymentFlow = params.signals.includes('deployment');
   const isNextPageRoute = params.routeContract?.route_type === 'page';
   const isNextLayoutRoute = params.routeContract?.route_type === 'layout';
   const isNextMetadataRoute = params.routeContract?.route_type === 'metadata';
@@ -2995,6 +4186,11 @@ function inferFlowContracts(params: {
     ...(params.configs.length > 0
       ? [`Entrypoint depends on config artifact(s): ${params.configs.slice(0, 4).join(', ')}.`]
       : []),
+    ...(isDeploymentFlow
+      ? [
+          'Deployment entrypoint is inferred from a deploy-like package script and deployment config evidence.',
+        ]
+      : []),
   ]);
   const exitContract = unique([
     ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
@@ -3008,6 +4204,9 @@ function inferFlowContracts(params: {
       ? ['Exits by returning metadata asset content or a metadata response.']
       : []),
     ...(hasCommandEntry ? ['Exits through the package script command result.'] : []),
+    ...(isDeploymentFlow
+      ? ['Exits when the deployment provider/build command accepts or rejects the release.']
+      : []),
     ...(outputEvidence.length > 0 ? ['Source evidence includes a return or response output.'] : []),
     ...(params.tests.length > 0
       ? [`Expected behavior is test-backed by ${params.tests.slice(0, 4).join(', ')}.`]
@@ -3015,6 +4214,7 @@ function inferFlowContracts(params: {
   ]);
   const inputs = unique([
     ...commandInput,
+    ...(isDeploymentFlow ? ['Deployment provider environment and build-time configuration.'] : []),
     ...(hasRouteEntry && !isNextPageRoute && !isNextLayoutRoute && !isNextMetadataRoute
       ? ['HTTP request route input.']
       : []),
@@ -3046,6 +4246,11 @@ function inferFlowContracts(params: {
       ? ['State/session/cache/database or filesystem side effect inferred from source.']
       : []),
     ...(params.configs.length > 0 ? ['Reads configuration that can alter runtime behavior.'] : []),
+    ...(isDeploymentFlow
+      ? [
+          'May publish a build artifact, serverless function, container, or static output to a deployment provider.',
+        ]
+      : []),
   ]);
   const stateTransitions = unique([
     ...(sideEffectEvidence.length > 0
@@ -3073,12 +4278,18 @@ function inferFlowContracts(params: {
     ...(params.configs.length === 0
       ? ['No directly linked configs were detected for this flow.']
       : []),
+    ...(isDeploymentFlow
+      ? [
+          'Deployment can succeed locally while production storage, auth, CORS, or runtime env remain unverified.',
+        ]
+      : []),
   ]);
   const requiredTests = unique([
     ...params.tests,
     ...(validationEvidence.length > 0 ? ['validation failure coverage'] : []),
     ...(sideEffectEvidence.length > 0 ? ['state/session/cache/database side-effect coverage'] : []),
     ...(outputEvidence.length > 0 ? ['response/output contract coverage'] : []),
+    ...(isDeploymentFlow ? ['production smoke check'] : []),
   ]);
   const confidenceReasons = unique([
     params.confidenceReason,
@@ -3089,6 +4300,7 @@ function inferFlowContracts(params: {
         ]
       : []),
     ...params.signals.map((signal) => `Signal: ${signal}.`),
+    ...(isDeploymentFlow ? ['Deployment config evidence is recorded.'] : []),
     ...(entryEvidence.length > 0 ? ['Entrypoint evidence is recorded.'] : []),
     ...(stepEvidence.length > 0 ? ['Step evidence is recorded.'] : []),
     ...(validationEvidence.length > 0 ? ['Validation evidence is recorded.'] : []),
@@ -3112,6 +4324,9 @@ function inferFlowContracts(params: {
       inputs: unique([...inputEvidence, ...validationEvidence, ...entryEvidence]),
       outputs: unique([...outputEvidence, ...baseEvidence]),
       side_effects: sideEffectEvidence,
+      ...(isDeploymentFlow
+        ? { side_effects: unique([...sideEffectEvidence, ...baseEvidence]) }
+        : {}),
       ...(params.routeContract !== undefined && sideEffectEvidence.length === 0
         ? { side_effects: baseEvidence }
         : {}),
@@ -3121,11 +4336,13 @@ function inferFlowContracts(params: {
         ...failureEvidence,
         ...validationEvidence,
         ...(params.routeContract !== undefined ? baseEvidence : []),
+        ...(isDeploymentFlow ? params.configs.map(evidenceId) : []),
       ]),
       required_tests: unique([
         ...params.tests.map(evidenceId),
         ...validationEvidence,
         ...sideEffectEvidence,
+        ...(isDeploymentFlow ? params.configs.map(evidenceId) : []),
       ]),
       confidence_reasons: unique([
         ...entryEvidence,
@@ -3220,6 +4437,474 @@ function safeFlowSteps(entity: BrainEntity): FlowStep[] {
   }));
 }
 
+function flowJourneySummaryData(entity: BrainEntity): FlowJourneySummary | undefined {
+  const value = entity.data?.journey;
+  if (!isRecord(value)) return undefined;
+  const name = typeof value.name === 'string' ? safeText(value.name) : undefined;
+  if (name === undefined) return undefined;
+  return {
+    name,
+    category: typeof value.category === 'string' ? safeText(value.category) : 'unknown',
+    confidence: parseConfidence(value.confidence),
+    score: typeof value.score === 'number' ? value.score : 0,
+    reasons: asStringArray(value.reasons).map(safeText),
+    evidence_ids: asStringArray(value.evidence_ids).map(safeText),
+    missing_evidence: asStringArray(value.missing_evidence).map(safeText),
+  };
+}
+
+function safeFlowJourneySteps(entity: BrainEntity): FlowJourneyStep[] {
+  const steps = entity.data?.journey_steps;
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .filter((step): step is FlowJourneyStep => {
+      if (!isRecord(step)) return false;
+      return (
+        typeof step.step_id === 'string' &&
+        typeof step.order === 'number' &&
+        typeof step.type === 'string' &&
+        typeof step.label === 'string' &&
+        typeof step.description === 'string'
+      );
+    })
+    .map((step) => ({
+      step_id: safeText(step.step_id),
+      order: step.order,
+      type: journeyStepType(step.type),
+      label: safeText(step.label),
+      description: safeText(step.description),
+      files: asStringArray(step.files).map(safeText),
+      symbols: asStringArray(step.symbols).map(safeText),
+      routes: asStringArray(step.routes).map(safeText),
+      runtime_surfaces: asStringArray(step.runtime_surfaces).map(safeText),
+      configs: asStringArray(step.configs).map(safeText),
+      tests: asStringArray(step.tests).map(safeText),
+      confidence: parseConfidence(step.confidence),
+      evidence_ids: asStringArray(step.evidence_ids).map(safeText),
+      missing_evidence: asStringArray(step.missing_evidence).map(safeText),
+    }));
+}
+
+function journeyStepType(value: unknown): JourneyStepType {
+  if (
+    value === 'trigger' ||
+    value === 'validation_auth' ||
+    value === 'read_write_storage' ||
+    value === 'business_logic' ||
+    value === 'external_service_call' ||
+    value === 'rendering_response' ||
+    value === 'background_job_async' ||
+    value === 'runtime_config' ||
+    value === 'test_coverage'
+  ) {
+    return value;
+  }
+  return 'business_logic';
+}
+
+function textTokens(value: string): string[] {
+  return unique(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 1),
+  );
+}
+
+function titleWords(tokens: readonly string[]): string {
+  return tokens
+    .filter((token) => !['api', 'src', 'app', 'route', 'routes', 'page', 'handler'].includes(token))
+    .slice(0, 3)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+}
+
+function flowJourneyText(intelligence: FlowIntelligence): string {
+  return [
+    intelligence.name,
+    intelligence.kind,
+    intelligence.framework ?? '',
+    intelligence.route_path ?? '',
+    intelligence.route_type ?? '',
+    ...intelligence.entrypoints.flatMap((entrypoint) => [
+      entrypoint.path,
+      entrypoint.symbol ?? '',
+      entrypoint.type,
+    ]),
+    ...intelligence.steps.flatMap((step) => [
+      step.path,
+      step.symbol ?? '',
+      step.description,
+      step.type,
+    ]),
+    ...intelligence.files,
+    ...intelligence.configs,
+    ...intelligence.tests,
+    ...intelligence.runtime_surfaces,
+    ...intelligence.signals,
+  ].join(' ');
+}
+
+function journeyMatch(
+  text: string,
+  patterns: readonly RegExp[],
+): { readonly matched: boolean; readonly matchedTerms: readonly string[] } {
+  const matchedTerms = patterns
+    .filter((pattern) => pattern.test(text))
+    .map((pattern) => pattern.source.replace(/\\b|\(|\)|\||\?/g, ' ').trim())
+    .filter((term) => term.length > 0);
+  return { matched: matchedTerms.length > 0, matchedTerms };
+}
+
+function inferFlowJourneySummary(intelligence: FlowIntelligence): FlowJourneySummary {
+  const text = flowJourneyText(intelligence);
+  const normalized = text.toLowerCase();
+  const evidenceIds = unique([
+    ...intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+    ...intelligence.steps.flatMap((step) => step.evidence),
+    ...intelligence.configs.map(evidenceId),
+    ...intelligence.tests.map(evidenceId),
+  ]).slice(0, 12);
+  const routeOrName =
+    intelligence.route_path !== undefined
+      ? titleWords(textTokens(intelligence.route_path))
+      : titleWords(textTokens(intelligence.name));
+  const cases: readonly {
+    readonly category: string;
+    readonly label: string;
+    readonly noun: string;
+    readonly patterns: readonly RegExp[];
+  }[] = [
+    {
+      category: 'auth_login',
+      label: 'User login journey',
+      noun: 'login',
+      patterns: [/\bauth\b/i, /\blogin\b/i, /\bsignin\b/i, /\bsession\b/i, /\btoken\b/i],
+    },
+    {
+      category: 'checkout_payment',
+      label: 'Checkout payment journey',
+      noun: 'checkout',
+      patterns: [/\bcheckout\b/i, /\bpayment\b/i, /\bbilling\b/i, /\bcart\b/i, /\border(s)?\b/i],
+    },
+    {
+      category: 'upload_ingestion',
+      label: /admin/i.test(normalized)
+        ? 'Admin upload and processing flow'
+        : 'Upload ingestion journey',
+      noun: 'upload',
+      patterns: [/\bupload\b/i, /\bingest/i, /\bingestion\b/i, /\bmultipart\b/i, /\bfileupload\b/i],
+    },
+    {
+      category: 'search_retrieval',
+      label: 'Search query retrieval journey',
+      noun: 'search',
+      patterns: [/\bsearch\b/i, /\bquery\b/i, /\bretriev/i, /\blookup\b/i, /\bfind\b/i],
+    },
+    {
+      category: 'webhook_background',
+      label: /webhook/i.test(normalized)
+        ? 'Webhook event processing flow'
+        : 'Background job processing workflow',
+      noun: 'webhook',
+      patterns: [/\bwebhook\b/i, /\bevent\b/i, /\bqueue\b/i, /\bworker\b/i, /\bjob\b/i],
+    },
+    {
+      category: 'report_generation',
+      label: 'Report generation workflow',
+      noun: 'report',
+      patterns: [/\breport\b/i, /\bexport\b/i, /\bpdf\b/i, /\bgenerate\b/i],
+    },
+    {
+      category: 'deployment_runtime',
+      label: 'Deployment and runtime availability flow',
+      noun: 'deployment',
+      patterns: [/\bdeploy\b/i, /\brelease\b/i, /\bvercel\b/i, /\bdocker\b/i, /\bruntime\b/i],
+    },
+    {
+      category: 'rendering',
+      label: routeOrName.length > 0 ? `${routeOrName} rendering journey` : 'Page rendering journey',
+      noun: 'rendering',
+      patterns: [/\brender\b/i, /\bpage\b/i, /\blayout\b/i, /\bmetadata\b/i],
+    },
+  ];
+  const matched = cases.find((item) => journeyMatch(normalized, item.patterns).matched);
+  const fallbackName =
+    intelligence.kind === 'api'
+      ? routeOrName.length > 0
+        ? `${routeOrName} request journey`
+        : 'API request journey'
+      : intelligence.kind === 'job'
+        ? 'Background job workflow'
+        : intelligence.kind === 'cli'
+          ? `${titleWords(textTokens(intelligence.name)) || 'Command'} execution workflow`
+          : `${titleWords(textTokens(intelligence.name)) || 'Application'} workflow`;
+  const name = matched?.label ?? fallbackName;
+  const matchedTerms =
+    matched === undefined ? [] : journeyMatch(normalized, matched.patterns).matchedTerms;
+  const reasons = unique([
+    ...(intelligence.route_path !== undefined
+      ? [`Route path ${safeText(intelligence.route_path)} contributed to journey naming.`]
+      : []),
+    ...(intelligence.entrypoints.length > 0
+      ? [`${intelligence.entrypoints.length} entrypoint(s) contributed to journey naming.`]
+      : []),
+    ...(matched !== undefined
+      ? [`Matched ${matched.noun} journey signals from local names, paths, commands, or tests.`]
+      : ['No strong product-domain keyword matched; name stays generic and lower confidence.']),
+    ...(matchedTerms.length > 0 ? [`Matched terms: ${matchedTerms.slice(0, 4).join(', ')}.`] : []),
+    ...(intelligence.tests.length > 0 ? ['Linked tests improve journey confidence.'] : []),
+    ...(intelligence.configs.length > 0 ? ['Linked configs improve runtime confidence.'] : []),
+  ]);
+  const missingEvidence = unique([
+    ...(matched === undefined
+      ? ['No strong route, handler, test, or file keyword named a product journey.']
+      : []),
+    ...(intelligence.tests.length === 0
+      ? ['No directly linked test artifact for this journey.']
+      : []),
+    ...(intelligence.configs.length === 0
+      ? ['No directly linked config artifact for this journey.']
+      : []),
+    ...(evidenceIds.length === 0
+      ? ['No direct evidence IDs were recorded for journey naming.']
+      : []),
+  ]);
+  const score = Math.min(
+    1,
+    Number(
+      (
+        0.35 +
+        (matched === undefined ? 0 : 0.25) +
+        Math.min(0.2, evidenceIds.length * 0.025) +
+        (intelligence.tests.length > 0 ? 0.1 : 0) +
+        (intelligence.configs.length > 0 ? 0.1 : 0)
+      ).toFixed(2),
+    ),
+  );
+  return {
+    name: safeText(name),
+    category: matched?.category ?? 'generic_workflow',
+    confidence: score >= 0.75 ? 'verified' : score >= 0.5 ? 'inferred' : 'uncertain',
+    score,
+    reasons: reasons.map(safeText),
+    evidence_ids: evidenceIds.map(safeText),
+    missing_evidence: missingEvidence.map(safeText),
+  };
+}
+
+function inferJourneyStepType(step: FlowStep, journey: FlowJourneySummary): JourneyStepType {
+  const text =
+    `${step.type} ${step.path} ${step.symbol ?? ''} ${step.description} ${journey.category}`.toLowerCase();
+  if (step.type === 'test' || isTestPath(step.path)) return 'test_coverage';
+  if (step.type === 'config' || isConfigPath(step.path)) return 'runtime_config';
+  if (
+    /db|database|repo|repository|model|schema|prisma|sql|store|storage|cache|redis|write|read/.test(
+      text,
+    )
+  ) {
+    return 'read_write_storage';
+  }
+  if (/auth|login|session|token|password|permission|role|guard|middleware/.test(text)) {
+    return 'validation_auth';
+  }
+  if (/webhook|queue|worker|job|event|cron|background|async/.test(text)) {
+    return 'background_job_async';
+  }
+  if (/fetch|axios|stripe|s3|openai|api client|external|email|sendgrid|twilio|slack/.test(text)) {
+    return 'external_service_call';
+  }
+  if (/render|response|json|send|page|layout|metadata|return|view/.test(text)) {
+    return 'rendering_response';
+  }
+  return 'business_logic';
+}
+
+function journeyStepLabel(type: JourneyStepType): string {
+  switch (type) {
+    case 'trigger':
+      return 'Trigger';
+    case 'validation_auth':
+      return 'Validation/auth';
+    case 'read_write_storage':
+      return 'Read/write storage';
+    case 'business_logic':
+      return 'Business logic';
+    case 'external_service_call':
+      return 'External service call';
+    case 'rendering_response':
+      return 'Rendering/response';
+    case 'background_job_async':
+      return 'Background job / async continuation';
+    case 'runtime_config':
+      return 'Runtime config';
+    case 'test_coverage':
+      return 'Test coverage';
+  }
+}
+
+function journeyStepConfidence(params: {
+  readonly evidenceIds: readonly string[];
+  readonly tests: readonly string[];
+  readonly configs: readonly string[];
+  readonly type: JourneyStepType;
+}): Confidence {
+  if (params.evidenceIds.length === 0) return 'uncertain';
+  if (params.type === 'test_coverage' || params.type === 'runtime_config') return 'verified';
+  if (params.tests.length > 0 || params.configs.length > 0) return 'verified';
+  return 'inferred';
+}
+
+function inferFlowJourneySteps(
+  intelligence: FlowIntelligence,
+  journey: FlowJourneySummary,
+): FlowJourneyStep[] {
+  const route = intelligence.route_path === undefined ? [] : [safeText(intelligence.route_path)];
+  const steps: FlowJourneyStep[] = [];
+  const addStep = (step: FlowJourneyStep): void => {
+    steps.push({ ...step, order: steps.length + 1 });
+  };
+  const triggerEvidence = unique(
+    intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+  );
+  addStep({
+    step_id: `${intelligence.flow_id}:journey:trigger`,
+    order: 1,
+    type: 'trigger',
+    label: journeyStepLabel('trigger'),
+    description: `${journey.name} starts from ${intelligence.entrypoints.map(formatFlowEntrypoint).slice(0, 3).join(', ') || 'a reconstructed entrypoint'}.`,
+    files: unique(intelligence.entrypoints.map((entrypoint) => entrypoint.path)),
+    symbols: unique(
+      intelligence.entrypoints.flatMap((entrypoint) =>
+        entrypoint.symbol === null ? [] : [entrypoint.symbol],
+      ),
+    ),
+    routes: route,
+    runtime_surfaces: intelligence.runtime_surfaces.slice(0, 8).map(safeText),
+    configs: intelligence.configs.map(safeText),
+    tests: intelligence.tests.map(safeText),
+    confidence: triggerEvidence.length > 0 ? 'verified' : 'uncertain',
+    evidence_ids: triggerEvidence.map(safeText),
+    missing_evidence:
+      triggerEvidence.length === 0 ? ['No direct trigger evidence IDs were recorded.'] : [],
+  });
+  for (const step of intelligence.steps) {
+    const type = inferJourneyStepType(step, journey);
+    const evidenceIds = unique(step.evidence);
+    addStep({
+      step_id: `${step.step_id}:journey`,
+      order: steps.length + 1,
+      type,
+      label: journeyStepLabel(type),
+      description: step.description,
+      files: [safeText(step.path)],
+      symbols: step.symbol === null ? [] : [safeText(step.symbol)],
+      routes: route,
+      runtime_surfaces:
+        type === 'runtime_config' || type === 'trigger'
+          ? intelligence.runtime_surfaces.slice(0, 8).map(safeText)
+          : [],
+      configs:
+        type === 'runtime_config' || step.type === 'config'
+          ? unique([step.path, ...intelligence.configs]).map(safeText)
+          : [],
+      tests:
+        type === 'test_coverage' || step.type === 'test'
+          ? unique([step.path, ...intelligence.tests]).map(safeText)
+          : intelligence.tests.map(safeText),
+      confidence: journeyStepConfidence({
+        evidenceIds,
+        tests: intelligence.tests,
+        configs: intelligence.configs,
+        type,
+      }),
+      evidence_ids: evidenceIds.map(safeText),
+      missing_evidence: unique([
+        ...(evidenceIds.length === 0 ? ['No direct step evidence IDs were recorded.'] : []),
+        ...(type !== 'test_coverage' && intelligence.tests.length === 0
+          ? ['No linked test verifies this journey step.']
+          : []),
+        ...(type === 'runtime_config' && intelligence.configs.length === 0
+          ? ['No linked config artifact explains runtime behavior.']
+          : []),
+      ]).map(safeText),
+    });
+  }
+  if (intelligence.configs.length > 0 && !steps.some((step) => step.type === 'runtime_config')) {
+    addStep({
+      step_id: `${intelligence.flow_id}:journey:runtime-config`,
+      order: steps.length + 1,
+      type: 'runtime_config',
+      label: journeyStepLabel('runtime_config'),
+      description: `${journey.name} depends on local runtime configuration evidence.`,
+      files: intelligence.configs.map(safeText),
+      symbols: [],
+      routes: route,
+      runtime_surfaces: intelligence.runtime_surfaces.slice(0, 8).map(safeText),
+      configs: intelligence.configs.map(safeText),
+      tests: intelligence.tests.map(safeText),
+      confidence: 'verified',
+      evidence_ids: intelligence.configs.map(evidenceId).map(safeText),
+      missing_evidence: [],
+    });
+  }
+  if (intelligence.tests.length > 0 && !steps.some((step) => step.type === 'test_coverage')) {
+    addStep({
+      step_id: `${intelligence.flow_id}:journey:test-coverage`,
+      order: steps.length + 1,
+      type: 'test_coverage',
+      label: journeyStepLabel('test_coverage'),
+      description: `${journey.name} has linked test evidence for confidence calibration.`,
+      files: intelligence.tests.map(safeText),
+      symbols: [],
+      routes: route,
+      runtime_surfaces: [],
+      configs: intelligence.configs.map(safeText),
+      tests: intelligence.tests.map(safeText),
+      confidence: 'verified',
+      evidence_ids: intelligence.tests.map(evidenceId).map(safeText),
+      missing_evidence: [],
+    });
+  }
+  if (
+    !steps.some((step) => step.type === 'rendering_response') &&
+    (intelligence.outputs.length > 0 || intelligence.exit_contract.length > 0)
+  ) {
+    const evidenceIds = unique([
+      ...(intelligence.field_evidence.outputs ?? []),
+      ...(intelligence.field_evidence.exit_contract ?? []),
+    ]);
+    addStep({
+      step_id: `${intelligence.flow_id}:journey:response`,
+      order: steps.length + 1,
+      type: 'rendering_response',
+      label: journeyStepLabel('rendering_response'),
+      description: `${journey.name} returns or renders ${intelligence.outputs.slice(0, 3).join(', ') || 'a response'}.`,
+      files: intelligence.files.slice(0, 4).map(safeText),
+      symbols: [],
+      routes: route,
+      runtime_surfaces: [],
+      configs: [],
+      tests: intelligence.tests.map(safeText),
+      confidence: evidenceIds.length > 0 ? 'inferred' : 'uncertain',
+      evidence_ids: evidenceIds.map(safeText),
+      missing_evidence:
+        evidenceIds.length === 0 ? ['No direct output evidence IDs were recorded.'] : [],
+    });
+  }
+  return steps.slice(0, 16);
+}
+
+function enrichFlowWithJourney(intelligence: FlowIntelligence): FlowIntelligence {
+  const journey = inferFlowJourneySummary(intelligence);
+  return {
+    ...intelligence,
+    journey,
+    journey_steps: inferFlowJourneySteps(intelligence, journey),
+  };
+}
+
 function safeFlowRisks(entity: BrainEntity): FlowRisk[] {
   return flowRisks(entity).map((risk) => ({
     risk_id: safeText(risk.risk_id),
@@ -3227,6 +4912,254 @@ function safeFlowRisks(entity: BrainEntity): FlowRisk[] {
     description: safeText(risk.description),
     evidence: risk.evidence.map(safeText),
   }));
+}
+
+function safeFlowServiceCausality(entity: BrainEntity): FlowServiceCausality[] {
+  const entries = entity.data?.service_causality;
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry): entry is FlowServiceCausality => {
+      if (!isRecord(entry)) return false;
+      return (
+        typeof entry.service_id === 'string' &&
+        typeof entry.service_name === 'string' &&
+        typeof entry.service_root === 'string' &&
+        Array.isArray(entry.files) &&
+        entry.files.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.step_ids) &&
+        entry.step_ids.every((item) => typeof item === 'string') &&
+        typeof entry.cause === 'string' &&
+        Array.isArray(entry.effects) &&
+        entry.effects.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.evidence_ids) &&
+        entry.evidence_ids.every((item) => typeof item === 'string') &&
+        (entry.confidence === 'verified' ||
+          entry.confidence === 'inferred' ||
+          entry.confidence === 'uncertain') &&
+        Array.isArray(entry.unknowns) &&
+        entry.unknowns.every((item) => typeof item === 'string')
+      );
+    })
+    .map((entry) => ({
+      service_id: safeText(entry.service_id),
+      service_name: safeText(entry.service_name),
+      service_root: safeText(entry.service_root),
+      files: entry.files.map(safeText),
+      step_ids: entry.step_ids.map(safeText),
+      cause: safeText(entry.cause),
+      effects: entry.effects.map(safeText),
+      evidence_ids: entry.evidence_ids.map(safeText),
+      confidence: entry.confidence,
+      unknowns: entry.unknowns.map(safeText),
+    }));
+}
+
+function safeFlowDataDependencies(entity: BrainEntity): FlowDataDependency[] {
+  const entries = entity.data?.data_dependencies;
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry): entry is FlowDataDependency => {
+      if (!isRecord(entry)) return false;
+      return (
+        typeof entry.dependency_id === 'string' &&
+        typeof entry.kind === 'string' &&
+        typeof entry.label === 'string' &&
+        Array.isArray(entry.files) &&
+        entry.files.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.operations) &&
+        entry.operations.every((item) => typeof item === 'string') &&
+        Array.isArray(entry.evidence_ids) &&
+        entry.evidence_ids.every((item) => typeof item === 'string') &&
+        (entry.confidence === 'verified' ||
+          entry.confidence === 'inferred' ||
+          entry.confidence === 'uncertain') &&
+        Array.isArray(entry.missing_evidence) &&
+        entry.missing_evidence.every((item) => typeof item === 'string')
+      );
+    })
+    .map((entry) => ({
+      dependency_id: safeText(entry.dependency_id),
+      kind: dataDependencyKind(entry.kind),
+      label: safeText(entry.label),
+      files: entry.files.map(safeText),
+      operations: entry.operations.map(safeText),
+      confidence: entry.confidence,
+      evidence_ids: entry.evidence_ids.map(safeText),
+      missing_evidence: entry.missing_evidence.map(safeText),
+    }));
+}
+
+function dataDependencyKind(value: unknown): FlowDataDependencyKind {
+  if (
+    value === 'database' ||
+    value === 'cache' ||
+    value === 'filesystem' ||
+    value === 'object_storage' ||
+    value === 'vector_store' ||
+    value === 'orm' ||
+    value === 'schema' ||
+    value === 'state_module'
+  ) {
+    return value;
+  }
+  return 'state_module';
+}
+
+function dataDependencyKindForLabel(label: string): FlowDataDependencyKind {
+  const lower = label.toLowerCase();
+  if (/redis|cache|session/.test(lower)) return 'cache';
+  if (/filesystem|file|temporary/.test(lower)) return 'filesystem';
+  if (/object-storage|s3|blob/.test(lower)) return 'object_storage';
+  if (/vector/.test(lower)) return 'vector_store';
+  if (/orm|prisma|typeorm|mongoose|sequelize/.test(lower)) return 'orm';
+  if (/schema|migration|model|table/.test(lower)) return 'schema';
+  if (/database|postgres|sqlite|sql/.test(lower)) return 'database';
+  return 'state_module';
+}
+
+function isDataDependencySourceFile(path: string): boolean {
+  if (isTestPath(path) || isConfigPath(path) || isTypeOnlySupportFile(path)) return false;
+  const lower = path.toLowerCase();
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|cs|php|sql|prisma)$/i.test(lower);
+}
+
+function isTypeOnlySupportFile(path: string): boolean {
+  const name = basename(path).toLowerCase();
+  return name.endsWith('.d.ts') || /(^|[-_.])(types?|interfaces?)(\.[cm]?[jt]sx?)?$/.test(name);
+}
+
+function isGeneratedArtifactPath(path: string): boolean {
+  if (isDependencyPath(path) || isConfigPath(path)) return false;
+  const lower = path.toLowerCase();
+  const parts = lower.split('/');
+  if (
+    parts.some((part) =>
+      [
+        '__generated__',
+        '__snapshots__',
+        'generated',
+        'gen',
+        'vendor',
+        'vendors',
+        'third_party',
+        'third-party',
+      ].includes(part),
+    )
+  ) {
+    return true;
+  }
+  const name = basename(lower);
+  return (
+    /\.generated\.[cm]?[jt]sx?$/.test(name) ||
+    /\.gen\.[cm]?[jt]sx?$/.test(name) ||
+    /\.snap$/.test(name) ||
+    /^generated[-_.]/.test(name) ||
+    /[-_.]generated\./.test(name)
+  );
+}
+
+function pathStateDependencyLabels(path: string): string[] {
+  const lower = path.toLowerCase();
+  const name = basename(lower);
+  return unique([
+    ...(lower.endsWith('schema.prisma') ? ['prisma schema'] : []),
+    ...(lower.includes('/migrations/') || lower.endsWith('.sql')
+      ? ['database migration/schema']
+      : []),
+    ...(/(^|\/)(models?|schema|schemas)\//i.test(path) ||
+    /schema|model|table/.test(name) ||
+    /(^|\/)db\//i.test(path)
+      ? ['data schema/model']
+      : []),
+    ...(/(^|\/)(repositories?|repos?|store|stores|dao|db)\//i.test(path) ||
+    /repository|repo|store|dao/.test(name)
+      ? ['state repository/module']
+      : []),
+    ...(/(^|\/)(cache|redis|session|sessions)\//i.test(path) ? ['cache/session state'] : []),
+  ]);
+}
+
+function inferFlowDataDependencies(params: {
+  readonly rootDir: string;
+  readonly intelligence: FlowIntelligence;
+  readonly dbs: readonly Dti[];
+}): FlowDataDependency[] {
+  const grouped = new Map<
+    string,
+    {
+      readonly label: string;
+      readonly files: Set<string>;
+      readonly operations: Set<string>;
+      readonly evidenceIds: Set<string>;
+    }
+  >();
+  const add = (label: string, files: readonly string[], operations: readonly string[]): void => {
+    const key = stableSlug(label);
+    const existing = grouped.get(key) ?? {
+      label,
+      files: new Set<string>(),
+      operations: new Set<string>(),
+      evidenceIds: new Set<string>(),
+    };
+    for (const file of files) {
+      existing.files.add(safeText(file));
+      existing.evidenceIds.add(evidenceId(file));
+    }
+    for (const operation of operations) existing.operations.add(safeText(operation));
+    grouped.set(key, existing);
+  };
+  const dbLabels = dbFlowLabels({
+    tables: params.dbs,
+    flowFiles: params.intelligence.files,
+    entityIdForTable: entityId,
+  });
+
+  for (const file of params.intelligence.files) {
+    if (!isDataDependencySourceFile(file)) continue;
+    const text = readTextIfAvailable(params.rootDir, file) ?? '';
+    const operations = stateOperationsFromText(`${file}\n${text}`);
+    const labels = unique([
+      ...storageDependenciesFromText(text),
+      ...pathStateDependencyLabels(file),
+      ...(dbLabels.labelsByFile.get(file) ?? []),
+    ]);
+    for (const label of labels) {
+      const depFiles = unique([file, dbLabels.sourceByLabel.get(label) ?? file]);
+      add(label, depFiles, operations.length > 0 ? operations : ['state dependency']);
+    }
+  }
+
+  return [...grouped.values()]
+    .map((entry) => {
+      const files = [...entry.files].sort((a, b) => a.localeCompare(b));
+      const operations = [...entry.operations].sort((a, b) => a.localeCompare(b));
+      const evidenceIds = [...entry.evidenceIds].sort((a, b) => a.localeCompare(b));
+      const confidence: Confidence =
+        evidenceIds.length > 0 && operations.length > 0
+          ? 'verified'
+          : evidenceIds.length > 0
+            ? 'inferred'
+            : 'uncertain';
+      return {
+        dependency_id: `${params.intelligence.flow_id}:data:${stableSlug(entry.label)}`,
+        kind: dataDependencyKindForLabel(entry.label),
+        label: safeText(entry.label),
+        files,
+        operations,
+        confidence,
+        evidence_ids: evidenceIds,
+        missing_evidence: unique([
+          ...(operations.length === 0
+            ? ['No read/write/update/delete/schema operation was detected for this data surface.']
+            : []),
+          ...(params.intelligence.tests.length === 0
+            ? ['No linked test verifies this data/state dependency.']
+            : []),
+        ]).map(safeText),
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .slice(0, 12);
 }
 
 function flowRisks(entity: BrainEntity): FlowRisk[] {
@@ -3262,6 +5195,110 @@ function flowSteps(entity: BrainEntity): FlowStep[] {
   });
 }
 
+interface FlowSignalProfile {
+  readonly flow: BrainEntity;
+  readonly hasEntrypoint: boolean;
+  readonly hasSteps: boolean;
+  readonly hasEvidence: boolean;
+  readonly hasContracts: boolean;
+  readonly hasCausalSurface: boolean;
+  readonly hasVerificationSurface: boolean;
+  readonly isHighSignal: boolean;
+  readonly isInventoryOnly: boolean;
+  readonly confidenceScore: number;
+}
+
+function flowHasNonCommandEntrypoint(entrypoints: readonly FlowEntrypoint[]): boolean {
+  return entrypoints.some((entrypoint) => entrypoint.type !== 'command');
+}
+
+function flowHasCausalStep(steps: readonly FlowStep[]): boolean {
+  return steps.some((step) =>
+    [
+      'handler',
+      'service',
+      'function',
+      'test',
+      'test_coverage',
+      'rendering_response',
+      'data_access',
+    ].includes(step.type),
+  );
+}
+
+function flowSignalProfile(flow: BrainEntity): FlowSignalProfile {
+  const entrypoints = flowEntrypoints(flow);
+  const steps = flowSteps(flow);
+  const kind = flowKind(flow);
+  const hasRouteOrApiEntrypoint = flowHasNonCommandEntrypoint(entrypoints) || kind === 'api';
+  const hasVerificationSurface = flowStringArray(flow, 'tests').length > 0 || kind === 'test';
+  const hasCausalSurface =
+    safeFlowServiceCausality(flow).length > 0 ||
+    safeFlowDataDependencies(flow).length > 0 ||
+    flowStringArray(flow, 'services').length > 0 ||
+    flowHasCausalStep(steps);
+  const isHighSignal = hasRouteOrApiEntrypoint || hasVerificationSurface || hasCausalSurface;
+  const isInventoryOnly =
+    entrypoints.length > 0 &&
+    entrypoints.every((entrypoint) => entrypoint.type === 'command') &&
+    !hasVerificationSurface &&
+    !hasCausalSurface;
+  return {
+    flow,
+    hasEntrypoint: entrypoints.length > 0,
+    hasSteps: steps.length > 0,
+    hasEvidence: flow.evidence_ids.length > 0,
+    hasContracts:
+      flowStringArray(flow, 'entry_contract').length > 0 &&
+      flowStringArray(flow, 'exit_contract').length > 0,
+    hasCausalSurface,
+    hasVerificationSurface,
+    isHighSignal,
+    isInventoryOnly,
+    confidenceScore: asFlowConfidenceScore(flow),
+  };
+}
+
+function flowSignalScore(profiles: readonly FlowSignalProfile[]): number {
+  if (profiles.length === 0) return 0;
+  const scoredProfiles = profiles.filter((profile) => profile.isHighSignal);
+  const denominatorProfiles = scoredProfiles.length > 0 ? scoredProfiles : profiles;
+  const denominator = denominatorProfiles.length;
+  const averageConfidence =
+    denominatorProfiles.reduce((total, profile) => total + profile.confidenceScore, 0) /
+    denominator;
+  return boundedScore(
+    scorePercent(
+      denominatorProfiles.filter((profile) => profile.hasEntrypoint).length,
+      denominator,
+    ) *
+      0.16 +
+      scorePercent(denominatorProfiles.filter((profile) => profile.hasSteps).length, denominator) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasEvidence).length,
+        denominator,
+      ) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasContracts).length,
+        denominator,
+      ) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasCausalSurface).length,
+        denominator,
+      ) *
+        0.16 +
+      scorePercent(
+        denominatorProfiles.filter((profile) => profile.hasVerificationSurface).length,
+        denominator,
+      ) *
+        0.1 +
+      averageConfidence * 100 * 0.1,
+  );
+}
+
 function inferScriptFlow(params: {
   readonly rootDir: string;
   readonly files: readonly FileFact[];
@@ -3270,12 +5307,18 @@ function inferScriptFlow(params: {
   readonly scriptName: string;
   readonly command: string;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
   const ownerPath = packageComponentPath(params.packageFact);
   const ownerComponentId = ownerPath === undefined ? undefined : entityId('component', ownerPath);
   const ownerFiles = sourceFilesForPackage(params.files, params.packageFact);
   const commandFiles = filesReferencedByCommand(params.files, params.command, ownerPath);
+  const commandTargets = commandTargetPaths(params.command, ownerPath);
+  const isDeploymentScript = isDeployLikeScript(params.scriptName, params.command);
+  const deploymentConfigs = isDeploymentScript
+    ? deploymentConfigFilesForPackage(params.files, params.packageFact)
+    : [];
   const commandEntryFiles = commandFiles.filter((file) => classifySourceKind(file) === 'source');
   const entryFiles = uniqueFileFacts([
     ...(commandEntryFiles.length > 0 ? commandEntryFiles : []),
@@ -3315,9 +5358,16 @@ function inferScriptFlow(params: {
   const relatedComponents = params.components.filter((component) =>
     relatedComponentIds.has(component.id),
   );
+  const serviceLinkFiles = unique([
+    ...commandFiles.map((file) => file.relativePath),
+    ...entryFiles.map((file) => file.relativePath),
+    ...importContext.importedFiles.map((file) => file.relativePath),
+  ]);
+  const serviceIds = svcIdsForFiles(serviceLinkFiles, params.services);
   const files = unique([
     params.packageFact.relativePath,
     ...commandFiles.map((file) => file.relativePath),
+    ...deploymentConfigs.map((file) => file.relativePath),
     ...entryFiles.map((file) => file.relativePath),
     ...importContext.importedFiles.map((file) => file.relativePath),
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'important_files')),
@@ -3325,6 +5375,7 @@ function inferScriptFlow(params: {
   ]).slice(0, 30);
   const configs = unique([
     params.packageFact.relativePath,
+    ...deploymentConfigs.map((file) => file.relativePath),
     ...relatedComponents.flatMap((component) => stringArrayData(component, 'configs')),
   ]);
   const tests = unique(
@@ -3364,6 +5415,17 @@ function inferScriptFlow(params: {
     });
     order += 1;
   }
+  const targetSteps = commandTargetSteps({
+    targets: commandEntryFiles.length > 0 ? [] : commandTargets,
+    representedPaths: new Set([...commandFiles, ...entryFiles].map((file) => file.relativePath)),
+    flowId,
+    startOrder: order,
+    scriptName: params.scriptName,
+    evidenceId: scriptEvidenceId,
+    flowStepId,
+  });
+  steps.push(...targetSteps);
+  order += targetSteps.length;
   for (const component of relatedComponents.filter(
     (component) => component.id !== ownerComponentId,
   )) {
@@ -3393,6 +5455,18 @@ function inferScriptFlow(params: {
     });
     order += 1;
   }
+  const serviceSteps = svcStepsForFlow({
+    flowId,
+    startOrder: order,
+    files: serviceLinkFiles,
+    serviceIds,
+    services: params.services,
+    safeText,
+    evidenceId,
+    flowStepId,
+  });
+  steps.push(...serviceSteps);
+  order += serviceSteps.length;
   for (const config of configs.slice(0, 3)) {
     steps.push({
       step_id: flowStepId(flowId, order),
@@ -3420,8 +5494,10 @@ function inferScriptFlow(params: {
 
   const signals = unique([
     'package script',
+    ...(isDeploymentScript ? ['deployment'] : []),
     ...(entryFiles.length > 0 ? ['source entry'] : []),
     ...(commandFiles.length > 0 ? ['command path'] : []),
+    ...(commandEntryFiles.length === 0 && commandTargets.length > 0 ? ['command target'] : []),
     ...(importedSpecifiers.size > 0 ? ['static import'] : []),
     ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
     ...(tests.length > 0 ? ['test artifact'] : []),
@@ -3433,8 +5509,13 @@ function inferScriptFlow(params: {
     )
       ? ['Dynamic import is static evidence only; runtime reachability is not traced.']
       : []),
-    ...(entryFiles.length === 0
+    ...(entryFiles.length === 0 && commandTargets.length === 0
       ? ['No source entry file was detected for this package script.']
+      : []),
+    ...(isDeploymentScript
+      ? [
+          'Deployment flow is inferred from static script/config evidence; production reachability is not verified until smoke evidence is recorded.',
+        ]
       : []),
   ]);
   const risks: FlowRisk[] = [];
@@ -3454,6 +5535,13 @@ function inferScriptFlow(params: {
       evidence: [scriptEvidenceId],
     });
   }
+  risks.push(
+    ...deploymentRisksForConfigs({
+      rootDir: params.rootDir,
+      flowId,
+      configs,
+    }),
+  );
   if (files.some((file) => params.changedFiles.has(file))) {
     risks.push({
       risk_id: `${flowId}:changed-hotspot`,
@@ -3463,6 +5551,14 @@ function inferScriptFlow(params: {
     });
   }
   const baseConfidence = flowConfidenceFor({ tests, signals, unknowns });
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel: 'Command',
+    entryLabel: params.scriptName,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind,
@@ -3476,6 +5572,14 @@ function inferScriptFlow(params: {
     signals,
     confidenceReason: baseConfidence.reason,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind,
+    scriptName: params.scriptName,
+    command: params.command,
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   return {
     flow_id: flowId,
     name: flowNameForScript(params.scriptName, kind),
@@ -3485,6 +5589,9 @@ function inferScriptFlow(params: {
     components: unique([...relatedComponentIds]),
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
+    services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests,
     risks,
@@ -3517,6 +5624,14 @@ function inferScriptFlow(params: {
           reason: `Source file is an inferred handler for ${params.scriptName}.`,
         }),
       ),
+      ...deploymentConfigs.map((file) =>
+        flowEvidenceForNeedle({
+          rootDir: params.rootDir,
+          path: file.relativePath,
+          needle: basename(file.relativePath),
+          reason: `Deployment config ${file.relativePath} is linked to deploy-like script ${params.scriptName}.`,
+        }),
+      ),
     ]),
     field_evidence: {
       entrypoints: [scriptEvidenceId],
@@ -3524,6 +5639,13 @@ function inferScriptFlow(params: {
       components: unique(relatedComponents.flatMap((component) => component.evidence_ids)),
       files: files.map(evidenceId),
       dependencies: [scriptEvidenceId],
+      runtime_surfaces: unique([
+        scriptEvidenceId,
+        ...configs.map(evidenceId),
+        ...idsEvidence(serviceIds, params.services),
+      ]),
+      services: idsEvidence(serviceIds, params.services),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: tests.map(evidenceId),
       risks: unique(risks.flatMap((risk) => risk.evidence)),
@@ -3554,9 +5676,11 @@ function isRouteLikeFile(file: FileFact): boolean {
     lower.includes('/api/') ||
     lower.includes('/routes/') ||
     lower.includes('/controllers/') ||
+    lower.includes('/routers/') ||
     name === 'route.ts' ||
     name === 'route.js' ||
-    name.includes('controller')
+    name.includes('controller') ||
+    name.includes('router')
   );
 }
 
@@ -3741,6 +5865,7 @@ function inferNextAppRouteFlow(params: {
   readonly routePath: string;
   readonly routeType: NextAppRouteType;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
@@ -3756,6 +5881,10 @@ function inferNextAppRouteFlow(params: {
   );
   const relatedComponents = params.components.filter((component) =>
     componentIds.includes(component.id),
+  );
+  const serviceIds = svcIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.services,
   );
   const relatedTests = nextRouteTestPaths({
     routeFile: params.file,
@@ -3889,6 +6018,14 @@ function inferNextAppRouteFlow(params: {
     route_type: params.routeType,
     entry_file: params.file.relativePath,
   };
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel: 'Next.js',
+    entryLabel: `${params.routeType} ${params.routePath}`,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind,
@@ -3902,6 +6039,15 @@ function inferNextAppRouteFlow(params: {
     confidenceReason: baseConfidence.reason,
     routeContract,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind,
+    framework: 'nextjs-app-router',
+    routePath: params.routePath,
+    routeType: params.routeType,
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   return {
     flow_id: flowId,
     name: `Next.js ${safeText(params.routePath)} ${nextRouteTypeLabel(params.routeType)}`,
@@ -3914,6 +6060,9 @@ function inferNextAppRouteFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
+    services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests: relatedTests,
     risks,
@@ -3947,6 +6096,13 @@ function inferNextAppRouteFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      runtime_surfaces: unique([
+        evId,
+        ...configs.map(evidenceId),
+        ...idsEvidence(serviceIds, params.services),
+      ]),
+      services: idsEvidence(serviceIds, params.services),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -3961,6 +6117,12 @@ const HTTP_ROUTE_DECLARATION_PATTERN =
   /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|del|head|options|all)\s*\(\s*(['"`])([^'"`${}]+)\3/g;
 
 const HONO_APP_DECLARATION_PATTERN = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+Hono\b/g;
+
+const FASTAPI_ROUTE_DECLARATION_PATTERN =
+  /@\s*([A-Za-z_][\w]*)\s*\.\s*(get|post|put|patch|delete|head|options|api_route|route)\s*\(\s*(['"])([^'"]+)\3/g;
+
+const FLASK_ROUTE_DECLARATION_PATTERN =
+  /@\s*([A-Za-z_][\w]*)\s*\.\s*(route|get|post|put|patch|delete|head|options)\s*\(\s*(['"])([^'"]+)\3/g;
 
 function maskCommentsForStaticScan(text: string): string {
   return text
@@ -3995,11 +6157,14 @@ function honoRouteReceivers(text: string): ReadonlySet<string> {
 }
 
 function httpRouteFrameworkLabel(framework: HttpRouteFramework): string {
+  if (framework === 'fastapi') return 'FastAPI';
+  if (framework === 'flask') return 'Flask';
   if (framework === 'hono') return 'Hono';
   return 'HTTP';
 }
 
 function httpRouteMethod(method: string): HttpRouteMethod {
+  if (method.toLowerCase() === 'api_route' || method.toLowerCase() === 'route') return 'ALL';
   if (method.toLowerCase() === 'del') return 'DELETE';
   return method.toUpperCase() as HttpRouteMethod;
 }
@@ -4012,7 +6177,7 @@ function normalizeHttpRoutePath(routePath: string): string | undefined {
 }
 
 function isHttpRouteSourceFile(file: FileFact): boolean {
-  return /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file.relativePath) && !isTestPath(file.relativePath);
+  return /\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(file.relativePath) && !isTestPath(file.relativePath);
 }
 
 function httpRouteDeclarationsForFile(params: {
@@ -4023,34 +6188,211 @@ function httpRouteDeclarationsForFile(params: {
   const text = readTextIfAvailable(params.rootDir, params.file.relativePath);
   if (text === undefined) return [];
   const masked = maskCommentsForStaticScan(text);
+  const isFastApiPythonFile =
+    params.file.relativePath.endsWith('.py') && /FastAPI|APIRouter|fastapi/i.test(masked);
+  const isFlaskPythonFile =
+    params.file.relativePath.endsWith('.py') && /\bFlask\b|Blueprint|flask/i.test(masked);
   const honoReceivers = honoRouteReceivers(masked);
   const declarations = new Map<string, HttpRouteDeclaration>();
-  for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
-    const receiver = match[1];
-    const rawMethod = match[2];
-    const rawRoutePath = match[4];
-    if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) continue;
-    const framework = honoReceivers.has(receiver) ? 'hono' : 'express-fastify-http';
-    if (framework !== 'hono' && !isHttpRouteReceiver(receiver)) continue;
-    const routePath = normalizeHttpRoutePath(rawRoutePath);
-    if (routePath === undefined) continue;
-    const method = httpRouteMethod(rawMethod);
-    const line = lineNumberAtOffset(masked, match.index ?? 0);
-    const source = `${receiver}.${rawMethod}`;
-    declarations.set(`${framework}:${method}:${routePath}:${line}:${source}`, {
-      framework,
-      receiver,
-      method,
-      routePath,
-      line,
-      source,
-    });
+  if (!isFastApiPythonFile && !isFlaskPythonFile) {
+    for (const match of masked.matchAll(HTTP_ROUTE_DECLARATION_PATTERN)) {
+      const receiver = match[1];
+      const rawMethod = match[2];
+      const rawRoutePath = match[4];
+      if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) {
+        continue;
+      }
+      const framework = honoReceivers.has(receiver) ? 'hono' : 'express-fastify-http';
+      if (framework !== 'hono' && !isHttpRouteReceiver(receiver)) continue;
+      const routePath = normalizeHttpRoutePath(rawRoutePath);
+      if (routePath === undefined) continue;
+      const method = httpRouteMethod(rawMethod);
+      const line = lineNumberAtOffset(masked, match.index ?? 0);
+      const source = `${receiver}.${rawMethod}`;
+      declarations.set(`${framework}:${method}:${routePath}:${line}:${source}`, {
+        framework,
+        receiver,
+        method,
+        routePath,
+        line,
+        source,
+      });
+    }
+  }
+  if (isFlaskPythonFile) {
+    for (const match of masked.matchAll(FLASK_ROUTE_DECLARATION_PATTERN)) {
+      const receiver = match[1];
+      const rawMethod = match[2];
+      const rawRoutePath = match[4];
+      if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) {
+        continue;
+      }
+      const routePath = normalizeHttpRoutePath(rawRoutePath);
+      if (routePath === undefined) continue;
+      const method = httpRouteMethod(rawMethod);
+      const line = lineNumberAtOffset(masked, match.index ?? 0);
+      const source = `@${receiver}.${rawMethod}`;
+      declarations.set(`flask:${method}:${routePath}:${line}:${source}`, {
+        framework: 'flask',
+        receiver,
+        method,
+        routePath,
+        line,
+        source,
+      });
+    }
+  }
+  if (isFastApiPythonFile) {
+    for (const match of masked.matchAll(FASTAPI_ROUTE_DECLARATION_PATTERN)) {
+      const receiver = match[1];
+      const rawMethod = match[2];
+      const rawRoutePath = match[4];
+      if (receiver === undefined || rawMethod === undefined || rawRoutePath === undefined) {
+        continue;
+      }
+      const routePath = normalizeHttpRoutePath(rawRoutePath);
+      if (routePath === undefined) continue;
+      const method = httpRouteMethod(rawMethod);
+      const line = lineNumberAtOffset(masked, match.index ?? 0);
+      const source = `@${receiver}.${rawMethod}`;
+      declarations.set(`fastapi:${method}:${routePath}:${line}:${source}`, {
+        framework: 'fastapi',
+        receiver,
+        method,
+        routePath,
+        line,
+        source,
+      });
+    }
   }
   return sorted(
     [...declarations.values()],
     (declaration) =>
       `${declaration.method}:${declaration.routePath}:${declaration.line}:${declaration.source}`,
   );
+}
+
+function offsetForLine(text: string, line: number): number {
+  if (line <= 1) return 0;
+  let currentLine = 1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== '\n') continue;
+    currentLine += 1;
+    if (currentLine === line) return index + 1;
+  }
+  return text.length;
+}
+
+function httpRouteHandlerText(params: {
+  readonly text: string;
+  readonly declaration: HttpRouteDeclaration;
+}): string | undefined {
+  const start = offsetForLine(params.text, params.declaration.line);
+  const callStart = params.text.indexOf('(', start);
+  if (callStart < 0) return undefined;
+  let depth = 0;
+  let quote: '"' | "'" | '`' | undefined;
+  let escaped = false;
+  for (let index = callStart; index < params.text.length; index += 1) {
+    const char = params.text[index];
+    if (char === undefined) continue;
+    if (quote !== undefined) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(') depth += 1;
+    if (char !== ')') continue;
+    depth -= 1;
+    if (depth === 0) return params.text.slice(callStart, index + 1);
+  }
+  return params.text.slice(callStart, Math.min(params.text.length, callStart + 2000));
+}
+
+function pythonRouteHandlerText(params: {
+  readonly text: string;
+  readonly declaration: HttpRouteDeclaration;
+}): string | undefined {
+  const start = offsetForLine(params.text, params.declaration.line);
+  const lines = params.text.slice(start).split(/\r?\n/);
+  const defIndex = lines.findIndex((line) =>
+    /^\s*(?:async\s+def|def)\s+[A-Za-z_]\w*\s*\(/.test(line),
+  );
+  if (defIndex < 0) return undefined;
+  const defLine = lines[defIndex];
+  const defIndent = defLine?.match(/^\s*/)?.[0].length ?? 0;
+  const handlerLines: string[] = [];
+  for (let index = defIndex; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined) continue;
+    if (index > defIndex && line.trim() !== '') {
+      const indent = line.match(/^\s*/)?.[0].length ?? 0;
+      const startsNextTopLevelBlock =
+        indent <= defIndent && /^\s*(?:@|async\s+def\b|def\b|class\b)/.test(line);
+      const startsNextPeerStatement = indent <= defIndent && !/^\s/.test(line);
+      if (startsNextTopLevelBlock || startsNextPeerStatement) break;
+    }
+    handlerLines.push(line);
+  }
+  return handlerLines.join('\n');
+}
+
+function routeHandlerTextForDeclaration(params: {
+  readonly text: string;
+  readonly routeFile: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+}): string | undefined {
+  if (params.declaration.framework === 'fastapi' || params.routeFile.relativePath.endsWith('.py')) {
+    return pythonRouteHandlerText(params);
+  }
+  return httpRouteHandlerText(params);
+}
+
+function textContainsIdentifier(text: string, identifier: string): boolean {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}($|[^A-Za-z0-9_$])`).test(text);
+}
+
+function reachableHttpRouteImportedFiles(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly routeFile: FileFact;
+  readonly declaration: HttpRouteDeclaration;
+  readonly importContext: {
+    readonly importedFiles: readonly FileFact[];
+  };
+}): FileFact[] {
+  const text = readTextIfAvailable(params.rootDir, params.routeFile.relativePath);
+  if (text === undefined) return [...params.importContext.importedFiles];
+  const handlerText = routeHandlerTextForDeclaration({
+    text,
+    routeFile: params.routeFile,
+    declaration: params.declaration,
+  });
+  if (handlerText === undefined) return [...params.importContext.importedFiles];
+  const aliases = importAliasContextForConfigs({ rootDir: params.rootDir, files: params.files });
+  const bindings = importBindingsFromText(text);
+  if (bindings.length === 0) return [...params.importContext.importedFiles];
+  const reachableFiles = bindings.flatMap((binding) => {
+    if (!binding.local_names.some((name) => textContainsIdentifier(handlerText, name))) return [];
+    return [
+      ...resolveRelativeImportFiles(params.files, params.routeFile.relativePath, binding.specifier),
+      ...resolveAliasImportFiles(params.files, binding.specifier, aliases),
+      ...resolveDottedImportFiles(params.files, binding.specifier),
+    ];
+  });
+  return uniqueFileFacts(reachableFiles);
 }
 
 function owningPackageFactForFile(
@@ -4154,6 +6496,7 @@ function inferHttpRouteDeclarationFlow(params: {
   readonly file: FileFact;
   readonly declaration: HttpRouteDeclaration;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
@@ -4162,13 +6505,41 @@ function inferHttpRouteDeclarationFlow(params: {
     files: params.files,
     entryFiles: [params.file],
   });
-  const allScannedFiles = [params.file, ...importContext.importedFiles];
+  const reachableImportedFiles = reachableHttpRouteImportedFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    routeFile: params.file,
+    declaration: params.declaration,
+    importContext,
+  });
+  const reachableImportContext = importContextForFiles({
+    rootDir: params.rootDir,
+    files: params.files,
+    entryFiles: reachableImportedFiles,
+  });
+  const flowImportedFiles = uniqueFileFacts([
+    ...reachableImportedFiles,
+    ...reachableImportContext.importedFiles,
+  ]);
+  const flowImportedSpecifiers = unique([
+    ...importContext.importedSpecifiers,
+    ...reachableImportContext.importedSpecifiers,
+  ]);
+  const flowResolvedImportSpecifiers = unique([
+    ...importContext.resolvedImportSpecifiers,
+    ...reachableImportContext.resolvedImportSpecifiers,
+  ]);
+  const allScannedFiles = [params.file, ...flowImportedFiles];
   const componentIds = componentIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.components,
   );
   const relatedComponents = params.components.filter((component) =>
     componentIds.includes(component.id),
+  );
+  const serviceIds = svcIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.services,
   );
   const relatedTests = httpRouteTestPaths({
     routeFile: params.file,
@@ -4183,7 +6554,10 @@ function inferHttpRouteDeclarationFlow(params: {
     relatedComponents,
   });
   const dependencies = unique(
-    externalImportSpecifiers(importContext).map((dependency) => entityId('dependency', dependency)),
+    externalImportSpecifiers({
+      importedSpecifiers: flowImportedSpecifiers,
+      resolvedImportSpecifiers: flowResolvedImportSpecifiers,
+    }).map((dependency) => entityId('dependency', dependency)),
   );
   const flowId = entityId(
     'flow',
@@ -4230,7 +6604,7 @@ function inferHttpRouteDeclarationFlow(params: {
       )}().`,
       evidence: [evId],
     },
-    ...importContext.importedFiles.slice(0, 8).map((file, index) => ({
+    ...flowImportedFiles.slice(0, 8).map((file, index) => ({
       step_id: flowStepId(flowId, index + 2),
       order: index + 2,
       type: 'service' as const,
@@ -4270,8 +6644,8 @@ function inferHttpRouteDeclarationFlow(params: {
     'http route declaration',
     'route file',
     `${params.declaration.method.toLowerCase()} route`,
-    ...(importContext.importedSpecifiers.length > 0 ? ['static import'] : []),
-    ...(importContext.importedFiles.length > 0 ? ['relative import'] : []),
+    ...(flowImportedSpecifiers.length > 0 ? ['static import'] : []),
+    ...(flowImportedFiles.length > 0 ? ['reachable relative import'] : []),
     ...(relatedTests.length > 0 ? ['test artifact'] : []),
     ...(configs.length > 0 ? ['configuration'] : []),
   ]);
@@ -4295,8 +6669,16 @@ function inferHttpRouteDeclarationFlow(params: {
   ];
   const files = unique([
     params.file.relativePath,
-    ...importContext.importedFiles.map((file) => file.relativePath),
+    ...flowImportedFiles.map((file) => file.relativePath),
   ]);
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel,
+    entryLabel: `${params.declaration.method} ${params.declaration.routePath}`,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind: 'api',
@@ -4308,6 +6690,15 @@ function inferHttpRouteDeclarationFlow(params: {
     risks,
     signals,
     confidenceReason: baseConfidence.reason,
+  });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind: 'api',
+    framework: params.declaration.framework,
+    routePath: params.declaration.routePath,
+    routeType: params.declaration.method,
+    configs,
+    serviceIds,
+    services: params.services,
   });
   const routeEvidence = httpRouteDeclarationEvidence({
     file: params.file,
@@ -4325,6 +6716,9 @@ function inferHttpRouteDeclarationFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
+    services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests: relatedTests,
     risks,
@@ -4338,18 +6732,27 @@ function inferHttpRouteDeclarationFlow(params: {
     required_tests: contracts.required_tests,
     confidence_reasons: contracts.confidence_reasons,
     confidence: { score: baseConfidence.score, reason: baseConfidence.reason },
-    evidence: uniqueFlowEvidence([routeEvidence, ...importContext.importEvidence]),
+    evidence: uniqueFlowEvidence([
+      routeEvidence,
+      ...(flowImportedFiles.length > 0
+        ? [...importContext.importEvidence, ...reachableImportContext.importEvidence]
+        : []),
+    ]),
     field_evidence: {
       entrypoints: [evId],
       steps: unique(steps.flatMap((step) => step.evidence)),
       components: componentIds.flatMap(
         (id) => params.components.find((item) => item.id === id)?.evidence_ids ?? [],
       ),
-      files: unique([
+      files: unique([evId, ...flowImportedFiles.map((file) => evidenceId(file.relativePath))]),
+      dependencies: flowImportedSpecifiers.length > 0 ? [evId] : [],
+      runtime_surfaces: unique([
         evId,
-        ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
+        ...configs.map(evidenceId),
+        ...idsEvidence(serviceIds, params.services),
       ]),
-      dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      services: idsEvidence(serviceIds, params.services),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -4365,6 +6768,7 @@ function inferRouteFlow(params: {
   readonly files: readonly FileFact[];
   readonly file: FileFact;
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly tests: readonly BrainEntity[];
   readonly changedFiles: ReadonlySet<string>;
 }): FlowIntelligence {
@@ -4377,6 +6781,10 @@ function inferRouteFlow(params: {
   const componentIds = componentIdsForFiles(
     allScannedFiles.map((file) => file.relativePath),
     params.components,
+  );
+  const serviceIds = svcIdsForFiles(
+    allScannedFiles.map((file) => file.relativePath),
+    params.services,
   );
   const relatedTests = params.tests
     .filter((test) => {
@@ -4454,6 +6862,14 @@ function inferRouteFlow(params: {
     params.file.relativePath,
     ...importContext.importedFiles.map((file) => file.relativePath),
   ]);
+  const serviceCausality = flowServiceCausality({
+    frameworkLabel: 'API',
+    entryLabel: params.file.relativePath,
+    serviceIds,
+    services: params.services,
+    files,
+    steps,
+  });
   const contracts = inferFlowContracts({
     rootDir: params.rootDir,
     kind: 'api',
@@ -4466,6 +6882,12 @@ function inferRouteFlow(params: {
     signals,
     confidenceReason: baseConfidence.reason,
   });
+  const runtimeSurfaces = flowRuntimeSurfaces({
+    kind: 'api',
+    configs,
+    serviceIds,
+    services: params.services,
+  });
   return {
     flow_id: flowId,
     name: `${safeText(basename(params.file.relativePath))} API flow`,
@@ -4475,6 +6897,9 @@ function inferRouteFlow(params: {
     components: componentIds,
     files,
     dependencies,
+    runtime_surfaces: runtimeSurfaces,
+    services: serviceIds,
+    service_causality: serviceCausality,
     configs,
     tests: unique(relatedTests),
     risks,
@@ -4508,6 +6933,13 @@ function inferRouteFlow(params: {
         ...importContext.importedFiles.map((file) => evidenceId(file.relativePath)),
       ]),
       dependencies: importContext.importedSpecifiers.length > 0 ? [evId] : [],
+      runtime_surfaces: unique([
+        evId,
+        ...configs.map(evidenceId),
+        ...idsEvidence(serviceIds, params.services),
+      ]),
+      services: idsEvidence(serviceIds, params.services),
+      service_causality: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
       configs: configs.map(evidenceId),
       tests: relatedTests.map(evidenceId),
       risks: risks.flatMap((risk) => risk.evidence),
@@ -4521,35 +6953,47 @@ function inferRouteFlow(params: {
 
 function buildFlowEntity(
   intelligence: FlowIntelligence,
+  rootDir: string,
   now: string,
+  dbs: readonly Dti[],
   createdAt?: string,
 ): BrainEntity {
+  const withDataDependencies: FlowIntelligence = {
+    ...intelligence,
+    data_dependencies: inferFlowDataDependencies({ rootDir, intelligence, dbs }),
+  };
+  const enriched = enrichFlowWithJourney(withDataDependencies);
   const confidence = flowConfidenceFor({
-    tests: intelligence.tests,
-    signals: intelligence.signals,
-    unknowns: intelligence.unknowns,
+    tests: enriched.tests,
+    signals: enriched.signals,
+    unknowns: enriched.unknowns,
   });
   return makeEntity({
-    id: intelligence.flow_id,
+    id: enriched.flow_id,
     type: 'flow',
-    name: intelligence.name,
-    description: `${intelligence.kind} flow reconstructed from local evidence.`,
+    name: enriched.name,
+    description: `${enriched.journey?.name ?? enriched.kind} reconstructed from local evidence.`,
     now,
     ...(createdAt !== undefined ? { createdAt } : {}),
     confidence: confidence.confidence,
     evidenceIds: unique([
-      ...intelligence.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
-      ...intelligence.steps.flatMap((step) => step.evidence),
-      ...intelligence.risks.flatMap((risk) => risk.evidence),
+      ...enriched.entrypoints.flatMap((entrypoint) => entrypoint.evidence),
+      ...enriched.steps.flatMap((step) => step.evidence),
+      ...(enriched.service_causality ?? []).flatMap((item) => item.evidence_ids),
+      ...(enriched.data_dependencies ?? []).flatMap((item) => item.evidence_ids),
+      ...enriched.risks.flatMap((risk) => risk.evidence),
+      ...(enriched.journey?.evidence_ids ?? []),
+      ...(enriched.journey_steps ?? []).flatMap((step) => step.evidence_ids),
     ]),
     relatedEntityIds: unique([
-      ...intelligence.components,
-      ...intelligence.dependencies,
-      ...intelligence.configs.map((config) => entityId('config', config)),
-      ...intelligence.tests.map((test) => entityId('test', test)),
+      ...enriched.components,
+      ...(enriched.services ?? []),
+      ...enriched.dependencies,
+      ...enriched.configs.map((config) => entityId('config', config)),
+      ...enriched.tests.map((test) => entityId('test', test)),
     ]),
-    sourceFiles: intelligence.files,
-    data: { ...intelligence, confidence: { ...intelligence.confidence, score: confidence.score } },
+    sourceFiles: enriched.files,
+    data: { ...enriched, confidence: { ...enriched.confidence, score: confidence.score } },
   });
 }
 
@@ -4564,6 +7008,7 @@ function reconstructFlows(params: {
   readonly previousFlows: ReadonlyMap<string, BrainEntity>;
 }): void {
   const changedFileSet = new Set(params.changedFiles);
+  const dbs = inferDbTables(params.rootDir, params.files);
   const flowIntelligence: FlowIntelligence[] = [];
   for (const pkg of params.packageFacts) {
     for (const [scriptName, command] of Object.entries(pkg.scripts)) {
@@ -4576,6 +7021,7 @@ function reconstructFlows(params: {
           scriptName,
           command,
           components: params.buckets.components,
+          services: params.buckets.services,
           changedFiles: changedFileSet,
         }),
       );
@@ -4594,6 +7040,7 @@ function reconstructFlows(params: {
         routePath: routeInfo.routePath,
         routeType: routeInfo.routeType,
         components: params.buckets.components,
+        services: params.buckets.services,
         tests: params.buckets.tests,
         changedFiles: changedFileSet,
       }),
@@ -4618,6 +7065,7 @@ function reconstructFlows(params: {
           file,
           declaration,
           components: params.buckets.components,
+          services: params.buckets.services,
           tests: params.buckets.tests,
           changedFiles: changedFileSet,
         }),
@@ -4636,10 +7084,35 @@ function reconstructFlows(params: {
         files: params.files,
         file,
         components: params.buckets.components,
+        services: params.buckets.services,
         tests: params.buckets.tests,
         changedFiles: changedFileSet,
       }),
     );
+  }
+  for (const service of params.buckets.services) {
+    for (const entrypoint of svcFlowEntrypoints(service)) {
+      if (flowCoversFile(flowIntelligence, entrypoint)) continue;
+      flowIntelligence.push(
+        inferSvcFlow({
+          rootDir: params.rootDir,
+          service,
+          entrypoint,
+          changedFiles: changedFileSet,
+          deps: {
+            safeText,
+            evidenceId,
+            entityId,
+            flowStepId,
+            flowEvidenceForNeedle,
+            flowConfidenceFor,
+            flowServiceCausality,
+            inferFlowContracts,
+            flowRuntimeSurfaces,
+          },
+        }),
+      );
+    }
   }
 
   const byId = new Map<string, FlowIntelligence>();
@@ -4647,7 +7120,7 @@ function reconstructFlows(params: {
 
   for (const flow of sorted([...byId.values()], (item) => item.flow_id)) {
     const previous = params.previousFlows.get(flow.flow_id);
-    const entity = buildFlowEntity(flow, params.now, previous?.created_at);
+    const entity = buildFlowEntity(flow, params.rootDir, params.now, dbs, previous?.created_at);
     params.buckets.flows.push(entity);
     for (const componentId of flow.components) {
       addRelation(
@@ -4667,6 +7140,17 @@ function reconstructFlows(params: {
         dependencyId,
         flow.field_evidence.dependencies ?? entity.evidence_ids,
         'inferred',
+      );
+    }
+    for (const serviceId of flow.services ?? []) {
+      const service = params.buckets.services.find((item) => item.id === serviceId);
+      addRelation(
+        params.relationships,
+        flow.flow_id,
+        'calls',
+        serviceId,
+        flow.field_evidence.services ?? service?.evidence_ids ?? entity.evidence_ids,
+        entity.confidence,
       );
     }
     for (const configPath of flow.configs) {
@@ -5005,6 +7489,153 @@ interface EvidenceGap {
   readonly to_entity_id?: string;
 }
 
+interface EvidenceConfidenceDelta {
+  readonly priority: number;
+  readonly gap_kind: string;
+  readonly target_id: string;
+  readonly current_confidence: Confidence;
+  readonly target_confidence: Confidence;
+  readonly current_score: number;
+  readonly target_score: number;
+  readonly confidence_delta: number;
+  readonly reason: string;
+  readonly verification_actions: readonly string[];
+  readonly read_first_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+}
+
+type ConfidenceInspectionSource =
+  | 'evidence'
+  | 'architecture'
+  | 'incremental'
+  | 'security'
+  | 'tools';
+
+type SecurityScanFindingCategory =
+  | 'private_surface'
+  | 'install_lifecycle'
+  | 'networked_script'
+  | 'destructive_script'
+  | 'sensitive_dependency';
+
+interface SecurityScanFinding {
+  readonly finding_id: string;
+  readonly severity: EvidenceGap['severity'];
+  readonly category: SecurityScanFindingCategory;
+  readonly target_id: string;
+  readonly target_type: 'file' | 'package_script' | 'dependency';
+  readonly path?: string;
+  readonly package_path?: string;
+  readonly script_name?: string;
+  readonly dependency_name?: string;
+  readonly reason: string;
+  readonly inspect_hint: string;
+  readonly evidence_ids: readonly string[];
+}
+
+interface SecurityScanArtifact {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly scan_mode: string;
+  readonly scanned_files: number;
+  readonly scanned_manifests: number;
+  readonly posture_score: number;
+  readonly finding_count: number;
+  readonly high_risk_count: number;
+  readonly private_surface_count: number;
+  readonly risky_script_count: number;
+  readonly dependency_attention_count: number;
+  readonly findings: readonly SecurityScanFinding[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
+type ToolInventorySurfaceKind = 'mcp_config' | 'agent_config' | 'ci_workflow' | 'package_script';
+
+interface ToolInventorySurface {
+  readonly surface_id: string;
+  readonly kind: ToolInventorySurfaceKind;
+  readonly path: string;
+  readonly name: string;
+  readonly risk_level: EvidenceGap['severity'];
+  readonly reason: string;
+  readonly inspect_hint: string;
+  readonly evidence_ids: readonly string[];
+}
+
+interface ToolInventoryArtifact {
+  readonly schema_version: number;
+  readonly generated_at: string;
+  readonly deterministic: boolean;
+  readonly provider_calls_required: boolean;
+  readonly network_required: boolean;
+  readonly scan_mode: string;
+  readonly surface_count: number;
+  readonly mcp_config_count: number;
+  readonly agent_config_count: number;
+  readonly ci_workflow_count: number;
+  readonly package_script_count: number;
+  readonly high_risk_count: number;
+  readonly tool_risk_score: number;
+  readonly surfaces: readonly ToolInventorySurface[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
+interface ConfidenceInspectionQueueItem {
+  readonly priority: number;
+  readonly source: ConfidenceInspectionSource;
+  readonly severity: EvidenceGap['severity'];
+  readonly target_type: string;
+  readonly target_id: string;
+  readonly reason: string;
+  readonly current_confidence: Confidence;
+  readonly confidence_delta: number;
+  readonly inspect_hint: string;
+  readonly verification_actions: readonly string[];
+  readonly read_first_files: readonly string[];
+  readonly evidence_ids: readonly string[];
+  readonly evidence_gap_ids: readonly string[];
+  readonly artifacts: readonly string[];
+}
+
+type ConfidenceInspectionQueueCandidate = Omit<ConfidenceInspectionQueueItem, 'priority'>;
+
+interface ConfidenceInspectionQueue {
+  readonly schema_version: number;
+  readonly item_count: number;
+  readonly candidate_count: number;
+  readonly high_priority_count: number;
+  readonly sources: Record<ConfidenceInspectionSource, number>;
+  readonly items: readonly ConfidenceInspectionQueueItem[];
+  readonly summary: string;
+  readonly calibration_rule: string;
+}
+
+interface ServiceCausalityQualitySummary {
+  readonly total_claims: number;
+  readonly evidence_backed_claims: number;
+  readonly unsupported_claims: number;
+  readonly weak_evidence_claims: number;
+  readonly uncertain_claims: number;
+  readonly missing_evidence_claims: number;
+  readonly missing_effect_claims: number;
+  readonly missing_step_link_claims: number;
+  readonly evidence_coverage_score: number;
+  readonly confidence_mix: Record<Confidence, number>;
+  readonly claim_examples: readonly {
+    readonly flow_id: string;
+    readonly service_id: string;
+    readonly evidence_ids: number;
+    readonly effects: number;
+    readonly step_ids: number;
+    readonly confidence: Confidence;
+  }[];
+}
+
 interface EvidenceCalibrationClaimSet {
   readonly name: string;
   readonly claims: readonly BrainEntity[];
@@ -5063,6 +7694,8 @@ const FLOW_UNDERSTANDING_FIELDS = [
   'components',
   'files',
   'dependencies',
+  'runtime_surfaces',
+  'service_causality',
   'configs',
   'tests',
   'risks',
@@ -5162,11 +7795,93 @@ function fieldEvidenceGapRecords(params: {
   return gaps;
 }
 
+function serviceCausalityQualitySummary(
+  flows: readonly BrainEntity[],
+): ServiceCausalityQualitySummary {
+  const claims = flows.flatMap((flow) =>
+    safeFlowServiceCausality(flow).map((claim) => ({ flow, claim })),
+  );
+  const evidenceBackedClaims = claims.filter(({ claim }) => claim.evidence_ids.length > 0);
+  const weakEvidenceClaims = evidenceBackedClaims.filter(
+    ({ claim }) => claim.confidence !== 'verified',
+  );
+  const missingEvidenceClaims = claims.filter(({ claim }) => claim.evidence_ids.length === 0);
+  const missingEffectClaims = claims.filter(({ claim }) => claim.effects.length === 0);
+  const missingStepLinkClaims = claims.filter(({ claim }) => claim.step_ids.length === 0);
+  const confidenceMix = countByConfidence(claims.map(({ claim }) => claim.confidence));
+  return {
+    total_claims: claims.length,
+    evidence_backed_claims: evidenceBackedClaims.length,
+    unsupported_claims: missingEvidenceClaims.length,
+    weak_evidence_claims: weakEvidenceClaims.length,
+    uncertain_claims: confidenceMix.uncertain,
+    missing_evidence_claims: missingEvidenceClaims.length,
+    missing_effect_claims: missingEffectClaims.length,
+    missing_step_link_claims: missingStepLinkClaims.length,
+    evidence_coverage_score: scorePercent(evidenceBackedClaims.length, claims.length),
+    confidence_mix: confidenceMix,
+    claim_examples: claims.slice(0, 8).map(({ flow, claim }) => ({
+      flow_id: safeText(flow.id),
+      service_id: safeText(claim.service_id),
+      evidence_ids: claim.evidence_ids.length,
+      effects: claim.effects.length,
+      step_ids: claim.step_ids.length,
+      confidence: claim.confidence,
+    })),
+  };
+}
+
+function serviceCausalityEvidenceGapRecords(flows: readonly BrainEntity[]): EvidenceGap[] {
+  const gaps: EvidenceGap[] = [];
+  for (const flow of flows) {
+    for (const claim of safeFlowServiceCausality(flow)) {
+      const id = `${safeText(flow.id)} service_causality ${safeText(claim.service_id)}`;
+      if (claim.evidence_ids.length === 0) {
+        gaps.push({
+          kind: 'unsupported_service_causality',
+          id,
+          entity_type: 'flow',
+          field: 'service_causality',
+          severity: 'high',
+          confidence: claim.confidence,
+          reason:
+            'Service causality claim has no evidence_ids; static reachability cannot be inspected.',
+        });
+      }
+      if (claim.effects.length === 0) {
+        gaps.push({
+          kind: 'uncertain_service_causality_effect',
+          id,
+          entity_type: 'flow',
+          field: 'service_causality',
+          severity: 'medium',
+          confidence: claim.confidence,
+          reason: 'Service causality claim has no recorded effects, so impact is uncertain.',
+        });
+      }
+      if (claim.step_ids.length === 0) {
+        gaps.push({
+          kind: 'uncertain_service_causality_step',
+          id,
+          entity_type: 'flow',
+          field: 'service_causality',
+          severity: 'medium',
+          confidence: claim.confidence,
+          reason:
+            'Service causality claim is not linked to a reconstructed flow step; treat static-import reachability as uncertain.',
+        });
+      }
+    }
+  }
+  return gaps;
+}
+
 function topEvidenceGaps(params: {
   readonly entitiesWithoutEvidence: readonly BrainEntity[];
   readonly relationshipsWithoutEvidence: readonly BrainRelationship[];
   readonly missingEvidenceReferences: readonly string[];
   readonly fieldGaps: readonly EvidenceGap[];
+  readonly serviceCausalityGaps: readonly EvidenceGap[];
 }): EvidenceGap[] {
   const gaps: EvidenceGap[] = [
     ...params.missingEvidenceReferences.map((id) => ({
@@ -5196,6 +7911,7 @@ function topEvidenceGaps(params: {
         reason: 'Entity claim has no evidence reference.',
       })),
     ...params.fieldGaps,
+    ...params.serviceCausalityGaps,
   ];
   const severityRank = (severity: EvidenceGap['severity']): number => {
     if (severity === 'high') return 0;
@@ -5342,6 +8058,15 @@ function evidenceInspectHint(gap: EvidenceGap): string {
   if (gap.kind === 'unsupported_field') {
     return 'Inspect the field-specific evidence map for this component or flow.';
   }
+  if (gap.kind === 'unsupported_service_causality') {
+    return 'Inspect the flow service_causality entry and attach direct source evidence for the service reachability claim.';
+  }
+  if (
+    gap.kind === 'uncertain_service_causality_effect' ||
+    gap.kind === 'uncertain_service_causality_step'
+  ) {
+    return 'Inspect the service_causality effects and step_ids before relying on service impact claims.';
+  }
   return 'Inspect the entity evidence_ids and source files before relying on this claim.';
 }
 
@@ -5390,6 +8115,7 @@ function buildEvidenceCalibrationBreakdown(params: {
   readonly buckets: BrainBuckets;
   readonly relationships: readonly BrainRelationship[];
   readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly serviceCausalityQuality: ServiceCausalityQualitySummary;
   readonly topGaps: readonly EvidenceGap[];
   readonly redactedEvidenceCount: number;
   readonly redactedReferenceCount: number;
@@ -5458,6 +8184,15 @@ function buildEvidenceCalibrationBreakdown(params: {
       coverage: params.fieldCoverage.component,
     }),
     fieldCalibrationSurface({ surface: 'flow_fields', coverage: params.fieldCoverage.flow }),
+    {
+      surface: 'service_causality',
+      total_claims: params.serviceCausalityQuality.total_claims,
+      evidence_backed_claims: params.serviceCausalityQuality.evidence_backed_claims,
+      unsupported_claims: params.serviceCausalityQuality.unsupported_claims,
+      weak_evidence_claims: params.serviceCausalityQuality.weak_evidence_claims,
+      evidence_coverage_score: params.serviceCausalityQuality.evidence_coverage_score,
+      confidence_mix: params.serviceCausalityQuality.confidence_mix,
+    },
   ];
   const allSurfaces = [...categorySurfaces, ...surfaceMix];
   const weakAreas = topEvidenceWeakAreas(allSurfaces);
@@ -5488,6 +8223,7 @@ function unbackedClaimGroups(params: {
   readonly claimEntitiesWithoutEvidence: readonly BrainEntity[];
   readonly relationshipsWithoutEvidence: readonly BrainRelationship[];
   readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly serviceCausalityQuality: ServiceCausalityQualitySummary;
 }): Array<Record<string, unknown>> {
   const entityGroups = Object.entries(
     countByValue(params.claimEntitiesWithoutEvidence.map((entity) => entity.type)),
@@ -5538,7 +8274,22 @@ function unbackedClaimGroups(params: {
         'Inspect flow field_evidence maps for populated flow steps, tests, contracts, or risks without evidence.',
     },
   ].filter((group) => group.claim_count > 0);
-  return [...entityGroups, ...relationshipGroup, ...fieldGroups]
+  const serviceCausalityGroup =
+    params.serviceCausalityQuality.unsupported_claims === 0
+      ? []
+      : [
+          {
+            group: 'service causality claims',
+            claim_count: params.serviceCausalityQuality.unsupported_claims,
+            example_ids: params.serviceCausalityQuality.claim_examples
+              .filter((claim) => claim.evidence_ids === 0)
+              .map((claim) => `${claim.flow_id} -> ${claim.service_id}`)
+              .slice(0, 5),
+            inspect_hint:
+              'Inspect flow service_causality entries and add direct evidence_ids for static service reachability claims.',
+          },
+        ];
+  return [...entityGroups, ...relationshipGroup, ...fieldGroups, ...serviceCausalityGroup]
     .sort((a, b) => {
       const aCount = typeof a.claim_count === 'number' ? a.claim_count : 0;
       const bCount = typeof b.claim_count === 'number' ? b.claim_count : 0;
@@ -5553,6 +8304,7 @@ function lowConfidenceClaimAreas(params: {
   readonly claimEntitiesWithWeakEvidence: readonly BrainEntity[];
   readonly relationshipsWithWeakEvidence: readonly BrainRelationship[];
   readonly fieldCoverage: Record<'component' | 'flow', FieldCoverageSummary>;
+  readonly serviceCausalityQuality: ServiceCausalityQualitySummary;
 }): Array<Record<string, unknown>> {
   const entityGroups = Object.entries(
     countByValue(params.claimEntitiesWithWeakEvidence.map((entity) => entity.type)),
@@ -5618,7 +8370,22 @@ function lowConfidenceClaimAreas(params: {
         'Confirm flow fields backed by inferred flow evidence before using them as execution certainty.',
     },
   ].filter((area) => area.claim_count > 0);
-  return [...entityGroups, ...relationshipArea, ...fieldAreas]
+  const serviceCausalityArea =
+    params.serviceCausalityQuality.weak_evidence_claims === 0
+      ? []
+      : [
+          {
+            area: 'service causality evidence-backed claims',
+            claim_count: params.serviceCausalityQuality.weak_evidence_claims,
+            confidence_mix: params.serviceCausalityQuality.confidence_mix,
+            example_ids: params.serviceCausalityQuality.claim_examples
+              .map((claim) => `${claim.flow_id} -> ${claim.service_id}`)
+              .slice(0, 5),
+            inspect_hint:
+              'Treat static-import service causality as inferred until runtime traces, smoke checks, or direct behavior tests verify it.',
+          },
+        ];
+  return [...entityGroups, ...relationshipArea, ...fieldAreas, ...serviceCausalityArea]
     .sort((a, b) => {
       const aCount = typeof a.claim_count === 'number' ? a.claim_count : 0;
       const bCount = typeof b.claim_count === 'number' ? b.claim_count : 0;
@@ -5654,6 +8421,12 @@ function readFirstFilesForEntity(entity: BrainEntity): string[] {
     .slice(0, 5);
 }
 
+function uniqueById(entities: readonly BrainEntity[]): BrainEntity[] {
+  const byId = new Map<string, BrainEntity>();
+  for (const entity of entities) byId.set(entity.id, entity);
+  return [...byId.values()];
+}
+
 function suggestedReadFirstForEvidenceGaps(params: {
   readonly topGaps: readonly EvidenceGap[];
   readonly entitiesById: ReadonlyMap<string, BrainEntity>;
@@ -5679,6 +8452,757 @@ function suggestedReadFirstForEvidenceGaps(params: {
   });
 }
 
+function confidenceDeltaTargetForGap(gap: EvidenceGap): Confidence {
+  if (gap.confidence === 'verified') return 'verified';
+  if (
+    gap.kind === 'missing_reference' ||
+    gap.kind === 'unsupported_relationship' ||
+    gap.kind === 'unsupported_service_causality'
+  ) {
+    return 'verified';
+  }
+  return 'inferred';
+}
+
+function serviceCausalityFlowIdFromGap(gap: EvidenceGap): string | undefined {
+  const marker = ' service_causality ';
+  if (!gap.id.includes(marker)) return undefined;
+  const flowId = gap.id.slice(0, gap.id.indexOf(marker));
+  return flowId === '' ? undefined : flowId;
+}
+
+function evidenceVerificationActionsForGap(params: {
+  readonly gap: EvidenceGap;
+  readonly targetEntities: readonly BrainEntity[];
+}): string[] {
+  const explainTargets = params.targetEntities
+    .map((entity) => {
+      if (entity.type === 'flow') return `rizz explain ${entity.id}`;
+      if (entity.source_files.length > 0) return `rizz explain ${entity.source_files[0]}`;
+      return `rizz explain ${entity.id}`;
+    })
+    .slice(0, 3);
+  return uniqueInOrder([
+    evidenceInspectHint(params.gap),
+    ...explainTargets,
+    ...(params.gap.kind === 'unsupported_relationship'
+      ? ['Confirm the relationship against imports, manifests, tests, or direct source evidence.']
+      : []),
+    ...(params.gap.kind === 'unsupported_field'
+      ? ['Add field-specific evidence_ids before using this field as review guidance.']
+      : []),
+    ...(params.gap.kind.includes('service_causality')
+      ? ['Run or inspect the route/service behavior before upgrading service-causality confidence.']
+      : []),
+  ]).map(safeText);
+}
+
+function evidenceConfidenceDeltasForGaps(params: {
+  readonly topGaps: readonly EvidenceGap[];
+  readonly entitiesById: ReadonlyMap<string, BrainEntity>;
+}): EvidenceConfidenceDelta[] {
+  return params.topGaps.slice(0, 10).map((gap, index) => {
+    const serviceFlowId = serviceCausalityFlowIdFromGap(gap);
+    const directTargets = readFirstEntityTargets({ gap, entitiesById: params.entitiesById });
+    const serviceFlow =
+      serviceFlowId === undefined ? undefined : params.entitiesById.get(serviceFlowId);
+    const targetEntities = uniqueById([
+      ...directTargets,
+      ...(serviceFlow === undefined ? [] : [serviceFlow]),
+    ]);
+    const currentConfidence = gap.confidence ?? 'uncertain';
+    const targetConfidence = confidenceDeltaTargetForGap(gap);
+    const currentScore = confidenceScoreForValue(currentConfidence);
+    const targetScore = confidenceScoreForValue(targetConfidence);
+    return {
+      priority: index + 1,
+      gap_kind: safeText(gap.kind),
+      target_id: safeText(gap.id),
+      current_confidence: currentConfidence,
+      target_confidence: targetConfidence,
+      current_score: Number(currentScore.toFixed(2)),
+      target_score: Number(targetScore.toFixed(2)),
+      confidence_delta: Math.max(0, Math.round((targetScore - currentScore) * 100)),
+      reason: safeText(gap.reason),
+      verification_actions: evidenceVerificationActionsForGap({ gap, targetEntities }),
+      read_first_files: unique(targetEntities.flatMap(readFirstFilesForEntity)).slice(0, 6),
+      evidence_ids: unique(
+        targetEntities.flatMap((entity) => entity.evidence_ids.map(safeText)),
+      ).slice(0, 8),
+    };
+  });
+}
+
+function fileEvidenceIds(path: string): string[] {
+  return [evidenceId(path)];
+}
+
+function scriptTargetId(packagePath: string, scriptName: string): string {
+  return `${safeText(packagePath)}#scripts.${safeText(scriptName)}`;
+}
+
+function isSecretSurfacePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.env.example')) return false;
+  if (classifySensitivePath(path).isSensitive) return true;
+  return /(^|\/)\.env(\.|$)/.test(lower) || /(^|\/)(secrets?|credentials?|tokens?)\//.test(lower);
+}
+
+function isMcpConfigPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const leaf = lower.split('/').at(-1) ?? lower;
+  return (
+    leaf === 'mcp.json' ||
+    leaf === '.mcp.json' ||
+    lower.includes('/mcp/') ||
+    lower.endsWith('/mcp_config.json') ||
+    lower.endsWith('/claude_desktop_config.json')
+  );
+}
+
+function isAgentConfigPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  const leaf = lower.split('/').at(-1) ?? lower;
+  return (
+    leaf === 'agents.md' ||
+    leaf === 'claude.md' ||
+    lower.startsWith('.cursor/') ||
+    lower.startsWith('.windsurf/') ||
+    lower.endsWith('/agent.yaml') ||
+    lower.endsWith('/agent.yml') ||
+    lower.endsWith('/agent.json')
+  );
+}
+
+function isCiWorkflowPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.startsWith('.github/workflows/') || lower.startsWith('.gitlab-ci');
+}
+
+function scriptHasNetworkedInstaller(command: string): boolean {
+  return /\b(curl|wget)\b/i.test(command) && /(\|\s*(sh|bash)|\bsh\b|\bbash\b)/i.test(command);
+}
+
+function scriptIsDestructive(command: string): boolean {
+  return /\brm\s+-[a-z-]*r[a-z-]*f\b/i.test(command) || /\bchmod\s+777\b/i.test(command);
+}
+
+function securitySensitiveDependency(name: string): boolean {
+  return /(^|[-/@])(auth|oauth|jwt|passport|keychain|credential|secret|crypto|stripe|firebase|supabase|aws-sdk|gcp|azure|openai|anthropic)([-/]|$)/i.test(
+    name,
+  );
+}
+
+function buildSecurityScanArtifact(params: {
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): SecurityScanArtifact {
+  const secretSurfaceFindings = params.files
+    .filter((file) => isSecretSurfacePath(file.relativePath))
+    .slice(0, 20)
+    .map(
+      (file): SecurityScanFinding => ({
+        finding_id: `security:${stableSlug(file.relativePath)}:private-surface`,
+        severity: 'high',
+        category: 'private_surface',
+        target_id: safeText(file.relativePath),
+        target_type: 'file',
+        path: safeText(file.relativePath),
+        reason: 'Repository contains a path that looks like a private credential surface.',
+        inspect_hint:
+          'Confirm this file is ignored, redacted, or fixture-only before sharing artifacts or running agent tools.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      }),
+    );
+  const scriptFindings = params.packageFacts.flatMap((pkg) =>
+    Object.entries(pkg.scripts).flatMap(([scriptName, command]) => {
+      const findings: SecurityScanFinding[] = [];
+      if (/^(preinstall|install|postinstall|prepare)$/.test(scriptName)) {
+        findings.push({
+          finding_id: `security:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:install-lifecycle`,
+          severity: 'medium',
+          category: 'install_lifecycle',
+          target_id: scriptTargetId(pkg.relativePath, scriptName),
+          target_type: 'package_script',
+          package_path: safeText(pkg.relativePath),
+          script_name: safeText(scriptName),
+          reason: 'Package lifecycle script can execute during dependency installation.',
+          inspect_hint:
+            'Review this script before letting an agent install dependencies or repair the workspace.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        });
+      }
+      if (scriptHasNetworkedInstaller(command)) {
+        findings.push({
+          finding_id: `security:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:networked-script`,
+          severity: 'high',
+          category: 'networked_script',
+          target_id: scriptTargetId(pkg.relativePath, scriptName),
+          target_type: 'package_script',
+          package_path: safeText(pkg.relativePath),
+          script_name: safeText(scriptName),
+          reason: 'Package script appears to pipe a network fetch into a shell.',
+          inspect_hint:
+            'Require human approval before running this command; inspect the source URL out of band.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        });
+      }
+      if (scriptIsDestructive(command)) {
+        findings.push({
+          finding_id: `security:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:destructive-script`,
+          severity: 'high',
+          category: 'destructive_script',
+          target_id: scriptTargetId(pkg.relativePath, scriptName),
+          target_type: 'package_script',
+          package_path: safeText(pkg.relativePath),
+          script_name: safeText(scriptName),
+          reason: 'Package script includes a destructive shell pattern.',
+          inspect_hint:
+            'Do not run this script from an agent loop without explicit approval and a clean worktree.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        });
+      }
+      return findings;
+    }),
+  );
+  const dependencyFindings = params.packageFacts.flatMap((pkg) =>
+    unique([
+      ...Object.keys(pkg.dependencies).filter(securitySensitiveDependency),
+      ...Object.keys(pkg.devDependencies).filter(securitySensitiveDependency),
+    ])
+      .slice(0, 12)
+      .map(
+        (dependency): SecurityScanFinding => ({
+          finding_id: `security:${stableSlug(`${pkg.relativePath}:${dependency}`)}:sensitive-dependency`,
+          severity: 'low',
+          category: 'sensitive_dependency',
+          target_id: `${safeText(pkg.relativePath)}#${safeText(dependency)}`,
+          target_type: 'dependency',
+          package_path: safeText(pkg.relativePath),
+          dependency_name: safeText(dependency),
+          reason:
+            'Dependency name suggests auth, cloud, payments, model, or credential-sensitive behavior.',
+          inspect_hint:
+            'Inspect related flows before trusting blast radius or letting agent tools modify this package.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        }),
+      ),
+  );
+  const findings = [...secretSurfaceFindings, ...scriptFindings, ...dependencyFindings]
+    .sort(
+      (a, b) =>
+        confidenceInspectionSeverityRank(a.severity) -
+          confidenceInspectionSeverityRank(b.severity) ||
+        a.category.localeCompare(b.category) ||
+        a.target_id.localeCompare(b.target_id),
+    )
+    .slice(0, 40);
+  const highRiskCount = findings.filter((finding) => finding.severity === 'high').length;
+  const mediumRiskCount = findings.filter((finding) => finding.severity === 'medium').length;
+  const postureScore = Math.max(0, 100 - highRiskCount * 18 - mediumRiskCount * 9);
+  const riskyScriptCount = findings.filter(
+    (finding) =>
+      finding.category === 'install_lifecycle' ||
+      finding.category === 'networked_script' ||
+      finding.category === 'destructive_script',
+  ).length;
+  const dependencyAttentionCount = findings.filter(
+    (finding) => finding.category === 'sensitive_dependency',
+  ).length;
+  const secretSurfaceCount = findings.filter(
+    (finding) => finding.category === 'private_surface',
+  ).length;
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    scan_mode: 'metadata_and_manifest_only',
+    scanned_files: params.files.length,
+    scanned_manifests: params.packageFacts.length,
+    posture_score: postureScore,
+    finding_count: findings.length,
+    high_risk_count: highRiskCount,
+    private_surface_count: secretSurfaceCount,
+    risky_script_count: riskyScriptCount,
+    dependency_attention_count: dependencyAttentionCount,
+    findings,
+    summary:
+      findings.length === 0
+        ? 'No deterministic security scanner findings were detected.'
+        : `${findings.length} security scanner finding(s), including ${highRiskCount} high-risk item(s), need inspection before broad agent execution.`,
+    calibration_rule:
+      'Security scan is deterministic metadata; it flags credential paths, risky scripts, and sensitive dependency surfaces.',
+  };
+}
+
+function toolRiskLevel(surface: ToolInventorySurface): EvidenceGap['severity'] {
+  if (surface.kind === 'mcp_config') return 'high';
+  if (surface.kind === 'ci_workflow') return 'medium';
+  if (surface.kind === 'package_script' && /deploy|release|publish|start|dev/i.test(surface.name)) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function buildToolInventoryArtifact(params: {
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): ToolInventoryArtifact {
+  const fileSurfaces: ToolInventorySurface[] = [];
+  for (const file of params.files) {
+    const path = safeText(file.relativePath);
+    if (isMcpConfigPath(file.relativePath)) {
+      fileSurfaces.push({
+        surface_id: `tool:${stableSlug(file.relativePath)}:mcp-config`,
+        kind: 'mcp_config',
+        path,
+        name: basename(file.relativePath),
+        risk_level: 'high',
+        reason: 'MCP configuration can grant an agent new tools or external capabilities.',
+        inspect_hint:
+          'Review tool servers, command arguments, and trust boundaries before using this workspace with agents.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      });
+      continue;
+    }
+    if (isAgentConfigPath(file.relativePath)) {
+      fileSurfaces.push({
+        surface_id: `tool:${stableSlug(file.relativePath)}:agent-config`,
+        kind: 'agent_config',
+        path,
+        name: basename(file.relativePath),
+        risk_level: 'medium',
+        reason: 'Agent instructions can change tool behavior, review scope, or safety posture.',
+        inspect_hint:
+          'Inspect this file before accepting repo-local agent behavior or orchestration rules.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      });
+      continue;
+    }
+    if (isCiWorkflowPath(file.relativePath)) {
+      fileSurfaces.push({
+        surface_id: `tool:${stableSlug(file.relativePath)}:ci-workflow`,
+        kind: 'ci_workflow',
+        path,
+        name: basename(file.relativePath),
+        risk_level: 'medium',
+        reason: 'CI workflow defines executable automation and release gates.',
+        inspect_hint:
+          'Inspect workflow triggers, permissions, private value usage, and publish/deploy steps.',
+        evidence_ids: fileEvidenceIds(file.relativePath),
+      });
+    }
+    if (fileSurfaces.length >= 40) break;
+  }
+  const scriptSurfaces = params.packageFacts.flatMap((pkg) =>
+    Object.keys(pkg.scripts)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 16)
+      .map((scriptName) => {
+        const base: ToolInventorySurface = {
+          surface_id: `tool:${stableSlug(scriptTargetId(pkg.relativePath, scriptName))}:package-script`,
+          kind: 'package_script',
+          path: safeText(pkg.relativePath),
+          name: safeText(scriptName),
+          risk_level: 'low',
+          reason: 'Package script is an executable tool surface available to agents.',
+          inspect_hint:
+            'Inspect script intent before using it as an automated repair or verification command.',
+          evidence_ids: fileEvidenceIds(pkg.relativePath),
+        };
+        return { ...base, risk_level: toolRiskLevel(base) };
+      }),
+  );
+  const surfaces = [...fileSurfaces, ...scriptSurfaces]
+    .sort(
+      (a, b) =>
+        confidenceInspectionSeverityRank(a.risk_level) -
+          confidenceInspectionSeverityRank(b.risk_level) ||
+        a.kind.localeCompare(b.kind) ||
+        a.surface_id.localeCompare(b.surface_id),
+    )
+    .slice(0, 60);
+  const highRiskCount = surfaces.filter((surface) => surface.risk_level === 'high').length;
+  const mediumRiskCount = surfaces.filter((surface) => surface.risk_level === 'medium').length;
+  const toolRiskScore = Math.max(0, 100 - highRiskCount * 16 - mediumRiskCount * 7);
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    scan_mode: 'metadata_and_manifest_only',
+    surface_count: surfaces.length,
+    mcp_config_count: surfaces.filter((surface) => surface.kind === 'mcp_config').length,
+    agent_config_count: surfaces.filter((surface) => surface.kind === 'agent_config').length,
+    ci_workflow_count: surfaces.filter((surface) => surface.kind === 'ci_workflow').length,
+    package_script_count: surfaces.filter((surface) => surface.kind === 'package_script').length,
+    high_risk_count: highRiskCount,
+    tool_risk_score: toolRiskScore,
+    surfaces,
+    summary:
+      surfaces.length === 0
+        ? 'No tool inventory surfaces were detected.'
+        : `${surfaces.length} tool surface(s), including ${highRiskCount} high-risk item(s), are available for agent inspection.`,
+    calibration_rule: 'Tool inventory is metadata-only and does not load tools by default.',
+  };
+}
+
+function parseInspectionSeverity(value: unknown): EvidenceGap['severity'] {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
+  return 'medium';
+}
+
+function confidenceInspectionSeverityRank(severity: EvidenceGap['severity']): number {
+  if (severity === 'high') return 0;
+  if (severity === 'medium') return 1;
+  return 2;
+}
+
+function confidenceInspectionSourceRank(source: ConfidenceInspectionSource): number {
+  if (source === 'evidence') return 0;
+  if (source === 'architecture') return 1;
+  if (source === 'security') return 2;
+  if (source === 'tools') return 3;
+  return 4;
+}
+
+function confidenceInspectionSources(
+  items: readonly ConfidenceInspectionQueueItem[],
+): Record<ConfidenceInspectionSource, number> {
+  return {
+    evidence: items.filter((item) => item.source === 'evidence').length,
+    architecture: items.filter((item) => item.source === 'architecture').length,
+    incremental: items.filter((item) => item.source === 'incremental').length,
+    security: items.filter((item) => item.source === 'security').length,
+    tools: items.filter((item) => item.source === 'tools').length,
+  };
+}
+
+function confidenceInspectionCandidateKey(item: ConfidenceInspectionQueueCandidate): string {
+  return `${item.source}\u0000${item.target_type}\u0000${item.target_id}`;
+}
+
+function compareConfidenceInspectionCandidates(
+  a: ConfidenceInspectionQueueCandidate,
+  b: ConfidenceInspectionQueueCandidate,
+): number {
+  return (
+    confidenceInspectionSeverityRank(a.severity) - confidenceInspectionSeverityRank(b.severity) ||
+    confidenceInspectionSourceRank(a.source) - confidenceInspectionSourceRank(b.source) ||
+    b.confidence_delta - a.confidence_delta ||
+    a.target_id.localeCompare(b.target_id)
+  );
+}
+
+function evidenceQueueItems(value: Record<string, unknown>): ConfidenceInspectionQueueCandidate[] {
+  const actionability = nestedRecord(value, 'actionability');
+  const readFirstByTarget = new Map(
+    recordArray(actionability, 'suggested_read_first')
+      .filter(isRecord)
+      .map((item) => [recordString(item, 'target_id', ''), item] as const)
+      .filter(([target]) => target !== ''),
+  );
+  const deltasByTarget = new Map(
+    recordArray(actionability, 'evidence_confidence_deltas')
+      .filter(isRecord)
+      .map((item) => [recordString(item, 'target_id', ''), item] as const)
+      .filter(([target]) => target !== ''),
+  );
+  return recordArray(actionability, 'top_evidence_gaps')
+    .filter(isRecord)
+    .slice(0, 10)
+    .map((gap) => {
+      const targetId = recordString(gap, 'id', 'unknown evidence gap');
+      const field = recordString(gap, 'field', '');
+      const readFirst = readFirstByTarget.get(targetId);
+      const delta = deltasByTarget.get(targetId);
+      const reason = recordString(gap, 'reason', 'Evidence gap needs inspection.');
+      return {
+        source: 'evidence' as const,
+        severity: parseInspectionSeverity(gap.severity),
+        target_type: recordString(gap, 'kind', 'evidence_gap'),
+        target_id: field === '' ? targetId : `${targetId}.${field}`,
+        reason,
+        current_confidence: parseConfidence(gap.confidence),
+        confidence_delta: recordNumber(delta, 'confidence_delta'),
+        inspect_hint: recordString(
+          readFirst,
+          'inspect_hint',
+          'Inspect the evidence gap before relying on this claim.',
+        ),
+        verification_actions: asStringArray(delta?.verification_actions).slice(0, 4),
+        read_first_files: asStringArray(readFirst?.read_first_files).slice(0, 6),
+        evidence_ids: unique([
+          ...asStringArray(readFirst?.evidence_ids),
+          ...asStringArray(delta?.evidence_ids),
+        ]).slice(0, 8),
+        evidence_gap_ids: [],
+        artifacts: ['.rizz/research/evidence_quality.json', '.rizz/brain/latest.json'],
+      };
+    });
+}
+
+function architectureQueueItems(
+  value: Record<string, unknown>,
+): ConfidenceInspectionQueueCandidate[] {
+  const confidenceDebt = nestedRecord(value, 'confidence_debt');
+  const correctionPackets = cqi(value);
+  const architectureEvidenceGaps = recordArray(value, 'evidence_gaps').filter(isRecord);
+  const evidenceIdsByGapId = new Map(
+    architectureEvidenceGaps
+      .map((gap) => [recordString(gap, 'gap_id', ''), asStringArray(gap.evidence_ids)] as const)
+      .filter(([gapId]) => gapId !== ''),
+  );
+  const evidenceIdsForGapIds = (gapIds: readonly string[]): string[] =>
+    unique(gapIds.flatMap((gapId) => evidenceIdsByGapId.get(gapId) ?? [])).slice(0, 8);
+  const unsupportedAssumptions = recordArray(confidenceDebt, 'unsupported_assumptions')
+    .filter(isRecord)
+    .slice(0, 6)
+    .map((assumption): ConfidenceInspectionQueueCandidate => {
+      const evidenceGapIds = asStringArray(assumption.evidence_gap_ids).slice(0, 8);
+      return {
+        source: 'architecture' as const,
+        severity: evidenceGapIds.length > 0 ? 'high' : 'medium',
+        target_type: 'architecture_assumption',
+        target_id: recordString(assumption, 'assumption_id', 'unknown assumption'),
+        reason: recordString(
+          assumption,
+          'reason',
+          'Architecture assumption lacks enough direct evidence.',
+        ),
+        current_confidence: parseConfidence(assumption.confidence),
+        confidence_delta: Math.max(
+          0,
+          Math.round((1 - recordNumber(assumption, 'confidence_score')) * 100),
+        ),
+        inspect_hint:
+          'Inspect the linked evidence gaps and source files before upgrading this assumption.',
+        verification_actions: [
+          'Open .rizz/research/architecture_reasoning.json and inspect the evidence_gap_ids.',
+          'Use rizz explain on the component or flow named by the assumption.',
+        ],
+        read_first_files: [],
+        evidence_ids: evidenceIdsForGapIds(evidenceGapIds),
+        evidence_gap_ids: evidenceGapIds,
+        artifacts: ['.rizz/research/architecture_reasoning.json', '.rizz/brain/latest.json'],
+      };
+    });
+  const lowConfidenceAreas = recordArray(confidenceDebt, 'low_confidence_areas')
+    .filter(isRecord)
+    .slice(0, 8)
+    .map((area): ConfidenceInspectionQueueCandidate => {
+      const evidenceGapIds = asStringArray(area.evidence_gap_ids).slice(0, 8);
+      return {
+        source: 'architecture' as const,
+        severity: recordNumber(area, 'confidence_score') < 0.5 ? 'high' : 'medium',
+        target_type: recordString(area, 'area_type', 'architecture_area'),
+        target_id: recordString(area, 'entity_id', recordString(area, 'area_id', 'unknown area')),
+        reason: recordString(area, 'reason', 'Architecture confidence area needs inspection.'),
+        current_confidence: parseConfidence(area.confidence),
+        confidence_delta: Math.max(
+          0,
+          Math.round((1 - recordNumber(area, 'confidence_score')) * 100),
+        ),
+        inspect_hint:
+          'Inspect the architecture confidence debt section and confirm direct source evidence.',
+        verification_actions: [
+          'Open the Mission Control Architecture object.',
+          'Confirm whether this area is static inference or direct runtime evidence.',
+        ],
+        read_first_files: [],
+        evidence_ids: evidenceIdsForGapIds(evidenceGapIds),
+        evidence_gap_ids: evidenceGapIds,
+        artifacts: ['.rizz/research/architecture_reasoning.json', '.rizz/reports/index.html'],
+      };
+    });
+  const evidenceGaps = architectureEvidenceGaps.slice(0, 6).map(
+    (gap): ConfidenceInspectionQueueCandidate => ({
+      source: 'architecture' as const,
+      severity: parseInspectionSeverity(gap.severity),
+      target_type: 'architecture_evidence_gap',
+      target_id: recordString(gap, 'entity_id', recordString(gap, 'gap_id', 'unknown gap')),
+      reason: recordString(gap, 'gap', 'Architecture evidence gap needs inspection.'),
+      current_confidence: 'uncertain' as const,
+      confidence_delta: parseInspectionSeverity(gap.severity) === 'high' ? 65 : 35,
+      inspect_hint:
+        'Inspect the architecture evidence gap before relying on the inferred boundary or flow.',
+      verification_actions: [
+        'Open .rizz/research/architecture_reasoning.json.',
+        'Check whether the source file, flow, or relationship has direct evidence IDs.',
+      ],
+      read_first_files: [],
+      evidence_ids: asStringArray(gap.evidence_ids).slice(0, 8),
+      evidence_gap_ids: [recordString(gap, 'gap_id', 'unknown gap')],
+      artifacts: ['.rizz/research/architecture_reasoning.json'],
+    }),
+  );
+  return [...correctionPackets, ...unsupportedAssumptions, ...lowConfidenceAreas, ...evidenceGaps];
+}
+
+function incrementalQueueItems(
+  metrics: IncrementalUnderstandingMetrics,
+): ConfidenceInspectionQueueCandidate[] {
+  const staleSurfaces = metrics.understanding_deltas.stale_surfaces.slice(0, 8).map((surface) => ({
+    source: 'incremental' as const,
+    severity: 'medium' as const,
+    target_type: `${surface.surface_type}_surface`,
+    target_id: safeText(surface.surface_id),
+    reason: 'Understanding surface is stale and should be refreshed before reuse.',
+    current_confidence: 'uncertain' as const,
+    confidence_delta: 35,
+    inspect_hint: 'Run rizz brain again or inspect the stale surface source before relying on it.',
+    verification_actions: [
+      'Run rizz brain after source changes.',
+      'Inspect the stale surface in incremental_update.json.',
+    ],
+    read_first_files: [],
+    evidence_ids: surface.evidence_ids.map(safeText).slice(0, 8),
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/incremental_update.json', '.rizz/brain/latest.json'],
+  }));
+  const staleFacts = metrics.stale_fact_candidates.slice(0, 8).map((candidate) => ({
+    source: 'incremental' as const,
+    severity: 'low' as const,
+    target_type: 'stale_fact_candidate',
+    target_id: safeText(candidate),
+    reason: 'Previously known fact may no longer describe the current repo state.',
+    current_confidence: 'uncertain' as const,
+    confidence_delta: 20,
+    inspect_hint: 'Inspect the stale fact candidate before using it as current context.',
+    verification_actions: ['Run rizz brain and confirm the entity latest_status before reuse.'],
+    read_first_files: [],
+    evidence_ids: [],
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/incremental_update.json'],
+  }));
+  return [...staleSurfaces, ...staleFacts];
+}
+
+function securityQueueItems(value: SecurityScanArtifact): ConfidenceInspectionQueueCandidate[] {
+  return value.findings.slice(0, 8).map((finding) => ({
+    source: 'security' as const,
+    severity: finding.severity,
+    target_type: finding.target_type,
+    target_id: finding.target_id,
+    reason: finding.reason,
+    current_confidence: 'verified' as const,
+    confidence_delta: finding.severity === 'high' ? 80 : finding.severity === 'medium' ? 55 : 25,
+    inspect_hint: finding.inspect_hint,
+    verification_actions: [
+      'Open .rizz/research/security_scan.json.',
+      'Inspect the referenced file, package script, or dependency before running agent automation.',
+    ],
+    read_first_files: finding.path === undefined ? [] : [finding.path],
+    evidence_ids: finding.evidence_ids,
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/security_scan.json', '.rizz/brain/latest.json'],
+  }));
+}
+
+function toolInventoryQueueItems(
+  value: ToolInventoryArtifact,
+): ConfidenceInspectionQueueCandidate[] {
+  return value.surfaces.slice(0, 8).map((surface) => ({
+    source: 'tools' as const,
+    severity: surface.risk_level,
+    target_type: surface.kind,
+    target_id: surface.surface_id,
+    reason: surface.reason,
+    current_confidence: 'verified' as const,
+    confidence_delta:
+      surface.risk_level === 'high' ? 70 : surface.risk_level === 'medium' ? 45 : 20,
+    inspect_hint: surface.inspect_hint,
+    verification_actions: [
+      'Open .rizz/research/tool_inventory.json.',
+      'Review the tool surface before allowing broad agent control.',
+    ],
+    read_first_files: [surface.path],
+    evidence_ids: surface.evidence_ids,
+    evidence_gap_ids: [],
+    artifacts: ['.rizz/research/tool_inventory.json', '.rizz/brain/latest.json'],
+  }));
+}
+
+function buildConfidenceInspectionQueue(params: {
+  readonly evidenceQuality: Record<string, unknown>;
+  readonly architectureReasoning: Record<string, unknown>;
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+  readonly securityScan: SecurityScanArtifact;
+  readonly toolInventory: ToolInventoryArtifact;
+}): ConfidenceInspectionQueue {
+  const candidates = [
+    ...evidenceQueueItems(params.evidenceQuality),
+    ...architectureQueueItems(params.architectureReasoning),
+    ...securityQueueItems(params.securityScan),
+    ...toolInventoryQueueItems(params.toolInventory),
+    ...incrementalQueueItems(params.incrementalMetrics),
+  ];
+  const sortedCandidates = [...candidates].sort(compareConfidenceInspectionCandidates);
+  const sourceRepresentatives = (
+    ['evidence', 'architecture', 'security', 'tools', 'incremental'] as const
+  ).flatMap((source) => sortedCandidates.find((candidate) => candidate.source === source) ?? []);
+  const selected = uniqueBy(
+    [...sourceRepresentatives, ...sortedCandidates],
+    confidenceInspectionCandidateKey,
+  ).slice(0, 12);
+  const items = selected
+    .sort(compareConfidenceInspectionCandidates)
+    .slice(0, 12)
+    .map((item, index) => ({ priority: index + 1, ...item }));
+  const highPriorityCount = items.filter((item) => item.severity === 'high').length;
+  return {
+    schema_version: 1,
+    item_count: items.length,
+    candidate_count: candidates.length,
+    high_priority_count: highPriorityCount,
+    sources: confidenceInspectionSources(items),
+    items,
+    summary:
+      items.length === 0
+        ? 'No confidence inspection items were detected.'
+        : `${items.length} confidence item(s), ${highPriorityCount} high-priority, need inspection.`,
+    calibration_rule:
+      'Confidence inspection combines evidence gaps, architecture debt, security, tools, and stale surfaces.',
+  };
+}
+
+function attachConfidenceInspectionQueue(params: {
+  readonly evidenceQuality: Record<string, unknown>;
+  readonly architectureReasoning: Record<string, unknown>;
+  readonly queue: ConfidenceInspectionQueue;
+}): {
+  readonly evidenceQuality: Record<string, unknown>;
+  readonly architectureReasoning: Record<string, unknown>;
+} {
+  const actionability = nestedRecord(params.evidenceQuality, 'actionability');
+  const confidenceDebt = nestedRecord(params.architectureReasoning, 'confidence_debt');
+  const architectureItems = params.queue.items
+    .filter((item) => item.source === 'architecture')
+    .map((item, index) => ({ ...item, priority: index + 1 }));
+  return {
+    evidenceQuality: {
+      ...params.evidenceQuality,
+      confidence_inspection_queue: params.queue,
+      actionability: {
+        ...actionability,
+        confidence_inspection_queue: params.queue,
+      },
+    },
+    architectureReasoning: {
+      ...params.architectureReasoning,
+      confidence_debt: {
+        ...confidenceDebt,
+        inspection_queue: architectureItems.slice(0, 8),
+      },
+    },
+  };
+}
+
 function redactionHiddenEvidenceSummary(params: {
   readonly redactedEvidenceCount: number;
   readonly redactedReferenceCount: number;
@@ -5700,7 +9224,7 @@ function redactionHiddenEvidenceSummary(params: {
     impact,
     user_impact:
       impact === 'contained'
-        ? 'Some evidence is intentionally hidden behind redacted ids; inspect nearby non-sensitive files or rerun in a trusted local context before upgrading confidence.'
+        ? 'Some evidence is redacted; inspect safe nearby files before upgrading confidence.'
         : 'No redaction-hidden evidence is limiting confidence.',
   };
 }
@@ -5728,9 +9252,9 @@ function calibrationSummary(params: {
     weak_evidence_claims: params.weakEvidenceClaims,
     evidence_gap_count: params.evidenceGapCount,
     confidence_distribution: params.confidenceDistribution,
-    summary: `${params.unsupportedClaims} unsupported claim(s), ${params.weakEvidenceClaims} weak evidence claim(s), and ${params.evidenceGapCount} total actionability gap(s) limit confidence.`,
+    summary: `${params.unsupportedClaims} unsupported claim(s), ${params.weakEvidenceClaims} weak, ${params.evidenceGapCount} gap(s) limit confidence.`,
     calibration_rule:
-      'Evidence confidence is calibrated from direct evidence coverage, field-specific evidence, missing references, claim confidence, and secret-safe redaction impact.',
+      'Evidence confidence uses coverage, field evidence, missing refs, claim confidence, and redaction.',
   };
 }
 
@@ -5741,9 +9265,19 @@ function buildEvidenceQualityArtifact(params: {
 }): Record<string, unknown> {
   const entities = allBucketEntities(params.buckets);
   const claimEntities = entities.filter((entity) => entity.type !== 'evidence');
+  const fieldEvidenceEntries = [
+    ...params.buckets.components.flatMap((component) =>
+      Object.values(recordStringArrayData(component, 'field_evidence')),
+    ),
+    ...params.buckets.flows.flatMap((flow) =>
+      Object.values(recordStringArrayData(flow, 'field_evidence')),
+    ),
+  ];
+  const fieldEvidenceIds = unique(fieldEvidenceEntries.flat());
   const referencedEvidenceIds = unique([
     ...entities.flatMap((entity) => entity.evidence_ids),
     ...params.relationships.flatMap((relationship) => relationship.evidence_ids),
+    ...fieldEvidenceIds,
   ]);
   const knownEvidenceIds = new Set(params.buckets.evidence.map((entity) => entity.id));
   const missingEvidenceReferences = referencedEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
@@ -5790,14 +9324,6 @@ function buildEvidenceQualityArtifact(params: {
     relationshipsWithEvidence.length,
     params.relationships.length,
   );
-  const fieldEvidenceEntries = [
-    ...params.buckets.components.flatMap((component) =>
-      Object.values(recordStringArrayData(component, 'field_evidence')),
-    ),
-    ...params.buckets.flows.flatMap((flow) =>
-      Object.values(recordStringArrayData(flow, 'field_evidence')),
-    ),
-  ];
   const fieldsWithEvidence = fieldEvidenceEntries.filter((ids) => ids.length > 0).length;
   const fieldEvidenceScore = scorePercent(fieldsWithEvidence, fieldEvidenceEntries.length);
   const fieldCoverage = fieldCoverageByEntityType({
@@ -5808,6 +9334,8 @@ function buildEvidenceQualityArtifact(params: {
     components: params.buckets.components,
     flows: params.buckets.flows,
   });
+  const serviceCausalityQuality = serviceCausalityQualitySummary(params.buckets.flows);
+  const serviceCausalityGaps = serviceCausalityEvidenceGapRecords(params.buckets.flows);
   const unsupportedFieldClaims =
     fieldCoverage.component.unsupported_fields + fieldCoverage.flow.unsupported_fields;
   const weakEvidenceFieldClaims =
@@ -5815,13 +9343,19 @@ function buildEvidenceQualityArtifact(params: {
   const unsupportedClaims =
     claimEntitiesWithoutEvidence.length +
     relationshipsWithoutEvidence.length +
-    unsupportedFieldClaims;
+    unsupportedFieldClaims +
+    serviceCausalityQuality.unsupported_claims;
   const weakEvidenceClaims =
     claimEntitiesWithWeakEvidence.length +
     relationshipsWithWeakEvidence.length +
-    weakEvidenceFieldClaims;
+    weakEvidenceFieldClaims +
+    serviceCausalityQuality.weak_evidence_claims;
   const evidenceGapCount =
-    missingEvidenceReferences.length + unsupportedClaims + weakEvidenceClaims;
+    missingEvidenceReferences.length +
+    unsupportedClaims +
+    weakEvidenceClaims +
+    serviceCausalityQuality.missing_effect_claims +
+    serviceCausalityQuality.missing_step_link_claims;
   const evidenceCoverageScore = scorePercent(claimsWithEvidence, totalClaims);
   const referenceIntegrityScore = Math.max(0, 100 - missingEvidenceReferences.length * 10);
   const redactionSafetyScore = Math.max(0, 100 - unsafeSensitiveReferenceCount * 25);
@@ -5837,6 +9371,7 @@ function buildEvidenceQualityArtifact(params: {
       .filter((entity) => entity.confidence === 'uncertain')
       .slice(0, 8)
       .map((entity) => `${entity.type}: ${entity.id}`),
+    ...serviceCausalityGaps.slice(0, 8).map((gap) => `service causality: ${gap.id} (${gap.kind})`),
     ...missingEvidenceReferences.slice(0, 8).map((id) => `missing evidence: ${id}`),
   ]).slice(0, 12);
   const topGaps = topEvidenceGaps({
@@ -5844,11 +9379,13 @@ function buildEvidenceQualityArtifact(params: {
     relationshipsWithoutEvidence,
     missingEvidenceReferences,
     fieldGaps,
+    serviceCausalityGaps,
   });
   const evidenceCalibration = buildEvidenceCalibrationBreakdown({
     buckets: params.buckets,
     relationships: params.relationships,
     fieldCoverage,
+    serviceCausalityQuality,
     topGaps,
     redactedEvidenceCount,
     redactedReferenceCount,
@@ -5864,11 +9401,13 @@ function buildEvidenceQualityArtifact(params: {
     claimEntitiesWithoutEvidence,
     relationshipsWithoutEvidence,
     fieldCoverage,
+    serviceCausalityQuality,
   });
   const lowConfidenceAreas = lowConfidenceClaimAreas({
     claimEntitiesWithWeakEvidence,
     relationshipsWithWeakEvidence,
     fieldCoverage,
+    serviceCausalityQuality,
   });
   const redactionHiddenEvidence = redactionHiddenEvidenceSummary({
     redactedEvidenceCount,
@@ -5893,10 +9432,14 @@ function buildEvidenceQualityArtifact(params: {
     topGaps,
     entitiesById: entityById(entities),
   });
+  const evidenceConfidenceDeltas = evidenceConfidenceDeltasForGaps({
+    topGaps,
+    entitiesById: entityById(entities),
+  });
   const actionabilitySummary =
     evidenceGapCount === 0
       ? 'No evidence actionability gaps were detected in local research artifacts.'
-      : `${topGaps.length} prioritized evidence gap(s), ${unbackedGroups.length} unbacked claim group(s), and ${lowConfidenceAreas.length} low-confidence area(s) need inspection.`;
+      : `${topGaps.length} prioritized evidence gap(s), ${unbackedGroups.length} unbacked group(s), ${lowConfidenceAreas.length} low-confidence area(s).`;
 
   return {
     generated_at: params.now,
@@ -5916,6 +9459,14 @@ function buildEvidenceQualityArtifact(params: {
     redaction_safety_score: redactionSafetyScore,
     confidence_distribution: confidenceDistribution,
     field_coverage_by_entity_type: fieldCoverage,
+    service_causality_quality: serviceCausalityQuality,
+    service_causality_claim_count: serviceCausalityQuality.total_claims,
+    service_causality_evidence_backed_claims: serviceCausalityQuality.evidence_backed_claims,
+    service_causality_uncertain_claims: serviceCausalityQuality.uncertain_claims,
+    service_causality_missing_evidence_claims: serviceCausalityQuality.missing_evidence_claims,
+    service_causality_missing_effect_claims: serviceCausalityQuality.missing_effect_claims,
+    service_causality_missing_step_link_claims: serviceCausalityQuality.missing_step_link_claims,
+    service_causality_coverage_score: serviceCausalityQuality.evidence_coverage_score,
     evidence_calibration: evidenceCalibration,
     actionability: {
       summary: actionabilitySummary,
@@ -5924,12 +9475,14 @@ function buildEvidenceQualityArtifact(params: {
       low_confidence_claim_areas: lowConfidenceAreas,
       redaction_hidden_evidence: redactionHiddenEvidence,
       suggested_read_first: suggestedReadFirst,
+      evidence_confidence_deltas: evidenceConfidenceDeltas,
       calibration_summary: evidenceCalibrationSummary,
     },
     unbacked_claim_groups: unbackedGroups,
     low_confidence_claim_areas: lowConfidenceAreas,
     redaction_hidden_evidence: redactionHiddenEvidence,
     suggested_read_first: suggestedReadFirst,
+    evidence_confidence_deltas: evidenceConfidenceDeltas,
     calibration_summary: evidenceCalibrationSummary,
     confidence_adjustments: {
       redaction_downgrades: confidenceDowngradeCount,
@@ -6048,6 +9601,7 @@ function buildComponentIntelligenceArtifact(params: {
     (component) => component.latest_status !== 'stale',
   );
   const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const services = params.buckets.services.filter((service) => service.latest_status !== 'stale');
   const fieldSlots = components.length * COMPONENT_UNDERSTANDING_FIELDS.length;
   const coveredFieldSlots = components.reduce(
     (count, component) =>
@@ -6196,6 +9750,98 @@ function buildComponentIntelligenceArtifact(params: {
   };
 }
 
+function buildServiceIntelligenceArtifact(params: {
+  readonly now: string;
+  readonly buckets: BrainBuckets;
+}): Record<string, unknown> {
+  const services = params.buckets.services.filter((service) => service.latest_status !== 'stale');
+  const flows = params.buckets.flows.filter((flow) => flow.latest_status !== 'stale');
+  const servicesWithFlows = services.filter(
+    (service) => serviceDataStringArray(service, 'related_flows').length > 0,
+  );
+  const servicesWithRoutes = services.filter(
+    (service) => serviceDataStringArray(service, 'routes').length > 0,
+  );
+  const servicesWithStorage = services.filter(
+    (service) => serviceDataStringArray(service, 'storage_dependencies').length > 0,
+  );
+  const servicesWithExternalApis = services.filter(
+    (service) => serviceDataStringArray(service, 'external_services').length > 0,
+  );
+  const servicesWithEvidence = services.filter((service) => service.evidence_ids.length > 0);
+  const confidenceDistribution = countByConfidence(services.map((service) => service.confidence));
+  const fieldSlots = services.length * 8;
+  const coveredFieldSlots = services.reduce(
+    (count, service) =>
+      count +
+      [
+        'entrypoints',
+        'routes',
+        'jobs',
+        'storage_dependencies',
+        'environment_variables',
+        'external_services',
+        'deployment_configs',
+        'related_flows',
+      ].filter((field) => serviceDataStringArray(service, field).length > 0).length,
+    0,
+  );
+  const serviceUnderstandingScore = boundedScore(
+    scorePercent(coveredFieldSlots, fieldSlots) * 0.45 +
+      scorePercent(servicesWithEvidence.length, services.length) * 0.25 +
+      scorePercent(servicesWithFlows.length, services.length) * 0.3,
+  );
+
+  return {
+    schema_version: 1,
+    generated_at: params.now,
+    total_services: services.length,
+    service_understanding_score: serviceUnderstandingScore,
+    services_with_routes: servicesWithRoutes.length,
+    services_with_storage: servicesWithStorage.length,
+    services_with_external_apis: servicesWithExternalApis.length,
+    services_with_related_flows: servicesWithFlows.length,
+    confidence_distribution: confidenceDistribution,
+    flow_links: flows.map((flow) => ({
+      flow_id: flow.id,
+      service_ids: flowStringArray(flow, 'services'),
+      evidence_ids: flow.evidence_ids,
+    })),
+    services: services.map((service) => ({
+      id: service.id,
+      name: service.name,
+      runtime: stringData(service, 'runtime') ?? 'unknown',
+      framework: stringData(service, 'framework') ?? 'unknown',
+      service_root: stringData(service, 'service_root') ?? service.name,
+      entrypoints: serviceDataStringArray(service, 'entrypoints'),
+      routes: serviceDataStringArray(service, 'routes'),
+      jobs: serviceDataStringArray(service, 'jobs'),
+      storage_dependencies: serviceDataStringArray(service, 'storage_dependencies'),
+      environment_variables: serviceDataStringArray(service, 'environment_variables'),
+      external_services: serviceDataStringArray(service, 'external_services'),
+      deployment_configs: serviceDataStringArray(service, 'deployment_configs'),
+      related_flows: serviceDataStringArray(service, 'related_flows'),
+      related_components: serviceDataStringArray(service, 'related_components'),
+      risks: serviceDataStringArray(service, 'risks'),
+      unknowns: serviceDataStringArray(service, 'unknowns'),
+      confidence: service.confidence,
+      confidence_score:
+        numberData(service, 'confidence_score') ?? confidenceScoreForValue(service.confidence),
+      evidence_ids: service.evidence_ids,
+      field_evidence: recordStringArrayData(service, 'field_evidence'),
+    })),
+    unknowns: unique(
+      services.flatMap((service) =>
+        serviceDataStringArray(service, 'unknowns').map((unknown) => `${service.id}: ${unknown}`),
+      ),
+    ).slice(0, 12),
+    scoring_notes: [
+      'Service Intelligence is static inference from service files, routes, jobs, storage/API/env, configs, and flows.',
+      'Runtime reachability is not executed; weak or missing evidence remains visible as unknowns.',
+    ],
+  };
+}
+
 function componentCouplingRecord(component: BrainEntity): ComponentIntelligence['coupling'] {
   const coupling = component.data?.coupling;
   if (!isRecord(coupling)) {
@@ -6246,10 +9892,7 @@ function architectureAssumptionConfidence(params: {
   readonly component: BrainEntity;
   readonly componentFlows: readonly BrainEntity[];
 }): Confidence {
-  return weakestConfidence([
-    params.component.confidence,
-    ...params.componentFlows.map((flow) => flow.confidence),
-  ]);
+  return weakestConfidence([params.component.confidence, ...params.componentFlows.map(afc)]);
 }
 
 function architectureAssumptionScore(params: {
@@ -6309,7 +9952,7 @@ function routeFlowEntryLabels(flow: BrainEntity): string[] {
 
 function routeArchitectureConfidence(flow: BrainEntity): Confidence {
   return weakestConfidence([
-    flow.confidence,
+    afc(flow),
     flowStringArray(flow, 'tests').length > 0 ? 'verified' : 'inferred',
     flowStringArray(flow, 'configs').length > 0 ? 'verified' : 'inferred',
   ]);
@@ -6332,7 +9975,7 @@ function routeArchitectureGapIds(flow: BrainEntity): string[] {
   if (flowStringArray(flow, 'configs').length === 0) {
     gapIds.push(`gap:${safeText(flow.id)}:route-config`);
   }
-  if (flow.confidence !== 'verified') {
+  if (routeArchitectureConfidence(flow) !== 'verified') {
     gapIds.push(`gap:${safeText(flow.id)}:runtime-verification`);
   }
   return gapIds;
@@ -6352,7 +9995,7 @@ function routeArchitectureAssumptions(flows: readonly BrainEntity[]): Architectu
         assumption_id: `assumption:${safeText(flow.id)}:route-architecture`,
         entity_id: safeText(flow.id),
         assumption: safeText(
-          `${routePath} is treated as a Next.js ${routeType} architecture surface because the app-router entrypoint, imports, configs, tests, and confidence evidence reconstruct a route flow.`,
+          `${routePath} is a Next.js ${routeType} architecture surface from entrypoint, imports, configs, tests, and evidence.`,
         ),
         inferred_from: unique([
           'nextjs app router',
@@ -6382,7 +10025,7 @@ function routeArchitectureAssumptions(flows: readonly BrainEntity[]): Architectu
           ...(configs.length === 0
             ? [`No config or manifest artifact was linked to route ${routePath}.`]
             : []),
-          ...(flow.confidence === 'verified'
+          ...(routeArchitectureConfidence(flow) === 'verified'
             ? []
             : [`Route ${routePath} is statically reconstructed and not runtime verified.`]),
         ]).map(safeText),
@@ -6402,6 +10045,7 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
       const configs = flowStringArray(flow, 'configs');
       const tests = flowStringArray(flow, 'tests');
       const risks = flowRisks(flow);
+      const serviceCausality = safeFlowServiceCausality(flow);
       const sharedFiles = files.filter(
         (file) =>
           !file.includes('/app/') &&
@@ -6420,14 +10064,15 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
         files: files.map(safeText),
         configs: configs.map(safeText),
         tests: tests.map(safeText),
+        service_causality: serviceCausality,
         confidence: routeArchitectureConfidence(flow),
         confidence_score: routeArchitectureScore(flow),
         assumptions: [
           `Route ${routePath} is an architecture surface because ${routeType} entrypoint evidence is present.`,
-          `Route ${routePath} behavior depends on ${components.length} component(s), ${configs.length} config artifact(s), and ${tests.length} test artifact(s).`,
+          `Route ${routePath} depends on ${components.length} component(s), ${configs.length} config(s), ${tests.length} test(s).`,
         ].map(safeText),
         tradeoffs: unique([
-          'Framework-native routes make ownership easier to find, but route behavior can be split across layouts, components, content modules, and config.',
+          'Framework-native routes make ownership easier, but behavior can split across layouts, components, content, and config.',
           ...(configs.length > 0
             ? ['Route behavior can change when shared Next.js or TypeScript configuration changes.']
             : []),
@@ -6452,6 +10097,12 @@ function routeArchitectureRecords(flows: readonly BrainEntity[]): Array<Record<s
           ...(tests.length === 0
             ? [`Route ${routePath} has no directly linked test, so regressions are easier to miss.`]
             : []),
+          ...serviceCausality.flatMap((item) =>
+            item.effects.map(
+              (effect) =>
+                `Changing ${item.service_id} can affect route ${routePath} through ${effect}.`,
+            ),
+          ),
         ]).map(safeText),
         shared_files: sharedFiles.map(safeText),
         risks: risks.map(formatFlowRisk).map(safeText),
@@ -6487,7 +10138,7 @@ function routeArchitectureDesignPressures(
       entity_id: safeText(flow.id),
       pressure_type: 'flow',
       pressure: safeText(
-        `${routePath} is a Next.js ${routeType} entrypoint, so route-file changes can affect user-visible navigation, rendering, metadata, or API behavior.`,
+        `${routePath} is a Next.js ${routeType} entrypoint; changes can affect navigation, render, metadata, or API behavior.`,
       ),
       strength: routeType === 'api' || routeType === 'page' ? 'high' : 'medium',
       evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
@@ -6571,11 +10222,13 @@ function architectureAssumptionRecords(params: {
   readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
   readonly relationships: readonly BrainRelationship[];
   readonly flows: readonly BrainEntity[];
+  readonly be: ReadonlyMap<string, Record<string, unknown>>;
 }): ArchitectureAssumption[] {
   const assumptions: ArchitectureAssumption[] = [...routeArchitectureAssumptions(params.flows)];
   for (const component of params.components) {
     const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
     const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+    const be = params.be.get(component.id);
     const coupling = componentCouplingRecord(component);
     const configs = stringArrayData(component, 'configs');
     const dependencies = stringArrayData(component, 'dependencies');
@@ -6589,8 +10242,8 @@ function architectureAssumptionRecords(params: {
       evidenceIds,
       componentFlows,
     });
-    const confidence = architectureAssumptionConfidence({ component, componentFlows });
     const confidenceScore = architectureAssumptionScore({ component, componentFlows });
+    const confidence = architectureAssumptionConfidence({ component, componentFlows });
     const fieldEvidence = recordStringArrayData(component, 'field_evidence');
     assumptions.push({
       assumption_id: `assumption:${safeText(component.id)}:boundary`,
@@ -6619,7 +10272,7 @@ function architectureAssumptionRecords(params: {
         `dependencies:${dependencies.length}`,
       ],
       unknowns: unique([
-        ...stringArrayData(component, 'unknowns'),
+        ...bu(component, be),
         ...(componentFlows.length === 0
           ? ['No reconstructed flow currently crosses or reaches this boundary.']
           : []),
@@ -6683,7 +10336,7 @@ function architectureDesignPressures(params: {
         entity_id: safeText(component.id),
         pressure_type: 'flow',
         pressure: safeText(
-          `${component.id} participates in ${componentFlows.length} reconstructed flow(s), so boundary changes can affect navigation through the system.`,
+          `${component.id} participates in ${componentFlows.length} flow(s); boundary changes can affect navigation.`,
         ),
         strength: pressureStrengthFromCount(componentFlows.length),
         evidence_ids: unique([
@@ -6763,11 +10416,13 @@ function architectureBoundaryRationale(params: {
   readonly components: readonly BrainEntity[];
   readonly flowsByComponent: ReadonlyMap<string, readonly BrainEntity[]>;
   readonly relationships: readonly BrainRelationship[];
+  readonly be: ReadonlyMap<string, Record<string, unknown>>;
 }): ArchitectureBoundaryRationale[] {
   return sorted(
     params.components.map((component) => {
       const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
       const componentFlows = params.flowsByComponent.get(component.id) ?? [];
+      const be = params.be.get(component.id);
       const signals = stringArrayData(component, 'signals');
       const configs = stringArrayData(component, 'configs');
       const dependencies = stringArrayData(component, 'dependencies');
@@ -6775,22 +10430,16 @@ function architectureBoundaryRationale(params: {
         component_id: safeText(component.id),
         boundary_type: boundaryType,
         rationale: safeText(
-          `${component.id} is a ${boundaryType} boundary from ${signals.length} structural signal(s), ${componentFlows.length} linked flow(s), ${configs.length} config signal(s), and ${dependencies.length} dependency signal(s).`,
+          `${component.id}: ${boundaryType} boundary from ${signals.length} structure, ${componentFlows.length} linked flow(s), ${configs.length} config, ${dependencies.length} dependency signal(s).`,
         ),
         evidence_ids: architectureEvidenceIdsForComponent({
           component,
           componentFlows,
           relationships: params.relationships,
         }),
-        confidence: architectureAssumptionConfidence({ component, componentFlows }),
-        rules: [
-          `boundary_type:${boundaryType}`,
-          `signals:${signals.length}`,
-          `flow_links:${componentFlows.length}`,
-          `configs:${configs.length}`,
-          `dependencies:${dependencies.length}`,
-        ],
-        unknowns: stringArrayData(component, 'unknowns').map(safeText),
+        confidence: bc(be),
+        rules: [`boundary_type:${boundaryType}`, `flow_links:${componentFlows.length}`],
+        unknowns: bu(component, be).map(safeText),
       };
     }),
     (rationale) => rationale.component_id,
@@ -6820,7 +10469,7 @@ function architectureCouplingRationale(params: {
           coupling_level: coupling.level,
           coupling_score: coupling.score,
           rationale: safeText(
-            `${component.id} coupling is ${coupling.level} from ${coupling.static_import_count} static import(s), ${coupling.internal_imports.length} internal target(s), and ${coupling.external_imports.length} external root(s).`,
+            `${component.id} coupling ${coupling.level}: ${coupling.static_import_count} static, ${coupling.internal_imports.length} internal, ${coupling.external_imports.length} external.`,
           ),
           intentional_coupling: intentionalCoupling,
           risky_coupling: riskyCoupling,
@@ -6894,7 +10543,7 @@ function architectureEvidenceGaps(params: {
       });
     }
   }
-  for (const flow of params.flows.filter((item) => item.confidence !== 'verified')) {
+  for (const flow of params.flows.filter((item) => afc(item) !== 'verified')) {
     gaps.push({
       gap_id: `gap:${safeText(flow.id)}:runtime-verification`,
       entity_id: safeText(flow.id),
@@ -6902,7 +10551,7 @@ function architectureEvidenceGaps(params: {
       severity: flowStringArray(flow, 'components').length > 1 ? 'high' : 'medium',
       evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
       rules: [
-        `confidence:${flow.confidence}`,
+        `confidence:${afc(flow)}`,
         `components:${flowStringArray(flow, 'components').length}`,
       ],
     });
@@ -7192,10 +10841,10 @@ function buildArchitectureConfidenceDebt(params: {
     low_confidence_areas: lowConfidenceAreas,
     blocking_unknowns: blockingUnknowns,
     summary: safeText(
-      `${unsupportedAssumptions.length} unsupported assumption(s), ${inferredTradeoffs.length} inferred tradeoff(s), ${lowConfidenceAreas.length} low-confidence area(s), and ${blockingUnknowns.length} blocking unknown(s).`,
+      `${unsupportedAssumptions.length} unsupported assumption(s), ${inferredTradeoffs.length} inferred, ${lowConfidenceAreas.length} low-confidence, ${blockingUnknowns.length} blocking unknown(s).`,
     ),
     calibration_rule:
-      'Confidence debt is derived only from local architecture assumptions, tradeoffs, evidence gaps, confidence scores, and unknowns.',
+      'Confidence debt uses local architecture assumptions, gaps, scores, and unknowns.',
   };
 }
 
@@ -7215,6 +10864,93 @@ function directDependentComponents(params: {
       )
       .map((relationship) => relationship.from),
   ).map(safeText);
+}
+
+function architectureImpactRiskLevel(score: number): ArchitectureImpactRiskLevel {
+  if (score >= 8) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function architectureImpactRiskReasoning(params: {
+  readonly entityId: string;
+  readonly criticality: string;
+  readonly criticalityScore: number;
+  readonly couplingLevel: ComponentIntelligence['coupling']['level'];
+  readonly couplingScore: number;
+  readonly affectedFlows: readonly string[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+  readonly dependentComponents: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidenceGapIds: readonly string[];
+  readonly tradeoffs: readonly string[];
+  readonly riskySeams: readonly string[];
+  readonly serviceCausality: readonly FlowServiceCausality[];
+}): ArchitectureImpactRiskReasoning {
+  const serviceEffectCount = unique(params.serviceCausality.flatMap((item) => item.effects)).length;
+  const rawScore =
+    params.couplingScore +
+    Math.min(3, Math.floor(params.criticalityScore / 3)) +
+    Math.min(2, params.dependentComponents.length) +
+    Math.min(2, params.affectedConfigs.length) +
+    Math.min(2, serviceEffectCount) +
+    (params.affectedTests.length === 0 ? 2 : 0) +
+    (params.confidence !== 'verified' ? 1 : 0) +
+    (params.evidenceGapIds.length > 0 ? 1 : 0);
+  const riskScore = Math.min(10, rawScore);
+  const riskySurfaces = unique([
+    ...(params.criticality === 'high' ? ['high-criticality surface'] : []),
+    ...(params.couplingLevel === 'high' ? ['high-coupling surface'] : []),
+    ...(params.affectedTests.length === 0 ? ['untested surface'] : []),
+    ...(params.affectedConfigs.length > 0 ? ['configuration-backed surface'] : []),
+    ...(params.dependentComponents.length > 0 ? ['consumer-dependent surface'] : []),
+    ...(params.confidence !== 'verified' ? ['confidence-gap surface'] : []),
+    ...(params.evidenceGapIds.length > 0 ? ['evidence-gap surface'] : []),
+    ...(serviceEffectCount > 0 ? ['service-side-effect surface'] : []),
+    ...params.riskySeams,
+  ]).map(safeText);
+  const reviewFocus = unique([
+    ...(params.dependentComponents.length > 0
+      ? [`Review ${params.dependentComponents.length} dependent component(s).`]
+      : []),
+    ...(params.affectedFlows.length > 0
+      ? [`Verify ${params.affectedFlows.length} reconstructed flow(s).`]
+      : []),
+    ...(params.affectedTests.length > 0
+      ? [`Run or inspect ${params.affectedTests.length} linked test artifact(s).`]
+      : ['Add or justify focused test evidence for this surface.']),
+    ...(params.affectedConfigs.length > 0
+      ? [`Inspect ${params.affectedConfigs.length} linked config/dependency artifact(s).`]
+      : []),
+    ...(params.evidenceGapIds.length > 0
+      ? [`Close ${params.evidenceGapIds.length} architecture evidence gap(s).`]
+      : []),
+    ...(serviceEffectCount > 0
+      ? [`Check ${serviceEffectCount} service side-effect signal(s).`]
+      : []),
+  ]).map(safeText);
+  return {
+    risk_level: architectureImpactRiskLevel(riskScore),
+    risk_score: riskScore,
+    criticality: safeText(params.criticality),
+    coupling_level: params.couplingLevel,
+    tradeoffs: params.tradeoffs.map(safeText).slice(0, 8),
+    risky_surfaces: riskySurfaces.slice(0, 10),
+    review_focus: reviewFocus.slice(0, 10),
+    reasons: unique([
+      `entity:${safeText(params.entityId)}`,
+      `criticality:${safeText(params.criticality)}`,
+      `coupling:${params.couplingLevel}`,
+      `flows:${params.affectedFlows.length}`,
+      `tests:${params.affectedTests.length}`,
+      `configs:${params.affectedConfigs.length}`,
+      `dependent_components:${params.dependentComponents.length}`,
+      `confidence:${params.confidence}`,
+      `evidence_gaps:${params.evidenceGapIds.length}`,
+      `service_effects:${serviceEffectCount}`,
+    ]).map(safeText),
+  };
 }
 
 function componentImpactEntry(params: {
@@ -7261,6 +10997,10 @@ function componentImpactEntry(params: {
     component: params.component,
     componentFlows: params.componentFlows,
   });
+  const criticality = stringData(params.component, 'criticality') ?? 'unknown';
+  const criticalityScore = numberData(params.component, 'criticality_score') ?? 0;
+  const tradeoffs = stringArrayData(params.component, 'tradeoffs');
+  const riskySeams = stringArrayData(params.component, 'risky_seams');
   const whatBreaks = unique([
     ...stringArrayData(params.component, 'what_breaks_if_removed'),
     ...stringArrayData(params.component, 'failure_modes'),
@@ -7276,6 +11016,22 @@ function componentImpactEntry(params: {
         ]
       : []),
   ]).map(safeText);
+  const riskReasoning = architectureImpactRiskReasoning({
+    entityId: params.component.id,
+    criticality,
+    criticalityScore,
+    couplingLevel: coupling.level,
+    couplingScore: coupling.score,
+    affectedFlows,
+    affectedTests,
+    affectedConfigs,
+    dependentComponents,
+    confidence,
+    evidenceGapIds,
+    tradeoffs,
+    riskySeams,
+    serviceCausality: [],
+  });
   return {
     impact_id: `impact:${safeText(params.component.id)}`,
     surface_type: 'component',
@@ -7294,6 +11050,7 @@ function componentImpactEntry(params: {
     evidence_ids: evidenceIds,
     evidence_gap_ids: evidenceGapIds,
     what_breaks: whatBreaks,
+    risk_reasoning: riskReasoning,
     reasons: unique([
       `boundary_type:${stringData(params.component, 'boundary_type') ?? 'unknown'}`,
       `flow_links:${affectedFlows.length}`,
@@ -7303,6 +11060,28 @@ function componentImpactEntry(params: {
       `coupling:${coupling.level}`,
     ]).map(safeText),
   };
+}
+
+function tradeoffsForRouteImpact(flow: BrainEntity): string[] {
+  const configs = flowStringArray(flow, 'configs');
+  const components = flowStringArray(flow, 'components');
+  const serviceCausality = safeFlowServiceCausality(flow);
+  return unique([
+    'Route ownership is visible, but behavior can still depend on components, services, and config.',
+    ...(configs.length > 0
+      ? ['Config-backed routes are easier to audit, but config changes can alter runtime behavior.']
+      : []),
+    ...(components.length > 1
+      ? [
+          'Cross-component routes improve reuse, but widen review scope across component boundaries.',
+        ]
+      : []),
+    ...(serviceCausality.length > 0
+      ? [
+          'Service causality makes side effects visible, but side-effect changes can break route behavior.',
+        ]
+      : []),
+  ]).map(safeText);
 }
 
 function routeCouplingLevel(flow: BrainEntity): ComponentIntelligence['coupling']['level'] {
@@ -7334,8 +11113,28 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
   const components = flowStringArray(flow, 'components').map(safeText);
   const tests = flowStringArray(flow, 'tests').map(safeText);
   const configs = flowStringArray(flow, 'configs').map(safeText);
+  const serviceCausality = safeFlowServiceCausality(flow);
   const couplingLevel = routeCouplingLevel(flow);
   const couplingScore = routeCouplingScore(flow);
+  const confidence = routeArchitectureConfidence(flow);
+  const confidenceScore = routeArchitectureScore(flow);
+  const evidenceGapIds = routeArchitectureGapIds(flow);
+  const riskReasoning = architectureImpactRiskReasoning({
+    entityId: flow.id,
+    criticality: serviceCausality.length > 0 || couplingLevel === 'high' ? 'high' : 'medium',
+    criticalityScore: serviceCausality.length > 0 || couplingLevel === 'high' ? 8 : 5,
+    couplingLevel,
+    couplingScore,
+    affectedFlows: [safeText(flow.id)],
+    affectedTests: tests,
+    affectedConfigs: configs,
+    dependentComponents: [],
+    confidence,
+    evidenceGapIds,
+    tradeoffs: tradeoffsForRouteImpact(flow),
+    riskySeams: [],
+    serviceCausality,
+  });
   return {
     impact_id: `impact:${safeText(flow.id)}`,
     surface_type: 'route',
@@ -7348,13 +11147,14 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
     affected_files: files,
     affected_tests: tests,
     affected_configs: configs,
+    service_causality: serviceCausality,
     dependent_components: [],
     coupling_level: couplingLevel,
     coupling_score: couplingScore,
-    confidence: routeArchitectureConfidence(flow),
-    confidence_score: routeArchitectureScore(flow),
+    confidence,
+    confidence_score: confidenceScore,
     evidence_ids: evidenceIdsForFlow(flow).slice(0, 12),
-    evidence_gap_ids: routeArchitectureGapIds(flow),
+    evidence_gap_ids: evidenceGapIds,
     what_breaks: unique([
       routeBreaks,
       ...configs.map(
@@ -7366,7 +11166,25 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
       ...(tests.length === 0
         ? [`Route ${routePath} has no directly linked test artifact in the impact map.`]
         : []),
+      ...serviceCausality.flatMap((item) =>
+        item.effects.map(
+          (effect) => `${item.service_id} can affect route ${routePath} through ${effect}.`,
+        ),
+      ),
+      ...serviceCausality
+        .filter((item) => item.effects.length === 0)
+        .map(
+          (item) =>
+            `${item.service_id} reaches route ${routePath}, but no service side effect is recorded; blast radius remains uncertain.`,
+        ),
+      ...serviceCausality
+        .filter((item) => item.step_ids.length === 0)
+        .map(
+          (item) =>
+            `${item.service_id} reaches route ${routePath} without a linked flow step; inspect reachability before relying on this impact.`,
+        ),
     ]).map(safeText),
+    risk_reasoning: riskReasoning,
     reasons: [
       `framework:${safeText(framework)}`,
       `route_type:${safeText(routeType)}`,
@@ -7374,8 +11192,86 @@ function routeImpactEntry(flow: BrainEntity): ArchitectureImpactEntry {
       `files:${files.length}`,
       `tests:${tests.length}`,
       `configs:${configs.length}`,
+      `service_causality:${serviceCausality.length}`,
       `coupling:${couplingLevel}`,
     ],
+  };
+}
+
+function serviceCausalityEffectCategory(effect: string): string {
+  const [category] = effect.split(':');
+  if (category === undefined || category.trim() === '') return 'unknown';
+  return safeText(category);
+}
+
+function buildArchitectureServiceCausalityReasoning(params: {
+  readonly flows: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
+}): ArchitectureServiceCausalityReasoning {
+  const claims = params.flows.flatMap((flow) =>
+    safeFlowServiceCausality(flow).map((claim) => ({ flow, claim })),
+  );
+  const effects = unique(claims.flatMap(({ claim }) => claim.effects)).map(safeText);
+  const missingEffectPaths = claims
+    .filter(({ claim }) => claim.effects.length === 0)
+    .map(({ flow, claim }) => `${safeText(flow.id)} -> ${safeText(claim.service_id)}`);
+  const missingStepLinkPaths = claims
+    .filter(({ claim }) => claim.step_ids.length === 0)
+    .map(({ flow, claim }) => `${safeText(flow.id)} -> ${safeText(claim.service_id)}`);
+  const routeImpacts = claims
+    .filter(({ flow }) => isArchitectureRouteFlow(flow))
+    .map(({ flow, claim }) => {
+      const routePath = safeText(routePathForFlow(flow));
+      const whatBreaks =
+        claim.effects.length === 0
+          ? [
+              `${safeText(claim.service_id)} reaches route ${routePath}, but no side effect is recorded yet.`,
+            ]
+          : claim.effects.map(
+              (effect) =>
+                `${safeText(claim.service_id)} can change route ${routePath} behavior through ${safeText(effect)}.`,
+            );
+      return {
+        flow_id: safeText(flow.id),
+        route_path: routePath,
+        service_id: safeText(claim.service_id),
+        effects: claim.effects.map(safeText),
+        what_breaks: whatBreaks.map(safeText),
+        evidence_ids: claim.evidence_ids.map(safeText),
+        confidence: claim.confidence,
+      };
+    });
+  const unknowns = unique([
+    ...(claims.length === 0 && params.services.length > 0
+      ? [
+          `${params.services.length} service entity/entities were reconstructed, but no service causality paths were linked to flows yet.`,
+        ]
+      : []),
+    ...missingEffectPaths.map((path) => `${path} has no recorded service effect.`),
+    ...missingStepLinkPaths.map((path) => `${path} is not linked to a reconstructed flow step.`),
+    ...claims.flatMap(({ claim }) => claim.unknowns),
+  ]).map(safeText);
+  return {
+    total_services: params.services.length,
+    total_paths: claims.length,
+    affected_flows: unique(claims.map(({ flow }) => flow.id)).map(safeText),
+    affected_services: unique(claims.map(({ claim }) => claim.service_id)).map(safeText),
+    effect_count: effects.length,
+    effects,
+    effect_categories: unique(effects.map(serviceCausalityEffectCategory)),
+    route_impacts: routeImpacts,
+    missing_effect_paths: missingEffectPaths.map(safeText),
+    missing_step_link_paths: missingStepLinkPaths.map(safeText),
+    evidence_ids: unique(claims.flatMap(({ claim }) => claim.evidence_ids)).map(safeText),
+    confidence_distribution: countByConfidence(claims.map(({ claim }) => claim.confidence)),
+    top_risky_effects: effects
+      .filter((effect) =>
+        /env|secret|token|credential|storage|db|database|external|api/i.test(effect),
+      )
+      .slice(0, 10),
+    unknowns: unknowns.slice(0, 20),
+    calibration_rule:
+      'Service causality uses flow steps, service ownership, side effects, evidence, and confidence.',
   };
 }
 
@@ -7403,6 +11299,8 @@ function buildArchitectureImpactMap(params: {
         a.impact_id.localeCompare(b.impact_id),
     )
     .slice(0, 50);
+  const serviceCausality = entries.flatMap((entry) => entry.service_causality ?? []);
+  const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   return {
     summary: {
       total_surfaces: entries.length,
@@ -7411,12 +11309,629 @@ function buildArchitectureImpactMap(params: {
       high_coupling_surfaces: entries.filter((entry) => entry.coupling_level === 'high').length,
       test_backed_surfaces: entries.filter((entry) => entry.affected_tests.length > 0).length,
       config_backed_surfaces: entries.filter((entry) => entry.affected_configs.length > 0).length,
+      evidence_backed_surfaces: entries.filter((entry) => entry.evidence_ids.length > 0).length,
+      what_breaks_surfaces: entries.filter((entry) => entry.what_breaks.length > 0).length,
+      dependent_component_surfaces: entries.filter((entry) => entry.dependent_components.length > 0)
+        .length,
+      service_causality_paths: serviceCausality.length,
+      service_causality_effect_count: serviceCausalityEffects.length,
+      service_causality_backed_surfaces: entries.filter(
+        (entry) => (entry.service_causality ?? []).length > 0,
+      ).length,
+      service_causality_unknown_count: serviceCausality.filter(
+        (item) => item.effects.length === 0 || item.step_ids.length === 0,
+      ).length,
       top_impacted_surfaces: entries.slice(0, 5).map((entry) => entry.impact_id),
     },
     entries,
     calibration_rule:
-      'Impact map is deterministic static inference from component boundaries, route metadata, flows, graph relationships, tests, configs, coupling, and evidence IDs.',
+      'Impact map is deterministic static inference from boundaries, routes, flows, graph, tests, configs, coupling, evidence.',
   };
+}
+
+function architectureCrossComponentRelationships(
+  relationships: readonly BrainRelationship[],
+): Array<Record<string, unknown>> {
+  return relationships
+    .filter(
+      (relationship) =>
+        relationship.from.startsWith('component:') &&
+        relationship.to.startsWith('component:') &&
+        ['imports', 'calls', 'depends_on'].includes(relationship.relation),
+    )
+    .map((relationship) => ({
+      from: safeText(relationship.from),
+      relation: safeText(relationship.relation),
+      to: safeText(relationship.to),
+      confidence: relationship.confidence,
+      evidence_ids: relationship.evidence_ids.slice(0, 20).map(safeText),
+      what_breaks: [
+        `${relationship.from} ${relationship.relation} ${relationship.to}; changes on either side can break static architecture reachability.`,
+      ].map(safeText),
+      rules: [
+        `relation:${safeText(relationship.relation)}`,
+        `evidence_ids:${relationship.evidence_ids.length}`,
+      ],
+    }))
+    .sort(
+      (a, b) =>
+        recordArray(b, 'evidence_ids').length - recordArray(a, 'evidence_ids').length ||
+        String(a.from).localeCompare(String(b.from)) ||
+        String(a.to).localeCompare(String(b.to)),
+    )
+    .slice(0, 30);
+}
+
+function isDeploymentFlow(flow: BrainEntity): boolean {
+  return flowStringArray(flow, 'signals').includes('deployment');
+}
+
+function buildDeploymentIntelligence(flows: readonly BrainEntity[]): Record<string, unknown> {
+  const deploymentFlows = flows.filter(isDeploymentFlow);
+  const entries = deploymentFlows.map((flow) => {
+    const risks = flowRisks(flow).filter((risk) => risk.kind.startsWith('deployment_'));
+    const configs = flowStringArray(flow, 'configs').filter(isDeploymentConfigPath);
+    const requiredTests = flowStringArray(flow, 'required_tests');
+    return {
+      flow_id: safeText(flow.id),
+      name: safeText(flow.name),
+      configs: configs.map(safeText),
+      required_tests: requiredTests.map(safeText),
+      production_risk_count: risks.length,
+      production_risks: risks.map((risk) => safeText(risk.description)),
+      smoke_required: requiredTests.includes('production smoke check'),
+      confidence: flow.confidence,
+      confidence_score: asFlowConfidenceScore(flow),
+      evidence_ids: unique([...flow.evidence_ids, ...configs.map(evidenceId)]).slice(0, 12),
+    };
+  });
+  const productionRiskCount = entries.reduce(
+    (count, entry) => count + Number(entry.production_risk_count),
+    0,
+  );
+  const configCount = unique(entries.flatMap((entry) => entry.configs)).length;
+  return {
+    summary: {
+      deployment_flow_count: entries.length,
+      deployment_config_count: configCount,
+      production_risk_count: productionRiskCount,
+      smoke_required_count: entries.filter((entry) => entry.smoke_required).length,
+      posture: deploymentPosture(entries.length, productionRiskCount),
+    },
+    flows: entries,
+    unknowns: unique([
+      ...(entries.length === 0
+        ? ['No deployment flow was reconstructed from local evidence.']
+        : []),
+      ...(entries.some((entry) => entry.smoke_required)
+        ? [
+            'Deployment flows need recorded production smoke evidence before production confidence improves.',
+          ]
+        : []),
+      ...(productionRiskCount > 0
+        ? ['Deployment configuration includes production risks that require explicit review.']
+        : []),
+    ]),
+    calibration_rule:
+      'Deployment intelligence uses deploy scripts, configs, flow contracts, and risk evidence.',
+  };
+}
+
+function buildServiceArchitectureIntelligence(
+  services: readonly BrainEntity[],
+): Record<string, unknown> {
+  const entries = services.map((service) => {
+    const risks = serviceDataStringArray(service, 'risks');
+    const relatedFlows = serviceDataStringArray(service, 'related_flows');
+    const storage = serviceDataStringArray(service, 'storage_dependencies');
+    const envVars = serviceDataStringArray(service, 'environment_variables');
+    const externalServices = serviceDataStringArray(service, 'external_services');
+    const deploymentConfigs = serviceDataStringArray(service, 'deployment_configs');
+    return {
+      service_id: safeText(service.id),
+      name: safeText(service.name),
+      runtime: stringData(service, 'runtime') ?? 'unknown',
+      framework: stringData(service, 'framework') ?? 'unknown',
+      related_flows: relatedFlows,
+      related_components: serviceDataStringArray(service, 'related_components'),
+      route_count: serviceDataStringArray(service, 'routes').length,
+      job_count: serviceDataStringArray(service, 'jobs').length,
+      storage_dependencies: storage,
+      environment_variables: envVars,
+      external_services: externalServices,
+      deployment_configs: deploymentConfigs,
+      risk_count: risks.length,
+      risks,
+      confidence: service.confidence,
+      confidence_score:
+        numberData(service, 'confidence_score') ?? confidenceScoreForValue(service.confidence),
+      evidence_ids: service.evidence_ids.map(safeText),
+      unknowns: serviceDataStringArray(service, 'unknowns'),
+    };
+  });
+  const riskyServices = entries.filter(
+    (entry) =>
+      entry.risk_count > 0 ||
+      entry.storage_dependencies.length > 0 ||
+      entry.deployment_configs.length > 0,
+  );
+  return {
+    summary: {
+      service_count: entries.length,
+      services_with_flows: entries.filter((entry) => entry.related_flows.length > 0).length,
+      services_with_storage: entries.filter((entry) => entry.storage_dependencies.length > 0)
+        .length,
+      services_with_external_apis: entries.filter((entry) => entry.external_services.length > 0)
+        .length,
+      risky_service_count: riskyServices.length,
+    },
+    services: entries,
+    unknowns: unique(
+      services.flatMap((service) =>
+        serviceDataStringArray(service, 'unknowns').map((unknown) => `${service.id}: ${unknown}`),
+      ),
+    ).slice(0, 12),
+    calibration_rule:
+      'Service architecture uses service entities, flows, storage/API/env, configs, and unknowns.',
+  };
+}
+
+function deploymentPosture(deploymentFlowCount: number, productionRiskCount: number): string {
+  if (deploymentFlowCount === 0) return 'no deployment evidence';
+  if (productionRiskCount > 0) return 'risky until verified';
+  return 'needs smoke evidence';
+}
+
+function isServiceLikeSourceFile(file: FileFact): boolean {
+  if (!isSourceFile(file.relativePath)) return false;
+  const lower = file.relativePath.toLowerCase();
+  const name = basename(lower);
+  return (
+    /(^|\/)(services?|adapters?|repositories?|workers?|jobs?|integrations?)\//i.test(lower) ||
+    /(^|\/)(controllers?|models?|schemas?)\//i.test(lower) ||
+    /(^|[-_.])(service|adapter|repository|controller|model|schema|worker|job|ingest|processor|client)([-_.]|$)/i.test(
+      name,
+    )
+  );
+}
+
+function serviceRootForFile(path: string): string {
+  const parts = path.split('/');
+  const serviceIndex = parts.findIndex((part) =>
+    /^(services?|adapters?|repositories?|controllers?|models?|schemas?|workers?|jobs?|integrations?)$/i.test(
+      part,
+    ),
+  );
+  if (serviceIndex >= 0) return parts.slice(0, serviceIndex + 1).join('/');
+  return dirname(path).split(sep).join('/');
+}
+
+function runtimeForService(files: readonly FileFact[]): ServiceRuntime {
+  if (files.some((file) => file.relativePath.endsWith('.py'))) return 'python';
+  if (files.some((file) => /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file.relativePath))) return 'node';
+  return 'unknown';
+}
+
+function frameworkForService(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): string {
+  const text = params.files
+    .map((file) => readTextIfAvailable(params.rootDir, file.relativePath) ?? '')
+    .join('\n');
+  const manifestText = params.packageFacts
+    .map((pkg) => JSON.stringify({ ...pkg.dependencies, ...pkg.devDependencies }))
+    .join('\n');
+  if (/FastAPI|APIRouter|fastapi/i.test(text)) return 'fastapi';
+  if (/Flask|flask/i.test(text)) return 'flask';
+  if (/Django|django/i.test(text)) return 'django';
+  if (/new\s+Hono\b|from\s+['"]hono['"]|hono/i.test(`${text}\n${manifestText}`)) return 'hono';
+  if (/express|fastify/i.test(`${text}\n${manifestText}`)) return 'express-fastify-http';
+  if (/next/i.test(manifestText)) return 'nextjs';
+  return 'unknown';
+}
+
+function envVarsFromText(text: string): string[] {
+  const vars = new Set<string>();
+  const patterns = [
+    /process\.env\.([A-Z][A-Z0-9_]*)/g,
+    /process\.env\[['"]([A-Z][A-Z0-9_]*)['"]\]/g,
+    /os\.getenv\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g,
+    /getenv\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const name = match[1];
+      if (name !== undefined) vars.add(safeText(name));
+    }
+  }
+  return [...vars].sort((a, b) => a.localeCompare(b));
+}
+
+function externalServicesFromText(text: string, imports: readonly string[]): string[] {
+  const services = new Set<string>();
+  for (const item of imports) {
+    if (!item.startsWith('.') && !/^[A-Za-z_][\w.]+$/.test(item)) services.add(safeText(item));
+  }
+  const checks: ReadonlyArray<readonly [RegExp, string]> = [
+    [/youtube|yt-dlp|pytube/i, 'youtube'],
+    [/openai|anthropic|cohere/i, 'llm/api'],
+    [/stripe/i, 'stripe'],
+    [/yfinance|alpaca|polygon|binance/i, 'market-data-api'],
+    [/requests\.|httpx|fetch\(|axios/i, 'http-client'],
+    [/s3|boto3|blob/i, 'object-storage'],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(text)) services.add(label);
+  }
+  return [...services].sort((a, b) => a.localeCompare(b)).slice(0, 12);
+}
+
+function serviceRoutesForFiles(params: {
+  readonly rootDir: string;
+  readonly files: readonly FileFact[];
+}): string[] {
+  return unique(
+    params.files.flatMap((file) =>
+      httpRouteDeclarationsForFile({ rootDir: params.rootDir, file }).map(
+        (route) => `${route.method} ${route.routePath} (${file.relativePath})`,
+      ),
+    ),
+  );
+}
+
+function serviceJobsForRoot(params: {
+  readonly root: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+}): string[] {
+  const rootFiles = new Set(params.files.map((file) => file.relativePath));
+  const fileJobs = params.files
+    .filter((file) => /(^|\/)(jobs?|workers?|scripts?)\//i.test(file.relativePath))
+    .map((file) => file.relativePath);
+  const scriptJobs = params.packageFacts.flatMap((pkg) => {
+    const pkgDir = packageComponentPath(pkg) ?? '.';
+    return Object.entries(pkg.scripts)
+      .filter(([name, command]) =>
+        /job|worker|cron|ingest|sync|generate|build|deploy/i.test(`${name} ${command}`),
+      )
+      .flatMap(([name, command]) => {
+        const referenced = filesReferencedByCommand(
+          params.files,
+          command,
+          pkgDir === '.' ? undefined : pkgDir,
+        );
+        return referenced.some((file) => rootFiles.has(file.relativePath))
+          ? [`${pkg.relativePath}:${name}`]
+          : [];
+      });
+  });
+  return unique([...fileJobs, ...scriptJobs]).slice(0, 12);
+}
+
+function serviceDeploymentConfigs(params: {
+  readonly root: string;
+  readonly files: readonly FileFact[];
+}): string[] {
+  return unique(
+    params.files
+      .filter((file) => {
+        if (!isDeploymentConfigPath(file.relativePath)) return false;
+        return (
+          file.relativePath.startsWith(`${params.root}/`) ||
+          !file.relativePath.includes('/') ||
+          file.relativePath.startsWith('.github/')
+        );
+      })
+      .map((file) => file.relativePath),
+  ).slice(0, 12);
+}
+
+function serviceConfidence(params: {
+  readonly entrypoints: readonly string[];
+  readonly routes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly storageDependencies: readonly string[];
+  readonly externalServices: readonly string[];
+  readonly unknowns: readonly string[];
+}): { readonly confidence: Confidence; readonly score: number } {
+  let score = 0.35;
+  if (params.entrypoints.length > 0) score += 0.2;
+  if (params.routes.length > 0) score += 0.15;
+  if (params.jobs.length > 0) score += 0.1;
+  if (params.storageDependencies.length > 0) score += 0.1;
+  if (params.externalServices.length > 0) score += 0.05;
+  if (params.unknowns.length > 0) score -= 0.1;
+  const bounded = Math.max(0.1, Math.min(0.9, Number(score.toFixed(2))));
+  if (bounded >= 0.8 && params.unknowns.length === 0) {
+    return { confidence: 'verified', score: bounded };
+  }
+  if (bounded >= 0.5) return { confidence: 'inferred', score: bounded };
+  return { confidence: 'uncertain', score: bounded };
+}
+
+function inferServices(params: {
+  readonly rootDir: string;
+  readonly now: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
+  readonly components: readonly BrainEntity[];
+  readonly tests: readonly BrainEntity[];
+  readonly configs: readonly BrainEntity[];
+  readonly databaseTables: readonly BrainEntity[];
+}): BrainEntity[] {
+  const serviceFilesByRoot = new Map<string, FileFact[]>();
+  for (const file of params.files.filter(isServiceLikeSourceFile)) {
+    const root = serviceRootForFile(file.relativePath);
+    serviceFilesByRoot.set(root, [...(serviceFilesByRoot.get(root) ?? []), file]);
+  }
+  const services: BrainEntity[] = [];
+  for (const [root, rawFiles] of serviceFilesByRoot.entries()) {
+    const files = uniqueFileFacts(rawFiles);
+    const textByFile = new Map(
+      files.map((file) => [
+        file.relativePath,
+        readTextIfAvailable(params.rootDir, file.relativePath) ?? '',
+      ]),
+    );
+    const allText = [...textByFile.values()].join('\n');
+    const importContext = importContextForFiles({
+      rootDir: params.rootDir,
+      files: params.files,
+      entryFiles: files,
+    });
+    const componentIds = componentIdsForFiles(
+      files.map((file) => file.relativePath),
+      params.components,
+    );
+    const testPaths = params.tests
+      .filter((test) =>
+        test.source_files.some(
+          (file) => file.startsWith(`${root}/`) || basename(file).includes(basename(root)),
+        ),
+      )
+      .flatMap((test) => test.source_files);
+    const configPaths = params.configs
+      .filter((config) => config.source_files.some((file) => file.startsWith(`${root}/`)))
+      .flatMap((config) => config.source_files);
+    const entrypoints = unique([
+      ...files
+        .filter((file) =>
+          /(^|\/)(index|main|app|server|worker|job|ingest|processor)\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(
+            file.relativePath,
+          ),
+        )
+        .map((file) => file.relativePath),
+      ...files.slice(0, 3).map((file) => file.relativePath),
+    ]).slice(0, 8);
+    const routes = serviceRoutesForFiles({ rootDir: params.rootDir, files });
+    const jobs = serviceJobsForRoot({
+      root,
+      files,
+      packageFacts: params.packageFacts,
+    });
+    const envVars = envVarsFromText(allText);
+    const tableDependencies = params.databaseTables.filter((table) =>
+      table.source_files.some((file) =>
+        files.some((serviceFile) => serviceFile.relativePath === file),
+      ),
+    );
+    const storageDependencies = unique([
+      ...storageDependenciesFromText(allText),
+      ...tableDependencies.map((table) => table.id),
+    ]);
+    const externalServices = externalServicesFromText(allText, importContext.importedSpecifiers);
+    const deploymentConfigs = serviceDeploymentConfigs({ root, files: params.files });
+    const risks = unique([
+      ...(testPaths.length === 0
+        ? ['No directly linked test artifact was detected for this service.']
+        : []),
+      ...(storageDependencies.some((item) => /temporary|sqlite|filesystem/i.test(item))
+        ? [
+            'Storage depends on local filesystem, temporary files, or SQLite-like evidence; verify production durability.',
+          ]
+        : []),
+      ...(envVars.length > 0 && configPaths.length === 0
+        ? ['Environment variables are read but no service-local config artifact was linked.']
+        : []),
+    ]);
+    const unknowns = unique([
+      ...(routes.length === 0 && jobs.length === 0
+        ? ['No API route evidence was linked directly to this service.']
+        : []),
+      ...(jobs.length === 0
+        ? ['No background job or script evidence was linked directly to this service.']
+        : []),
+      ...(storageDependencies.length === 0
+        ? ['No storage dependency was detected from static source evidence.']
+        : []),
+    ]);
+    const confidence = serviceConfidence({
+      entrypoints,
+      routes,
+      jobs,
+      storageDependencies,
+      externalServices,
+      unknowns,
+    });
+    const evidenceIds = unique(files.map((file) => evidenceId(file.relativePath)));
+    const serviceId = entityId('service', root);
+    const fieldEvidence = {
+      entrypoints: entrypoints.map(evidenceId),
+      routes: files
+        .filter(
+          (file) => httpRouteDeclarationsForFile({ rootDir: params.rootDir, file }).length > 0,
+        )
+        .map((file) => evidenceId(file.relativePath)),
+      jobs: jobs.flatMap((job) => {
+        const manifest = job.split(':')[0] ?? '';
+        return manifest.endsWith('package.json') ? [evidenceId(manifest)] : [];
+      }),
+      storage_dependencies: files
+        .filter(
+          (file) => storageDependenciesFromText(textByFile.get(file.relativePath) ?? '').length > 0,
+        )
+        .map((file) => evidenceId(file.relativePath))
+        .concat(tableDependencies.flatMap((table) => table.evidence_ids)),
+      environment_variables: files
+        .filter((file) => envVarsFromText(textByFile.get(file.relativePath) ?? '').length > 0)
+        .map((file) => evidenceId(file.relativePath)),
+      external_services: unique([
+        ...files
+          .filter(
+            (file) =>
+              externalServicesFromText(
+                textByFile.get(file.relativePath) ?? '',
+                importSpecifiersFromText(textByFile.get(file.relativePath) ?? ''),
+              ).length > 0,
+          )
+          .map((file) => evidenceId(file.relativePath)),
+        ...importContext.importEvidence.map((evidence) => evidenceId(evidence.path)),
+      ]),
+      deployment_configs: deploymentConfigs.map(evidenceId),
+      risks: evidenceIds,
+      unknowns: evidenceIds,
+    };
+    const intelligence: ServiceIntelligence = {
+      service_id: serviceId,
+      name: safeText(root),
+      runtime: runtimeForService(files),
+      framework: frameworkForService({
+        rootDir: params.rootDir,
+        files,
+        packageFacts: params.packageFacts,
+      }),
+      service_root: safeText(root),
+      files: files.map((file) => safeText(file.relativePath)),
+      entrypoints: entrypoints.map(safeText),
+      routes: routes.map(safeText),
+      jobs: jobs.map(safeText),
+      storage_dependencies: storageDependencies.map(safeText),
+      environment_variables: envVars.map(safeText),
+      external_services: externalServices.map(safeText),
+      deployment_configs: deploymentConfigs.map(safeText),
+      related_flows: [],
+      related_components: componentIds.map(safeText),
+      risks: risks.map(safeText),
+      confidence: confidence.confidence,
+      confidence_score: confidence.score,
+      evidence_ids: evidenceIds.map(safeText),
+      field_evidence: fieldEvidence,
+      unknowns: unknowns.map(safeText),
+      signals: unique([
+        'service-like path',
+        ...(routes.length > 0 ? ['route evidence'] : []),
+        ...(jobs.length > 0 ? ['job evidence'] : []),
+        ...(storageDependencies.length > 0 ? ['storage evidence'] : []),
+        ...(envVars.length > 0 ? ['environment evidence'] : []),
+        ...(externalServices.length > 0 ? ['external API evidence'] : []),
+      ]),
+    };
+    services.push(
+      makeEntity({
+        id: serviceId,
+        type: 'service',
+        name: safeText(root),
+        description: `${safeText(root)} service inferred from local source evidence.`,
+        now: params.now,
+        confidence: confidence.confidence,
+        evidenceIds,
+        relatedEntityIds: componentIds,
+        sourceFiles: files.map((file) => file.relativePath),
+        data: intelligence as unknown as Record<string, unknown>,
+      }),
+    );
+  }
+  return sorted(services, (service) => service.id);
+}
+
+function flowServiceCausality(params: {
+  readonly frameworkLabel: string;
+  readonly entryLabel: string;
+  readonly serviceIds: readonly string[];
+  readonly services: readonly BrainEntity[];
+  readonly files: readonly string[];
+  readonly steps: readonly FlowStep[];
+}): FlowServiceCausality[] {
+  return params.serviceIds.flatMap((serviceId): FlowServiceCausality[] => {
+    const service = params.services.find((item) => item.id === serviceId);
+    if (service === undefined) return [];
+    const serviceFiles = unique(params.files.filter((file) => svcFile(service, file)));
+    const serviceSteps = params.steps.filter(
+      (step) =>
+        ['handler', 'service', 'function'].includes(step.type) && svcFile(service, step.path),
+    );
+    const storage = serviceDataStringArray(service, 'storage_dependencies');
+    const envVars = serviceDataStringArray(service, 'environment_variables');
+    const externalServices = serviceDataStringArray(service, 'external_services');
+    const jobs = serviceDataStringArray(service, 'jobs');
+    const routes = serviceDataStringArray(service, 'routes');
+    const effects = unique([
+      ...storage.map((item) => `storage:${item}`),
+      ...envVars.map((item) => `env:${item}`),
+      ...externalServices.map((item) => `external:${item}`),
+      ...jobs.map((item) => `job:${item}`),
+      ...routes.map((item) => `route:${item}`),
+    ]);
+    const evidenceIds = unique([
+      ...service.evidence_ids,
+      ...serviceSteps.flatMap((step) => step.evidence),
+      ...serviceFiles.map(evidenceId),
+    ]);
+    return [
+      {
+        service_id: safeText(service.id),
+        service_name: safeText(service.name),
+        service_root: safeText(stringData(service, 'service_root') ?? service.name),
+        files: serviceFiles.map(safeText),
+        step_ids: serviceSteps.map((step) => safeText(step.step_id)),
+        cause: safeText(
+          `${params.frameworkLabel} ${params.entryLabel} reaches ${service.id} through static import evidence.`,
+        ),
+        effects: effects.map(safeText),
+        evidence_ids: evidenceIds.map(safeText),
+        confidence: weakestConfidence([
+          service.confidence,
+          serviceSteps.length > 0 ? 'inferred' : 'uncertain',
+        ]),
+        unknowns: serviceDataStringArray(service, 'unknowns'),
+      },
+    ];
+  });
+}
+
+function enrichServicesWithFlows(
+  services: readonly BrainEntity[],
+  flows: readonly BrainEntity[],
+): BrainEntity[] {
+  return services.map((service) => {
+    const relatedFlows = flows.filter((flow) =>
+      flowStringArray(flow, 'services').includes(service.id),
+    );
+    const relatedFlowIds = relatedFlows.map((flow) => flow.id);
+    const relatedComponentIds = unique([
+      ...stringArrayData(service, 'related_components'),
+      ...relatedFlows.flatMap((flow) => flowStringArray(flow, 'components')),
+    ]);
+    return {
+      ...service,
+      related_entity_ids: unique([
+        ...service.related_entity_ids,
+        ...relatedFlowIds,
+        ...relatedComponentIds,
+      ]),
+      data: {
+        ...(service.data ?? {}),
+        related_flows: relatedFlowIds.map(safeText),
+        related_components: relatedComponentIds.map(safeText),
+      },
+    };
+  });
+}
+
+function serviceDataStringArray(service: BrainEntity, key: string): string[] {
+  return stringArrayData(service, key).map(safeText);
 }
 
 function buildArchitectureReasoningArtifact(params: {
@@ -7431,6 +11946,7 @@ function buildArchitectureReasoningArtifact(params: {
   const components = params.buckets.components.filter(
     (component) => component.latest_status !== 'stale',
   );
+  const services = params.buckets.services.filter((service) => service.latest_status !== 'stale');
   const changedFileSet = new Set(params.changedFiles);
   const flowsByComponent = new Map<string, BrainEntity[]>();
   for (const flow of flows) {
@@ -7439,6 +11955,9 @@ function buildArchitectureReasoningArtifact(params: {
       flowsByComponent.set(componentId, [...existing, flow]);
     }
   }
+  const cbe = br({ components, flowsByComponent });
+  const be = bi(cbe);
+  const cp = ccp({ components, flowsByComponent, boundaryEvidenceByComponent: be });
   const boundaryCandidates = components
     .map((component) => {
       const componentFlows = flowsByComponent.get(component.id) ?? [];
@@ -7460,10 +11979,7 @@ function buildArchitectureReasoningArtifact(params: {
         outbound_count: outboundCount,
         coupling_level: coupling.level,
         coupling_score: coupling.score,
-        confidence: weakestConfidence([
-          component.confidence,
-          ...componentFlows.map((flow) => flow.confidence),
-        ]),
+        confidence: weakestConfidence([component.confidence, ...componentFlows.map(afc)]),
         evidence_ids: unique([
           ...component.evidence_ids,
           ...componentFlows.flatMap((flow) => flow.evidence_ids),
@@ -7598,7 +12114,8 @@ function buildArchitectureReasoningArtifact(params: {
   const changedFlows = flows.filter((flow) =>
     flowStringArray(flow, 'files').some((file) => changedFileSet.has(file)),
   );
-  const lowConfidenceFlows = flows.filter((flow) => flow.confidence !== 'verified');
+  const flowEvidenceSummary = aes(flows);
+  const weakFlows = flowEvidenceSummary.weakFlows;
   const reviewHints: Array<Record<string, unknown>> = [];
   if (changedFlows.length > 0) {
     reviewHints.push({
@@ -7648,19 +12165,33 @@ function buildArchitectureReasoningArtifact(params: {
       confidence: 'inferred',
     });
   }
-  if (lowConfidenceFlows.length > 0) {
+  if (weakFlows.length > 0) {
     reviewHints.push({
-      reason:
-        'Low-confidence flows need evidence review before architectural decisions rely on them.',
-      affected_flows: lowConfidenceFlows.map((flow) => safeText(flow.id)),
-      suggested_tests: unique(
-        lowConfidenceFlows.flatMap((flow) => flowStringArray(flow, 'tests')),
-      ).map(safeText),
+      reason: 'Low-confidence flows need evidence review.',
+      affected_flows: weakFlows.map((flow) => safeText(flow.id)),
+      suggested_tests: unique(weakFlows.flatMap((flow) => flowStringArray(flow, 'tests'))).map(
+        safeText,
+      ),
       confidence: 'inferred',
     });
   }
   const routeArchitecture = routeArchitectureRecords(flows);
   const routeWhatBreaks = routeArchitectureWhatBreaks(flows);
+  const deploymentIntelligence = buildDeploymentIntelligence(flows);
+  const serviceIntelligence = buildServiceArchitectureIntelligence(services);
+  const deploymentFlowIds = recordArray(deploymentIntelligence, 'flows')
+    .filter(isRecord)
+    .map((flow) => String(flow.flow_id ?? ''))
+    .filter((id) => id !== '');
+  if (deploymentFlowIds.length > 0) {
+    reviewHints.push({
+      reason:
+        'Deployment flows should be reviewed with deployment config, smoke checks, storage, auth, and CORS evidence.',
+      affected_flows: deploymentFlowIds,
+      suggested_tests: ['production smoke check'],
+      confidence: 'inferred',
+    });
+  }
   if (routeArchitecture.length > 0) {
     reviewHints.push({
       reason: 'Next.js app-router surfaces should be reviewed as route-level architecture.',
@@ -7668,6 +12199,25 @@ function buildArchitectureReasoningArtifact(params: {
       affected_routes: routeArchitecture.map((route) => String(route.route_path ?? '')),
       suggested_tests: unique(
         flows.filter(isNextAppRouterFlow).flatMap((flow) => flowStringArray(flow, 'tests')),
+      ).map(safeText),
+      confidence: 'inferred',
+    });
+  }
+  if (services.length > 0) {
+    reviewHints.push({
+      reason:
+        'Review service changes with routes, flows, storage, env, APIs, deploy configs, and smoke checks.',
+      affected_services: services.map((service) => safeText(service.id)),
+      affected_flows: unique(
+        services.flatMap((service) => serviceDataStringArray(service, 'related_flows')),
+      ),
+      suggested_tests: unique(
+        services
+          .flatMap((service) => serviceDataStringArray(service, 'related_flows'))
+          .flatMap((flowId) => {
+            const flow = flows.find((item) => item.id === flowId);
+            return flow === undefined ? [] : flowStringArray(flow, 'tests');
+          }),
       ).map(safeText),
       confidence: 'inferred',
     });
@@ -7683,6 +12233,7 @@ function buildArchitectureReasoningArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
     flows,
+    be,
   });
   const designPressures = sorted(
     [
@@ -7695,6 +12246,7 @@ function buildArchitectureReasoningArtifact(params: {
     components,
     flowsByComponent,
     relationships: params.relationships,
+    be,
   });
   const couplingRationale = architectureCouplingRationale({
     components,
@@ -7718,6 +12270,11 @@ function buildArchitectureReasoningArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
   });
+  const serviceCausalityReasoning = buildArchitectureServiceCausalityReasoning({
+    flows,
+    services,
+  });
+  const crossComponentRelationships = architectureCrossComponentRelationships(params.relationships);
   const architectureUnknowns = unique([
     ...(flows.length === 0 ? ['No reconstructed flows are available yet.'] : []),
     ...(componentsWithoutFlows.length > 0
@@ -7730,12 +12287,15 @@ function buildArchitectureReasoningArtifact(params: {
           `${relationshipsWithoutEvidence.length} relationship(s) do not have direct evidence IDs yet.`,
         ]
       : []),
-    ...(lowConfidenceFlows.length > 0
-      ? [`${lowConfidenceFlows.length} reconstructed flow(s) are not verified yet.`]
+    ...(flowEvidenceSummary.localEvidenceDebtFlows.length > 0
+      ? [`${flowEvidenceSummary.localEvidenceDebtFlows.length} flow(s) need local evidence.`]
       : []),
-    ...(crossComponentFlows.length === 0 && flows.length > 0
+    ...(crossComponentFlows.length === 0 &&
+    crossComponentRelationships.length === 0 &&
+    flows.length > 0
       ? ['No cross-component flows were reconstructed from static evidence yet.']
       : []),
+    ...serviceCausalityReasoning.unknowns,
   ]).map(safeText);
   const confidenceDebt = buildArchitectureConfidenceDebt({
     assumptions: architectureAssumptions,
@@ -7756,8 +12316,16 @@ function buildArchitectureReasoningArtifact(params: {
     what_breaks: whatBreaks,
     route_architecture: routeArchitecture,
     route_what_breaks: routeWhatBreaks,
+    deployment_intelligence: deploymentIntelligence,
+    service_intelligence: serviceIntelligence,
+    component_local_evidence: cl({ components, flows, services }),
+    component_boundary_evidence: cbe,
+    component_correction_packets: cp,
+    flow_evidence_precision: ap(flowEvidenceSummary),
+    service_causality_reasoning: serviceCausalityReasoning,
     impact_map: impactMap,
     cross_component_flows: crossComponentFlows,
+    cross_component_relationships: crossComponentRelationships,
     risk_concentrations: riskConcentrations,
     review_hints: reviewHints,
     architecture_assumptions: architectureAssumptions,
@@ -7769,11 +12337,13 @@ function buildArchitectureReasoningArtifact(params: {
       high_pressure_count: highPressures.length,
       intentional_coupling_count: intentionalCouplings.length,
       risky_coupling_count: riskyCouplings.length,
+      service_causality_path_count: serviceCausalityReasoning.total_paths,
+      service_causality_unknown_count: serviceCausalityReasoning.unknowns.length,
       evidence_gap_count: evidenceGaps.length,
       top_design_pressures: highPressures.slice(0, 10).map((pressure) => pressure.pressure_id),
       top_risky_couplings: riskyCouplings.slice(0, 10).map((rationale) => rationale.component_id),
       summary:
-        'Architecture reasoning is deterministic static inference; risky/intentional coupling reflects import, flow, config, dependency, and test evidence.',
+        'Architecture reasoning is static; coupling reflects import, flow, config, dependency, and test evidence.',
     },
     assumption_confidence: architectureAssumptionConfidenceSummary(architectureAssumptions),
     confidence_debt: confidenceDebt,
@@ -7903,6 +12473,7 @@ function buildReasoningTracesArtifact(params: {
       flowsByComponent.set(componentId, [...existing, flow]);
     }
   }
+  const be = bi(br({ components, flowsByComponent }));
 
   const componentTraces = components.map((component) => {
     const boundaryType = stringData(component, 'boundary_type') ?? 'unknown';
@@ -8017,6 +12588,7 @@ function buildReasoningTracesArtifact(params: {
     flowsByComponent,
     relationships: params.relationships,
     flows,
+    be,
   }).map((assumption) =>
     reasoningTrace({
       entityId: assumption.entity_id,
@@ -8035,7 +12607,7 @@ function buildReasoningTracesArtifact(params: {
     entityId: projectId,
     reasoningType: 'architecture',
     suffix: 'project-summary',
-    claim: `Project architecture confidence is calibrated from ${components.length} component(s), ${flows.length} flow(s), and ${params.relationships.length} relationship claim(s).`,
+    claim: `Architecture confidence uses ${components.length} component(s), ${flows.length} flow(s), and ${params.relationships.length} relationship claim(s).`,
     evidenceIds: unique([
       ...components.flatMap(evidenceIdsForComponent),
       ...flows.flatMap(evidenceIdsForFlow),
@@ -9476,6 +14048,94 @@ function architectureImpactSummary(value: unknown): string {
   return `${totalSurfaces} impact surface(s): ${componentSurfaces} component(s), ${routeSurfaces} route(s), ${highCouplingSurfaces} high-coupling surface(s).`;
 }
 
+function architectureImpactReadiness(architectureReasoning: unknown): number {
+  const impactMap = nestedRecord(architectureReasoning, 'impact_map');
+  const summary = nestedRecord(impactMap, 'summary');
+  const totalSurfaces = recordNumber(summary, 'total_surfaces');
+  if (totalSurfaces === 0) return 0;
+  return boundedScore(
+    20 +
+      scorePercent(recordNumber(summary, 'what_breaks_surfaces'), totalSurfaces) * 0.25 +
+      scorePercent(recordNumber(summary, 'evidence_backed_surfaces'), totalSurfaces) * 0.25 +
+      scorePercent(recordNumber(summary, 'test_backed_surfaces'), totalSurfaces) * 0.15 +
+      scorePercent(recordNumber(summary, 'config_backed_surfaces'), totalSurfaces) * 0.15,
+  );
+}
+
+function architectureLinkageReadiness(architectureReasoning: unknown): number {
+  const crossComponentFlowCount = recordArray(
+    architectureReasoning,
+    'cross_component_flows',
+  ).length;
+  const crossComponentRelationshipCount = recordArray(
+    architectureReasoning,
+    'cross_component_relationships',
+  ).length;
+  const routeArchitectureCount = recordArray(architectureReasoning, 'route_architecture').length;
+  const impactSummary = nestedRecord(nestedRecord(architectureReasoning, 'impact_map'), 'summary');
+  return boundedScore(
+    (crossComponentFlowCount > 0 ? 35 : 0) +
+      (crossComponentRelationshipCount > 0 ? 35 : 0) +
+      (routeArchitectureCount > 0 ? 40 : 0) +
+      (recordNumber(impactSummary, 'dependent_component_surfaces') > 0 ? 15 : 0),
+  );
+}
+
+function architectureServiceCausalityReadiness(architectureReasoning: unknown): number {
+  const serviceCausality = nestedRecord(architectureReasoning, 'service_causality_reasoning');
+  const totalServices = recordNumber(serviceCausality, 'total_services');
+  const totalPaths = recordNumber(serviceCausality, 'total_paths');
+  if (totalServices === 0) return 100;
+  if (totalPaths === 0) return 35;
+  return boundedScore(
+    65 +
+      scorePercent(totalPaths, totalServices) * 0.2 +
+      (recordNumber(serviceCausality, 'effect_count') > 0 ? 15 : 0),
+  );
+}
+
+function architectureWhatBreaksReadiness(architectureReasoning: unknown): number {
+  const componentBreaks = recordArray(architectureReasoning, 'what_breaks').length;
+  const routeBreaks = recordArray(architectureReasoning, 'route_what_breaks').length;
+  const impactSummary = nestedRecord(nestedRecord(architectureReasoning, 'impact_map'), 'summary');
+  const impactBreaks = recordNumber(impactSummary, 'what_breaks_surfaces');
+  return Math.min(100, (componentBreaks + routeBreaks + impactBreaks) * 24);
+}
+
+function architectureConfidenceReadiness(architectureReasoning: unknown): number {
+  const confidenceDebt = nestedRecord(architectureReasoning, 'confidence_debt');
+  const unknowns = asStringArray(
+    isRecord(architectureReasoning) ? architectureReasoning.unknowns : undefined,
+  );
+  return boundedScore(
+    100 -
+      unknowns.length * 5 -
+      recordNumber(confidenceDebt, 'unsupported_assumption_count') * 8 -
+      recordNumber(confidenceDebt, 'low_confidence_area_count') * 2,
+  );
+}
+
+function architectureSignalScore(params: {
+  readonly components: readonly BrainEntity[];
+  readonly architectureReasoning: unknown;
+}): number {
+  const knownBoundaryComponents = params.components.filter(
+    (component) => stringData(component, 'boundary_type') !== 'unknown',
+  );
+  const componentCouplingCoverage = params.components.filter(
+    (component) => componentCouplingRecord(component).reasons.length > 0,
+  );
+  return boundedScore(
+    scorePercent(knownBoundaryComponents.length, params.components.length) * 0.16 +
+      scorePercent(componentCouplingCoverage.length, params.components.length) * 0.12 +
+      architectureImpactReadiness(params.architectureReasoning) * 0.28 +
+      architectureLinkageReadiness(params.architectureReasoning) * 0.12 +
+      architectureServiceCausalityReadiness(params.architectureReasoning) * 0.06 +
+      architectureConfidenceReadiness(params.architectureReasoning) * 0.18 +
+      architectureWhatBreaksReadiness(params.architectureReasoning) * 0.08,
+  );
+}
+
 function readinessScore(value: unknown): number {
   if (!isRecord(value)) return 0;
   const readiness = value.readiness;
@@ -9554,6 +14214,288 @@ function dimensionRecord(params: {
   };
 }
 
+function capabilityScoreRecord(params: {
+  readonly key: string;
+  readonly label: string;
+  readonly score: number;
+  readonly evidenceBasis: readonly string[];
+  readonly nextRequiredImprovements: readonly string[];
+  readonly isBlocked?: boolean;
+}): Record<string, unknown> {
+  const score = boundedScore(params.score);
+  const status = params.isBlocked === true ? 'blocked' : scoreBand(score);
+  const nextRequiredImprovements = unique(
+    params.nextRequiredImprovements.filter((item) => item.trim() !== ''),
+  ).slice(0, 6);
+  return {
+    key: params.key,
+    label: params.label,
+    target_score: 100,
+    score,
+    remaining_to_100: 100 - score,
+    status,
+    evidence_basis: unique(params.evidenceBasis).map(safeText).slice(0, 8),
+    next_required_improvements: score >= 100 ? [] : nextRequiredImprovements.map(safeText),
+  };
+}
+
+function isIncrementalBaselineCapture(metrics: IncrementalUnderstandingMetrics): boolean {
+  return metrics.previous_brain_fingerprint === null;
+}
+
+function incrementalBaselineCaptureScore(metrics: IncrementalUnderstandingMetrics): number {
+  return boundedScore(
+    (metrics.scanned_files > 0 ? 10 : 0) +
+      (/^[a-f0-9]{64}$/.test(metrics.current_brain_fingerprint) ? 25 : 0) +
+      (metrics.current_entity_count > 0 ? 25 : 0) +
+      (metrics.understanding_deltas.new_surface_count > 0 ? 20 : 0) +
+      (metrics.stale_fact_count === 0 ? 20 : Math.max(0, 20 - metrics.stale_fact_count * 4)),
+  );
+}
+
+function incrementalStatusScore(metrics: IncrementalUnderstandingMetrics): number {
+  if (isIncrementalBaselineCapture(metrics)) {
+    return Math.min(88, incrementalBaselineCaptureScore(metrics));
+  }
+  return boundedScore(
+    Math.max(0, 100 - metrics.stale_fact_count * 12) * 0.45 +
+      metrics.scan_efficiency_score * 0.35 +
+      Math.round(metrics.file_reuse_ratio * 100) * 0.2,
+  );
+}
+
+function incrementalStatusSignals(metrics: IncrementalUnderstandingMetrics): string[] {
+  const signals = [
+    `${metrics.reused_understanding_count} reused understanding item(s)`,
+    `${metrics.scan_efficiency_score}/100 scan efficiency`,
+  ];
+  if (isIncrementalBaselineCapture(metrics)) {
+    signals.unshift(`${incrementalBaselineCaptureScore(metrics)}/100 baseline capture readiness`);
+    signals.push(
+      'First scan establishes the baseline; repeated-scan reuse is measured on later runs.',
+      'First-scan Incremental Understanding score is capped at 88/100 until reuse is proven.',
+    );
+  }
+  return signals;
+}
+
+function incrementalStatusWeakSpots(metrics: IncrementalUnderstandingMetrics): string[] {
+  const weakSpots = [...metrics.stale_fact_candidates.slice(0, 6)];
+  if (isIncrementalBaselineCapture(metrics)) {
+    weakSpots.unshift('Run a second scan to prove stable/reused understanding on this repository.');
+  }
+  return weakSpots;
+}
+
+function buildPieCapabilityScorecard(params: {
+  readonly dimensions: Record<string, Record<string, unknown>>;
+  readonly evidenceQuality: unknown;
+  readonly architectureReasoning: unknown;
+  readonly benchmarkReady: unknown;
+  readonly incrementalMetrics: IncrementalUnderstandingMetrics;
+  readonly components: readonly BrainEntity[];
+  readonly flows: readonly BrainEntity[];
+  readonly evidenceCount: number;
+  readonly readFirstCount: number;
+}): Record<string, unknown> {
+  const flowScore = dimensionScore(params.dimensions.flows);
+  const architectureScore = dimensionScore(params.dimensions.architecture);
+  const evidenceScore = dimensionScore(params.dimensions.evidence);
+  const incrementalScore = dimensionScore(params.dimensions.incremental_status);
+  const reviewScore = boundedScore(
+    dimensionScore(params.dimensions.review_readiness) * 0.6 +
+      architectureScore * 0.2 +
+      flowScore * 0.2,
+  );
+  const benchmarkCalibration = nestedRecord(params.benchmarkReady, 'readiness_calibration');
+  const benchmarkTaskCoverage = nestedRecord(
+    nestedRecord(benchmarkCalibration, 'dimensions'),
+    'benchmark_task_category_coverage',
+  );
+  const benchmarkCoverageScore = recordNumber(benchmarkTaskCoverage, 'score');
+  const benchmarkScore = boundedScore(
+    (readinessScore(params.benchmarkReady) + benchmarkCoverageScore) / 2,
+  );
+  const architectureWhatBreaks = recordArray(params.architectureReasoning, 'what_breaks');
+  const architectureImpactSummaryRecord = nestedRecord(
+    nestedRecord(params.architectureReasoning, 'impact_map'),
+    'summary',
+  );
+  const architectureServiceCausality = nestedRecord(
+    params.architectureReasoning,
+    'service_causality_reasoning',
+  );
+  const architectureCrossComponentRelationships = recordArray(
+    params.architectureReasoning,
+    'cross_component_relationships',
+  );
+  const missionControlScore = boundedScore(
+    (params.components.length > 0 ? 18 : 0) +
+      (params.flows.length > 0 ? 18 : 0) +
+      (params.evidenceCount > 0 ? 18 : 0) +
+      (architectureWhatBreaks.length > 0 ? 16 : 0) +
+      (params.readFirstCount > 0 ? 12 : 0) +
+      (benchmarkScore >= 70 ? 18 : Math.round(benchmarkScore * 0.18)),
+  );
+  const foundationAverage = boundedScore(
+    (flowScore +
+      architectureScore +
+      evidenceScore +
+      missionControlScore +
+      benchmarkScore +
+      incrementalScore +
+      reviewScore) /
+      7,
+  );
+  const askReadiness = nestedRecord(params.benchmarkReady, 'ask_readiness');
+  const askReadinessScore = recordNumber(askReadiness, 'score');
+  const askScore = Math.min(askReadinessScore, foundationAverage);
+  const askIsBlocked =
+    recordString(askReadiness, 'status', scoreBand(askReadinessScore)) === 'blocked' ||
+    foundationAverage < 95;
+  const flowProfiles = params.flows.map(flowSignalProfile);
+  const highSignalFlowCount = flowProfiles.filter((profile) => profile.isHighSignal).length;
+  const inventoryOnlyFlowCount = flowProfiles.filter((profile) => profile.isInventoryOnly).length;
+  const capabilities = [
+    capabilityScoreRecord({
+      key: 'flow_understanding',
+      label: 'Flow Understanding',
+      score: flowScore,
+      evidenceBasis: [
+        `${params.flows.length} reconstructed flow(s)`,
+        `${highSignalFlowCount} high-signal flow candidate(s) scored`,
+        `${inventoryOnlyFlowCount} inventory-only script flow(s) tracked as gaps`,
+        `${params.flows.filter((flow) => flowSteps(flow).length > 0).length} flow(s) with steps`,
+        `${params.flows.filter((flow) => flowStringArray(flow, 'tests').length > 0).length} flow(s) with tests`,
+      ],
+      nextRequiredImprovements: [
+        'Improve business journey naming, step extraction, and service/config/test linkage.',
+        ...dimensionWeakSpots(params.dimensions.flows),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'architecture_reasoning',
+      label: 'Architecture Reasoning',
+      score: architectureScore,
+      evidenceBasis: [
+        `${recordNumber(architectureImpactSummaryRecord, 'total_surfaces')} architecture impact surface(s)`,
+        `${recordNumber(architectureImpactSummaryRecord, 'what_breaks_surfaces')} what-breaks impact surface(s)`,
+        `${architectureCrossComponentRelationships.length} cross-component relationship(s)`,
+        `${recordNumber(architectureServiceCausality, 'total_paths')} service causality path(s)`,
+        `${recordArray(params.architectureReasoning, 'coupling_hotspots').length} coupling hotspot(s)`,
+        `${recordArray(params.architectureReasoning, 'critical_paths').length} critical path(s)`,
+        `${architectureWhatBreaks.length} what-breaks claim(s)`,
+      ],
+      nextRequiredImprovements: [
+        'Strengthen why/tradeoff/assumption reasoning and causal what-breaks explanations.',
+        ...dimensionWeakSpots(params.dimensions.architecture),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'evidence_quality_scoring',
+      label: 'Evidence Quality scoring',
+      score: evidenceScore,
+      evidenceBasis: [
+        `${recordNumber(params.evidenceQuality, 'overall_score')}/100 evidence quality`,
+        `${recordNumber(params.evidenceQuality, 'evidence_coverage_score')}/100 evidence coverage`,
+        `${recordNumber(params.evidenceQuality, 'redaction_safety_score')}/100 redaction safety`,
+      ],
+      nextRequiredImprovements: [
+        'Calibrate verified, inferred, uncertain, weak, and redacted evidence more sharply.',
+        ...dimensionWeakSpots(params.dimensions.evidence),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'mission_control_ux',
+      label: 'Mission Control UX',
+      score: missionControlScore,
+      evidenceBasis: [
+        `${params.components.length} component card source(s)`,
+        `${params.flows.length} flow card source(s)`,
+        `${params.readFirstCount} read-first pointer(s)`,
+        `${architectureWhatBreaks.length} architecture what-breaks row(s)`,
+      ],
+      nextRequiredImprovements: [
+        'Keep the Portal flagship-minimal: fewer noisy panels, stronger drilldowns, clearer first-read objects.',
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'pi_bench_seed_dataset_task_format',
+      label: 'PI-Bench seed dataset/task format',
+      score: benchmarkScore,
+      evidenceBasis: [
+        `${readinessScore(params.benchmarkReady)}/100 benchmark readiness`,
+        `${benchmarkCoverageScore}/100 benchmark task category coverage`,
+      ],
+      nextRequiredImprovements: [
+        'Add more real-repo task seeds, expected answers, and ground-truth scoring depth.',
+        ...asStringArray(benchmarkTaskCoverage.missing_categories).map(
+          (category) => `Missing benchmark category: ${category}`,
+        ),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'incremental_understanding_metrics',
+      label: 'Incremental Understanding metrics',
+      score: incrementalScore,
+      evidenceBasis: [
+        ...incrementalStatusSignals(params.incrementalMetrics),
+        `${params.incrementalMetrics.stale_fact_count} stale fact candidate(s)`,
+      ],
+      nextRequiredImprovements: [
+        'Prove efficient understanding updates across repeated real-repo scans.',
+        ...dimensionWeakSpots(params.dimensions.incremental_status),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'review_intelligence_true_blast_radius',
+      label: 'Review Intelligence with true blast radius',
+      score: reviewScore,
+      evidenceBasis: [
+        `${dimensionScore(params.dimensions.review_readiness)}/100 review readiness`,
+        `${architectureScore}/100 architecture reasoning`,
+        `${flowScore}/100 flow understanding`,
+      ],
+      nextRequiredImprovements: [
+        'Connect file/config/test changes to user-visible journey failures with stronger causal evidence.',
+        ...dimensionWeakSpots(params.dimensions.review_readiness),
+      ],
+    }),
+    capabilityScoreRecord({
+      key: 'rizz_ask',
+      label: 'rizz ask',
+      score: askScore,
+      isBlocked: askIsBlocked,
+      evidenceBasis: [
+        `${askReadinessScore}/100 ask readiness gate`,
+        `${foundationAverage}/100 foundation average before broad ask`,
+      ],
+      nextRequiredImprovements: [
+        'Keep broad rizz ask blocked until flow, architecture, evidence, Mission Control, benchmark, incremental, and review foundations are strong.',
+        ...asStringArray(askReadiness.next_required_improvements),
+      ],
+    }),
+  ];
+  const averageScore = boundedScore(
+    capabilities.reduce((total, capability) => total + recordNumber(capability, 'score'), 0) /
+      capabilities.length,
+  );
+  return {
+    schema_version: 1,
+    target_score: 100,
+    average_score: averageScore,
+    average_remaining_to_100: 100 - averageScore,
+    foundation_average_score: foundationAverage,
+    capability_count: capabilities.length,
+    capabilities,
+    scoring_notes: [
+      'Capability scores are deterministic local readiness estimates, not claims of product completion.',
+      'A score reaches 100 only when the local Project Intelligence artifacts show strong coverage and no blocking gates.',
+      'rizz ask remains gated by the foundation average so it cannot outrun evidence-backed understanding.',
+    ],
+  };
+}
+
 function buildUnderstandingScoreArtifact(params: {
   readonly projectName: string;
   readonly now: string;
@@ -9561,6 +14503,7 @@ function buildUnderstandingScoreArtifact(params: {
   readonly relationships: readonly BrainRelationship[];
   readonly incrementalMetrics: IncrementalUnderstandingMetrics;
   readonly componentIntelligence: unknown;
+  readonly serviceIntelligence: unknown;
   readonly evidenceQuality: unknown;
   readonly architectureReasoning: unknown;
   readonly benchmarkReady: unknown;
@@ -9572,37 +14515,34 @@ function buildUnderstandingScoreArtifact(params: {
   const flowsWithSteps = flows.filter((flow) => flowSteps(flow).length > 0);
   const flowsWithEvidence = flows.filter((flow) => flow.evidence_ids.length > 0);
   const flowsWithTests = flows.filter((flow) => flowStringArray(flow, 'tests').length > 0);
-  const averageFlowConfidence =
-    flows.length === 0
-      ? 0
-      : flows.reduce((total, flow) => total + asFlowConfidenceScore(flow), 0) / flows.length;
-  const flowScore = boundedScore(
-    scorePercent(flowsWithSteps.length, flows.length) * 0.3 +
-      scorePercent(flowsWithEvidence.length, flows.length) * 0.25 +
-      scorePercent(flowsWithTests.length, flows.length) * 0.2 +
-      averageFlowConfidence * 100 * 0.25,
+  const flowProfiles = flows.map(flowSignalProfile);
+  const highSignalFlowProfiles = flowProfiles.filter((profile) => profile.isHighSignal);
+  const inventoryOnlyFlowProfiles = flowProfiles.filter((profile) => profile.isInventoryOnly);
+  const flowProfilesWithCausalSurface = flowProfiles.filter((profile) => profile.hasCausalSurface);
+  const flowProfilesWithVerificationSurface = flowProfiles.filter(
+    (profile) => profile.hasVerificationSurface,
   );
+  const flowScore = flowSignalScore(flowProfiles);
   const knownBoundaryComponents = components.filter(
     (component) => stringData(component, 'boundary_type') !== 'unknown',
+  );
+  const couplingEvidenceComponents = components.filter(
+    (component) => componentCouplingRecord(component).reasons.length > 0,
   );
   const architectureUnknowns = asStringArray(
     isRecord(params.architectureReasoning) ? params.architectureReasoning.unknowns : undefined,
   );
-  const architectureScore = boundedScore(
-    scorePercent(knownBoundaryComponents.length, components.length) * 0.4 +
-      scorePercent(
-        components.filter((component) => componentCouplingRecord(component).reasons.length > 0)
-          .length,
-        components.length,
-      ) *
-        0.25 +
-      Math.max(0, 100 - architectureUnknowns.length * 12) * 0.35,
+  const architectureImpactMap = nestedRecord(params.architectureReasoning, 'impact_map');
+  const architectureImpactMapSummary = nestedRecord(architectureImpactMap, 'summary');
+  const architectureServiceCausality = nestedRecord(
+    params.architectureReasoning,
+    'service_causality_reasoning',
   );
-  const incrementalScore = boundedScore(
-    Math.max(0, 100 - params.incrementalMetrics.stale_fact_count * 12) * 0.45 +
-      params.incrementalMetrics.scan_efficiency_score * 0.35 +
-      Math.round(params.incrementalMetrics.file_reuse_ratio * 100) * 0.2,
-  );
+  const architectureScore = architectureSignalScore({
+    components,
+    architectureReasoning: params.architectureReasoning,
+  });
+  const incrementalScore = incrementalStatusScore(params.incrementalMetrics);
   const unknownItems = topUnknowns({
     buckets: params.buckets,
     architectureReasoning: params.architectureReasoning,
@@ -9613,6 +14553,7 @@ function buildUnderstandingScoreArtifact(params: {
     params.componentIntelligence,
     'component_understanding_score',
   );
+  const serviceScore = recordNumber(params.serviceIntelligence, 'service_understanding_score');
   const evidenceScore = recordNumber(params.evidenceQuality, 'overall_score');
   const reviewReadinessScore = readinessScore(params.benchmarkReady);
   const dimensions = {
@@ -9637,24 +14578,71 @@ function buildUnderstandingScoreArtifact(params: {
     }),
     flows: dimensionRecord({
       score: flowScore,
-      summary: `${flows.length} reconstructed flow(s), ${flowsWithTests.length} with tests.`,
+      summary: `${flows.length} reconstructed flow(s), ${highSignalFlowProfiles.length} high-signal candidate(s), ${flowsWithTests.length} with linked tests.`,
       signals: [
+        `${highSignalFlowProfiles.length} high-signal flow candidate(s) scored`,
+        `${inventoryOnlyFlowProfiles.length} inventory-only script flow(s) kept as inspectable gaps`,
+        `${flowProfilesWithCausalSurface.length} flow(s) with causal surfaces`,
+        `${flowProfilesWithVerificationSurface.length} flow(s) with verification surfaces`,
         `${flowsWithSteps.length} flow(s) with steps`,
         `${flowsWithEvidence.length} flow(s) with evidence`,
       ],
-      weakSpots: flows
-        .filter((flow) => flow.confidence !== 'verified')
+      weakSpots: unique([
+        ...(inventoryOnlyFlowProfiles.length > 0
+          ? [
+              `${inventoryOnlyFlowProfiles.length} package-script flow(s) are inventory-only until source, service, data, or test causality is linked.`,
+            ]
+          : []),
+        ...highSignalFlowProfiles
+          .filter((profile) => !profile.hasVerificationSurface)
+          .map((profile) => profile.flow.id),
+        ...inventoryOnlyFlowProfiles.map((profile) => profile.flow.id),
+        ...flows.filter((flow) => flow.confidence !== 'verified').map((flow) => flow.id),
+      ])
         .slice(0, 6)
-        .map((flow) => flow.id),
+        .map(safeText),
+    }),
+    services: dimensionRecord({
+      score: serviceScore,
+      summary: `${params.buckets.services.length} service(s), ${recordNumber(
+        params.serviceIntelligence,
+        'services_with_related_flows',
+      )} linked to flows.`,
+      signals: [
+        `${recordNumber(params.serviceIntelligence, 'services_with_routes')} service(s) with routes`,
+        `${recordNumber(params.serviceIntelligence, 'services_with_storage')} service(s) with storage evidence`,
+        `${recordNumber(params.serviceIntelligence, 'services_with_external_apis')} service(s) with external API evidence`,
+      ],
+      weakSpots: recordArray(params.serviceIntelligence, 'unknowns')
+        .filter((item): item is string => typeof item === 'string')
+        .slice(0, 6),
     }),
     architecture: dimensionRecord({
       score: architectureScore,
-      summary: `${knownBoundaryComponents.length}/${components.length} component boundary type(s) known.`,
+      summary: `${knownBoundaryComponents.length}/${components.length} component boundary type(s) known; ${recordNumber(
+        architectureImpactMapSummary,
+        'total_surfaces',
+      )} impact surface(s) mapped.`,
       signals: [
+        `${couplingEvidenceComponents.length} component(s) with coupling rationale`,
+        `${recordNumber(architectureImpactMapSummary, 'what_breaks_surfaces')} impact surface(s) with what-breaks claims`,
+        `${recordArray(params.architectureReasoning, 'cross_component_relationships').length} cross-component relationship(s) with evidence`,
+        `${recordNumber(architectureServiceCausality, 'total_paths')} service causality path(s) across ${recordNumber(
+          architectureServiceCausality,
+          'total_services',
+        )} service entity/entities`,
         `${recordArray(params.architectureReasoning, 'coupling_hotspots').length} coupling hotspot(s)`,
         `${recordArray(params.architectureReasoning, 'critical_paths').length} critical path(s)`,
       ],
-      weakSpots: architectureUnknowns,
+      weakSpots: unique([
+        ...architectureUnknowns,
+        ...asStringArray(
+          isRecord(params.architectureReasoning) &&
+            isRecord(params.architectureReasoning.confidence_debt)
+            ? params.architectureReasoning.confidence_debt.blocking_unknowns
+            : undefined,
+        ),
+      ]).slice(0, 8),
     }),
     evidence: dimensionRecord({
       score: evidenceScore,
@@ -9671,12 +14659,11 @@ function buildUnderstandingScoreArtifact(params: {
     }),
     incremental_status: dimensionRecord({
       score: incrementalScore,
-      summary: `${params.incrementalMetrics.changed_file_count} changed file(s), ${params.incrementalMetrics.changed_entity_count} changed entity/entities.`,
-      signals: [
-        `${params.incrementalMetrics.reused_understanding_count} reused understanding item(s)`,
-        `${params.incrementalMetrics.scan_efficiency_score}/100 scan efficiency`,
-      ],
-      weakSpots: params.incrementalMetrics.stale_fact_candidates.slice(0, 6),
+      summary: isIncrementalBaselineCapture(params.incrementalMetrics)
+        ? `${params.incrementalMetrics.changed_file_count} baseline file(s), ${params.incrementalMetrics.current_entity_count} captured understanding entity/entities.`
+        : `${params.incrementalMetrics.changed_file_count} changed file(s), ${params.incrementalMetrics.changed_entity_count} changed entity/entities.`,
+      signals: incrementalStatusSignals(params.incrementalMetrics),
+      weakSpots: incrementalStatusWeakSpots(params.incrementalMetrics),
     }),
     review_readiness: dimensionRecord({
       score: reviewReadinessScore,
@@ -9704,10 +14691,23 @@ function buildUnderstandingScoreArtifact(params: {
   const dimensionScores = Object.values(dimensions).map((dimension) =>
     recordNumber(dimension, 'score'),
   );
+  const readFirst = readFirstPointers(components);
+  const capabilityScorecard = buildPieCapabilityScorecard({
+    dimensions,
+    evidenceQuality: params.evidenceQuality,
+    architectureReasoning: params.architectureReasoning,
+    benchmarkReady: params.benchmarkReady,
+    incrementalMetrics: params.incrementalMetrics,
+    components,
+    flows,
+    evidenceCount: params.buckets.evidence.length,
+    readFirstCount: readFirst.length,
+  });
   const overallScore = boundedScore(
     recordNumber(dimensions.components, 'score') * 0.2 +
-      recordNumber(dimensions.flows, 'score') * 0.16 +
-      recordNumber(dimensions.architecture, 'score') * 0.16 +
+      recordNumber(dimensions.flows, 'score') * 0.14 +
+      recordNumber(dimensions.services, 'score') * 0.1 +
+      recordNumber(dimensions.architecture, 'score') * 0.14 +
       recordNumber(dimensions.evidence, 'score') * 0.18 +
       recordNumber(dimensions.incremental_status, 'score') * 0.1 +
       recordNumber(dimensions.review_readiness, 'score') * 0.12 +
@@ -9723,8 +14723,9 @@ function buildUnderstandingScoreArtifact(params: {
     score_band: scoreBand(overallScore),
     dimension_count: dimensionScores.length,
     dimensions,
+    capability_scorecard: capabilityScorecard,
     top_unknowns: unknownItems,
-    read_first: readFirstPointers(components),
+    read_first: readFirst,
     changed: {
       changed_file_count: params.incrementalMetrics.changed_file_count,
       changed_entity_count: params.incrementalMetrics.changed_entity_count,
@@ -9794,16 +14795,39 @@ function buildIncrementalUnderstandingMetrics(params: {
     params.relationships,
   );
   const evidenceDelta = buildEvidenceDelta(previousEntities, currentEntities);
+  const serviceIncrementalHealth = buildEntityTypeIncrementalHealth({
+    entityType: 'service',
+    previousEntities,
+    currentEntities,
+    changedFileSet,
+  });
+  const flowIncrementalHealth = buildEntityTypeIncrementalHealth({
+    entityType: 'flow',
+    previousEntities,
+    currentEntities,
+    changedFileSet,
+  });
+  const serviceCausalityDelta = buildServiceCausalityDelta({
+    previousEntities,
+    currentEntities,
+    changedFiles,
+    evidenceDelta,
+    serviceIncrementalHealth,
+    flowIncrementalHealth,
+  });
   const staleFactCandidates = unique([
     ...staleFiles.map((file) => entityId('file', file)),
     ...currentEntities
       .filter((entity) => entity.latest_status === 'stale')
       .map((entity) => entity.id),
   ]);
-  const recomputedUnderstandingCount =
-    addedEntities.length + changedEntities.length + relationshipDelta.added_count;
-  const efficiencyDenominator =
-    stableEntityCount + recomputedUnderstandingCount + staleFactCandidates.length;
+  const recomputed =
+    addedEntities.length +
+    changedEntities.length +
+    relationshipDelta.added_count +
+    relationshipDelta.removed_count +
+    relationshipDelta.changed_count;
+  const efficiencyDenominator = stableEntityCount + recomputed + staleFactCandidates.length;
   const understandingDeltas = buildUnderstandingDeltas({
     previousFingerprint: params.previous.fingerprint,
     previousEntities,
@@ -9811,6 +14835,7 @@ function buildIncrementalUnderstandingMetrics(params: {
     previousRelationships: params.previous.relationships,
     currentRelationships: params.relationships,
     relationshipDelta,
+    changedFiles,
   });
 
   return {
@@ -9829,6 +14854,18 @@ function buildIncrementalUnderstandingMetrics(params: {
     current_files: currentFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
     new_files: newFiles.map((file) => file.name).sort((a, b) => a.localeCompare(b)),
     affected_flows: changedFlows.map((flow) => flow.id),
+    service_count: serviceIncrementalHealth.total,
+    service_changed: serviceIncrementalHealth.changed,
+    service_stale: serviceIncrementalHealth.stale,
+    service_reused: serviceIncrementalHealth.reused,
+    service_recomputed: serviceIncrementalHealth.recomputed,
+    service_incremental_health: serviceIncrementalHealth,
+    flow_count: flowIncrementalHealth.total,
+    flow_changed: flowIncrementalHealth.changed,
+    flow_stale: flowIncrementalHealth.stale,
+    flow_reused: flowIncrementalHealth.reused,
+    flow_recomputed: flowIncrementalHealth.recomputed,
+    flow_incremental_health: flowIncrementalHealth,
     previous_entity_count: previousEntities.length,
     current_entity_count: currentEntities.length,
     added_entity_count: addedEntities.length,
@@ -9840,8 +14877,9 @@ function buildIncrementalUnderstandingMetrics(params: {
     changed_entities: sorted(changedEntities.map(incrementalEntityDelta), (entity) => entity.id),
     relationship_delta: relationshipDelta,
     evidence_delta: evidenceDelta,
+    service_causality_delta: serviceCausalityDelta,
     reused_understanding_count: stableEntityCount,
-    recomputed_understanding_count: recomputedUnderstandingCount,
+    recomputed_understanding_count: recomputed,
     stale_fact_count: staleFactCandidates.length,
     stale_fact_candidates: staleFactCandidates,
     scan_efficiency_score: scorePercent(stableEntityCount, efficiencyDenominator),
@@ -9910,6 +14948,322 @@ function buildEvidenceDelta(
   };
 }
 
+function buildEntityTypeIncrementalHealth(params: {
+  readonly entityType: 'service' | 'flow';
+  readonly previousEntities: readonly BrainEntity[];
+  readonly currentEntities: readonly BrainEntity[];
+  readonly changedFileSet: ReadonlySet<string>;
+}): IncrementalEntityTypeHealth {
+  const previousById = new Map(
+    params.previousEntities
+      .filter((entity) => entity.type === params.entityType)
+      .map((entity) => [entity.id, entity]),
+  );
+  const currentEntities = params.currentEntities.filter(
+    (entity) => entity.type === params.entityType,
+  );
+  const currentById = new Map(currentEntities.map((entity) => [entity.id, entity]));
+  const changedIds: string[] = [];
+  const newIds: string[] = [];
+  const reusedIds: string[] = [];
+  const recomputedIds: string[] = [];
+  const staleIds: string[] = [];
+  const sourceChangedIds: string[] = [];
+
+  for (const current of currentEntities) {
+    const previous = previousById.get(current.id);
+    const isNew = previous === undefined;
+    const isStale = current.latest_status === 'stale';
+    const isSemanticChanged =
+      previous !== undefined && entitySemanticHash(previous) !== entitySemanticHash(current);
+    const isSourceChanged = entityIncrementalFiles(current).some((file) =>
+      params.changedFileSet.has(file),
+    );
+
+    if (isSourceChanged) sourceChangedIds.push(current.id);
+    if (isNew) newIds.push(current.id);
+    if (isStale) {
+      staleIds.push(current.id);
+      continue;
+    }
+    if (isNew || isSemanticChanged || isSourceChanged || current.latest_status === 'changed') {
+      changedIds.push(current.id);
+      recomputedIds.push(current.id);
+      continue;
+    }
+    if (previous !== undefined) reusedIds.push(current.id);
+  }
+
+  for (const previous of previousById.values()) {
+    if (!currentById.has(previous.id)) staleIds.push(previous.id);
+  }
+
+  return {
+    entity_type: params.entityType,
+    total: currentEntities.length,
+    changed: changedIds.length,
+    new: newIds.length,
+    stale: unique(staleIds).length,
+    reused: reusedIds.length,
+    recomputed: recomputedIds.length,
+    status_counts: countByValue(currentEntities.map((entity) => entity.latest_status)),
+    changed_ids: unique(changedIds),
+    reused_ids: unique(reusedIds),
+    recomputed_ids: unique(recomputedIds),
+    stale_ids: unique(staleIds),
+    source_changed_ids: unique(sourceChangedIds),
+  };
+}
+
+function entityIncrementalFiles(entity: BrainEntity): string[] {
+  if (entity.type === 'flow') {
+    return unique([
+      ...stringArrayData(entity, 'files'),
+      ...stringArrayData(entity, 'tests'),
+      ...stringArrayData(entity, 'configs'),
+    ]);
+  }
+  return unique([
+    ...entity.source_files,
+    ...stringArrayData(entity, 'files'),
+    ...stringArrayData(entity, 'tests'),
+    ...stringArrayData(entity, 'configs'),
+    ...stringArrayData(entity, 'entrypoints'),
+    ...stringArrayData(entity, 'deployment_configs'),
+  ]);
+}
+
+function buildServiceCausalityDelta(params: {
+  readonly previousEntities: readonly BrainEntity[];
+  readonly currentEntities: readonly BrainEntity[];
+  readonly changedFiles: readonly string[];
+  readonly evidenceDelta: IncrementalEvidenceDelta;
+  readonly serviceIncrementalHealth: IncrementalEntityTypeHealth;
+  readonly flowIncrementalHealth: IncrementalEntityTypeHealth;
+}): IncrementalServiceCausalityDelta {
+  const previousPaths = serviceCausalitySnapshots(params.previousEntities);
+  const currentPaths = serviceCausalitySnapshots(params.currentEntities);
+  const previousById = new Map(previousPaths.map((path) => [path.path_id, path]));
+  const currentById = new Map(currentPaths.map((path) => [path.path_id, path]));
+  const changedFileSet = new Set(params.changedFiles);
+  const changedEvidenceSet = new Set([
+    ...params.evidenceDelta.added,
+    ...params.evidenceDelta.removed,
+    ...params.evidenceDelta.changed,
+    ...params.changedFiles.map(evidenceId),
+  ]);
+  const recomputedFlowSet = new Set([
+    ...params.flowIncrementalHealth.recomputed_ids,
+    ...params.flowIncrementalHealth.source_changed_ids,
+  ]);
+  const recomputedServiceSet = new Set([
+    ...params.serviceIncrementalHealth.recomputed_ids,
+    ...params.serviceIncrementalHealth.source_changed_ids,
+  ]);
+  const pathDeltas: IncrementalServiceCausalityPathDelta[] = [];
+
+  for (const current of currentPaths) {
+    const previous = previousById.get(current.path_id);
+    pathDeltas.push(
+      serviceCausalityPathDelta({
+        previous,
+        current,
+        changedFileSet,
+        changedEvidenceSet,
+        recomputedFlowSet,
+        recomputedServiceSet,
+      }),
+    );
+  }
+
+  for (const previous of previousPaths) {
+    if (currentById.has(previous.path_id)) continue;
+    pathDeltas.push(
+      serviceCausalityPathDelta({
+        previous,
+        current: undefined,
+        changedFileSet,
+        changedEvidenceSet,
+        recomputedFlowSet,
+        recomputedServiceSet,
+      }),
+    );
+  }
+
+  const sortedPathDeltas = sorted(pathDeltas, (path) => path.path_id);
+  const stablePathCount = sortedPathDeltas.filter((path) => path.status === 'stable').length;
+  const recomputedPathCount = sortedPathDeltas.filter(
+    (path) => path.status === 'recomputed' || path.status === 'new',
+  ).length;
+  const driftedPathCount = sortedPathDeltas.filter((path) => path.status === 'drifted').length;
+  const newPathCount = sortedPathDeltas.filter((path) => path.status === 'new').length;
+  const stalePathCount = sortedPathDeltas.filter((path) => path.status === 'stale').length;
+  const evidenceChangedPaths = sortedPathDeltas.filter(
+    (path) => path.changed_evidence_ids.length > 0,
+  );
+  const affectedPaths = sortedPathDeltas.filter((path) => path.status !== 'stable');
+  const changedEvidenceIds = unique(sortedPathDeltas.flatMap((path) => path.changed_evidence_ids));
+  const freshnessDenominator = currentPaths.length + stalePathCount;
+  const freshnessNumerator = Math.max(0, currentPaths.length - driftedPathCount - stalePathCount);
+
+  return {
+    schema_version: 1,
+    previous_path_count: previousPaths.length,
+    current_path_count: currentPaths.length,
+    total_path_count: sortedPathDeltas.length,
+    stable_path_count: stablePathCount,
+    recomputed_path_count: recomputedPathCount,
+    drifted_path_count: driftedPathCount,
+    new_path_count: newPathCount,
+    stale_path_count: stalePathCount,
+    evidence_changed_path_count: evidenceChangedPaths.length,
+    affected_flow_count: unique(affectedPaths.map((path) => path.flow_id)).length,
+    affected_service_count: unique(affectedPaths.map((path) => path.service_id)).length,
+    affected_flows: unique(affectedPaths.map((path) => path.flow_id)),
+    affected_services: unique(affectedPaths.map((path) => path.service_id)),
+    changed_evidence_ids: changedEvidenceIds,
+    freshness_score: scorePercent(freshnessNumerator, freshnessDenominator),
+    path_deltas: sortedPathDeltas,
+    summary: safeText(
+      `${stablePathCount} stable, ${recomputedPathCount} recomputed/new, ${driftedPathCount} drifted, and ${stalePathCount} stale service causality path(s).`,
+    ),
+    calibration_rule:
+      'Service causality freshness compares flow-service fingerprints and evidence ids; drift means linked service, flow, or evidence changed.',
+  };
+}
+
+function serviceCausalitySnapshots(entities: readonly BrainEntity[]): ServiceCausalitySnapshot[] {
+  return sorted(
+    entities
+      .filter((entity) => entity.type === 'flow')
+      .flatMap((flow) =>
+        safeFlowServiceCausality(flow).map((service) => {
+          const files = unique(service.files);
+          const evidenceIds = unique(service.evidence_ids);
+          const pathId = serviceCausalityPathId(flow.id, service.service_id);
+          return {
+            path_id: pathId,
+            flow_id: safeText(flow.id),
+            flow_name: safeText(flow.name),
+            service_id: safeText(service.service_id),
+            service_name: safeText(service.service_name),
+            files,
+            evidence_ids: evidenceIds,
+            semantic_hash: stableHash({
+              flow_id: safeText(flow.id),
+              service_id: safeText(service.service_id),
+              service_name: safeText(service.service_name),
+              service_root: safeText(service.service_root),
+              files,
+              step_ids: unique(service.step_ids),
+              cause: safeText(service.cause),
+              effects: unique(service.effects),
+              evidence_ids: evidenceIds,
+              confidence: service.confidence,
+              unknowns: unique(service.unknowns),
+            }),
+          };
+        }),
+      ),
+    (path) => path.path_id,
+  );
+}
+
+function serviceCausalityPathId(flowId: string, serviceId: string): string {
+  return `service-causality:${safeText(flowId)}->${safeText(serviceId)}`;
+}
+
+function serviceCausalityPathDelta(params: {
+  readonly previous: ServiceCausalitySnapshot | undefined;
+  readonly current: ServiceCausalitySnapshot | undefined;
+  readonly changedFileSet: ReadonlySet<string>;
+  readonly changedEvidenceSet: ReadonlySet<string>;
+  readonly recomputedFlowSet: ReadonlySet<string>;
+  readonly recomputedServiceSet: ReadonlySet<string>;
+}): IncrementalServiceCausalityPathDelta {
+  const path = params.current ?? params.previous;
+  if (path === undefined) {
+    throw new Error('service causality delta requires a previous or current path');
+  }
+  const evidenceIds = unique([...(params.current ?? path).evidence_ids]);
+  const changedEvidenceIds = unique(
+    [...evidenceIds, ...(params.previous?.evidence_ids ?? [])].filter((id) =>
+      params.changedEvidenceSet.has(id),
+    ),
+  );
+  const changedFiles = unique(
+    [...(params.current?.files ?? []), ...(params.previous?.files ?? [])].filter((file) =>
+      params.changedFileSet.has(file),
+    ),
+  );
+  const isFlowRecomputed = params.recomputedFlowSet.has(path.flow_id);
+  const isServiceRecomputed = params.recomputedServiceSet.has(path.service_id);
+  const hasEvidenceChange = changedEvidenceIds.length > 0;
+  const hasSourceChange = changedFiles.length > 0;
+  const hasAffectedBase =
+    hasEvidenceChange || hasSourceChange || isFlowRecomputed || isServiceRecomputed;
+  const isSemanticChanged =
+    params.previous !== undefined &&
+    params.current !== undefined &&
+    params.previous.semantic_hash !== params.current.semantic_hash;
+  let status: IncrementalServiceCausalityPathStatus = 'stable';
+  if (params.current === undefined) {
+    status = 'stale';
+  } else if (params.previous === undefined) {
+    status = 'new';
+  } else if (isSemanticChanged) {
+    status = 'recomputed';
+  } else if (hasAffectedBase) {
+    status = 'drifted';
+  }
+
+  return {
+    path_id: path.path_id,
+    flow_id: path.flow_id,
+    service_id: path.service_id,
+    service_name: path.service_name,
+    status,
+    previous_hash: params.previous?.semantic_hash ?? null,
+    current_hash: params.current?.semantic_hash ?? null,
+    changed_files: changedFiles,
+    changed_evidence_ids: changedEvidenceIds,
+    evidence_ids: evidenceIds,
+    reasons: serviceCausalityDeltaReasons({
+      status,
+      hasEvidenceChange,
+      hasSourceChange,
+      isSemanticChanged,
+      isFlowRecomputed,
+      isServiceRecomputed,
+    }),
+  };
+}
+
+function serviceCausalityDeltaReasons(params: {
+  readonly status: IncrementalServiceCausalityPathStatus;
+  readonly hasEvidenceChange: boolean;
+  readonly hasSourceChange: boolean;
+  readonly isSemanticChanged: boolean;
+  readonly isFlowRecomputed: boolean;
+  readonly isServiceRecomputed: boolean;
+}): string[] {
+  const reasons: string[] = [];
+  if (params.status === 'new') reasons.push('new flow-service causality path');
+  if (params.status === 'stale')
+    reasons.push('previous flow-service causality path is no longer current');
+  if (params.isSemanticChanged) reasons.push('causality fingerprint changed');
+  if (params.hasEvidenceChange) reasons.push('linked evidence changed');
+  if (params.hasSourceChange) reasons.push('linked source file changed');
+  if (params.isFlowRecomputed) reasons.push('owning flow was recomputed');
+  if (params.isServiceRecomputed) reasons.push('target service was recomputed');
+  if (params.status === 'stable')
+    reasons.push('causality fingerprint and linked evidence are stable');
+  if (params.status === 'drifted') {
+    reasons.push('causality fingerprint stayed stable while linked evidence changed');
+  }
+  return reasons.map(safeText);
+}
+
 function buildUnderstandingDeltas(params: {
   readonly previousFingerprint: string | null;
   readonly previousEntities: readonly BrainEntity[];
@@ -9917,10 +15271,12 @@ function buildUnderstandingDeltas(params: {
   readonly previousRelationships: readonly BrainRelationship[];
   readonly currentRelationships: readonly BrainRelationship[];
   readonly relationshipDelta: IncrementalRelationshipDelta;
+  readonly changedFiles: readonly string[];
 }): IncrementalUnderstandingDeltas {
   const entitySurfaces = buildEntityUnderstandingSurfaces(
     params.previousEntities,
     params.currentEntities,
+    new Set(params.changedFiles),
   );
   const unknownSurfaces = buildUnknownUnderstandingSurfaces(
     params.previousEntities,
@@ -9977,13 +15333,14 @@ function buildUnderstandingDeltas(params: {
       `${changedSurfaces.length} changed, ${newSurfaces.length} new, ${stableSurfaces.length} stable, and ${staleSurfaces.length} stale understanding surface(s).`,
     ),
     calibration_rule:
-      'Understanding deltas are deterministic local comparisons of component, flow, architecture, evidence, unknown, and confidence-score surfaces across scans.',
+      'Understanding deltas are deterministic local comparisons of component, service, flow, architecture, evidence, unknown, and confidence-score surfaces across scans.',
   };
 }
 
 function buildEntityUnderstandingSurfaces(
   previousEntities: readonly BrainEntity[],
   currentEntities: readonly BrainEntity[],
+  changedFileSet: ReadonlySet<string>,
 ): IncrementalUnderstandingSurface[] {
   const previousById = new Map(
     previousEntities.filter(isDeltaEntitySurface).map((entity) => [entity.id, entity]),
@@ -9994,7 +15351,7 @@ function buildEntityUnderstandingSurfaces(
   const surfaces: IncrementalUnderstandingSurface[] = [];
   for (const current of currentById.values()) {
     const previous = previousById.get(current.id);
-    const status = entitySurfaceStatus(previous, current);
+    const status = entitySurfaceStatus(previous, current, changedFileSet);
     surfaces.push(entityUnderstandingSurface({ previous, current, status }));
   }
   for (const previous of previousById.values()) {
@@ -10081,21 +15438,34 @@ function buildArchitectureUnderstandingSurface(params: {
 }
 
 function isDeltaEntitySurface(entity: BrainEntity): boolean {
-  return entity.type === 'component' || entity.type === 'flow' || entity.type === 'evidence';
+  return (
+    entity.type === 'component' ||
+    entity.type === 'flow' ||
+    entity.type === 'service' ||
+    entity.type === 'evidence'
+  );
 }
 
 function entitySurfaceType(entity: BrainEntity): IncrementalUnderstandingSurfaceType {
   if (entity.type === 'component') return 'component';
   if (entity.type === 'flow') return 'flow';
+  if (entity.type === 'service') return 'service';
   return 'evidence';
 }
 
 function entitySurfaceStatus(
   previous: BrainEntity | undefined,
   current: BrainEntity,
+  changedFileSet: ReadonlySet<string>,
 ): IncrementalUnderstandingSurfaceStatus {
   if (previous === undefined) return 'new';
   if (entitySemanticHash(previous) !== entitySemanticHash(current)) return 'changed';
+  if (
+    (current.type === 'flow' || current.type === 'service') &&
+    entityIncrementalFiles(current).some((file) => changedFileSet.has(file))
+  ) {
+    return 'changed';
+  }
   return 'stable';
 }
 
@@ -10130,7 +15500,7 @@ function unknownSurfaceEntityMap(
 ): Map<string, { readonly entity: BrainEntity; readonly unknown: string }> {
   const out = new Map<string, { readonly entity: BrainEntity; readonly unknown: string }>();
   for (const entity of entities.filter(
-    (item) => item.type === 'component' || item.type === 'flow',
+    (item) => item.type === 'component' || item.type === 'flow' || item.type === 'service',
   )) {
     for (const unknown of stringArrayData(entity, 'unknowns')) {
       const surfaceId = `unknown:${entity.id}:${stableSlug(safeText(unknown))}`;
@@ -10172,6 +15542,11 @@ function unknownUnderstandingSurface(params: {
 function understandingEntityScore(entity: BrainEntity): number {
   if (entity.type === 'component') return boundedScore(componentConfidenceScore(entity) * 100);
   if (entity.type === 'flow') return boundedScore(asFlowConfidenceScore(entity) * 100);
+  if (entity.type === 'service') {
+    return boundedScore(
+      (numberData(entity, 'confidence_score') ?? confidenceScoreForValue(entity.confidence)) * 100,
+    );
+  }
   return boundedScore(confidenceScoreForValue(entity.confidence) * 100);
 }
 
@@ -10208,6 +15583,7 @@ function understandingSurfaceCounts(
       component: { changed: 0, new: 0, stable: 0, stale: 0 },
       evidence: { changed: 0, new: 0, stable: 0, stale: 0 },
       flow: { changed: 0, new: 0, stable: 0, stale: 0 },
+      service: { changed: 0, new: 0, stable: 0, stale: 0 },
       unknown: { changed: 0, new: 0, stable: 0, stale: 0 },
     };
   for (const surface of surfaces) {
@@ -10232,6 +15608,7 @@ function buildResearchArtifacts(params: {
   readonly relationships: readonly BrainRelationship[];
   readonly stack: readonly string[];
   readonly packageManager: string;
+  readonly packageFacts: readonly PackageJsonFact[];
   readonly changedFiles: readonly string[];
   readonly staleFiles: readonly string[];
   readonly incrementalMetrics: IncrementalUnderstandingMetrics;
@@ -10261,6 +15638,24 @@ function buildResearchArtifacts(params: {
       flowStringArray(flow, 'entry_contract').length > 0 &&
       flowStringArray(flow, 'exit_contract').length > 0,
   );
+  const flowsWithRuntimeSurfaces = flows.filter(
+    (flow) => flowStringArray(flow, 'runtime_surfaces').length > 0,
+  );
+  const flowJourneySummaries = flows
+    .map((flow) => ({ flow, journey: flowJourneySummaryData(flow) }))
+    .filter(
+      (item): item is { readonly flow: BrainEntity; readonly journey: FlowJourneySummary } =>
+        item.journey !== undefined,
+    );
+  const flowJourneySteps = flows.flatMap(safeFlowJourneySteps);
+  const flowDataDependencies = flows.flatMap(safeFlowDataDependencies);
+  const flowsWithDataDependencies = flows.filter(
+    (flow) => safeFlowDataDependencies(flow).length > 0,
+  );
+  const statefulFlowFiles = new Set(flowDataDependencies.flatMap((item) => item.files));
+  const runtimeSurfacesCoveredByFlows = unique(
+    flows.flatMap((flow) => flowStringArray(flow, 'runtime_surfaces')),
+  );
   const flowCoveredFiles = new Set(flows.flatMap((flow) => flowStringArray(flow, 'files')));
   const activeSourceFiles = activeFileEntities.filter((file) => isSourceFile(file.name));
   const activeTestFiles = activeFileEntities.filter((file) => isTestPath(file.name));
@@ -10286,7 +15681,11 @@ function buildResearchArtifacts(params: {
     buckets: params.buckets,
     relationships: params.relationships,
   });
-  const evidenceQuality = buildEvidenceQualityArtifact({
+  const serviceIntelligence = buildServiceIntelligenceArtifact({
+    now: params.now,
+    buckets: params.buckets,
+  });
+  const evidenceQualityBase = buildEvidenceQualityArtifact({
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
@@ -10298,12 +15697,45 @@ function buildResearchArtifacts(params: {
     relationships: params.relationships,
     changedFiles,
   });
-  const architectureReasoning = buildArchitectureReasoningArtifact({
+  const architectureReasoningBase = buildArchitectureReasoningArtifact({
     projectName: params.projectName,
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
     changedFiles,
+  });
+  const securityScan = buildSecurityScanArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
+  const toolInventory = buildToolInventoryArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
+  const confidenceInspectionQueue = buildConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    incrementalMetrics: params.incrementalMetrics,
+    securityScan,
+    toolInventory,
+  });
+  const { evidenceQuality, architectureReasoning } = attachConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    queue: confidenceInspectionQueue,
+  });
+  const verificationPlan = bavp({
+    generatedAt: params.now,
+    commands: params.buckets.commands,
+    flows: params.buckets.flows,
+    components: params.buckets.components,
+  });
+  const agentRepairPackets = buildAgentRepairPacketsArtifact({
+    generatedAt: params.now,
+    confidenceInspectionQueue,
+    verificationPlan,
   });
   const benchmarkReady = buildBenchmarkReadyArtifact({
     projectName: params.projectName,
@@ -10323,6 +15755,7 @@ function buildResearchArtifacts(params: {
     relationships: params.relationships,
     incrementalMetrics: params.incrementalMetrics,
     componentIntelligence,
+    serviceIntelligence,
     evidenceQuality,
     architectureReasoning,
     benchmarkReady,
@@ -10376,6 +15809,8 @@ function buildResearchArtifacts(params: {
       flows: flows.length,
       flow_steps: flowStepCount,
       flow_risks: flowRiskCount,
+      flow_data_dependencies: flowDataDependencies.length,
+      stateful_flows: flowsWithDataDependencies.length,
       commands: params.buckets.commands.length,
       tests: params.buckets.tests.length,
       evidence_records: params.buckets.evidence.length,
@@ -10416,6 +15851,11 @@ function buildResearchArtifacts(params: {
       flows_with_configs: flows.filter((flow) => flowStringArray(flow, 'configs').length > 0)
         .length,
       flows_with_evidence: flows.filter((flow) => flow.evidence_ids.length > 0).length,
+      flows_with_data_dependencies: flowsWithDataDependencies.length,
+      stateful_files_covered_by_flows: activeSourceFiles.filter((file) =>
+        statefulFlowFiles.has(file.name),
+      ).length,
+      stateful_flow_coverage_ratio: ratio(flowsWithDataDependencies.length, flows.length),
       source_files_covered_by_flows: activeSourceFiles.filter((file) =>
         flowCoveredFiles.has(file.name),
       ).length,
@@ -10437,6 +15877,13 @@ function buildResearchArtifacts(params: {
         route_type: stringData(flow, 'route_type'),
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
+        data_dependencies: safeFlowDataDependencies(flow).map((dependency) => ({
+          label: dependency.label,
+          kind: dependency.kind,
+          operations: dependency.operations,
+          confidence: dependency.confidence,
+        })),
         tests: flowStringArray(flow, 'tests'),
         configs: flowStringArray(flow, 'configs'),
         evidence_ids: flow.evidence_ids.length,
@@ -10559,6 +16006,7 @@ function buildResearchArtifacts(params: {
         })),
     },
     componentIntelligence,
+    serviceIntelligence,
     evidenceQuality,
     reasoningTraces,
     incrementalUpdate: params.incrementalMetrics,
@@ -10569,10 +16017,50 @@ function buildResearchArtifacts(params: {
       flows_with_tests: flowsWithTests.length,
       flows_without_tests: flowsWithoutTests.length,
       flows_with_contracts: flowsWithContracts.length,
+      flows_with_runtime_surfaces: flowsWithRuntimeSurfaces.length,
+      flows_with_journey_names: flowJourneySummaries.length,
+      flows_with_data_dependencies: flowsWithDataDependencies.length,
+      data_dependencies: flowDataDependencies.length,
+      journey_steps: flowJourneySteps.length,
       flow_steps: flowStepCount,
       mapped_components: unique(flows.flatMap((flow) => flowStringArray(flow, 'components')))
         .length,
+      mapped_services: unique(flows.flatMap((flow) => flowStringArray(flow, 'services'))).length,
       mapped_files: flowCoveredFiles.size,
+      runtime_surface_count: runtimeSurfacesCoveredByFlows.length,
+      runtime_surfaces: runtimeSurfacesCoveredByFlows,
+      data_dependencies_by_kind: countByValue(flowDataDependencies.map((item) => item.kind)),
+      state_operations_by_type: countByValue(
+        flowDataDependencies.flatMap((item) => item.operations),
+      ),
+      data_dependency_flows: flowsWithDataDependencies.map((flow) => ({
+        id: flow.id,
+        journey_name: flowJourneySummaryData(flow)?.name,
+        dependencies: safeFlowDataDependencies(flow).map((dependency) => ({
+          label: dependency.label,
+          kind: dependency.kind,
+          operations: dependency.operations,
+          files: dependency.files,
+          confidence: dependency.confidence,
+          missing_evidence: dependency.missing_evidence,
+        })),
+      })),
+      journeys: flowJourneySummaries.map(({ flow, journey }) => ({
+        id: flow.id,
+        flow_name: flow.name,
+        journey_name: journey.name,
+        category: journey.category,
+        confidence: journey.confidence,
+        score: journey.score,
+        evidence_ids: journey.evidence_ids,
+        missing_evidence: journey.missing_evidence,
+        reasons: journey.reasons,
+        step_count: safeFlowJourneySteps(flow).length,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
+        tests: flowStringArray(flow, 'tests'),
+        configs: flowStringArray(flow, 'configs'),
+      })),
+      journey_steps_by_type: countByValue(flowJourneySteps.map((step) => step.type)),
       entrypoints: entrypoints.length,
       entrypoints_mapped_to_components: entrypointsWithComponents.length,
       average_confidence: averageFlowConfidence,
@@ -10586,6 +16074,7 @@ function buildResearchArtifacts(params: {
       })),
       contracts: flows.map((flow) => ({
         id: flow.id,
+        journey_name: flowJourneySummaryData(flow)?.name,
         framework: stringData(flow, 'framework'),
         route_path: stringData(flow, 'route_path'),
         route_type: stringData(flow, 'route_type'),
@@ -10597,17 +16086,47 @@ function buildResearchArtifacts(params: {
         state_transitions: flowStringArray(flow, 'state_transitions'),
         failure_modes: flowStringArray(flow, 'failure_modes'),
         required_tests: flowStringArray(flow, 'required_tests'),
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
+        data_dependencies: safeFlowDataDependencies(flow).map((dependency) => ({
+          label: dependency.label,
+          kind: dependency.kind,
+          operations: dependency.operations,
+          confidence: dependency.confidence,
+        })),
+        services: flowStringArray(flow, 'services'),
+        service_causality: safeFlowServiceCausality(flow),
+        journey_steps: safeFlowJourneySteps(flow).map((step) => ({
+          step_id: step.step_id,
+          type: step.type,
+          label: step.label,
+          files: step.files,
+          runtime_surfaces: step.runtime_surfaces,
+          configs: step.configs,
+          tests: step.tests,
+          confidence: step.confidence,
+          missing_evidence: step.missing_evidence,
+        })),
         confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
       })),
       orphan_entrypoints: flows
         .filter((flow) => flowStringArray(flow, 'components').length === 0)
         .map((flow) => flow.id),
       incremental_update: {
-        previous_total_flows: flows.length,
-        current_total_flows: flows.length,
-        added: [],
-        removed: [],
-        changed: changedFlows.map((flow) => flow.id),
+        previous_total_flows:
+          params.incrementalMetrics.flow_count -
+          params.incrementalMetrics.flow_incremental_health.new +
+          params.incrementalMetrics.flow_stale,
+        current_total_flows: params.incrementalMetrics.flow_count,
+        changed: params.incrementalMetrics.flow_incremental_health.changed_ids,
+        reused: params.incrementalMetrics.flow_incremental_health.reused_ids,
+        recomputed: params.incrementalMetrics.flow_incremental_health.recomputed_ids,
+        stale: params.incrementalMetrics.flow_incremental_health.stale_ids,
+        changed_count: params.incrementalMetrics.flow_changed,
+        reused_count: params.incrementalMetrics.flow_reused,
+        recomputed_count: params.incrementalMetrics.flow_recomputed,
+        stale_count: params.incrementalMetrics.flow_stale,
+        source_changed: params.incrementalMetrics.flow_incremental_health.source_changed_ids,
+        affected_by_changed_files: changedFlows.map((flow) => flow.id),
       },
     },
     flowCoverage: {
@@ -10630,6 +16149,13 @@ function buildResearchArtifacts(params: {
         flows.length,
       ),
       contract_backed_flow_ratio: ratio(flowsWithContracts.length, flows.length),
+      runtime_surface_coverage_ratio: ratio(flowsWithRuntimeSurfaces.length, flows.length),
+      data_dependency_coverage_ratio: ratio(flowsWithDataDependencies.length, flows.length),
+      journey_named_flow_ratio: ratio(flowJourneySummaries.length, flows.length),
+      journey_step_coverage_ratio: ratio(
+        flows.filter((flow) => safeFlowJourneySteps(flow).length > 0).length,
+        flows.length,
+      ),
       source_file_coverage_ratio: ratio(
         activeSourceFiles.filter((file) => flowCoveredFiles.has(file.name)).length,
         activeSourceFiles.length,
@@ -10646,11 +16172,22 @@ function buildResearchArtifacts(params: {
         flows.flatMap((flow) => flowStringArray(flow, 'components')),
       ),
       files_covered_by_flows: unique(flows.flatMap((flow) => flowStringArray(flow, 'files'))),
+      runtime_surfaces_covered_by_flows: runtimeSurfacesCoveredByFlows,
       flows: flows.map((flow) => ({
         id: flow.id,
         kind: stringData(flow, 'kind') ?? 'unknown',
+        journey_name: flowJourneySummaryData(flow)?.name,
+        journey_confidence: flowJourneySummaryData(flow)?.confidence,
+        journey_steps: safeFlowJourneySteps(flow).length,
         files: flowStringArray(flow, 'files').length,
         components: flowStringArray(flow, 'components').length,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').length,
+        data_dependencies: safeFlowDataDependencies(flow).length,
+        state_operations: unique(
+          safeFlowDataDependencies(flow).flatMap((dependency) => dependency.operations),
+        ).length,
+        services: flowStringArray(flow, 'services').length,
+        service_causality: safeFlowServiceCausality(flow).length,
         tests: flowStringArray(flow, 'tests').length,
         configs: flowStringArray(flow, 'configs').length,
         entry_contract: flowStringArray(flow, 'entry_contract').length,
@@ -10687,10 +16224,15 @@ function buildResearchArtifacts(params: {
       })),
     },
     architectureReasoning,
+    securityScan,
+    toolInventory,
     benchmarkReady,
     benchmarkTasks,
     understandingScore,
     pieAcceptance,
+    verificationPlan,
+    verificationEvidence: emptyVerificationEvidenceArtifact(params.projectName, params.now),
+    agentRepairPackets,
   };
 }
 
@@ -10729,7 +16271,9 @@ async function writeFlowMirrors(
       route_type: stringData(flow, 'route_type'),
       file: `.rizz/brain/flows/${flowMirrorFileName(flow)}`,
       entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
+      runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
       components: flowStringArray(flow, 'components').length,
+      services: flowStringArray(flow, 'services').length,
       files: flowStringArray(flow, 'files').length,
       tests: flowStringArray(flow, 'tests').length,
       risks: flowRisks(flow).length,
@@ -10754,6 +16298,8 @@ function buildLatest(params: {
   readonly now: string;
   readonly stack: readonly string[];
   readonly packageManager: string;
+  readonly files: readonly FileFact[];
+  readonly packageFacts: readonly PackageJsonFact[];
   readonly buckets: BrainBuckets;
   readonly relationships: readonly BrainRelationship[];
   readonly changedFiles: readonly string[];
@@ -10802,6 +16348,7 @@ function buildLatest(params: {
     route_type: stringData(flow, 'route_type'),
     entrypoints: Array.isArray(flow.data?.entrypoints) ? flow.data.entrypoints : [],
     component_count: flowStringArray(flow, 'components').length,
+    service_count: flowStringArray(flow, 'services').length,
     file_count: flowStringArray(flow, 'files').length,
     test_count: flowStringArray(flow, 'tests').length,
     risk_count: flowRisks(flow).length,
@@ -10813,10 +16360,32 @@ function buildLatest(params: {
     state_transitions: flowStringArray(flow, 'state_transitions'),
     failure_modes: flowStringArray(flow, 'failure_modes'),
     required_tests: flowStringArray(flow, 'required_tests'),
+    runtime_surfaces: flowStringArray(flow, 'runtime_surfaces'),
     confidence_reasons: flowStringArray(flow, 'confidence_reasons'),
+    services: flowStringArray(flow, 'services'),
     confidence: flow.confidence,
     score: asFlowConfidenceScore(flow),
     evidence_ids: flow.evidence_ids,
+  }));
+  const serviceMap = params.buckets.services.map((service) => ({
+    id: service.id,
+    name: service.name,
+    runtime: stringData(service, 'runtime') ?? 'unknown',
+    framework: stringData(service, 'framework') ?? 'unknown',
+    service_root: stringData(service, 'service_root') ?? service.name,
+    entrypoints: serviceDataStringArray(service, 'entrypoints'),
+    routes: serviceDataStringArray(service, 'routes'),
+    jobs: serviceDataStringArray(service, 'jobs'),
+    storage_dependencies: serviceDataStringArray(service, 'storage_dependencies'),
+    environment_variables: serviceDataStringArray(service, 'environment_variables'),
+    external_services: serviceDataStringArray(service, 'external_services'),
+    deployment_configs: serviceDataStringArray(service, 'deployment_configs'),
+    related_flows: serviceDataStringArray(service, 'related_flows'),
+    related_components: serviceDataStringArray(service, 'related_components'),
+    risks: serviceDataStringArray(service, 'risks'),
+    confidence: service.confidence,
+    confidence_score: numberData(service, 'confidence_score'),
+    evidence_ids: service.evidence_ids,
   }));
   const risks = params.buckets.risks.map((risk) => ({
     id: risk.id,
@@ -10825,22 +16394,48 @@ function buildLatest(params: {
     confidence: risk.confidence,
     evidence_ids: risk.evidence_ids,
   }));
-  const architectureReasoning = buildArchitectureReasoningArtifact({
+  const architectureReasoningBase = buildArchitectureReasoningArtifact({
     projectName: params.projectName,
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
     changedFiles: params.changedFiles,
   });
-  const evidenceQuality = buildEvidenceQualityArtifact({
+  const evidenceQualityBase = buildEvidenceQualityArtifact({
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
+  });
+  const securityScan = buildSecurityScanArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
+  const toolInventory = buildToolInventoryArtifact({
+    now: params.now,
+    files: params.files,
+    packageFacts: params.packageFacts,
+  });
+  const confidenceInspectionQueue = buildConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    incrementalMetrics: params.incrementalMetrics,
+    securityScan,
+    toolInventory,
+  });
+  const { evidenceQuality, architectureReasoning } = attachConfidenceInspectionQueue({
+    evidenceQuality: evidenceQualityBase,
+    architectureReasoning: architectureReasoningBase,
+    queue: confidenceInspectionQueue,
   });
   const componentIntelligence = buildComponentIntelligenceArtifact({
     now: params.now,
     buckets: params.buckets,
     relationships: params.relationships,
+  });
+  const serviceIntelligence = buildServiceIntelligenceArtifact({
+    now: params.now,
+    buckets: params.buckets,
   });
   const benchmarkReady = buildBenchmarkReadyArtifact({
     projectName: params.projectName,
@@ -10860,6 +16455,7 @@ function buildLatest(params: {
     relationships: params.relationships,
     incrementalMetrics: params.incrementalMetrics,
     componentIntelligence,
+    serviceIntelligence,
     evidenceQuality,
     architectureReasoning,
     benchmarkReady,
@@ -10893,13 +16489,18 @@ function buildLatest(params: {
     project_id: entityId('project', params.projectName),
     latest_architecture_summary:
       params.buckets.components.length === 0
-        ? 'No durable component map has been inferred yet.'
-        : `${params.projectName} has ${params.buckets.components.length} inferred component(s), ${params.buckets.flows.length} reconstructed flow(s), ${params.buckets.commands.length} command(s), and ${params.buckets.tests.length} test artifact(s).`,
+        ? 'No component map inferred yet.'
+        : `${params.projectName}: ${params.buckets.components.length} component(s), ${params.buckets.flows.length} flow(s), ${params.buckets.commands.length} command(s), ${params.buckets.tests.length} test(s).`,
     latest_architecture_impact_summary: architectureImpactSummary(architectureReasoning),
     latest_component_map: componentMap,
+    latest_service_map: serviceMap,
     latest_flow_map: flowMap,
     latest_architecture_reasoning: architectureReasoning,
+    latest_service_intelligence: serviceIntelligence,
     latest_evidence_quality: evidenceQuality,
+    latest_security_scan: securityScan,
+    latest_tool_inventory: toolInventory,
+    latest_confidence_inspection_queue: confidenceInspectionQueue,
     latest_understanding_score: understandingScore,
     latest_pie_acceptance: {
       path: '.rizz/research/pie_acceptance.json',
@@ -10944,6 +16545,18 @@ function buildLatest(params: {
       stable_entity_count: params.incrementalMetrics.stable_entity_count,
       added_entity_count: params.incrementalMetrics.added_entity_count,
       removed_entity_count: params.incrementalMetrics.removed_entity_count,
+      service_count: params.incrementalMetrics.service_count,
+      service_changed: params.incrementalMetrics.service_changed,
+      service_stale: params.incrementalMetrics.service_stale,
+      service_reused: params.incrementalMetrics.service_reused,
+      service_recomputed: params.incrementalMetrics.service_recomputed,
+      service_incremental_health: params.incrementalMetrics.service_incremental_health,
+      flow_count: params.incrementalMetrics.flow_count,
+      flow_changed: params.incrementalMetrics.flow_changed,
+      flow_stale: params.incrementalMetrics.flow_stale,
+      flow_reused: params.incrementalMetrics.flow_reused,
+      flow_recomputed: params.incrementalMetrics.flow_recomputed,
+      flow_incremental_health: params.incrementalMetrics.flow_incremental_health,
       reused_understanding_count: params.incrementalMetrics.reused_understanding_count,
       recomputed_understanding_count: params.incrementalMetrics.recomputed_understanding_count,
       stale_fact_count: params.incrementalMetrics.stale_fact_count,
@@ -10958,6 +16571,34 @@ function buildLatest(params: {
         added_count: params.incrementalMetrics.evidence_delta.added_count,
         removed_count: params.incrementalMetrics.evidence_delta.removed_count,
         changed_count: params.incrementalMetrics.evidence_delta.changed_count,
+      },
+      service_causality_delta: {
+        schema_version: params.incrementalMetrics.service_causality_delta.schema_version,
+        previous_path_count: params.incrementalMetrics.service_causality_delta.previous_path_count,
+        current_path_count: params.incrementalMetrics.service_causality_delta.current_path_count,
+        stable_path_count: params.incrementalMetrics.service_causality_delta.stable_path_count,
+        recomputed_path_count:
+          params.incrementalMetrics.service_causality_delta.recomputed_path_count,
+        drifted_path_count: params.incrementalMetrics.service_causality_delta.drifted_path_count,
+        new_path_count: params.incrementalMetrics.service_causality_delta.new_path_count,
+        stale_path_count: params.incrementalMetrics.service_causality_delta.stale_path_count,
+        evidence_changed_path_count:
+          params.incrementalMetrics.service_causality_delta.evidence_changed_path_count,
+        affected_flow_count: params.incrementalMetrics.service_causality_delta.affected_flow_count,
+        affected_service_count:
+          params.incrementalMetrics.service_causality_delta.affected_service_count,
+        affected_flows: params.incrementalMetrics.service_causality_delta.affected_flows.slice(
+          0,
+          12,
+        ),
+        affected_services:
+          params.incrementalMetrics.service_causality_delta.affected_services.slice(0, 12),
+        changed_evidence_ids:
+          params.incrementalMetrics.service_causality_delta.changed_evidence_ids.slice(0, 20),
+        freshness_score: params.incrementalMetrics.service_causality_delta.freshness_score,
+        path_deltas: params.incrementalMetrics.service_causality_delta.path_deltas.slice(0, 12),
+        summary: params.incrementalMetrics.service_causality_delta.summary,
+        calibration_rule: params.incrementalMetrics.service_causality_delta.calibration_rule,
       },
       understanding_deltas: {
         schema_version: params.incrementalMetrics.understanding_deltas.schema_version,
@@ -11008,6 +16649,11 @@ function buildLatest(params: {
       changed_files: params.changedFiles,
       stale_files: params.staleFiles,
       relationship_count: params.relationships.length,
+      incremental_health: {
+        services: params.incrementalMetrics.service_incremental_health,
+        flows: params.incrementalMetrics.flow_incremental_health,
+        service_causality: params.incrementalMetrics.service_causality_delta,
+      },
     },
   };
 }
@@ -11348,10 +16994,17 @@ function renderFlowCards(
         <h4>Coverage</h4>
         ${renderList([
           `${flowStringArray(flow, 'components').length} component(s)`,
+          `${flowStringArray(flow, 'services').length} service(s)`,
           `${flowStringArray(flow, 'files').length} file(s)`,
           `${flowStringArray(flow, 'tests').length} test artifact(s)`,
           `${risks.length} risk(s)`,
         ])}
+        <h4>Services</h4>
+        ${renderListWithEvidence(
+          flowStringArray(flow, 'services'),
+          fieldEvidence.services ?? flow.evidence_ids,
+          evidenceById,
+        )}
         <h4>Risks</h4>
         ${renderListWithEvidence(
           risks.map((risk) => `${risk.kind}: ${risk.description}`),
@@ -11368,6 +17021,213 @@ function renderFlowCards(
         ${renderListWithEvidence(
           stringArrayData(flow, 'confidence_reasons'),
           fieldEvidence.confidence_reasons ?? flow.evidence_ids,
+          evidenceById,
+        )}
+      </article>`;
+    })
+    .join('');
+}
+
+function renderJourneyIntelligence(
+  flows: readonly BrainEntity[],
+  latest: Record<string, unknown>,
+): string {
+  const journeys = flows
+    .flatMap((flow) => {
+      const journey = flowJourneySummaryData(flow);
+      if (journey === undefined) return [];
+      return [{ flow, journey, steps: safeFlowJourneySteps(flow) }];
+    })
+    .sort(
+      (a, b) =>
+        b.journey.score - a.journey.score ||
+        confidenceRank(b.journey.confidence) - confidenceRank(a.journey.confidence) ||
+        a.journey.name.localeCompare(b.journey.name),
+    );
+  if (journeys.length === 0) {
+    return '<p class="muted">No journey-aware flows detected yet.</p>';
+  }
+  const highestRisk =
+    [...journeys].sort((a, b) => {
+      const aRisk =
+        flowRisks(a.flow).length + a.journey.missing_evidence.length + weakStepCount(a.steps);
+      const bRisk =
+        flowRisks(b.flow).length + b.journey.missing_evidence.length + weakStepCount(b.steps);
+      return bRisk - aRisk || a.journey.name.localeCompare(b.journey.name);
+    })[0] ?? journeys[0];
+  if (highestRisk === undefined) {
+    return '<p class="muted">No journey-aware flows detected yet.</p>';
+  }
+  const reviewSummary = latestReviewEvidenceSummary(latest);
+  const affectedJourneys = asStringArray(reviewSummary.affected_journeys);
+  const affectedDataDependencies = asStringArray(reviewSummary.affected_data_dependencies);
+  const affectedStateOperations = asStringArray(reviewSummary.affected_state_operations);
+  const failureModes = asStringArray(reviewSummary.user_visible_failure_modes);
+  const journeyMissingEvidence = asStringArray(reviewSummary.journey_missing_evidence);
+  const affectedStepCount = recordNumber(reviewSummary, 'affected_journey_steps');
+  const journeyDataDependencies = journeys.flatMap((item) => safeFlowDataDependencies(item.flow));
+
+  return `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${journeys.length} journey(s)</div>
+      <h3>Top Journeys</h3>
+      ${renderList(
+        journeys.slice(0, 5).map((item) => {
+          const surfaces = flowStringArray(item.flow, 'runtime_surfaces').slice(0, 2).join(', ');
+          const dataSignals = safeFlowDataDependencies(item.flow)
+            .map((dependency) => dependency.label)
+            .slice(0, 2)
+            .join(', ');
+          const suffix = [surfaces, dataSignals]
+            .filter((value) => value.length > 0)
+            .map((value) => ` · ${value}`)
+            .join('');
+          return `${item.journey.name} (${item.journey.confidence}, ${item.steps.length} step(s))${suffix}`;
+        }),
+      )}
+    </article>
+    <article class="card compact">
+      <div class="badge">${htmlEscape(highestRisk.journey.confidence)}</div>
+      <h3>Highest Risk Journey</h3>
+      <p>${htmlEscape(highestRisk.journey.name)}</p>
+      <h4>Evidence Gaps</h4>
+      ${renderList(highestRisk.journey.missing_evidence.slice(0, 4))}
+      <h4>Runtime Surfaces</h4>
+      ${renderList(flowStringArray(highestRisk.flow, 'runtime_surfaces').slice(0, 5))}
+      <h4>State/Data</h4>
+      ${renderList(
+        safeFlowDataDependencies(highestRisk.flow).slice(0, 4).map(formatDataDependencyForReview),
+      )}
+    </article>
+    <article class="card compact">
+      <div class="badge">${journeyEvidenceHealth(journeys)}/100</div>
+      <h3>Evidence Health</h3>
+      ${renderList([
+        `${journeys.filter((item) => item.journey.confidence === 'verified').length} verified journey name(s)`,
+        `${journeys.filter((item) => item.journey.confidence === 'inferred').length} inferred journey name(s)`,
+        `${journeyDataDependencies.length} state/data dependency signal(s)`,
+        `${journeys.flatMap((item) => item.journey.missing_evidence).length} missing evidence note(s)`,
+        `${journeys.flatMap((item) => item.steps).filter((step) => step.tests.length > 0).length} step(s) with tests`,
+      ])}
+    </article>
+    <article class="card compact">
+      <div class="badge">${affectedJourneys.length} affected</div>
+      <h3>Latest Review Impact</h3>
+      ${renderList([
+        ...(affectedJourneys.length === 0
+          ? ['No affected journeys recorded by the latest review.']
+          : affectedJourneys.slice(0, 4).map((journey) => `Affected: ${journey}`)),
+        `${affectedStepCount} affected journey step(s)`,
+        ...affectedDataDependencies.slice(0, 3).map((item) => `State/data: ${item}`),
+        ...affectedStateOperations.slice(0, 3).map((item) => `Operation: ${item}`),
+        ...failureModes.slice(0, 3),
+        ...journeyMissingEvidence.slice(0, 3).map((gap) => `Gap: ${gap}`),
+      ])}
+    </article>
+  </div>`;
+}
+
+function confidenceRank(confidence: Confidence): number {
+  if (confidence === 'verified') return 3;
+  if (confidence === 'inferred') return 2;
+  return 1;
+}
+
+function weakStepCount(steps: readonly FlowJourneyStep[]): number {
+  return steps.filter((step) => step.confidence !== 'verified').length;
+}
+
+function journeyEvidenceHealth(
+  journeys: readonly {
+    readonly journey: FlowJourneySummary;
+    readonly steps: readonly FlowJourneyStep[];
+  }[],
+): number {
+  const possible = journeys.length * 3 + journeys.flatMap((item) => item.steps).length;
+  if (possible === 0) return 0;
+  const verifiedNames =
+    journeys.filter((item) => item.journey.confidence === 'verified').length * 3;
+  const inferredNames =
+    journeys.filter((item) => item.journey.confidence === 'inferred').length * 2;
+  const verifiedSteps = journeys
+    .flatMap((item) => item.steps)
+    .filter((step) => step.confidence === 'verified').length;
+  return Math.round(((verifiedNames + inferredNames + verifiedSteps) / possible) * 100);
+}
+
+function latestReviewEvidenceSummary(latest: Record<string, unknown>): Record<string, unknown> {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) return {};
+  return isRecord(status.review_evidence_summary) ? status.review_evidence_summary : {};
+}
+
+function renderServiceCards(
+  services: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  if (services.length === 0) {
+    return '<p class="muted">No service intelligence detected yet.</p>';
+  }
+  return services
+    .map((service) => {
+      const runtime = stringData(service, 'runtime') ?? 'unknown';
+      const framework = stringData(service, 'framework') ?? 'unknown';
+      const fieldEvidence = recordStringArrayData(service, 'field_evidence');
+      const relatedFlows = serviceDataStringArray(service, 'related_flows');
+      const risks = serviceDataStringArray(service, 'risks');
+      return `<article class="card" data-search="${htmlEscape(
+        `${service.id} ${service.name} ${runtime} ${framework} ${service.source_files.join(' ')}`,
+      )}" data-kind="service" data-confidence="${htmlEscape(service.confidence)}">
+        <div class="badge">${htmlEscape(service.confidence)} · ${htmlEscape(runtime)} · ${htmlEscape(
+          framework,
+        )}</div>
+        <h3>${htmlEscape(service.name)}</h3>
+        <p class="muted">Explain this: <code>rizz explain service ${htmlEscape(service.name)}</code></p>
+        <p>${htmlEscape(service.description)}</p>
+        <h4>Routes</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'routes'),
+          fieldEvidence.routes ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Jobs</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'jobs'),
+          fieldEvidence.jobs ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Storage</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'storage_dependencies'),
+          fieldEvidence.storage_dependencies ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Environment</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'environment_variables'),
+          fieldEvidence.environment_variables ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>External APIs</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'external_services'),
+          fieldEvidence.external_services ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Deployment Configs</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'deployment_configs'),
+          fieldEvidence.deployment_configs ?? service.evidence_ids,
+          evidenceById,
+        )}
+        <h4>Related Flows</h4>
+        ${renderListWithEvidence(relatedFlows, service.evidence_ids, evidenceById)}
+        <h4>Risks</h4>
+        ${renderListWithEvidence(risks, fieldEvidence.risks ?? service.evidence_ids, evidenceById)}
+        <h4>Unknowns</h4>
+        ${renderListWithEvidence(
+          serviceDataStringArray(service, 'unknowns'),
+          fieldEvidence.unknowns ?? service.evidence_ids,
           evidenceById,
         )}
       </article>`;
@@ -11456,7 +17316,7 @@ function renderUnknowns(params: {
       )}" data-kind="unknown" data-confidence="uncertain">
         <div class="badge">needs confirmation</div>
         <h3>${htmlEscape(unknown)}</h3>
-        <p class="muted">Unknowns are work queues for better project intelligence. Verify with evidence before relying on inferred facts.</p>
+        <p class="muted">Verify unknowns with evidence before relying on inferred facts.</p>
       </article>`,
     )
     .join('');
@@ -11465,7 +17325,7 @@ function renderUnknowns(params: {
 function renderLatestReview(latest: Record<string, unknown>): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
   }
   const rows = Object.entries(status)
     .map(
@@ -11485,6 +17345,7 @@ function renderReviewStatusValue(value: unknown): string {
         return undefined;
       })
       .filter((item): item is string => item !== undefined);
+    if (labels.length === 0 && value.length > 0) return renderList([`${value.length} item(s)`]);
     return renderList(labels);
   }
   if (isRecord(value)) {
@@ -11504,7 +17365,7 @@ function renderLatestReviewRouteFlows(
 ): string {
   const status = latest.latest_review_status;
   if (!isRecord(status)) {
-    return '<p class="muted">No review status found. Run <code>rizz review</code> to add one.</p>';
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
   }
   const affectedFlowIds = new Set(asStringArray(status.affected_flows));
   if (affectedFlowIds.size === 0) {
@@ -11534,6 +17395,167 @@ function renderLatestReviewRouteFlows(
       </article>`;
     })
     .join('')}</div>`;
+}
+
+function renderMissionControlDependencyRuntimeImpact(latest: Record<string, unknown>): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
+  }
+  const impact = status.dependency_runtime_impact;
+  if (!isRecord(impact)) {
+    return '<p class="muted">No dependency or runtime package/config impact was detected by the latest review.</p>';
+  }
+  const changedFiles = asStringArray(impact.changed_files);
+  const runtimeSurfaces = asStringArray(impact.runtime_surfaces);
+  const affected = [
+    ...asStringArray(impact.affected_components),
+    ...asStringArray(impact.affected_services),
+    ...asStringArray(impact.affected_flows),
+  ];
+  const packageScripts = recordArray(impact, 'package_scripts')
+    .filter(isRecord)
+    .slice(0, 12)
+    .map((script) => {
+      const manifest = recordString(script, 'manifest', 'unknown manifest');
+      const name = recordString(script, 'name', 'unknown');
+      const category = recordString(script, 'category', 'unknown');
+      const command = recordString(script, 'command', '');
+      return `${manifest}#${name} (${category}): ${command}`;
+    });
+  const verificationFocus = asStringArray(impact.verification_focus);
+  const reasons = asStringArray(impact.reasons);
+  return `<div class="grid">
+    <article class="card compact">
+      <h3>Changed Package / Config</h3>
+      ${renderList(changedFiles)}
+    </article>
+    <article class="card compact">
+      <h3>Runtime Surfaces</h3>
+      ${renderList(runtimeSurfaces)}
+    </article>
+    <article class="card compact">
+      <h3>Components / Services / Flows</h3>
+      ${renderList(affected)}
+    </article>
+    <article class="card compact">
+      <h3>Package Scripts</h3>
+      ${renderList(packageScripts)}
+    </article>
+    <article class="card compact">
+      <h3>Focused Verification</h3>
+      ${renderList(verificationFocus)}
+    </article>
+    <article class="card compact">
+      <h3>Impact Reasons</h3>
+      ${renderList(reasons)}
+    </article>
+    <article class="card compact">
+      <h3>Review Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/reports/review.html',
+        '.rizz/research/review_eval.json',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/verification_evidence.json',
+        '.rizz/brain/latest.json',
+      ])}
+    </article>
+  </div>`;
+}
+
+function renderMissionControlArchitectureImpactClaims(
+  latest: Record<string, unknown>,
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const status = latest.latest_review_status;
+  if (!isRecord(status)) {
+    return '<p class="muted">Run <code>rizz review</code> to add review status.</p>';
+  }
+  if (recordString(status, 'status', 'not_run') === 'not_run') {
+    return '<p class="muted">No review has run for the current brain. Run <code>rizz review</code> to add architecture impact claims.</p>';
+  }
+  const claimRows = recordArray(status, 'architecture_impact_claims').filter(isRecord).slice(0, 5);
+  const claimCount = recordNumber(status, 'architecture_impact_claim_count');
+  const impactSurfaces = asStringArray(status.architecture_impact_surfaces);
+  const changedFiles = asStringArray(status.changed_files);
+  if (claimRows.length === 0) {
+    return `<div class="grid">
+    <article class="card compact">
+      <h3>Architecture Impact Claims</h3>
+      ${renderList([
+        `${claimCount} claim(s) recorded`,
+        `${impactSurfaces.length} impact surface(s) overlapped the diff`,
+        'No architecture impact claim details were recorded for this diff.',
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Review Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/reports/review.html',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/review_eval.json',
+      ])}
+    </article>
+  </div>`;
+  }
+  const redactedCount = claimRows.reduce(
+    (count, claim) => count + recordNumber(claim, 'redacted_evidence_count'),
+    0,
+  );
+  return `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${claimCount} claim(s)</div>
+      <h3>Architecture Impact Claims</h3>
+      ${renderList([
+        `${impactSurfaces.length} impact surface(s) overlapped the diff`,
+        `${changedFiles.length} changed file(s) linked`,
+        `${redactedCount} redacted evidence reference(s) in visible claim rows`,
+        'Basis: pre-change Project Intelligence Layer plus current git diff; not post-change runtime certainty.',
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Changed Files</h3>
+      ${renderList(changedFiles.slice(0, 8))}
+    </article>
+    <article class="card compact">
+      <h3>Review Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/reports/review.html',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/review_eval.json',
+      ])}
+    </article>
+    ${claimRows
+      .map((claim) => {
+        const impactId = recordString(claim, 'impact_id', 'unknown impact');
+        const surfaceType = recordString(claim, 'surface_type', 'unknown surface');
+        const confidence = recordString(claim, 'confidence', 'uncertain');
+        const claimText = recordString(claim, 'claim', 'Architecture impact claim recorded.');
+        const sourceFiles = asStringArray(claim.source_files).slice(0, 5);
+        const evidenceIds = asStringArray(claim.evidence_ids).slice(0, 5);
+        const whatBreaks = asStringArray(claim.what_breaks).slice(0, 4);
+        const reviewFocus = asStringArray(claim.review_focus).slice(0, 4);
+        const unknowns = asStringArray(claim.unknowns).slice(0, 4);
+        return `<article class="card compact" data-search="${htmlEscape(
+          `${impactId} ${surfaceType} ${confidence} ${claimText} ${sourceFiles.join(' ')}`,
+        )}">
+        <div class="badge">${htmlEscape(confidence)} · ${htmlEscape(surfaceType)}</div>
+        <h3>${htmlEscape(impactId)}</h3>
+        <p>${htmlEscape(claimText)}</p>
+        <h4>Changed Files</h4>
+        ${renderList(sourceFiles)}
+        <h4>Evidence</h4>
+        ${renderEvidenceLinks(evidenceIds, evidenceById)}
+        <h4>What Could Break</h4>
+        ${renderList(whatBreaks)}
+        <h4>Review Focus</h4>
+        ${renderList(reviewFocus)}
+        <h4>Unknowns</h4>
+        ${renderList(unknowns)}
+      </article>`;
+      })
+      .join('')}
+  </div>`;
 }
 
 function renderArchitectureConfidenceDebt(value: unknown): string {
@@ -11569,6 +17591,16 @@ function renderArchitectureConfidenceDebt(value: unknown): string {
       return `${areaId}: ${reason}`;
     });
   const blockingUnknowns = asStringArray(value.blocking_unknowns).slice(0, 4);
+  const inspectionQueue = recordArray(value, 'inspection_queue')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((item) => {
+      const priority = recordNumber(item, 'priority');
+      const severity = recordString(item, 'severity', 'medium');
+      const target = recordString(item, 'target_id', 'unknown target');
+      const hint = recordString(item, 'inspect_hint', 'Inspect architecture evidence.');
+      return `P${priority} ${severity}: ${target} - ${hint}`;
+    });
   return renderList([
     `${debtLevel} confidence debt: ${summary}`,
     `${unsupportedCount} unsupported assumption(s)`,
@@ -11578,10 +17610,81 @@ function renderArchitectureConfidenceDebt(value: unknown): string {
     ...unsupportedAssumptions,
     ...lowConfidenceAreas,
     ...blockingUnknowns,
+    ...inspectionQueue,
   ]);
 }
 
-function renderArchitectureReasoning(value: unknown): string {
+function renderArchitectureWhatBreaksEvidence(
+  value: Record<string, unknown>,
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
+  const componentBreaks = recordArray(value, 'what_breaks')
+    .filter(isRecord)
+    .map((item) => {
+      const componentId = recordString(item, 'component_id', 'unknown component');
+      const blastRadius = recordString(item, 'blast_radius', 'unknown');
+      return {
+        id: componentId,
+        label: `${componentId} · ${blastRadius} radius`,
+        surface: 'component',
+        confidence: 'inferred',
+        impacts: asStringArray(item.impacts),
+        tests: asStringArray(item.tests),
+        evidenceIds: asStringArray(item.evidence_ids),
+      };
+    });
+  const routeBreaks = recordArray(value, 'route_what_breaks')
+    .filter(isRecord)
+    .map((item) => {
+      const flowId = recordString(item, 'flow_id', 'unknown flow');
+      const routePath = recordString(item, 'route_path', 'unknown route');
+      const routeType = recordString(item, 'route_type', 'route');
+      return {
+        id: flowId,
+        label: `${routePath} · ${routeType}`,
+        surface: 'route',
+        confidence: 'inferred',
+        impacts: asStringArray(item.impacts),
+        tests: asStringArray(item.tests),
+        evidenceIds: asStringArray(item.evidence_ids),
+      };
+    });
+  const rows = [...componentBreaks, ...routeBreaks].filter((item) => item.impacts.length > 0);
+  if (rows.length === 0) {
+    return `<article class="card">
+      <h3>What Can Break</h3>
+      <p class="muted">No breakage paths recorded yet. This does not mean the architecture is safe.</p>
+    </article>`;
+  }
+  return rows
+    .slice(0, 6)
+    .map(
+      (row) => `<article class="card" data-search="${htmlEscape(
+        `${row.id} ${row.label} ${row.surface} ${row.impacts.join(' ')}`,
+      )}">
+        <div class="badge">${htmlEscape(row.confidence)} · ${htmlEscape(row.surface)}</div>
+        <h3>${htmlEscape(row.label)}</h3>
+        <h4>What Can Break</h4>
+        ${renderList(row.impacts.slice(0, 5))}
+        <h4>Evidence</h4>
+        ${renderEvidenceLinks(row.evidenceIds.slice(0, 8), evidenceById)}
+        <h4>Tests</h4>
+        ${renderList(row.tests.slice(0, 5))}
+        <h4>Unknowns</h4>
+        ${renderList(
+          row.evidenceIds.length === 0
+            ? ['No evidence records found for this claim yet. Treat it as unverified.']
+            : ['Unknowns are review prompts, not failures.'],
+        )}
+      </article>`,
+    )
+    .join('');
+}
+
+function renderArchitectureReasoning(
+  value: unknown,
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+): string {
   if (!isRecord(value)) {
     return '<p class="muted">No architecture reasoning artifact is available yet. Run <code>rizz brain</code> to refresh.</p>';
   }
@@ -11608,6 +17711,13 @@ function renderArchitectureReasoning(value: unknown): string {
   const reviewHints = Array.isArray(value.review_hints) ? value.review_hints.filter(isRecord) : [];
   const impactMap = isRecord(value.impact_map) ? value.impact_map : {};
   const impactEntries = Array.isArray(impactMap.entries) ? impactMap.entries.filter(isRecord) : [];
+  const deploymentIntelligence = isRecord(value.deployment_intelligence)
+    ? value.deployment_intelligence
+    : {};
+  const deploymentSummary = isRecord(deploymentIntelligence.summary)
+    ? deploymentIntelligence.summary
+    : {};
+  const deploymentFlows = recordArray(deploymentIntelligence, 'flows').filter(isRecord);
   const architectureAssumptions = Array.isArray(value.architecture_assumptions)
     ? value.architecture_assumptions.filter(isRecord)
     : [];
@@ -11751,10 +17861,32 @@ function renderArchitectureReasoning(value: unknown): string {
       : 0;
     const coupling =
       typeof impact.coupling_level === 'string' ? impact.coupling_level : 'unknown coupling';
-    return `${impactId}: ${surfaceType}, ${affectedFlows} flow(s), ${affectedTests} test(s), ${affectedConfigs} config(s), ${coupling} coupling`;
+    const riskReasoning = isRecord(impact.risk_reasoning) ? impact.risk_reasoning : {};
+    const riskLevel =
+      typeof riskReasoning.risk_level === 'string' ? riskReasoning.risk_level : 'unknown';
+    const riskScore =
+      typeof riskReasoning.risk_score === 'number' ? `${riskReasoning.risk_score}/10` : 'n/a';
+    return `${impactId}: ${surfaceType}, ${affectedFlows} flow(s), ${affectedTests} test(s), ${affectedConfigs} config(s), ${coupling} coupling, ${riskLevel} risk (${riskScore})`;
   });
+  const deploymentLabels = [
+    `flows: ${String(deploymentSummary.deployment_flow_count ?? 0)}`,
+    `configs: ${String(deploymentSummary.deployment_config_count ?? 0)}`,
+    `production risks: ${String(deploymentSummary.production_risk_count ?? 0)}`,
+    `posture: ${String(deploymentSummary.posture ?? 'unknown')}`,
+    ...deploymentFlows.slice(0, 4).map((flow) => {
+      const flowId = typeof flow.flow_id === 'string' ? flow.flow_id : 'unknown flow';
+      const risks = typeof flow.production_risk_count === 'number' ? flow.production_risk_count : 0;
+      const configs = Array.isArray(flow.configs)
+        ? flow.configs.filter((item): item is string => typeof item === 'string').length
+        : 0;
+      return `${flowId}: ${configs} deploy config(s), ${risks} production risk(s)`;
+    }),
+    ...asStringArray(deploymentIntelligence.unknowns).slice(0, 4),
+  ];
   return `<div class="grid">
     <article class="card"><h3>Confidence Debt</h3>${renderArchitectureConfidenceDebt(confidenceDebt)}</article>
+    <article class="card"><h3>Deployment Intelligence</h3>${renderList(deploymentLabels)}</article>
+    ${renderArchitectureWhatBreaksEvidence(value, evidenceById)}
     <article class="card"><h3>Impact Map</h3>${renderList([
       architectureImpactSummary(value),
       ...impactLabels,
@@ -11768,7 +17900,7 @@ function renderArchitectureReasoning(value: unknown): string {
     <article class="card"><h3>Critical Paths</h3>${renderList(criticalPathLabels)}</article>
     <article class="card"><h3>Risky Seams</h3>${renderList(seamLabels)}</article>
     <article class="card"><h3>Tradeoff Matrix</h3>${renderList(tradeoffLabels)}</article>
-    <article class="card"><h3>What Breaks</h3>${renderList(whatBreaksLabels)}</article>
+    <article class="card"><h3>What Breaks Summary</h3>${renderList(whatBreaksLabels)}</article>
     <article class="card"><h3>Cross-Component Flows</h3>${renderList(flowLabels)}</article>
     <article class="card"><h3>Risk Concentrations</h3>${renderList(riskLabels)}</article>
     <article class="card"><h3>Review Hints</h3>${renderList(hintLabels)}</article>
@@ -11872,6 +18004,19 @@ function renderEvidenceActionability(value: unknown): string {
       const fileLabel = files.length === 0 ? 'inspect entity evidence' : files.join(', ');
       return `P${priority} ${target}: ${fileLabel}`;
     });
+  const confidenceDeltas = recordArray(actionability, 'evidence_confidence_deltas')
+    .filter(isRecord)
+    .slice(0, 4)
+    .map((item) => {
+      const priority = typeof item.priority === 'number' ? item.priority : 0;
+      const target = typeof item.target_id === 'string' ? item.target_id : 'unknown target';
+      const current =
+        typeof item.current_confidence === 'string' ? item.current_confidence : 'uncertain';
+      const next = typeof item.target_confidence === 'string' ? item.target_confidence : 'inferred';
+      const delta = typeof item.confidence_delta === 'number' ? item.confidence_delta : 0;
+      const actions = asStringArray(item.verification_actions).slice(0, 1);
+      return `P${priority} ${target}: ${current} -> ${next} (+${delta})${actions.length === 0 ? '' : ` - ${actions[0]}`}`;
+    });
   const redactionImpact = typeof redaction.impact === 'string' ? redaction.impact : 'none';
   const hiddenCount =
     typeof redaction.hidden_evidence_count === 'number' ? redaction.hidden_evidence_count : 0;
@@ -11889,6 +18034,7 @@ function renderEvidenceActionability(value: unknown): string {
     `field evidence: ${fieldCoverage}/100`,
   ])}</article>
     <article class="card"><h3>Read First To Improve Confidence</h3>${renderList(readFirst)}</article>
+    <article class="card"><h3>Confidence Upgrade Queue</h3>${renderList(confidenceDeltas)}</article>
     <article class="card"><h3>Unbacked Claim Groups</h3>${renderList(unbackedGroups)}</article>
     <article class="card"><h3>Low-Confidence Claim Areas</h3>${renderList(lowConfidenceAreas)}</article>
     <article class="card"><h3>Redaction-Hidden Evidence</h3>${renderList([
@@ -11896,6 +18042,40 @@ function renderEvidenceActionability(value: unknown): string {
       `impact: ${redactionImpact}`,
       `confidence downgrades: ${downgrades}`,
     ])}</article>`;
+}
+
+function renderConfidenceInspectionQueue(value: unknown): string {
+  if (!isRecord(value)) return '';
+  const queue = isRecord(value.confidence_inspection_queue)
+    ? value.confidence_inspection_queue
+    : nestedRecord(value, 'confidence_inspection_queue');
+  const items = recordArray(queue, 'items').filter(isRecord).slice(0, 6);
+  if (items.length === 0) return '';
+  const summary = recordString(queue, 'summary', 'Confidence inspection queue is available.');
+  const highPriority = recordNumber(queue, 'high_priority_count');
+  const sources = isRecord(queue.sources) ? queue.sources : {};
+  const queueItems = items.map((item) => {
+    const priority = recordNumber(item, 'priority');
+    const source = recordString(item, 'source', 'unknown');
+    const severity = recordString(item, 'severity', 'medium');
+    const target = recordString(item, 'target_id', 'unknown target');
+    const reason = recordString(item, 'reason', 'Inspect this confidence item.');
+    const hint = recordString(item, 'inspect_hint', '');
+    const files = asStringArray(item.read_first_files).slice(0, 2);
+    const evidenceGaps = asStringArray(item.evidence_gap_ids).slice(0, 2);
+    const artifacts = asStringArray(item.artifacts).slice(0, 2);
+    return `P${priority} [${source}/${severity}] ${target}: ${reason}${hint === '' ? '' : ` ${hint}`}${files.length === 0 ? '' : ` Read: ${files.join(', ')}`}${evidenceGaps.length === 0 ? '' : ` Gaps: ${evidenceGaps.join(', ')}`}${artifacts.length === 0 ? '' : ` Artifacts: ${artifacts.join(', ')}`}`;
+  });
+  return `<article class="card"><h3>Confidence Inspection Queue</h3>${renderList([
+    summary,
+    `${highPriority} high-priority item(s)`,
+    `sources: evidence ${String(sources.evidence ?? 0)}, architecture ${String(
+      sources.architecture ?? 0,
+    )}, security ${String(sources.security ?? 0)}, tools ${String(
+      sources.tools ?? 0,
+    )}, incremental ${String(sources.incremental ?? 0)}`,
+    ...queueItems,
+  ])}</article>`;
 }
 
 function renderEvidenceQuality(value: unknown): string {
@@ -11954,6 +18134,7 @@ function renderEvidenceQuality(value: unknown): string {
     <article class="card"><h3>Confidence Distribution</h3>${renderList(distribution)}</article>
     <article class="card"><h3>Top Evidence Gaps</h3>${renderList(topGaps)}</article>
     <article class="card"><h3>Unknown / Uncertain Areas</h3>${renderList(uncertainAreas)}</article>
+    ${renderConfidenceInspectionQueue(value)}
     ${evidenceCalibration}
     ${evidenceActionability}
   </div>`;
@@ -12014,17 +18195,34 @@ function renderIncrementalUnderstanding(value: unknown): string {
       : staleFacts;
   const changedSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.changed_surfaces) ? understandingDeltas.changed_surfaces : [],
+    'recomputed',
   );
   const newSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.new_surfaces) ? understandingDeltas.new_surfaces : [],
+    'recomputed',
   );
   const stableSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.stable_surfaces) ? understandingDeltas.stable_surfaces : [],
+    'reused',
   );
   const staleSurfaceLabels = renderUnderstandingSurfaceLabels(
     Array.isArray(understandingDeltas.stale_surfaces) ? understandingDeltas.stale_surfaces : [],
+    'stale',
   );
+  const bySurfaceType = isRecord(understandingDeltas.by_surface_type)
+    ? understandingDeltas.by_surface_type
+    : {};
+  const summary =
+    typeof understandingDeltas.summary === 'string'
+      ? understandingDeltas.summary
+      : `${changedSurfaceCount} changed, ${newSurfaceCount} new, ${stableSurfaceCount} stable, and ${staleSurfaceCount} stale understanding surface(s).`;
   return `<div class="grid">
+    <article class="card"><h3>Understanding Delta</h3>${renderList([
+      summary,
+      `${changedSurfaceCount + newSurfaceCount} recomputed or new surface(s)`,
+      `${stableSurfaceCount} reused stable surface(s)`,
+      `${staleSurfaceCount} stale surface(s)`,
+    ])}</article>
     <article class="card"><h3>Changed Understanding Surfaces</h3>${renderList([
       `${changedSurfaceCount} changed surface(s)`,
       `${newSurfaceCount} new surface(s)`,
@@ -12047,25 +18245,44 @@ function renderIncrementalUnderstanding(value: unknown): string {
       `${reusedUnderstanding} reused understanding item(s)`,
       `${recomputedUnderstanding} recomputed understanding item(s)`,
     ])}</article>
+    <article class="card"><h3>Surface Type Delta</h3>${renderList(
+      renderUnderstandingSurfaceTypeDeltas(bySurfaceType),
+    )}</article>
     <article class="card"><h3>Relationship Delta</h3>${renderList(relationshipLabels)}</article>
     <article class="card"><h3>Evidence Delta</h3>${renderList(evidenceLabels)}</article>
   </div>`;
 }
 
-function renderUnderstandingSurfaceLabels(surfaces: readonly unknown[]): string[] {
+function renderUnderstandingSurfaceLabels(
+  surfaces: readonly unknown[],
+  posture: 'recomputed' | 'reused' | 'stale',
+): string[] {
   return surfaces
     .filter(isRecord)
     .slice(0, 6)
     .map((surface) => {
       const name = typeof surface.name === 'string' ? surface.name : 'unknown surface';
       const type = typeof surface.surface_type === 'string' ? surface.surface_type : 'unknown';
+      const reasons = asStringArray(surface.reasons).slice(0, 2);
       let delta = '';
       if (typeof surface.score_delta === 'number' && surface.score_delta !== 0) {
         const sign = surface.score_delta > 0 ? '+' : '';
         delta = ` (${sign}${surface.score_delta})`;
       }
-      return `${type}: ${name}${delta}`;
+      const reasonText = reasons.length > 0 ? ` because ${reasons.join('; ')}` : '';
+      return `${posture}: ${type}: ${name}${delta}${reasonText}`;
     });
+}
+
+function renderUnderstandingSurfaceTypeDeltas(bySurfaceType: Record<string, unknown>): string[] {
+  const labels = ['component', 'service', 'flow', 'architecture', 'evidence', 'unknown'];
+  return labels.map((label) => {
+    const counts = isRecord(bySurfaceType[label]) ? bySurfaceType[label] : {};
+    return `${label}: ${recordNumber(counts, 'changed')} changed, ${recordNumber(
+      counts,
+      'new',
+    )} new, ${recordNumber(counts, 'stable')} stable, ${recordNumber(counts, 'stale')} stale`;
+  });
 }
 
 function qualityBandFromScore(score: number): 'weak' | 'usable' | 'strong' {
@@ -12147,10 +18364,12 @@ function renderArtifactLinks(artifactPaths?: readonly string[]): string {
     '.rizz/brain/index.json',
     '.rizz/brain/graph.json',
     '.rizz/brain/entities/components.json',
+    '.rizz/brain/entities/services.json',
     '.rizz/brain/entities/flows.json',
     '.rizz/brain/entities/evidence.json',
     '.rizz/research/evidence_quality.json',
     '.rizz/research/understanding_score.json',
+    '.rizz/research/service_intelligence.json',
     '.rizz/research/architecture_reasoning.json',
     '.rizz/research/benchmark_tasks.json',
     '.rizz/research/pie_acceptance.json',
@@ -12193,6 +18412,7 @@ function renderDimensionCards(score: unknown): string {
   const dimensions = score.dimensions;
   const labels: ReadonlyArray<readonly [string, string]> = [
     ['components', 'Components'],
+    ['services', 'Services'],
     ['flows', 'Flows'],
     ['architecture', 'Architecture'],
     ['evidence', 'Evidence'],
@@ -12218,6 +18438,35 @@ function renderDimensionCards(score: unknown): string {
         <p>${htmlEscape(summary)}</p>
         <h4>Weak</h4>
         ${renderList(weakSpots)}
+      </article>`;
+    })
+    .join('');
+}
+
+function renderCapabilityScorecard(score: unknown): string {
+  const scorecard = nestedRecord(score, 'capability_scorecard');
+  const capabilities = recordArray(scorecard, 'capabilities').filter(isRecord);
+  if (capabilities.length === 0) {
+    return '<p class="muted">No PIE capability scorecard is available yet.</p>';
+  }
+  return capabilities
+    .map((capability) => {
+      const label = recordString(capability, 'label', 'Capability');
+      const value = recordNumber(capability, 'score');
+      const remaining = recordNumber(capability, 'remaining_to_100');
+      const status = recordString(capability, 'status', scoreBand(value));
+      const evidenceBasis = asStringArray(capability.evidence_basis).slice(0, 3);
+      const next = asStringArray(capability.next_required_improvements).slice(0, 3);
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${label} ${value} ${remaining} ${status} ${evidenceBasis.join(' ')} ${next.join(' ')}`,
+      )}" data-kind="score">
+        <div class="badge">${value}/100 · ${htmlEscape(status)}</div>
+        <h3>${htmlEscape(label)}</h3>
+        <p class="muted">${remaining} remaining to 100</p>
+        <h4>Evidence</h4>
+        ${renderList(evidenceBasis)}
+        <h4>Next</h4>
+        ${renderList(next)}
       </article>`;
     })
     .join('');
@@ -12257,7 +18506,7 @@ function nestedRecord(value: unknown, key: string): Record<string, unknown> {
 
 function renderAskReadinessLine(value: unknown): string {
   if (!isRecord(value)) {
-    return '<article class="card compact"><h3>Ask readiness</h3><p class="muted">No future-question readiness gate is available yet.</p></article>';
+    return '<article class="card compact"><h3>Ask readiness</h3><p class="muted">No readiness gate yet.</p></article>';
   }
   const score = recordNumber(value, 'score');
   const status = recordString(value, 'status', scoreBand(score));
@@ -12280,12 +18529,183 @@ function renderAskReadinessLine(value: unknown): string {
   </article>`;
 }
 
+function incrementalHealthFromLatest(latest: Record<string, unknown>): {
+  readonly services: Record<string, unknown>;
+  readonly flows: Record<string, unknown>;
+} {
+  const projectState = nestedRecord(latest, 'project_state');
+  const projectHealth = nestedRecord(projectState, 'incremental_health');
+  const latestIncremental = nestedRecord(latest, 'latest_incremental_update');
+  const services = nestedRecord(projectHealth, 'services');
+  const flows = nestedRecord(projectHealth, 'flows');
+  return {
+    services:
+      Object.keys(services).length > 0
+        ? services
+        : nestedRecord(latestIncremental, 'service_incremental_health'),
+    flows:
+      Object.keys(flows).length > 0
+        ? flows
+        : nestedRecord(latestIncremental, 'flow_incremental_health'),
+  };
+}
+
+function incrementalHealthLine(label: string, health: Record<string, unknown>): string {
+  const total = recordNumber(health, 'total');
+  const changed = recordNumber(health, 'changed');
+  const reused = recordNumber(health, 'reused');
+  const recomputed = recordNumber(health, 'recomputed');
+  const stale = recordNumber(health, 'stale');
+  return `${label}: ${changed} changed, ${reused} reused, ${recomputed} recomputed, ${stale} stale of ${total}`;
+}
+
+function renderIncrementalHealthCard(latest: Record<string, unknown>): string {
+  const health = incrementalHealthFromLatest(latest);
+  const serviceSourceChanged = asStringArray(health.services.source_changed_ids).length;
+  const flowSourceChanged = asStringArray(health.flows.source_changed_ids).length;
+  return `<article class="card compact">
+    <h3>Incremental Health</h3>
+    ${renderList([
+      incrementalHealthLine('services', health.services),
+      incrementalHealthLine('flows', health.flows),
+      `${serviceSourceChanged} source-changed service(s)`,
+      `${flowSourceChanged} source-changed flow(s)`,
+    ])}
+  </article>`;
+}
+
+interface FlowServiceCausalityRow {
+  readonly flowId: string;
+  readonly flowName: string;
+  readonly service: FlowServiceCausality;
+}
+
+function flowServiceCausalityRows(flows: readonly BrainEntity[]): FlowServiceCausalityRow[] {
+  return flows.flatMap((flow) =>
+    safeFlowServiceCausality(flow).map((service) => ({
+      flowId: flow.id,
+      flowName: flow.name,
+      service,
+    })),
+  );
+}
+
+function renderServiceCausalityCard(flows: readonly BrainEntity[]): string {
+  const rows = flowServiceCausalityRows(flows);
+  const flowCount = new Set(rows.map((row) => row.flowId)).size;
+  const serviceCount = new Set(rows.map((row) => row.service.service_id)).size;
+  const topRows = rows
+    .slice(0, 4)
+    .map(
+      (row) =>
+        `${row.flowName} -> ${row.service.service_name}: ${row.service.effects.length} effect(s), ${row.service.confidence}`,
+    );
+  return `<article class="card compact">
+    <h3>Service Causality</h3>
+    ${renderList([
+      `${rows.length} flow-service causality link(s)`,
+      `${flowCount} flow(s) with service evidence`,
+      `${serviceCount} linked service(s)`,
+      ...topRows,
+    ])}
+  </article>`;
+}
+
+interface ServiceReachabilityQuality {
+  readonly score: number;
+  readonly posture: string;
+  readonly pathCount: number;
+  readonly evidenceCoverage: number;
+  readonly freshnessScore: number;
+  readonly uncertainCount: number;
+  readonly unknownCount: number;
+  readonly missingEvidenceCount: number;
+  readonly missingEffectCount: number;
+  readonly missingStepLinkCount: number;
+  readonly driftedPathCount: number;
+  readonly stalePathCount: number;
+  readonly summary: string;
+}
+
+function serviceReachabilityQualityFromLatest(
+  latest: Record<string, unknown>,
+): ServiceReachabilityQuality {
+  const architectureReasoning = nestedRecord(latest, 'latest_architecture_reasoning');
+  const causalityReasoning = nestedRecord(architectureReasoning, 'service_causality_reasoning');
+  const evidenceQuality = nestedRecord(latest, 'latest_evidence_quality');
+  const quality = nestedRecord(evidenceQuality, 'service_causality_quality');
+  const incrementalUpdate = nestedRecord(latest, 'latest_incremental_update');
+  const delta = nestedRecord(incrementalUpdate, 'service_causality_delta');
+  const confidenceDistribution = nestedRecord(causalityReasoning, 'confidence_distribution');
+
+  const pathCount = recordNumber(causalityReasoning, 'total_paths');
+  const totalClaims = recordNumber(quality, 'total_claims');
+  const evidenceCoverage =
+    totalClaims > 0
+      ? recordNumber(quality, 'evidence_coverage_score')
+      : recordNumber(evidenceQuality, 'service_causality_coverage_score');
+  const freshnessScore = recordNumber(delta, 'freshness_score');
+  const uncertainCount = Math.max(
+    recordNumber(confidenceDistribution, 'uncertain'),
+    recordNumber(evidenceQuality, 'service_causality_uncertain_claims'),
+  );
+  const unknownCount =
+    asStringArray(causalityReasoning.unknowns).length +
+    asStringArray(causalityReasoning.missing_effect_paths).length +
+    asStringArray(causalityReasoning.missing_step_link_paths).length;
+  const missingEvidenceCount = recordNumber(
+    evidenceQuality,
+    'service_causality_missing_evidence_claims',
+  );
+  const missingEffectCount = recordNumber(
+    evidenceQuality,
+    'service_causality_missing_effect_claims',
+  );
+  const missingStepLinkCount = recordNumber(
+    evidenceQuality,
+    'service_causality_missing_step_link_claims',
+  );
+  const driftedPathCount = recordNumber(delta, 'drifted_path_count');
+  const stalePathCount = recordNumber(delta, 'stale_path_count');
+  const baseScore = pathCount === 0 ? 0 : Math.round((evidenceCoverage + freshnessScore) / 2);
+  const qualityPenalty =
+    Math.min(25, uncertainCount * 4) +
+    Math.min(20, missingEvidenceCount * 8) +
+    Math.min(15, missingEffectCount * 5) +
+    Math.min(15, missingStepLinkCount * 5) +
+    Math.min(20, driftedPathCount * 4 + stalePathCount * 6);
+  const score = Math.max(0, Math.min(100, baseScore - qualityPenalty));
+  const posture = qualityBandFromScore(score);
+  const summary =
+    pathCount === 0
+      ? 'No flow-service reachability paths are reconstructed yet.'
+      : `${pathCount} static reachability path(s); ${uncertainCount} uncertain/static-import-only, ${unknownCount} unknown, ${freshnessScore}/100 fresh.`;
+
+  return {
+    score,
+    posture,
+    pathCount,
+    evidenceCoverage,
+    freshnessScore,
+    uncertainCount,
+    unknownCount,
+    missingEvidenceCount,
+    missingEffectCount,
+    missingStepLinkCount,
+    driftedPathCount,
+    stalePathCount,
+    summary,
+  };
+}
+
 function renderFlagshipSummary(params: {
   readonly understandingScore: unknown;
   readonly askReadiness: unknown;
   readonly evidenceQuality: unknown;
   readonly incrementalUpdate: unknown;
   readonly architectureReasoning: unknown;
+  readonly latest: Record<string, unknown>;
+  readonly flows: readonly BrainEntity[];
   readonly flowCount: number;
   readonly evidenceCount: number;
   readonly reviewReadiness: { readonly value: number; readonly posture: string };
@@ -12322,6 +18742,20 @@ function renderFlagshipSummary(params: {
   const weakEvidenceClaims = recordNumber(params.evidenceQuality, 'weak_evidence_claims');
   const unsupportedClaims = recordNumber(params.evidenceQuality, 'unsupported_claims');
   const evidenceGaps = recordNumber(params.evidenceQuality, 'evidence_gap_count');
+  const confidenceInspectionQueue = nestedRecord(
+    params.evidenceQuality,
+    'confidence_inspection_queue',
+  );
+  const confidenceInspectionItems = recordArray(confidenceInspectionQueue, 'items')
+    .filter(isRecord)
+    .slice(0, 3)
+    .map((item) => {
+      const priority = recordNumber(item, 'priority');
+      const source = recordString(item, 'source', 'unknown');
+      const severity = recordString(item, 'severity', 'medium');
+      const target = recordString(item, 'target_id', 'unknown target');
+      return `P${priority} ${source}/${severity}: ${target}`;
+    });
   const reviewAttention = isRecord(params.understandingScore)
     ? recordArray(params.understandingScore.review_readiness, 'required_attention')
         .filter((item): item is string => typeof item === 'string')
@@ -12330,7 +18764,7 @@ function renderFlagshipSummary(params: {
 
   return `<section class="flagship-summary">
     <h3>Flagship Summary</h3>
-    <p class="muted">Fast local answer to what Rizz understands, what changed, what to inspect first, and where confidence is weak.</p>
+    <p class="muted">Fast local answer to what Rizz understands.</p>
     <div class="flagship-grid">
       <article class="card compact">
         <h3>Understanding Level</h3>
@@ -12353,6 +18787,14 @@ function renderFlagshipSummary(params: {
         ])}
       </article>
       <article class="card compact">
+        <h3>Inspect First</h3>
+        ${renderList([
+          `${recordNumber(confidenceInspectionQueue, 'item_count')} confidence item(s)`,
+          `${recordNumber(confidenceInspectionQueue, 'high_priority_count')} high priority`,
+          ...confidenceInspectionItems,
+        ])}
+      </article>
+      <article class="card compact">
         <h3>Flow Coverage</h3>
         ${renderList([
           `${params.flowCount} reconstructed flow(s)`,
@@ -12360,6 +18802,8 @@ function renderFlagshipSummary(params: {
           `${flowStatus} flow posture`,
         ])}
       </article>
+      ${renderServiceCausalityCard(params.flows)}
+      ${renderIncrementalHealthCard(params.latest)}
       <article class="card compact">
         <h3>Architecture Confidence Debt</h3>
         ${renderList([
@@ -12375,6 +18819,22 @@ function renderFlagshipSummary(params: {
           `${params.reviewReadiness.value}/100 review readiness`,
           `${params.reviewReadiness.posture} posture`,
           ...reviewAttention,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Security Scan</h3>
+        ${renderList([
+          `${recordNumber(params.latest.latest_security_scan, 'posture_score')}/100 posture`,
+          `${recordNumber(params.latest.latest_security_scan, 'finding_count')} finding(s)`,
+          `${recordNumber(params.latest.latest_security_scan, 'high_risk_count')} high risk`,
+        ])}
+      </article>
+      <article class="card compact">
+        <h3>Tool Inventory</h3>
+        ${renderList([
+          `${recordNumber(params.latest.latest_tool_inventory, 'surface_count')} surface(s)`,
+          `${recordNumber(params.latest.latest_tool_inventory, 'mcp_config_count')} MCP config(s)`,
+          `${recordNumber(params.latest.latest_tool_inventory, 'high_risk_count')} high risk`,
         ])}
       </article>
       ${renderAskReadinessLine(params.askReadiness)}
@@ -12399,9 +18859,12 @@ function renderFlagshipSummary(params: {
           '.rizz/brain/latest.json',
           '.rizz/brain/index.json',
           '.rizz/research/understanding_score.json',
+          '.rizz/research/service_intelligence.json',
           '.rizz/research/evidence_quality.json',
           '.rizz/research/flow_coverage.json',
           '.rizz/research/architecture_reasoning.json',
+          '.rizz/research/security_scan.json',
+          '.rizz/research/tool_inventory.json',
           '.rizz/research/benchmark_ready.json',
           '.rizz/research/benchmark_tasks.json',
           '.rizz/research/pie_acceptance.json',
@@ -12411,6 +18874,220 @@ function renderFlagshipSummary(params: {
       </article>
     </div>
   </section>`;
+}
+
+function renderIncrementalHealthDetails(latest: Record<string, unknown>): string {
+  const health = incrementalHealthFromLatest(latest);
+  const rows: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['Services', health.services],
+    ['Flows', health.flows],
+  ];
+  return `<table><thead><tr><th>Surface</th><th>Summary</th><th>Changed</th><th>Reused</th><th>Recomputed</th><th>Stale</th><th>Source Changed</th></tr></thead><tbody>${rows
+    .map(([label, item]) => {
+      const changed = asStringArray(item.changed_ids);
+      const reused = asStringArray(item.reused_ids);
+      const recomputed = asStringArray(item.recomputed_ids);
+      const stale = asStringArray(item.stale_ids);
+      const sourceChanged = asStringArray(item.source_changed_ids);
+      return `<tr>
+        <td><strong>${htmlEscape(label)}</strong></td>
+        <td>${htmlEscape(incrementalHealthLine(label.toLowerCase(), item))}</td>
+        <td>${renderList(changed.slice(0, 8))}</td>
+        <td>${renderList(reused.slice(0, 8))}</td>
+        <td>${renderList(recomputed.slice(0, 8))}</td>
+        <td>${renderList(stale.slice(0, 8))}</td>
+        <td>${renderList(sourceChanged.slice(0, 8))}</td>
+      </tr>`;
+    })
+    .join('')}</tbody></table>`;
+}
+
+function renderServiceCausalityDetails(
+  flows: readonly BrainEntity[],
+  evidenceById: ReadonlyMap<string, BrainEntity>,
+  latest: Record<string, unknown>,
+): string {
+  const rows = flowServiceCausalityRows(flows);
+  const reachability = serviceReachabilityQualityFromLatest(latest);
+  const architectureReasoning = nestedRecord(latest, 'latest_architecture_reasoning');
+  const causalityReasoning = nestedRecord(architectureReasoning, 'service_causality_reasoning');
+  const incrementalUpdate = nestedRecord(latest, 'latest_incremental_update');
+  const delta = nestedRecord(incrementalUpdate, 'service_causality_delta');
+  const routeImpacts = recordArray(causalityReasoning, 'route_impacts').filter(isRecord);
+  const pathDeltas = recordArray(delta, 'path_deltas').filter(isRecord);
+  const effects = asStringArray(causalityReasoning.effects).slice(0, 8);
+  const unknowns = asStringArray(causalityReasoning.unknowns).slice(0, 6);
+  const missingEffectPaths = asStringArray(causalityReasoning.missing_effect_paths).slice(0, 6);
+  const missingStepLinkPaths = asStringArray(causalityReasoning.missing_step_link_paths).slice(
+    0,
+    6,
+  );
+  const qualityCards = `<div class="grid">
+    <article class="card compact">
+      <div class="badge">${reachability.score}/100 · ${htmlEscape(reachability.posture)}</div>
+      <h3>Reachability Quality</h3>
+      ${renderList([
+        reachability.summary,
+        `${reachability.evidenceCoverage}/100 evidence coverage`,
+        `${reachability.uncertainCount} uncertain/static-import-only claim(s)`,
+        `${reachability.missingEvidenceCount} missing evidence claim(s)`,
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Effects & Unknowns</h3>
+      ${renderList([
+        `${recordNumber(causalityReasoning, 'effect_count')} distinct effect(s)`,
+        `${reachability.missingEffectCount} missing effect claim(s)`,
+        `${reachability.missingStepLinkCount} missing step-link claim(s)`,
+        ...effects,
+        ...unknowns,
+        ...missingEffectPaths,
+        ...missingStepLinkPaths,
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Freshness</h3>
+      ${renderList([
+        `${reachability.freshnessScore}/100 freshness`,
+        `${recordNumber(delta, 'stable_path_count')} stable path(s)`,
+        `${recordNumber(delta, 'recomputed_path_count')} recomputed/new path(s)`,
+        `${reachability.driftedPathCount} drifted path(s)`,
+        `${reachability.stalePathCount} stale path(s)`,
+        ...asStringArray(delta.affected_flows)
+          .slice(0, 3)
+          .map((flow) => `affected flow: ${flow}`),
+        ...asStringArray(delta.affected_services)
+          .slice(0, 3)
+          .map((service) => `affected service: ${service}`),
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/research/architecture_reasoning.json',
+        '.rizz/research/evidence_quality.json',
+        '.rizz/research/incremental_update.json',
+      ])}
+    </article>
+  </div>`;
+  if (rows.length === 0) {
+    return `${qualityCards}<p class="muted">No service causality links detected yet.</p>`;
+  }
+  const pathCards = rows
+    .slice(0, 8)
+    .map((row) => {
+      const routeImpact = routeImpacts.find(
+        (impact) => impact.flow_id === row.flowId && impact.service_id === row.service.service_id,
+      );
+      const pathDelta = pathDeltas.find(
+        (deltaItem) =>
+          deltaItem.flow_id === row.flowId && deltaItem.service_id === row.service.service_id,
+      );
+      const routePath = recordString(routeImpact, 'route_path', row.flowName);
+      const deltaStatus = recordString(pathDelta, 'status', 'unknown freshness');
+      const whatBreaks = asStringArray(routeImpact?.what_breaks).slice(0, 3);
+      const reasons = asStringArray(pathDelta?.reasons).slice(0, 3);
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${row.flowId} ${row.flowName} ${row.service.service_id} ${row.service.cause} ${row.service.effects.join(' ')}`,
+      )}">
+        <div class="badge">${htmlEscape(row.service.confidence)} · ${htmlEscape(deltaStatus)}</div>
+        <h3>${htmlEscape(routePath)} -> ${htmlEscape(row.service.service_name)}</h3>
+        <p class="muted">${htmlEscape(row.flowId)} · ${htmlEscape(row.service.service_id)}</p>
+        <p>${htmlEscape(row.service.cause)}</p>
+        <h4>Effects</h4>
+        ${renderList(row.service.effects)}
+        <h4>What Breaks</h4>
+        ${renderList(whatBreaks)}
+        <h4>Unknowns</h4>
+        ${renderList(row.service.unknowns)}
+        <h4>Freshness Reasons</h4>
+        ${renderList(reasons)}
+        <h4>Evidence</h4>
+        ${renderEvidenceLinks(row.service.evidence_ids, evidenceById)}
+      </article>`;
+    })
+    .join('');
+  return `${qualityCards}<h3>Reachability Paths</h3><div class="grid">${pathCards}</div>`;
+}
+
+function renderSecurityAndToolDetails(latest: Record<string, unknown>): string {
+  const securityScan = nestedRecord(latest, 'latest_security_scan');
+  const toolInventory = nestedRecord(latest, 'latest_tool_inventory');
+  const findings = recordArray(securityScan, 'findings').filter(isRecord).slice(0, 8);
+  const surfaces = recordArray(toolInventory, 'surfaces').filter(isRecord).slice(0, 8);
+  const findingCards = findings
+    .map((finding) => {
+      const severity = recordString(finding, 'severity', 'medium');
+      const category = recordString(finding, 'category', 'security');
+      const target = recordString(finding, 'target_id', 'unknown target');
+      const reason = recordString(finding, 'reason', 'Security scanner finding recorded.');
+      const hint = recordString(finding, 'inspect_hint', 'Inspect before broad agent execution.');
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${severity} ${category} ${target} ${reason} ${hint}`,
+      )}">
+        <div class="badge">${htmlEscape(severity)} · ${htmlEscape(category)}</div>
+        <h3>${htmlEscape(target)}</h3>
+        <p>${htmlEscape(reason)}</p>
+        <p class="muted">${htmlEscape(hint)}</p>
+      </article>`;
+    })
+    .join('');
+  const surfaceCards = surfaces
+    .map((surface) => {
+      const risk = recordString(surface, 'risk_level', 'low');
+      const kind = recordString(surface, 'kind', 'tool_surface');
+      const name = recordString(surface, 'name', 'tool');
+      const path = recordString(surface, 'path', 'unknown path');
+      const reason = recordString(surface, 'reason', 'Tool surface recorded.');
+      const hint = recordString(surface, 'inspect_hint', 'Inspect before broad agent control.');
+      return `<article class="card compact" data-search="${htmlEscape(
+        `${risk} ${kind} ${name} ${path} ${reason} ${hint}`,
+      )}">
+        <div class="badge">${htmlEscape(risk)} · ${htmlEscape(kind)}</div>
+        <h3>${htmlEscape(name)}</h3>
+        <p><code>${htmlEscape(path)}</code></p>
+        <p>${htmlEscape(reason)}</p>
+        <p class="muted">${htmlEscape(hint)}</p>
+      </article>`;
+    })
+    .join('');
+  return `<div class="grid">
+    <article class="card compact">
+      <h3>Security Scan</h3>
+      ${renderList([
+        `${recordNumber(securityScan, 'posture_score')}/100 posture`,
+        `${recordNumber(securityScan, 'finding_count')} finding(s)`,
+        `${recordNumber(securityScan, 'high_risk_count')} high-risk finding(s)`,
+        `${recordNumber(securityScan, 'private_surface_count')} private surface(s)`,
+        `${recordNumber(securityScan, 'risky_script_count')} risky script(s)`,
+        recordString(securityScan, 'summary', 'No security scan summary available.'),
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Tool Inventory</h3>
+      ${renderList([
+        `${recordNumber(toolInventory, 'surface_count')} tool surface(s)`,
+        `${recordNumber(toolInventory, 'mcp_config_count')} MCP config(s)`,
+        `${recordNumber(toolInventory, 'agent_config_count')} agent config(s)`,
+        `${recordNumber(toolInventory, 'ci_workflow_count')} CI workflow(s)`,
+        `${recordNumber(toolInventory, 'package_script_count')} package script(s)`,
+        recordString(toolInventory, 'summary', 'No tool inventory summary available.'),
+      ])}
+    </article>
+    <article class="card compact">
+      <h3>Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/research/security_scan.json',
+        '.rizz/research/tool_inventory.json',
+        '.rizz/research/evidence_quality.json',
+        '.rizz/brain/latest.json',
+      ])}
+    </article>
+  </div>
+  <h3>Security Findings</h3>
+  <div class="grid">${findingCards}</div>
+  <h3>Tool Surfaces</h3>
+  <div class="grid">${surfaceCards}</div>`;
 }
 
 function renderUnderstandingDashboard(score: unknown): string {
@@ -12448,6 +19125,8 @@ function renderUnderstandingDashboard(score: unknown): string {
         ${renderList(changedLabels)}
       </article>
     </div>
+    <h3>Remaining to 100%</h3>
+    <div class="grid">${renderCapabilityScorecard(score)}</div>
     <div class="grid">${renderDimensionCards(score)}</div>
     <h3>Read First</h3>
     <div class="grid">${renderReadFirstPointers(score)}</div>
@@ -12529,6 +19208,7 @@ function renderBenchmarkTasks(value: unknown): string {
         '.rizz/research/benchmark_ready.json',
         '.rizz/research/pie_acceptance.json',
         '.rizz/research/understanding_score.json',
+        '.rizz/research/service_intelligence.json',
         '.rizz/brain/latest.json',
         '.rizz/brain/index.json',
         missionControl,
@@ -12594,6 +19274,8 @@ function renderReport(params: {
     evidenceQuality: params.latest.latest_evidence_quality,
     incrementalUpdate,
     architectureReasoning: params.latest.latest_architecture_reasoning,
+    latest: params.latest,
+    flows: params.buckets.flows,
     flowCount: params.buckets.flows.length,
     evidenceCount: params.buckets.evidence.length,
     reviewReadiness,
@@ -12619,8 +19301,7 @@ function renderReport(params: {
   });
   const componentObject = renderObjectDetails({
     title: 'Components',
-    summary:
-      'Product and code boundaries reconstructed from manifests, source files, imports, tests, and local evidence.',
+    summary: 'Boundaries reconstructed from manifests, source, imports, tests, and evidence.',
     count: params.buckets.components.length,
     posture: params.buckets.components.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderComponentCards(params.buckets.components, evidenceById)}</div>`,
@@ -12633,13 +19314,64 @@ function renderReport(params: {
     posture: params.buckets.flows.length === 0 ? 'weak' : 'usable',
     body: `<div class="grid">${renderFlowCards(params.buckets.flows, evidenceById)}</div>`,
   });
+  const serviceObject = renderObjectDetails({
+    title: 'Service Intelligence',
+    summary:
+      'Runtime services from service files, routes, jobs, storage, env, APIs, deploy configs, and flows.',
+    count: params.buckets.services.length,
+    posture: params.buckets.services.length === 0 ? 'weak' : 'usable',
+    body: `<div class="grid">${renderServiceCards(params.buckets.services, evidenceById)}</div>`,
+  });
+  const serviceCausalityRows = flowServiceCausalityRows(params.buckets.flows);
+  const serviceReachability = serviceReachabilityQualityFromLatest(params.latest);
+  const serviceCausalityObject = renderObjectDetails({
+    title: 'Service Causality',
+    summary: `Reachability ${serviceReachability.score}/100: ${serviceReachability.summary}`,
+    count: serviceCausalityRows.length,
+    posture: serviceCausalityRows.length === 0 ? 'weak' : serviceReachability.posture,
+    body: renderServiceCausalityDetails(params.buckets.flows, evidenceById, params.latest),
+  });
+  const journeyObject = renderObjectDetails({
+    title: 'Journey Intelligence',
+    summary:
+      'Journeys inferred from routes, handlers, files, configs, tests, commands, runtime, and review impact.',
+    count: params.buckets.flows.filter((flow) => flowJourneySummaryData(flow) !== undefined).length,
+    posture:
+      params.buckets.flows.filter((flow) => flowJourneySummaryData(flow) !== undefined).length === 0
+        ? 'weak'
+        : 'usable',
+    body: renderJourneyIntelligence(params.buckets.flows, params.latest),
+  });
+  const incrementalHealthObject = renderObjectDetails({
+    title: 'Incremental Health',
+    summary:
+      'Service and flow reuse, recompute, source-change, and stale-state health from latest project state.',
+    posture: scanEfficiency >= 70 ? 'strong' : scanEfficiency >= 40 ? 'usable' : 'weak',
+    body: renderIncrementalHealthDetails(params.latest),
+  });
+  const securityScan = nestedRecord(params.latest, 'latest_security_scan');
+  const toolInventory = nestedRecord(params.latest, 'latest_tool_inventory');
+  const securityToolPosture =
+    recordNumber(securityScan, 'high_risk_count') + recordNumber(toolInventory, 'high_risk_count') >
+    0
+      ? 'weak'
+      : recordNumber(securityScan, 'finding_count') + recordNumber(toolInventory, 'surface_count') >
+          0
+        ? 'usable'
+        : 'strong';
+  const securityToolsObject = renderObjectDetails({
+    title: 'Security & Tools',
+    summary:
+      'Deterministic metadata-only security scan and tool inventory for agent execution posture.',
+    posture: securityToolPosture,
+    body: renderSecurityAndToolDetails(params.latest),
+  });
   const architectureObject = renderObjectDetails({
     title: 'Architecture',
-    summary:
-      'Reasoning from relationships, component pressure, coupling, boundaries, and evidence gaps.',
+    summary: 'Reasoning from relationships, coupling, boundaries, and evidence gaps.',
     posture: understandingPosture,
     body: `<p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning)}
+      ${renderArchitectureReasoning(params.latest.latest_architecture_reasoning, evidenceById)}
       <h3>Dependency Graph</h3>
       <table id="relationships"><thead><tr><th>From</th><th>Relation</th><th>To</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>
         ${params.relationships
@@ -12666,12 +19398,16 @@ function renderReport(params: {
   });
   const reviewObject = renderObjectDetails({
     title: 'Review Readiness',
-    summary: 'Latest review posture, affected flows, risk areas, and attention queue.',
+    summary: 'Review posture and risks.',
     posture: reviewReadiness.posture,
     body: `<h3><span>Review Blast Radius</span></h3>
       ${renderLatestReview(params.latest)}
+      <h3>Targeted Verification</h3>
+      ${renderLatestVerificationPlan(params.latest)}
       <h3>Affected Route Flows</h3>
       ${renderLatestReviewRouteFlows(params.latest, params.buckets.flows, evidenceById)}
+      <h3>Architecture Impact Claims</h3>
+      ${renderMissionControlArchitectureImpactClaims(params.latest, evidenceById)}
       <h3>Risk Areas</h3>
       <div class="grid">${renderRiskCards(params.buckets.risks, evidenceById)}</div>
       <h3>Required Attention</h3>
@@ -12682,6 +19418,28 @@ function renderReport(params: {
               .slice(0, 6)
           : [],
       )}`,
+  });
+  const evidenceQualityObject = renderObjectDetails({
+    title: 'Evidence Quality',
+    summary: 'Evidence scores and gaps.',
+    posture: evidenceQuality.posture,
+    body: `<h3>Evidence Quality Inspect</h3>
+      ${renderEvidenceQuality(params.latest.latest_evidence_quality)}
+      <h3>Evidence Quality Artifacts</h3>
+      ${renderArtifactLinks([
+        '.rizz/research/evidence_quality.json',
+        '.rizz/research/understanding_score.json',
+        '.rizz/brain/latest.json',
+        '.rizz/brain/entities/evidence.json',
+      ])}`,
+  });
+  const dependencyRuntimeObject = renderObjectDetails({
+    title: 'Review Dependency Runtime Impact',
+    summary: 'Dep focus.',
+    posture: reviewReadiness.posture,
+    body: `<h3>Review/Dependency Runtime Impact</h3>
+      <h3>Dependency Runtime Inspect</h3>
+      ${renderMissionControlDependencyRuntimeImpact(params.latest)}`,
   });
   const evidenceObject = renderObjectDetails({
     title: 'Evidence',
@@ -12721,7 +19479,7 @@ function renderReport(params: {
   <title>Mission Control · ${htmlEscape(params.projectName)}</title>
   <style>
     :root { color-scheme: light dark; --bg: #101114; --panel: #17191f; --text: #f2efe7; --muted: #aaa59a; --line: #30333b; --accent: #e3b341; --ok: #5fb3a1; --warn: #fbbf24; --danger: #d98a7a; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 1120px; margin: 0 auto; padding: 28px 18px 56px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
     h1 { font-size: 34px; margin: 0 0 8px; letter-spacing: 0; }
@@ -12737,7 +19495,7 @@ function renderReport(params: {
     .metric-value { font-size: 42px; line-height: 1; margin: 0; font-weight: 750; }
     .metric-posture { margin: 8px 0; text-transform: lowercase; color: var(--accent); }
     .compact { padding: 12px; }
-    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .badge.warn { color: var(--warn); }
     .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
     .objects { display: grid; gap: 12px; margin-top: 18px; }
@@ -12764,8 +19522,8 @@ function renderReport(params: {
     summary { cursor: pointer; font-weight: 700; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
     @media (max-width: 900px) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .flagship-grid { grid-template-columns: 1fr; } .artifact-links { columns: 1; } }
-    @media (max-width: 560px) { main { padding: 20px 12px 48px; } h1 { font-size: 28px; } .metrics { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } .metric-value { font-size: 36px; } }
-    @media print { body { background: #fff; color: #000; } .card, details, .metric { break-inside: avoid; border-color: #999; } a { color: #000; } }
+    @media (max-width: 560px) { main { padding: 20px 12px 48px; } .metrics { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
+    @media print { body { background: #fff; color: #000; } .card, details, .metric { break-inside: avoid; } }
   </style>
 </head>
 <body>
@@ -12775,7 +19533,7 @@ function renderReport(params: {
       <h1>Mission Control · ${htmlEscape(params.projectName)}</h1>
       <p class="muted">Static local view generated from <code>.rizz/brain</code>. No server. No network. No model call.</p>
       <p>${htmlEscape(String(params.latest.latest_architecture_summary ?? ''))}</p>
-      <p class="muted">Generated ${htmlEscape(generatedAt)} · Project Intelligence Store · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
+      <p class="muted">${htmlEscape(generatedAt)} · <code>.rizz/brain/latest.json</code> · <code>.rizz/reports/index.html</code></p>
       <div class="metrics" aria-label="Mission Control scorecard">
         ${metricCard({
           label: 'Understanding Score',
@@ -12808,6 +19566,7 @@ function renderReport(params: {
       ${renderAskReadinessLine(askReadiness)}
       <div class="stats">
         <span class="badge">${params.buckets.components.length} components</span>
+        <span class="badge">${params.buckets.services.length} services</span>
         <span class="badge">${params.buckets.flows.length} flows</span>
         <span class="badge warn">${params.buckets.risks.length} risks</span>
         <span class="badge warn">${unknownCount} unknowns</span>
@@ -12820,10 +19579,17 @@ function renderReport(params: {
     <section class="objects" aria-label="Mission Control objects">
       ${understandingObject}
       ${componentObject}
+      ${serviceObject}
+      ${serviceCausalityObject}
+      ${journeyObject}
       ${flowObject}
+      ${incrementalHealthObject}
+      ${securityToolsObject}
       ${architectureObject}
+      ${evidenceQualityObject}
       ${evidenceObject}
       ${unknownObject}
+      ${dependencyRuntimeObject}
       ${reviewObject}
       ${benchmarkObject}
     </section>
@@ -12977,6 +19743,7 @@ function buildBrain(params: {
     const sourceFiles = params.files
       .filter((file) => folder === '.' || file.relativePath.startsWith(`${folder}/`))
       .map((file) => file.relativePath);
+    const folderEvidenceIds = sourceFiles.slice(0, 12).map(evidenceId);
     buckets.folders.push(
       makeEntity({
         id: folderId,
@@ -12986,11 +19753,14 @@ function buildBrain(params: {
           folder === '.' ? 'Project root folder.' : `Folder inferred from ${safeText(folder)}.`,
         now: params.now,
         confidence: 'verified',
+        evidenceIds: folderEvidenceIds,
         sourceFiles,
         data: { path: folder, fileCount: sourceFiles.length },
       }),
     );
-    if (folder !== '.') addRelation(relationships, projectId, 'owns', folderId, [], 'verified');
+    if (folder !== '.') {
+      addRelation(relationships, projectId, 'owns', folderId, folderEvidenceIds, 'verified');
+    }
   }
 
   for (const componentPath of inferredComponentPaths) {
@@ -13109,6 +19879,45 @@ function buildBrain(params: {
     ]);
   }
 
+  const dbs = inferDbTables(params.rootDir, params.files);
+  const dbi = dbGraphIndex(dbs, entityId);
+  for (const table of dbs) {
+    const tableId = entityId('database/table', `${table.sourceFile}:${table.name}`);
+    const tableEntity = makeEntity({
+      id: tableId,
+      type: 'database/table',
+      name: safeText(table.name),
+      description: safeText(dbDesc(table)),
+      now: params.now,
+      confidence: 'verified',
+      evidenceIds: [evidenceId(table.sourceFile)],
+      sourceFiles: [table.sourceFile],
+      data: dbTableData({
+        table,
+        graphIndex: dbi,
+        sanitizeText: safeText,
+      }),
+    });
+    buckets.databaseTables.push(tableEntity);
+    addRelation(relationships, projectId, 'owns', tableId, [evidenceId(table.sourceFile)]);
+    addRelation(relationships, entityId('file', table.sourceFile), 'exposes', tableId, [
+      evidenceId(table.sourceFile),
+    ]);
+  }
+  for (const edge of dbRelEdges({
+    tables: dbs,
+    graphIndex: dbi,
+  })) {
+    addRelation(
+      relationships,
+      edge.from,
+      edge.relation,
+      edge.to,
+      [evidenceId(edge.evidenceFile)],
+      edge.confidence,
+    );
+  }
+
   for (const pkg of params.packageFacts) {
     const pkgEvidence = evidenceId(pkg.relativePath);
     for (const [name, version] of Object.entries({ ...pkg.dependencies, ...pkg.devDependencies })) {
@@ -13169,6 +19978,47 @@ function buildBrain(params: {
     addRelation(relationships, testId, 'tests', projectId, [evidenceId(test.relativePath)]);
   }
 
+  buckets.services.push(
+    ...inferServices({
+      rootDir: params.rootDir,
+      now: params.now,
+      files: params.files,
+      packageFacts: params.packageFacts,
+      components: buckets.components,
+      tests: buckets.tests,
+      configs: buckets.configs,
+      databaseTables: buckets.databaseTables,
+    }),
+  );
+  for (const service of buckets.services) {
+    addRelation(
+      relationships,
+      projectId,
+      'owns',
+      service.id,
+      service.evidence_ids,
+      service.confidence,
+    );
+    for (const file of service.source_files.slice(0, 20)) {
+      addRelation(relationships, service.id, 'owns', entityId('file', file), [evidenceId(file)]);
+    }
+    for (const componentId of serviceDataStringArray(service, 'related_components')) {
+      addRelation(
+        relationships,
+        service.id,
+        'depends_on',
+        componentId,
+        service.evidence_ids,
+        'inferred',
+      );
+    }
+    for (const config of serviceDataStringArray(service, 'deployment_configs')) {
+      addRelation(relationships, service.id, 'configures', entityId('config', config), [
+        evidenceId(config),
+      ]);
+    }
+  }
+
   reconstructFlows({
     rootDir: params.rootDir,
     now: params.now,
@@ -13179,6 +20029,11 @@ function buildBrain(params: {
     changedFiles,
     previousFlows: params.previousFlows,
   });
+  buckets.services.splice(
+    0,
+    buckets.services.length,
+    ...enrichServicesWithFlows(buckets.services, buckets.flows),
+  );
 
   if (!buckets.commands.some((command) => command.name.includes('test'))) {
     buckets.risks.push(
@@ -13252,7 +20107,25 @@ export async function generateProjectBrain(
   options: GenerateProjectBrainOptions,
 ): Promise<GenerateProjectBrainResult> {
   try {
+    const startedAt = Date.now();
     const rootDir = options.rootDir;
+    const reportProgress = options.onProgress;
+    const maxFiles = options.maxFiles ?? 5_000;
+    const reportStep = (
+      phase: GenerateProjectBrainProgress['phase'],
+      detail: string,
+      message: string,
+      scannedFiles?: number,
+    ): void => {
+      reportProgress?.({
+        phase,
+        detail,
+        message,
+        ...(scannedFiles !== undefined ? { scannedFiles } : {}),
+        maxFiles,
+        elapsedMs: Date.now() - startedAt,
+      });
+    };
     const now = (options.now ?? new Date()).toISOString();
     const projectName = basename(rootDir);
     const brainDir = join(rootDir, '.rizz', 'brain');
@@ -13265,7 +20138,9 @@ export async function generateProjectBrain(
     await mkdir(snapshotsDir, { recursive: true });
     await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
+    reportStep('prepare', 'workspace', `Prepared .rizz workspace for ${projectName}`);
 
+    reportStep('prepare', 'previous-state', 'Reading previous brain state');
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
       join(entitiesDir, 'files.json'),
     );
@@ -13277,13 +20152,21 @@ export async function generateProjectBrain(
       join(brainDir, 'graph.json'),
     );
     const ignorePatterns = await readRizzIgnore(rootDir);
+    reportStep('prepare', 'previous-state', 'Loaded previous brain state');
     const previousFiles = previousFileFacts(previous?.entities);
     const previousFlows = previousEntityMap(previousFlowFile?.entities);
     for (const relativePath of previousFiles.keys()) {
       if (shouldSkipRelativePath(relativePath, ignorePatterns)) previousFiles.delete(relativePath);
     }
-    const files = await scanFiles(rootDir, options.maxFiles ?? 5_000, ignorePatterns);
+    const files = await scanFiles(rootDir, maxFiles, ignorePatterns, reportProgress, startedAt);
+    reportStep(
+      'analyze',
+      'package-facts',
+      `Reading package facts from ${files.length} file(s)`,
+      files.length,
+    );
     const packageFacts = await readPackageJsonFacts(rootDir, files);
+    reportStep('analyze', 'entity-graph', 'Building entity graph and relationships', files.length);
     const built = buildBrain({
       rootDir,
       projectName,
@@ -13297,6 +20180,12 @@ export async function generateProjectBrain(
       generated_at: now,
       relationships: sorted(built.relationships, (rel) => `${rel.from}:${rel.relation}:${rel.to}`),
     };
+    reportStep(
+      'analyze',
+      'incremental-metrics',
+      'Calculating incremental understanding metrics',
+      files.length,
+    );
     const incrementalMetrics = buildIncrementalUnderstandingMetrics({
       now,
       files,
@@ -13306,11 +20195,14 @@ export async function generateProjectBrain(
       staleFiles: built.staleFiles,
       previous: previousUnderstanding,
     });
+    reportStep('analyze', 'latest-index', 'Building latest state and index metadata', files.length);
     const latest = buildLatest({
       projectName,
       now,
       stack: built.stack,
       packageManager: built.packageManager,
+      files,
+      packageFacts,
       buckets: built.buckets,
       relationships: graph.relationships,
       changedFiles: built.changedFiles,
@@ -13336,18 +20228,30 @@ export async function generateProjectBrain(
         confidence: '.rizz/research/confidence.json',
         reasoning_traces: '.rizz/research/reasoning_traces.json',
         component_intelligence: '.rizz/research/component_intelligence.json',
+        service_intelligence: '.rizz/research/service_intelligence.json',
         evidence_quality: '.rizz/research/evidence_quality.json',
         incremental_update: '.rizz/research/incremental_update.json',
         flow_understanding: '.rizz/research/flow_understanding.json',
         flow_coverage: '.rizz/research/flow_coverage.json',
         flow_confidence: '.rizz/research/flow_confidence.json',
         architecture_reasoning: '.rizz/research/architecture_reasoning.json',
+        security_scan: '.rizz/research/security_scan.json',
+        tool_inventory: '.rizz/research/tool_inventory.json',
         benchmark_ready: '.rizz/research/benchmark_ready.json',
         benchmark_tasks: '.rizz/research/benchmark_tasks.json',
         understanding_score: '.rizz/research/understanding_score.json',
         pie_acceptance: '.rizz/research/pie_acceptance.json',
+        verification_plan: '.rizz/research/verification_plan.json',
+        verification_evidence: '.rizz/research/verification_evidence.json',
+        agent_repair_packets: '.rizz/research/agent_repair_packets.json',
       },
     };
+    reportStep(
+      'analyze',
+      'research-artifacts',
+      'Building deterministic research artifacts',
+      files.length,
+    );
     const researchArtifacts = buildResearchArtifacts({
       projectName,
       now,
@@ -13356,10 +20260,12 @@ export async function generateProjectBrain(
       relationships: graph.relationships,
       stack: built.stack,
       packageManager: built.packageManager,
+      packageFacts,
       changedFiles: built.changedFiles,
       staleFiles: built.staleFiles,
       incrementalMetrics,
     });
+    reportStep('analyze', 'mission-control', 'Rendering Mission Control report', files.length);
     const report = renderReport({
       projectName,
       latest,
@@ -13387,17 +20293,29 @@ export async function generateProjectBrain(
     const snapshotName = `${now.replace(/:/g, '-')}.json`;
     const snapshot = { index, latest, graph };
 
+    reportStep('write', 'brain-core', 'Writing core brain artifacts', files.length);
     await writeVerifiedFile(join(brainDir, 'index.json'), jsonString(safeBrainValue(index)));
     await writeVerifiedFile(join(brainDir, 'graph.json'), jsonString(safeBrainValue(graph)));
     await writeVerifiedFile(join(brainDir, 'latest.json'), jsonString(safeBrainValue(latest)));
     await writeVerifiedFile(changelogPath, jsonString(safeBrainValue(changelog)));
     await writeVerifiedFile(join(snapshotsDir, snapshotName), jsonString(safeBrainValue(snapshot)));
+    reportStep('write', 'entity-stores', 'Writing entity stores', files.length);
     for (const [bucket, fileName, entityType] of ENTITY_FILES) {
       await writeEntityFile(entitiesDir, fileName, entityType, now, built.buckets[bucket]);
     }
+    reportStep('write', 'flow-mirrors', 'Writing flow mirrors', files.length);
     await writeFlowMirrors(flowDir, now, built.buckets.flows);
+    reportStep('write', 'research-artifacts', 'Writing research artifacts', files.length);
     await writeResearchArtifacts(researchDir, researchArtifacts);
+    await clearReviewDerivedArtifacts({ researchDir, reportsDir });
+    reportStep('write', 'mission-control', 'Writing Mission Control report', files.length);
     await writeVerifiedFile(join(reportsDir, 'index.html'), report);
+    reportStep(
+      'done',
+      'summary',
+      `Generated project brain with ${files.length} file(s)`,
+      files.length,
+    );
 
     return {
       ok: true,
@@ -13424,6 +20342,94 @@ export async function generateProjectBrain(
 
 export async function hasProjectBrain(rootDir: string): Promise<boolean> {
   return exists(join(rootDir, '.rizz', 'brain', 'latest.json'));
+}
+
+export async function addVerificationEvidence(
+  options: AddVerificationEvidenceOptions,
+): Promise<AddVerificationEvidenceResult> {
+  try {
+    const name = options.name.trim();
+    const command = options.command.trim();
+    if (name === '') {
+      return {
+        ok: false,
+        error: { code: 'VERIFY_NAME_REQUIRED', message: 'Verification evidence needs a name.' },
+      };
+    }
+    if (command === '') {
+      return {
+        ok: false,
+        error: {
+          code: 'VERIFY_COMMAND_REQUIRED',
+          message: 'Verification evidence needs the command that was run.',
+        },
+      };
+    }
+    const rootDir = options.rootDir;
+    const now = (options.now ?? new Date()).toISOString();
+    const researchDir = join(rootDir, '.rizz', 'research');
+    await mkdir(researchDir, { recursive: true });
+    const existing = await readVerificationEvidenceArtifact(rootDir, now);
+    const item: VerificationEvidenceItem = {
+      id: `verification:${stableSlug(name)}:${createHash('sha256')
+        .update(`${name}\0${command}\0${now}`)
+        .digest('hex')
+        .slice(0, 12)}`,
+      name: safeText(name),
+      command: safeText(command),
+      status: options.status,
+      timestamp: now,
+      ...(options.outputSummary !== undefined && options.outputSummary.trim() !== ''
+        ? { output_summary: safeText(options.outputSummary.trim()) }
+        : {}),
+      affected_confidence_areas: unique([
+        ...(options.affectedConfidenceAreas ?? []).map(safeText),
+        ...(commandLooksProduction(command) ? ['production'] : []),
+        ...(commandLooksLocal(command) ? ['local'] : []),
+      ]),
+    };
+    const artifact = buildVerificationEvidenceArtifact({
+      projectName: basename(rootDir),
+      generatedAt: now,
+      items: [...existing.items, item],
+    });
+    const artifactPath = verificationEvidenceArtifactPath(rootDir);
+    await writeVerifiedFile(artifactPath, jsonString(safeResearchValue(artifact)));
+    if (await hasProjectBrain(rootDir)) {
+      const brainDir = join(rootDir, '.rizz', 'brain');
+      const latestPath = join(brainDir, 'latest.json');
+      const latest = (await readJsonFile<Record<string, unknown>>(latestPath)) ?? {};
+      await writeVerifiedFile(
+        latestPath,
+        jsonString(
+          safeBrainValue({
+            ...latest,
+            latest_verification_evidence: {
+              artifact_path: '.rizz/research/verification_evidence.json',
+              total_checks: artifact.items.length,
+              status_counts: artifact.status_counts,
+              latest_item_id: item.id,
+              latest_status: item.status,
+              updated_at: now,
+            },
+            latest_research_artifacts: {
+              ...(isRecord(latest.latest_research_artifacts)
+                ? latest.latest_research_artifacts
+                : {}),
+              verification_evidence: '.rizz/research/verification_evidence.json',
+            },
+          }),
+        ),
+      );
+      await updateBrainIndexResearchPaths(join(brainDir, 'index.json'), {
+        verification_evidence: '.rizz/research/verification_evidence.json',
+      });
+    }
+    return { ok: true, value: { rootDir, researchDir, artifactPath, item, artifact } };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'VERIFY_EVIDENCE_FAILED', message } };
+  }
 }
 
 export async function reviewProjectChanges(
@@ -13466,10 +20472,21 @@ export async function reviewProjectChanges(
       (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
       {};
     const entitySets = await readReviewEntitySets(entitiesDir);
-    const gitChanges = readGitChanges(rootDir);
+    const gitChanges = readReviewGitChanges({
+      rootDir,
+      shouldSkipPath: (path) => shouldSkipRelativePath(path, []),
+      sanitizeText: safeText,
+    });
     if (!gitChanges.ok) return { ok: false, error: gitChanges.error };
+    const missionContract = loadReviewMissionContract({
+      rootDir,
+      ...(options.mission !== undefined ? { mission: options.mission } : {}),
+      ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
+      sanitizeText: safeText,
+    });
+    const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now);
 
-    const review = buildReview({
+    const reviewBase = buildReview({
       rootDir,
       now,
       latest,
@@ -13477,8 +20494,23 @@ export async function reviewProjectChanges(
       entitySets,
       changedFiles: gitChanges.value.changedFiles,
       diffText: gitChanges.value.diffText,
+      git: gitChanges.value.git,
+      missionContract,
+      verificationEvidence,
     });
+    const humanApproval = buildHumanApprovalPacket({
+      generatedAt: now,
+      review: reviewBase,
+      signoffRecord: await readHumanSignoffRecord(rootDir),
+    });
+    const review: ReviewSummaryData = { ...reviewBase, human_approval: humanApproval };
     const reviewEval = buildReviewEvalArtifact(review);
+    const reviewClaimEvidence = buildReviewClaimEvidenceArtifact(review);
+    const agentRepairPackets = buildAgentRepairPacketsArtifact({
+      generatedAt: now,
+      confidenceInspectionQueue: latest.latest_confidence_inspection_queue,
+      review,
+    });
 
     const reviewEntity = makeEntity({
       id: review.id,
@@ -13536,18 +20568,48 @@ export async function reviewProjectChanges(
           (component) => component.id,
         ),
         dependent_components: review.dependent_components.map((component) => component.id),
+        affected_services: review.affected_services.map((service) => service.id),
         affected_flows: review.affected_flows.map((flow) => flow.id),
+        service_causality_paths: review.review_evidence_summary.service_causality_paths,
+        service_causality_effects: review.review_evidence_summary.service_causality_effects,
         architecture_impact_surfaces: review.architecture_impact_map.map(
           (entry) => entry.impact_id,
         ),
+        architecture_impact_claim_count: reviewClaimEvidence.architecture_impact_claim_count,
+        architecture_impact_claims: reviewClaimEvidence.architecture_impact_claims
+          .slice(0, 5)
+          .map((claim) => ({
+            impact_id: claim.impact_id,
+            surface_type: claim.surface_type,
+            claim: claim.claim,
+            confidence: claim.confidence,
+            source_files: claim.source_files.slice(0, 8),
+            evidence_ids: claim.evidence_ids.slice(0, 8),
+            what_breaks: claim.what_breaks.slice(0, 5),
+            review_focus: claim.review_focus.slice(0, 5),
+            unknowns: claim.unknowns.slice(0, 5),
+            redacted_evidence_count: claim.redacted_evidence_count,
+          })),
+        dependency_runtime_impact: review.dependency_runtime_impact,
+        review_governance: review.review_governance,
         review_evidence_summary: review.review_evidence_summary,
+        verification_status: review.verification_status,
+        verification_plan: review.verification_plan,
+        verification_evidence_score: review.verification_evidence_score,
+        human_approval: humanApproval,
         research_artifacts: {
           review_eval: '.rizz/research/review_eval.json',
+          review_claim_evidence: '.rizz/research/review_claim_evidence.json',
+          verification_evidence: '.rizz/research/verification_evidence.json',
+          human_approval: '.rizz/research/human_approval.json',
         },
       },
       latest_research_artifacts: {
         ...(isRecord(latest.latest_research_artifacts) ? latest.latest_research_artifacts : {}),
         review_eval: '.rizz/research/review_eval.json',
+        review_claim_evidence: '.rizz/research/review_claim_evidence.json',
+        verification_evidence: '.rizz/research/verification_evidence.json',
+        human_approval: '.rizz/research/human_approval.json',
       },
       latest_risks: mergeLatestRisks(latest.latest_risks, review.findings),
       latest_open_questions: mergeStrings(latest.latest_open_questions, [
@@ -13562,13 +20624,36 @@ export async function reviewProjectChanges(
       project_state: {
         ...(isRecord(latest.project_state) ? latest.project_state : {}),
         last_reviewed_files: review.changed_files,
+        last_reviewed_services: review.affected_services.map((service) => service.id),
         last_reviewed_flows: review.affected_flows.map((flow) => flow.id),
         last_review_risk: review.overall_risk,
       },
     };
     await writeVerifiedFile(latestPath, jsonString(safeBrainValue(updatedLatest)));
     await writeVerifiedFile(join(researchDir, 'review_eval.json'), jsonString(reviewEval));
-    await updateBrainIndexReviewEvalPath(join(brainDir, 'index.json'));
+    await writeVerifiedFile(
+      reviewClaimEvidenceArtifactPath(rootDir),
+      jsonString(reviewClaimEvidence),
+    );
+    await writeVerifiedFile(
+      verificationEvidenceArtifactPath(rootDir),
+      jsonString(safeResearchValue(verificationEvidence)),
+    );
+    await writeVerifiedFile(
+      join(researchDir, 'agent_repair_packets.json'),
+      jsonString(safeResearchValue(agentRepairPackets)),
+    );
+    await writeVerifiedFile(
+      join(researchDir, 'human_approval.json'),
+      jsonString(safeResearchValue(humanApproval)),
+    );
+    await updateBrainIndexResearchPaths(join(brainDir, 'index.json'), {
+      review_eval: '.rizz/research/review_eval.json',
+      review_claim_evidence: '.rizz/research/review_claim_evidence.json',
+      verification_evidence: '.rizz/research/verification_evidence.json',
+      agent_repair_packets: '.rizz/research/agent_repair_packets.json',
+      human_approval: '.rizz/research/human_approval.json',
+    });
 
     const reviewReport = renderReviewReport(review);
     const reportPath = join(reportsDir, 'review.html');
@@ -13597,6 +20682,7 @@ export async function reviewProjectChanges(
         rootDir,
         reviewPath: join(entitiesDir, 'reviews.json'),
         reviewEvalPath: join(researchDir, 'review_eval.json'),
+        reviewClaimEvidencePath: reviewClaimEvidenceArtifactPath(rootDir),
         latestPath,
         reportPath,
         changedFiles: review.changed_files.length,
@@ -13609,6 +20695,9 @@ export async function reviewProjectChanges(
         recommendedAction: review.recommended_action,
         review,
         reviewEval,
+        reviewClaimEvidence,
+        humanApprovalPath: join(researchDir, 'human_approval.json'),
+        humanApproval,
       },
     };
   } catch (error: unknown) {
@@ -13656,6 +20745,7 @@ export async function explainProjectTarget(
     const research = await readExplainResearchArtifacts(rootDir);
     const explainableEntities = [
       ...entitySets.components,
+      ...entitySets.services,
       ...entitySets.flows,
       ...entitySets.files,
       ...entitySets.folders,
@@ -13666,6 +20756,7 @@ export async function explainProjectTarget(
     const now = (options.now ?? new Date()).toISOString();
     const explanation = buildExplanation({
       now,
+      rootDir,
       query: options.target,
       target: resolved.value,
       latest,
@@ -13675,7 +20766,10 @@ export async function explainProjectTarget(
     });
     const reportsDir = join(rootDir, '.rizz', 'reports');
     await mkdir(reportsDir, { recursive: true });
-    const reportPath = join(reportsDir, 'explain.html');
+    const reportPath = join(
+      reportsDir,
+      `explain-${stableSlug(explanation.resolved_entity_id)}.html`,
+    );
     await writeVerifiedFile(reportPath, renderExplainReport(explanation, entitySets.evidence));
 
     return {
@@ -13747,6 +20841,7 @@ export async function askProjectQuestion(
           })
         : buildAskAnswer({
             now,
+            rootDir,
             question: options.question,
             parsed: parsed.value,
             readiness,
@@ -13854,7 +20949,7 @@ function parseAskQuestion(
     error: {
       code: 'ASK_UNSUPPORTED_QUESTION',
       message:
-        'rizz ask only answers Project Intelligence questions over .rizz/brain and .rizz/research. Supported forms: what should I read first; what breaks if <target> changes; who depends on <target>; why does <target> exist; what evidence backs <target>.',
+        'Supported: read first; breaks if <target>; depends on <target>; why exists; evidence for <target>.',
     },
   };
 }
@@ -13976,6 +21071,7 @@ function buildBlockedAskAnswer(params: {
 
 function buildAskAnswer(params: {
   readonly now: string;
+  readonly rootDir: string;
   readonly question: string;
   readonly parsed: ParsedAskQuestion;
   readonly readiness: AskReadinessSummary;
@@ -14001,6 +21097,7 @@ function buildAskAnswer(params: {
 
   const explainableEntities = [
     ...params.entitySets.components,
+    ...params.entitySets.services,
     ...params.entitySets.flows,
     ...params.entitySets.files,
     ...params.entitySets.folders,
@@ -14017,6 +21114,7 @@ function buildAskAnswer(params: {
   }
   const explanation = buildExplanation({
     now: params.now,
+    rootDir: params.rootDir,
     query: params.parsed.target,
     target: resolved.value,
     latest: params.latest,
@@ -14273,13 +21371,13 @@ function renderAskReport(answer: AskProjectQuestionAnswer): string {
   <title>rizz ask · ${htmlEscape(answer.intent)}</title>
   <style>
     :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
     h1 { font-size: clamp(30px, 5vw, 48px); margin: 0 0 8px; letter-spacing: 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
     .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .muted { color: var(--muted); }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
     a { color: var(--accent); overflow-wrap: anywhere; }
@@ -14320,6 +21418,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly folders: readonly BrainEntity[];
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly flows: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
   readonly commands: readonly BrainEntity[];
@@ -14332,6 +21431,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     files,
     folders,
     components,
+    services,
     flows,
     configs,
     commands,
@@ -14343,6 +21443,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     readEntityFile(entitiesDir, 'files.json'),
     readEntityFile(entitiesDir, 'folders.json'),
     readEntityFile(entitiesDir, 'components.json'),
+    readEntityFile(entitiesDir, 'services.json'),
     readEntityFile(entitiesDir, 'flows.json'),
     readEntityFile(entitiesDir, 'configs.json'),
     readEntityFile(entitiesDir, 'commands.json'),
@@ -14355,6 +21456,7 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
     files,
     folders,
     components,
+    services,
     flows,
     configs,
     commands,
@@ -14390,7 +21492,8 @@ function resolveExplainTarget(
 ):
   | { readonly ok: true; readonly value: BrainEntity }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
-  const query = normalizeExplainQuery(target);
+  const hint = explainTypeHint(target);
+  const query = normalizeExplainQuery(hint.query);
   if (query === '') {
     return {
       ok: false,
@@ -14402,7 +21505,7 @@ function resolveExplainTarget(
   }
 
   const scored = entities
-    .map((entity) => ({ entity, score: explainMatchScore(query, entity) }))
+    .map((entity) => ({ entity, score: explainMatchScore(query, entity, hint.preferredType) }))
     .filter((match) => match.score > 0)
     .sort((a, b) => b.score - a.score || a.entity.id.localeCompare(b.entity.id));
   if (scored.length === 0) {
@@ -14441,19 +21544,42 @@ function resolveExplainTarget(
   return { ok: true, value: resolved.entity };
 }
 
+function explainTypeHint(target: string): {
+  readonly query: string;
+  readonly preferredType?: EntityType;
+} {
+  const trimmed = target.trim();
+  const match = /^(component|flow|file|folder|service)\s+(.+)$/i.exec(trimmed);
+  if (match === null) return { query: trimmed };
+  const preferredType = match[1]?.toLowerCase() as EntityType | undefined;
+  const query = match[2] ?? '';
+  return preferredType === undefined ? { query } : { query, preferredType };
+}
+
 function normalizeExplainQuery(value: string): string {
   const cleaned = value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/g, '');
   const classification = classifySensitivePath(cleaned);
   return (classification.isSensitive ? classification.redactedId : cleaned).toLowerCase();
 }
 
-function explainMatchScore(query: string, entity: BrainEntity): number {
+function explainTypeBonus(entityType: EntityType, preferredType: EntityType | undefined): number {
+  if (preferredType !== undefined) return entityType === preferredType ? 20 : 0;
+  if (entityType === 'component') return 5;
+  if (entityType === 'folder') return 4;
+  return 3;
+}
+
+function explainMatchScore(
+  query: string,
+  entity: BrainEntity,
+  preferredType: EntityType | undefined,
+): number {
   const name = normalizeExplainQuery(entity.name);
   const id = normalizeExplainQuery(entity.id);
   const relativePath = normalizeExplainQuery(stringData(entity, 'relativePath') ?? '');
   const sources = entity.source_files.map(normalizeExplainQuery);
   const slug = stableSlug(query);
-  const typeBonus = entity.type === 'component' ? 5 : entity.type === 'folder' ? 4 : 3;
+  const typeBonus = explainTypeBonus(entity.type, preferredType);
 
   if (id === query || id === `${entity.type}:${slug}`) return 100 + typeBonus;
   if (name === query || relativePath === query) return 90 + typeBonus;
@@ -14473,6 +21599,7 @@ function explainMatchScore(query: string, entity: BrainEntity): number {
 
 function buildExplanation(params: {
   readonly now: string;
+  readonly rootDir: string;
   readonly query: string;
   readonly target: BrainEntity;
   readonly latest: Record<string, unknown>;
@@ -14488,25 +21615,69 @@ function buildExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const componentData = primaryComponent?.data ?? {};
   const targetData = target.data ?? {};
+  const fp = stringData(target, 'relativePath') ?? target.name;
+  const fi =
+    target.type === 'file'
+      ? fxi({ path: fp, content: readTextIfAvailable(params.rootDir, fp) })
+      : undefined;
+  const primaryService = target.type === 'service' ? target : undefined;
   const relatedFlows = relatedFlowContext(target, params.entitySets.flows);
   const relatedComponentIds = unique([
     ...relatedComponents.map((component) => component.id),
+    ...(primaryService === undefined
+      ? []
+      : serviceDataStringArray(primaryService, 'related_components')),
     ...relationshipContext.dependsOnEntityIds.filter((id) => id.startsWith('component:')),
     ...relationshipContext.dependedOnByEntityIds.filter((id) => id.startsWith('component:')),
   ]);
   const purpose =
+    fi?.purpose ??
+    (primaryService === undefined
+      ? undefined
+      : `${safeText(primaryService.name)} is a ${stringData(primaryService, 'framework') ?? 'unknown'} service inferred across ${serviceDataStringArray(primaryService, 'related_flows').length} flow(s).`) ??
     stringData(target, 'purpose') ??
     (typeof componentData.purpose === 'string' ? componentData.purpose : undefined) ??
     target.description;
+  const serviceResponsibilities =
+    primaryService === undefined
+      ? []
+      : unique([
+          ...serviceDataStringArray(primaryService, 'routes').map(
+            (route) => `Handle route ${route}.`,
+          ),
+          ...serviceDataStringArray(primaryService, 'jobs').map((job) => `Run job/script ${job}.`),
+          ...serviceDataStringArray(primaryService, 'storage_dependencies').map(
+            (storage) => `Use storage dependency ${storage}.`,
+          ),
+          ...serviceDataStringArray(primaryService, 'external_services').map(
+            (api) => `Call external service/API ${api}.`,
+          ),
+        ]);
   const responsibilities = explainArray(
+    fi?.responsibilities,
     targetData.responsibilities,
     componentData.responsibilities,
+    serviceResponsibilities,
   );
   const dependencies = unique([
     ...explainArray(targetData.dependencies, componentData.dependencies),
     ...relationshipContext.dependsOn,
   ]);
   const dependencyRoles = explainArray(targetData.dependency_roles, componentData.dependency_roles);
+  const serviceDependencyRoles =
+    primaryService === undefined
+      ? []
+      : unique([
+          ...serviceDataStringArray(primaryService, 'storage_dependencies').map(
+            (storage) => `${storage}: storage/state dependency`,
+          ),
+          ...serviceDataStringArray(primaryService, 'environment_variables').map(
+            (envVar) => `${envVar}: environment configuration`,
+          ),
+          ...serviceDataStringArray(primaryService, 'external_services').map(
+            (api) => `${api}: external API dependency`,
+          ),
+        ]);
   const consumers = unique([
     ...explainArray(targetData.consumers, componentData.consumers),
     ...relationshipContext.dependedOnBy,
@@ -14515,10 +21686,10 @@ function buildExplanation(params: {
     ...explainArray(targetData.important_files, componentData.important_files),
     ...target.source_files,
   ]).slice(0, 12);
-  const entryPoints = explainArray(targetData.entry_points, componentData.entry_points).slice(
-    0,
-    12,
-  );
+  const entryPoints = unique([
+    ...explainArray(targetData.entry_points, componentData.entry_points),
+    ...(primaryService === undefined ? [] : serviceDataStringArray(primaryService, 'entrypoints')),
+  ]).slice(0, 12);
   const tests = unique([
     ...explainArray(targetData.tests, componentData.tests),
     ...relatedTestPaths(target, params.entitySets.tests),
@@ -14526,6 +21697,9 @@ function buildExplanation(params: {
   const configs = unique([
     ...explainArray(targetData.configs, componentData.configs),
     ...relatedConfigPaths(target, params.entitySets.configs),
+    ...(primaryService === undefined
+      ? []
+      : serviceDataStringArray(primaryService, 'deployment_configs')),
   ]);
   const breaksIfChanged = unique([
     ...explainArray(targetData.what_breaks_if_removed, componentData.what_breaks_if_removed),
@@ -14535,6 +21709,7 @@ function buildExplanation(params: {
   const failureModes = explainArray(targetData.failure_modes, componentData.failure_modes);
   const risks = unique([
     ...explainArray(targetData.known_risks, componentData.known_risks),
+    ...(primaryService === undefined ? [] : serviceDataStringArray(primaryService, 'risks')),
     ...failureModes,
     ...relatedRisks(target, relatedComponents, params.entitySets.risks),
   ]);
@@ -14584,7 +21759,7 @@ function buildExplanation(params: {
     purpose: safeText(purpose),
     responsibilities: responsibilities.map(safeText),
     dependencies: dependencies.map(safeText),
-    dependency_roles: dependencyRoles.map(safeText),
+    dependency_roles: unique([...dependencyRoles, ...serviceDependencyRoles]).map(safeText),
     consumers: consumers.map(safeText),
     important_files: importantFiles.map(safeText),
     entry_points: entryPoints.map(safeText),
@@ -14645,6 +21820,29 @@ function buildExplanation(params: {
           },
         }
       : {}),
+    ...(primaryService !== undefined
+      ? {
+          service: {
+            runtime: safeText(stringData(primaryService, 'runtime') ?? 'unknown'),
+            framework: safeText(stringData(primaryService, 'framework') ?? 'unknown'),
+            service_root: safeText(
+              stringData(primaryService, 'service_root') ?? primaryService.name,
+            ),
+            entrypoints: serviceDataStringArray(primaryService, 'entrypoints'),
+            routes: serviceDataStringArray(primaryService, 'routes'),
+            jobs: serviceDataStringArray(primaryService, 'jobs'),
+            storage_dependencies: serviceDataStringArray(primaryService, 'storage_dependencies'),
+            environment_variables: serviceDataStringArray(primaryService, 'environment_variables'),
+            external_services: serviceDataStringArray(primaryService, 'external_services'),
+            deployment_configs: serviceDataStringArray(primaryService, 'deployment_configs'),
+            related_flows: serviceDataStringArray(primaryService, 'related_flows'),
+            related_components: serviceDataStringArray(primaryService, 'related_components'),
+            confidence_score:
+              numberData(primaryService, 'confidence_score') ??
+              confidenceScoreForValue(primaryService.confidence),
+          },
+        }
+      : {}),
   };
 }
 
@@ -14661,10 +21859,16 @@ function buildFlowExplanation(params: {
   const relationshipContext = explainRelationshipContext(target, params.relationships);
   const entrypoints = safeFlowEntrypoints(target);
   const steps = safeFlowSteps(target);
+  const journey = flowJourneySummaryData(target);
+  const journeySteps = safeFlowJourneySteps(target);
+  const serviceCausality = safeFlowServiceCausality(target);
+  const dataDependencies = safeFlowDataDependencies(target);
   const flowRisksForTarget = safeFlowRisks(target);
   const components = flowStringArray(target, 'components').map(safeText);
+  const services = flowStringArray(target, 'services').map(safeText);
   const files = unique([...flowStringArray(target, 'files'), ...target.source_files]).map(safeText);
   const dependencies = flowStringArray(target, 'dependencies').map(safeText);
+  const runtimeSurfaces = flowStringArray(target, 'runtime_surfaces').map(safeText);
   const configs = flowStringArray(target, 'configs').map(safeText);
   const tests = flowStringArray(target, 'tests').map(safeText);
   const entryContract = flowStringArray(target, 'entry_contract').map(safeText);
@@ -14694,6 +21898,8 @@ function buildFlowExplanation(params: {
     ...target.evidence_ids,
     ...entrypoints.flatMap((entrypoint) => entrypoint.evidence),
     ...steps.flatMap((step) => step.evidence),
+    ...serviceCausality.flatMap((item) => item.evidence_ids),
+    ...dataDependencies.flatMap((dependency) => dependency.evidence_ids),
     ...flowRisksForTarget.flatMap((risk) => risk.evidence),
     ...relationshipContext.evidenceIds,
   ]).map(safeText);
@@ -14737,10 +21943,20 @@ function buildFlowExplanation(params: {
     summary: safeText(target.description),
     purpose: `${safeText(target.name)} is a ${flowKind(
       target,
-    )} flow reconstructed from local static evidence. It is not a runtime trace.`,
+    )} flow reconstructed from local static evidence. ${
+      journey === undefined ? '' : `Journey name: ${journey.name}. `
+    }It is not a runtime trace.`,
     responsibilities: unique([
+      ...(journey === undefined
+        ? []
+        : [`Explains the ${journey.name} with ${journeySteps.length} normalized journey step(s).`]),
       `Connects ${entrypoints.length} entrypoint(s) to ${steps.length} evidence-backed step(s).`,
-      `Covers ${components.length} component(s), ${files.length} file(s), ${tests.length} test artifact(s), and ${configs.length} config artifact(s).`,
+      `Covers ${components.length} component(s), ${services.length} service(s), ${runtimeSurfaces.length} runtime, ${dataDependencies.length} state/data, ${files.length} file(s), ${tests.length} test(s), ${configs.length} config(s).`,
+      ...serviceCausality.map((item) => item.cause),
+      ...dataDependencies.map(
+        (dependency) =>
+          `Tracks ${dependency.label} as ${dependency.kind} with ${dependency.operations.join(', ') || 'unknown'} operation signal(s).`,
+      ),
       ...entryContract.slice(0, 4),
       ...stepLabels.slice(0, 6),
     ]).map(safeText),
@@ -14765,6 +21981,11 @@ function buildFlowExplanation(params: {
       ...(tests.length === 0 ? ['No directly linked tests were detected for this flow.'] : []),
       ...(configs.length === 0 ? ['No directly linked configs were detected for this flow.'] : []),
       ...contractFailureModes,
+      ...dataDependencies.flatMap((dependency) =>
+        dependency.operations.map(
+          (operation) => `${dependency.label} ${operation} behavior may affect this flow.`,
+        ),
+      ),
       ...riskLabels,
     ]).map(safeText),
     breaks_if_changed: [
@@ -14800,14 +22021,20 @@ function buildFlowExplanation(params: {
     }),
     flow: {
       kind: flowKind(target),
+      ...(journey !== undefined ? { journey } : {}),
+      journey_steps: journeySteps,
       ...(framework !== undefined ? { framework: safeText(framework) } : {}),
       ...(routePath !== undefined ? { route_path: safeText(routePath) } : {}),
       ...(routeType !== undefined ? { route_type: safeText(routeType) } : {}),
       entrypoints,
       steps,
       components,
+      services,
+      service_causality: serviceCausality,
+      data_dependencies: dataDependencies,
       files,
       dependencies,
+      runtime_surfaces: runtimeSurfaces,
       tests,
       configs,
       risks: flowRisksForTarget,
@@ -14837,6 +22064,11 @@ function formatFlowEntrypoint(entrypoint: FlowEntrypoint): string {
 
 function formatFlowStep(step: FlowStep): string {
   return `${step.order}. ${step.type}: ${step.path} - ${step.description}`;
+}
+
+function formatFlowServiceCausality(item: FlowServiceCausality): string {
+  const effects = item.effects.length === 0 ? 'no effects recorded yet' : item.effects.join(', ');
+  return `${item.service_id}: ${item.cause} Effects: ${effects}. Confidence: ${item.confidence}.`;
 }
 
 function formatFlowRisk(risk: FlowRisk): string {
@@ -14894,6 +22126,16 @@ function relatedFlowContext(
   flows: readonly BrainEntity[],
 ): readonly BrainEntity[] {
   if (target.type === 'flow') return [target];
+  if (target.type === 'service') {
+    const relatedFlowIds = new Set(serviceDataStringArray(target, 'related_flows'));
+    return sorted(
+      flows.filter(
+        (flow) =>
+          relatedFlowIds.has(flow.id) || flowStringArray(flow, 'services').includes(target.id),
+      ),
+      (flow) => flow.id,
+    );
+  }
   const relatedSourceFiles = new Set([stringData(target, 'relativePath') ?? target.name]);
   for (const file of target.source_files) relatedSourceFiles.add(file);
   return sorted(
@@ -15048,6 +22290,9 @@ function explainResearchArtifactsForTarget(params: {
     proving.add('.rizz/research/flow_understanding.json');
     proving.add('.rizz/research/flow_coverage.json');
     proving.add('.rizz/research/flow_confidence.json');
+  } else if (params.entityType === 'service') {
+    proving.add('.rizz/research/service_intelligence.json');
+    proving.add('.rizz/research/flow_understanding.json');
   } else {
     proving.add('.rizz/research/component_intelligence.json');
   }
@@ -15150,13 +22395,13 @@ function renderExplainReport(
   <title>rizz explain · ${htmlEscape(explanation.resolved_entity_id)}</title>
   <style>
     :root { color-scheme: light dark; --bg: #0f1115; --panel: #171b22; --text: #f4f6fb; --muted: #a7b0c0; --line: #2b3340; --accent: #6ee7b7; --warn: #fbbf24; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
     main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; }
     header { border-bottom: 1px solid var(--line); margin-bottom: 24px; padding-bottom: 18px; }
     h1 { font-size: clamp(32px, 6vw, 56px); margin: 0 0 8px; letter-spacing: 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
     .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
-    .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; color: var(--accent); padding: 2px 8px; font-size: 12px; }
     .muted { color: var(--muted); }
     code { background: #05070a; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
     a { color: var(--accent); overflow-wrap: anywhere; }
@@ -15196,6 +22441,7 @@ function renderExplainReport(
           ...explanation.research_artifacts.limiting.map((path) => `Limits: ${path}`),
         ])}</article>
 	      ${renderComponentExplanationCards(explanation)}
+	      ${renderServiceExplanationCards(explanation)}
 	      ${renderFlowExplanationCards(explanation)}
 	      <article class="card"><h2>Important Files</h2>${renderList(explanation.important_files)}</article>
 	      <article class="card"><h2>Dependencies</h2>${renderList(explanation.dependencies)}</article>
@@ -15238,11 +22484,49 @@ function renderComponentExplanationCards(explanation: ExplainSummaryData): strin
   return `<article class="card"><h2>Component Boundary</h2>${renderList(details)}</article>`;
 }
 
+function renderServiceExplanationCards(explanation: ExplainSummaryData): string {
+  if (explanation.service === undefined) return '';
+  return `<article class="card"><h2>Service Runtime</h2>${renderList([
+    `Runtime: ${explanation.service.runtime}`,
+    `Framework: ${explanation.service.framework}`,
+    `Root: ${explanation.service.service_root}`,
+    `Confidence score: ${explanation.service.confidence_score}`,
+  ])}</article>
+      <article class="card"><h2>Service Routes</h2>${renderList(
+        explanation.service.routes,
+      )}</article>
+      <article class="card"><h2>Service Jobs</h2>${renderList(explanation.service.jobs)}</article>
+      <article class="card"><h2>Service Storage</h2>${renderList(
+        explanation.service.storage_dependencies,
+      )}</article>
+      <article class="card"><h2>Service Environment</h2>${renderList(
+        explanation.service.environment_variables,
+      )}</article>
+      <article class="card"><h2>External APIs</h2>${renderList(
+        explanation.service.external_services,
+      )}</article>
+      <article class="card"><h2>Deployment Configs</h2>${renderList(
+        explanation.service.deployment_configs,
+      )}</article>`;
+}
+
 function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
   if (explanation.flow === undefined) return '';
-  return `<article class="card"><h2>Entry Contract</h2>${renderList(
-    explanation.flow.entry_contract,
+  return `<article class="card"><h2>Journey</h2>${renderList(
+    explanation.flow.journey === undefined
+      ? ['No semantic journey name was inferred.']
+      : [
+          `${explanation.flow.journey.name} (${explanation.flow.journey.confidence} · ${explanation.flow.journey.score})`,
+          ...explanation.flow.journey.reasons,
+          ...explanation.flow.journey.missing_evidence,
+        ],
   )}</article>
+      <article class="card"><h2>Journey Steps</h2>${renderList(
+        explanation.flow.journey_steps.map(formatJourneyStepForReview),
+      )}</article>
+      <article class="card"><h2>Entry Contract</h2>${renderList(
+        explanation.flow.entry_contract,
+      )}</article>
       <article class="card"><h2>Exit Contract</h2>${renderList(
         explanation.flow.exit_contract,
       )}</article>
@@ -15253,6 +22537,11 @@ function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
       )}</article>
       <article class="card"><h2>State Transitions</h2>${renderList(
         explanation.flow.state_transitions,
+      )}</article>
+      <article class="card"><h2>State/Data Dependencies</h2>${renderList(
+        explanation.flow.data_dependencies.length === 0
+          ? ['No state/data dependency signal was linked to this flow.']
+          : explanation.flow.data_dependencies.map(formatDataDependencyForReview),
       )}</article>
       <article class="card"><h2>Required Tests</h2>${renderList(
         explanation.flow.required_tests,
@@ -15265,6 +22554,13 @@ function renderFlowExplanationCards(explanation: ExplainSummaryData): string {
       )}</article>
       <article class="card"><h2>Flow Components</h2>${renderList(
         explanation.flow.components,
+      )}</article>
+      <article class="card"><h2>Flow Services</h2>${renderList(explanation.flow.services)}</article>
+      <article class="card"><h2>Runtime Surfaces</h2>${renderList(
+        explanation.flow.runtime_surfaces,
+      )}</article>
+      <article class="card"><h2>Service Causality</h2>${renderList(
+        explanation.flow.service_causality.map(formatFlowServiceCausality),
       )}</article>
       <article class="card"><h2>Flow Confidence</h2>${renderList([
         `${explanation.flow.confidence_score}: ${explanation.flow.confidence_reason}`,
@@ -15326,6 +22622,7 @@ async function readBrainBuckets(entitiesDir: string): Promise<BrainBuckets> {
 async function readReviewEntitySets(entitiesDir: string): Promise<{
   readonly files: readonly BrainEntity[];
   readonly components: readonly BrainEntity[];
+  readonly services: readonly BrainEntity[];
   readonly flows: readonly BrainEntity[];
   readonly configs: readonly BrainEntity[];
   readonly commands: readonly BrainEntity[];
@@ -15333,10 +22630,11 @@ async function readReviewEntitySets(entitiesDir: string): Promise<{
   readonly dependencies: readonly BrainEntity[];
   readonly risks: readonly BrainEntity[];
 }> {
-  const [files, components, flows, configs, commands, tests, dependencies, risks] =
+  const [files, components, services, flows, configs, commands, tests, dependencies, risks] =
     await Promise.all([
       readEntityFile(entitiesDir, 'files.json'),
       readEntityFile(entitiesDir, 'components.json'),
+      readEntityFile(entitiesDir, 'services.json'),
       readEntityFile(entitiesDir, 'flows.json'),
       readEntityFile(entitiesDir, 'configs.json'),
       readEntityFile(entitiesDir, 'commands.json'),
@@ -15344,7 +22642,7 @@ async function readReviewEntitySets(entitiesDir: string): Promise<{
       readEntityFile(entitiesDir, 'dependencies.json'),
       readEntityFile(entitiesDir, 'risks.json'),
     ]);
-  return { files, components, flows, configs, commands, tests, dependencies, risks };
+  return { files, components, services, flows, configs, commands, tests, dependencies, risks };
 }
 
 function dropEntityById(entities: readonly BrainEntity[], id: string): BrainEntity[] {
@@ -15356,102 +22654,6 @@ function dropEntitiesByIds(
   ids: ReadonlySet<string>,
 ): BrainEntity[] {
   return entities.filter((entity) => !ids.has(entity.id));
-}
-
-function runGit(
-  rootDir: string,
-  args: readonly string[],
-): { readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly error: string } {
-  const result = spawnSync('git', args, {
-    cwd: rootDir,
-    encoding: 'utf8',
-    maxBuffer: 5_000_000,
-  });
-  if (result.status === 0) return { ok: true, stdout: result.stdout };
-  return { ok: false, error: result.stderr.trim() || result.stdout.trim() || 'git command failed' };
-}
-
-function readGitChanges(rootDir: string):
-  | {
-      readonly ok: true;
-      readonly value: { readonly changedFiles: readonly string[]; readonly diffText: string };
-    }
-  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } } {
-  const inside = runGit(rootDir, ['rev-parse', '--is-inside-work-tree']);
-  if (!inside.ok || inside.stdout.trim() !== 'true') {
-    return {
-      ok: false,
-      error: { code: 'GIT_REQUIRED', message: 'rizz review needs to run inside a git worktree.' },
-    };
-  }
-
-  const worktreeFiles = runGit(rootDir, ['diff', '--name-only', 'HEAD', '--']);
-  if (!worktreeFiles.ok) {
-    return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: worktreeFiles.error } };
-  }
-  const untrackedFiles = runGit(rootDir, ['ls-files', '--others', '--exclude-standard']);
-  const worktreeChanged = unique(
-    [
-      ...worktreeFiles.stdout.split(/\r?\n/),
-      ...(untrackedFiles.ok ? untrackedFiles.stdout.split(/\r?\n/) : []),
-    ].filter((line) => line.trim() !== ''),
-  );
-  if (worktreeChanged.length > 0) {
-    const diff = runGit(rootDir, ['diff', '--no-ext-diff', '--find-renames', 'HEAD', '--']);
-    const untrackedDiffText = untrackedFiles.ok
-      ? readUntrackedFileText(rootDir, untrackedFiles.stdout)
-      : '';
-    return {
-      ok: true,
-      value: {
-        changedFiles: worktreeChanged,
-        diffText: `${diff.ok ? diff.stdout : ''}\n${untrackedDiffText}`,
-      },
-    };
-  }
-
-  const base = runGit(rootDir, ['merge-base', 'HEAD', 'origin/develop']);
-  if (base.ok && base.stdout.trim() !== '') {
-    const baseSha = base.stdout.trim();
-    const branchFiles = runGit(rootDir, ['diff', '--name-only', baseSha, 'HEAD', '--']);
-    if (!branchFiles.ok) {
-      return { ok: false, error: { code: 'GIT_DIFF_FAILED', message: branchFiles.error } };
-    }
-    const branchChanged = unique(
-      branchFiles.stdout.split(/\r?\n/).filter((line) => line.trim() !== ''),
-    );
-    const diff = runGit(rootDir, [
-      'diff',
-      '--no-ext-diff',
-      '--find-renames',
-      baseSha,
-      'HEAD',
-      '--',
-    ]);
-    return {
-      ok: true,
-      value: { changedFiles: branchChanged, diffText: diff.ok ? diff.stdout : '' },
-    };
-  }
-
-  return { ok: true, value: { changedFiles: [], diffText: '' } };
-}
-
-function readUntrackedFileText(rootDir: string, stdout: string): string {
-  const chunks: string[] = [];
-  const files = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !shouldSkipRelativePath(line, []));
-  for (const file of files) {
-    try {
-      const absolutePath = join(rootDir, file);
-      const fileStat = statSync(absolutePath);
-      if (!fileStat.isFile() || fileStat.size > 1_000_000) continue;
-      chunks.push(readFileSync(absolutePath, 'utf8'));
-    } catch {}
-  }
-  return chunks.join('\n');
 }
 
 function parseConfidence(value: unknown): Confidence {
@@ -15469,9 +22671,59 @@ function parseArchitectureImpactSurfaceType(value: unknown): ArchitectureImpactS
   return 'component';
 }
 
+function parseArchitectureImpactRiskLevel(value: unknown): ArchitectureImpactRiskLevel {
+  if (value === 'high' || value === 'medium' || value === 'low') return value;
+  return 'low';
+}
+
 function numberRecordValue(value: Record<string, unknown>, key: string): number {
   const item = value[key];
   return typeof item === 'number' ? item : 0;
+}
+
+function parseArchitectureImpactRiskReasoning(params: {
+  readonly value: unknown;
+  readonly entityId: string;
+  readonly couplingLevel: ComponentIntelligence['coupling']['level'];
+  readonly couplingScore: number;
+  readonly affectedFlows: readonly string[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+  readonly dependentComponents: readonly string[];
+  readonly confidence: Confidence;
+  readonly evidenceGapIds: readonly string[];
+}): ArchitectureImpactRiskReasoning {
+  if (isRecord(params.value)) {
+    return {
+      risk_level: parseArchitectureImpactRiskLevel(params.value.risk_level),
+      risk_score: numberRecordValue(params.value, 'risk_score'),
+      criticality:
+        typeof params.value.criticality === 'string'
+          ? safeText(params.value.criticality)
+          : 'unknown',
+      coupling_level: parseCouplingLevel(params.value.coupling_level),
+      tradeoffs: asStringArray(params.value.tradeoffs).map(safeText),
+      risky_surfaces: asStringArray(params.value.risky_surfaces).map(safeText),
+      review_focus: asStringArray(params.value.review_focus).map(safeText),
+      reasons: asStringArray(params.value.reasons).map(safeText),
+    };
+  }
+  return architectureImpactRiskReasoning({
+    entityId: params.entityId,
+    criticality: 'unknown',
+    criticalityScore: 0,
+    couplingLevel: params.couplingLevel,
+    couplingScore: params.couplingScore,
+    affectedFlows: params.affectedFlows,
+    affectedTests: params.affectedTests,
+    affectedConfigs: params.affectedConfigs,
+    dependentComponents: params.dependentComponents,
+    confidence: params.confidence,
+    evidenceGapIds: params.evidenceGapIds,
+    tradeoffs: [],
+    riskySeams: [],
+    serviceCausality: [],
+  });
 }
 
 function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactData | undefined {
@@ -15482,6 +22734,14 @@ function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactDa
   if (impactId === undefined || entityId === undefined || name === undefined) return undefined;
   const routePath = typeof entry.route_path === 'string' ? safeText(entry.route_path) : undefined;
   const routeType = typeof entry.route_type === 'string' ? safeText(entry.route_type) : undefined;
+  const affectedFlows = asStringArray(entry.affected_flows).map(safeText);
+  const affectedTests = asStringArray(entry.affected_tests).map(safeText);
+  const affectedConfigs = asStringArray(entry.affected_configs).map(safeText);
+  const dependentComponents = asStringArray(entry.dependent_components).map(safeText);
+  const couplingLevel = parseCouplingLevel(entry.coupling_level);
+  const couplingScore = numberRecordValue(entry, 'coupling_score');
+  const confidence = parseConfidence(entry.confidence);
+  const evidenceGapIds = asStringArray(entry.evidence_gap_ids).map(safeText);
   return {
     impact_id: impactId,
     surface_type: parseArchitectureImpactSurfaceType(entry.surface_type),
@@ -15492,18 +22752,30 @@ function reviewImpactEntryFromRecord(entry: unknown): ReviewArchitectureImpactDa
     matched_changed_files: [],
     matched_components: [],
     matched_flows: [],
-    affected_flows: asStringArray(entry.affected_flows).map(safeText),
+    affected_flows: affectedFlows,
     affected_files: asStringArray(entry.affected_files).map(safeText),
-    affected_tests: asStringArray(entry.affected_tests).map(safeText),
-    affected_configs: asStringArray(entry.affected_configs).map(safeText),
-    dependent_components: asStringArray(entry.dependent_components).map(safeText),
-    coupling_level: parseCouplingLevel(entry.coupling_level),
-    coupling_score: numberRecordValue(entry, 'coupling_score'),
-    confidence: parseConfidence(entry.confidence),
+    affected_tests: affectedTests,
+    affected_configs: affectedConfigs,
+    dependent_components: dependentComponents,
+    coupling_level: couplingLevel,
+    coupling_score: couplingScore,
+    confidence,
     confidence_score: numberRecordValue(entry, 'confidence_score'),
     evidence_ids: asStringArray(entry.evidence_ids).map(safeText),
-    evidence_gap_ids: asStringArray(entry.evidence_gap_ids).map(safeText),
+    evidence_gap_ids: evidenceGapIds,
     what_breaks: asStringArray(entry.what_breaks).map(safeText),
+    risk_reasoning: parseArchitectureImpactRiskReasoning({
+      value: entry.risk_reasoning,
+      entityId,
+      couplingLevel,
+      couplingScore,
+      affectedFlows,
+      affectedTests,
+      affectedConfigs,
+      dependentComponents,
+      confidence,
+      evidenceGapIds,
+    }),
     reasons: asStringArray(entry.reasons).map(safeText),
   };
 }
@@ -15585,15 +22857,30 @@ function buildReview(params: {
   readonly entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>;
   readonly changedFiles: readonly string[];
   readonly diffText: string;
+  readonly git: ReviewGitBasisData;
+  readonly missionContract: ReturnType<typeof loadReviewMissionContract>;
+  readonly verificationEvidence: VerificationEvidenceArtifactData;
 }): ReviewSummaryData {
   const changedFiles = params.changedFiles.filter((file) => !shouldSkipRelativePath(file, []));
-  const changedFileSet = new Set(changedFiles);
+  const reviewableChangedFiles = changedFiles.filter((file) => !isGeneratedArtifactPath(file));
+  const reviewableChangedFileSet = new Set(reviewableChangedFiles);
   const publicChangedFiles = changedFiles.map(safeText);
-  const changedSourceFiles = changedFiles.filter((file) => isSourceFile(file));
+  const changedGeneratedArtifactFiles = changedFiles.filter(isGeneratedArtifactPath);
   const changedTestFiles = changedFiles.filter((file) => isTestPath(file));
   const changedConfigFiles = changedFiles.filter((file) => isConfigPath(file));
   const changedDependencyFiles = changedFiles.filter((file) => isDependencyPath(file));
-  const affectedComponents = affectedComponentEntities(changedFiles, params.entitySets.components);
+  const changedSourceFiles = changedFiles.filter(
+    (file) =>
+      isSourceFile(file) &&
+      !isGeneratedArtifactPath(file) &&
+      !isConfigPath(file) &&
+      !isDependencyPath(file) &&
+      hasRuntimeRelevantSourceDiff(file, params.diffText),
+  );
+  const affectedComponents = affectedComponentEntities(
+    reviewableChangedFiles,
+    params.entitySets.components,
+  );
   const affectedComponentIds = affectedComponents.map((component) => component.id);
   const dependentComponents = dependentComponentEntities(
     affectedComponentIds,
@@ -15603,14 +22890,36 @@ function buildReview(params: {
   const dependentComponentIds = dependentComponents.map((component) => component.id);
   const allAffectedComponents = uniqueEntities([...affectedComponents, ...dependentComponents]);
   const affectedFlows = affectedFlowEntities(
-    changedFiles,
+    reviewableChangedFiles,
     allAffectedComponents,
     params.entitySets.flows,
+    params.diffText,
   );
+  const affectedServices = affectedServiceEntities({
+    changedFiles: reviewableChangedFiles,
+    services: params.entitySets.services,
+    affectedFlows,
+  });
   const affectedFlowIds = affectedFlows.map((flow) => flow.id);
+  const affectedServiceIds = affectedServices.map((service) => service.id);
+  const reviewGovernance = buildReviewGovernance({
+    git: params.git,
+    changedFiles,
+    reviewableChangedFiles,
+    generatedArtifacts: changedGeneratedArtifactFiles,
+    diffText: params.diffText,
+    missionContract: params.missionContract,
+    affectedComponentIds: unique([...affectedComponentIds, ...dependentComponentIds]),
+    affectedServiceIds,
+    affectedFlowIds,
+    isSourceFile,
+    isConfigPath,
+    isDependencyPath,
+    sanitizeText: safeText,
+  });
   const architectureImpactMap = reviewArchitectureImpactMap({
     latest: params.latest,
-    changedFiles,
+    changedFiles: reviewableChangedFiles,
     componentIds: allAffectedComponents.map((component) => component.id),
     flowIds: affectedFlowIds,
   });
@@ -15625,26 +22934,30 @@ function buildReview(params: {
     architectureImpactMap.flatMap((entry) => [...entry.affected_flows, ...entry.matched_flows]),
   );
   const directlyAffectedEntities = unique([
-    ...changedFiles.map((file) => entityId('file', file)),
+    ...reviewableChangedFiles.map((file) => entityId('file', file)),
     ...affectedComponentIds,
     ...affectedFlowIds,
+    ...affectedServiceIds,
+    ...dbDepLabels(affectedFlows),
     ...params.entitySets.configs
-      .filter((config) => config.source_files.some((file) => changedFileSet.has(file)))
+      .filter((config) => config.source_files.some((file) => reviewableChangedFileSet.has(file)))
       .map((config) => config.id),
     ...params.entitySets.tests
-      .filter((test) => test.source_files.some((file) => changedFileSet.has(file)))
+      .filter((test) => test.source_files.some((file) => reviewableChangedFileSet.has(file)))
       .map((test) => test.id),
   ]);
   const affectedEntitySeed = unique([
     ...directlyAffectedEntities,
     ...dependentComponentIds,
     ...affectedFlowIds,
+    ...affectedServiceIds,
     ...architectureImpactComponentIds,
     ...architectureImpactFlowIds,
   ]);
   const affectedRelationships = affectedReviewRelationships(
     params.relationships,
     affectedEntitySeed,
+    staleReviewEntityIds(params.entitySets),
   );
   const graphAffectedEntities = unique([
     ...affectedEntitySeed,
@@ -15680,6 +22993,18 @@ function buildReview(params: {
     ...changedConfigFiles,
     ...changedDependencyFiles,
   ]).map(safeText);
+  const dependencyRuntimeImpact = reviewDependencyRuntimeImpact({
+    changedConfigFiles,
+    changedDependencyFiles,
+    entitySets: params.entitySets,
+    directComponents: affectedComponents,
+    dependentComponents,
+    affectedFlows,
+    affectedServices,
+    affectedTests,
+    affectedConfigs,
+    architectureImpactMap,
+  });
   const architectureEvidenceGapIds = unique(
     architectureImpactMap.flatMap((entry) => entry.evidence_gap_ids),
   ).map(safeText);
@@ -15689,15 +23014,48 @@ function buildReview(params: {
   const architectureWhatBreaks = unique(
     architectureImpactMap.flatMap((entry) => entry.what_breaks),
   ).map(safeText);
+  const architectureRiskReasoning = unique(
+    architectureImpactMap.flatMap((entry) => [
+      `${entry.impact_id}:${entry.risk_reasoning.risk_level}:${entry.risk_reasoning.risky_surfaces.join(', ') || 'no risky surface flags'}`,
+      ...entry.risk_reasoning.review_focus.map((focus) => `${entry.impact_id}:${focus}`),
+    ]),
+  ).map(safeText);
+  const serviceCausalityPaths = affectedFlows.flatMap((flow) => flow.service_causality);
+  const serviceCausalityEffects = unique(serviceCausalityPaths.flatMap((item) => item.effects)).map(
+    safeText,
+  );
+  const affectedJourneyNames = unique(
+    affectedFlows.flatMap((flow) => (flow.journey_name === undefined ? [] : [flow.journey_name])),
+  ).map(safeText);
+  const affectedJourneySteps = affectedFlows.flatMap((flow) => flow.affected_steps);
+  const testEvidenceChanges = reviewTestEvidenceChanges({
+    changedTestFiles,
+    affectedFlows,
+  });
+  const affectedDataDependencies = uniqueBy(
+    affectedFlows.flatMap((flow) => flow.data_dependencies),
+    (dependency) => dependency.dependency_id,
+  );
+  const affectedStateOperations = unique(
+    affectedDataDependencies.flatMap((dependency) => dependency.operations),
+  ).map(safeText);
+  const userVisibleFailureModes = unique(
+    affectedFlows.flatMap((flow) => flow.user_visible_failure_modes),
+  ).map(safeText);
+  const journeyMissingEvidence = unique(affectedFlows.flatMap((flow) => flow.missing_evidence)).map(
+    safeText,
+  );
   const reviewEvidenceIds = unique([
     ...allAffectedComponents.flatMap((component) => component.evidence_ids),
+    ...affectedServices.flatMap((service) => service.evidence_ids),
     ...affectedFlows.flatMap((flow) => flow.evidence_ids),
+    ...serviceCausalityPaths.flatMap((item) => item.evidence_ids),
     ...affectedRelationships.flatMap((relationship) => relationship.evidence_ids),
     ...architectureImpactMap.flatMap((entry) => entry.evidence_ids),
     ...changedFiles.map(evidenceId),
   ]).map(safeText);
   const blastRadius = classifyReviewBlastRadius({
-    fileCount: changedFiles.length,
+    fileCount: reviewableChangedFiles.length,
     directComponentCount: affectedComponents.length,
     dependentComponentCount: dependentComponents.length,
     flowCount: affectedFlows.length,
@@ -15713,11 +23071,15 @@ function buildReview(params: {
     directComponents: affectedComponents,
     dependentComponents,
     affectedFlows,
+    affectedServices,
     affectedRelationships,
     architectureImpactMap,
+    dependencyRuntimeImpact,
     affectedTests,
     affectedConfigs,
   });
+  const verificationStatus = reviewVerificationStatus(params.verificationEvidence);
+  const hasLocalVerification = verificationStatus.local_checks_passed.length > 0;
 
   const findings: ReviewFindingData[] = [];
   const addFinding = (
@@ -15759,18 +23121,65 @@ function buildReview(params: {
     });
   }
 
-  const isBroad = changedFiles.length > 8 || affectedComponents.length > 3;
+  if (reviewGovernance.version_control_warnings.length > 0) {
+    addFinding({
+      slug: 'version-control-hygiene',
+      severity: reviewGovernance.git.branch_behind > 0 ? 'medium' : 'low',
+      category: 'Correctness',
+      title: 'Version-control hygiene needs attention',
+      description: safeText(reviewGovernance.version_control_warnings.join(' ')),
+      affected_files: publicChangedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'verified',
+      recommendation:
+        'Rebase, commit, stash, or isolate local work before treating this review as approval-ready.',
+    });
+  }
+
+  if (reviewGovernance.scope_drift_signals.length > 0) {
+    addFinding({
+      slug: 'mission-scope-drift',
+      severity: reviewGovernance.scope_clusters.length > 3 ? 'medium' : 'low',
+      category: 'Overengineering',
+      title: 'Diff may include extra mission scope',
+      description: safeText(reviewGovernance.scope_drift_signals.join(' ')),
+      affected_files: publicChangedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Confirm every changed scope belongs to the same requested task, or split unrelated work.',
+    });
+  }
+
+  if (reviewGovernance.duplicate_change_signals.length > 0) {
+    addFinding({
+      slug: 'possible-duplication',
+      severity: 'low',
+      category: 'Maintainability',
+      title: 'Repeated changed code may be duplicate implementation work',
+      description: safeText(reviewGovernance.duplicate_change_signals.join(' ')),
+      affected_files: publicChangedFiles,
+      affected_entities: graphAffectedEntities,
+      confidence: 'inferred',
+      recommendation:
+        'Inspect repeated edits and prefer a shared helper only when the repeated behavior is intentional across callers.',
+    });
+  }
+
+  const isBroad = reviewableChangedFiles.length > 8 || affectedComponents.length > 3;
   if (isBroad || blastRadius === 'broad') {
     addFinding({
       slug: 'broad-change',
       severity:
-        changedFiles.length > 20 || affectedComponents.length > 5 || dependentComponents.length > 3
+        reviewableChangedFiles.length > 20 ||
+        affectedComponents.length > 5 ||
+        dependentComponents.length > 3
           ? 'high'
           : 'medium',
       category: 'Regression risk',
       title: 'Broad change crosses multiple brain boundaries',
       description: safeText(
-        `The diff touches ${changedFiles.length} file(s), ${affectedComponents.length} direct component(s), ${dependentComponents.length} dependent component(s), and ${affectedFlows.length} flow(s). ${blastRadiusReasons[0] ?? ''}`,
+        `Diff touches ${changedFiles.length} file(s), ${affectedComponents.length} direct component(s), ${dependentComponents.length} dependent, ${affectedFlows.length} flow(s). ${blastRadiusReasons[0] ?? ''}`,
       ),
       affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
@@ -15813,31 +23222,104 @@ function buildReview(params: {
   if (changedSourceFiles.length > 0 && changedTestFiles.length === 0) {
     addFinding({
       slug: 'missing-tests',
-      severity: changedSourceFiles.length > 4 ? 'high' : 'medium',
+      severity: hasLocalVerification ? 'low' : changedSourceFiles.length > 4 ? 'high' : 'medium',
       category: 'Missing tests',
-      title: 'Runtime files changed without test artifacts in the diff',
+      title: hasLocalVerification
+        ? 'Runtime files changed without new tests, but local checks are recorded'
+        : 'Runtime files changed without test artifacts in the diff',
       description: safeText(
-        `${changedSourceFiles.length} source file(s) changed, but no test file changed with them. Existing linked test evidence: ${affectedTests.slice(0, 5).join(', ') || 'none detected'}.`,
+        `${changedSourceFiles.length} source file(s) changed, but no test file changed with them. Existing linked test evidence: ${affectedTests.slice(0, 5).join(', ') || 'none detected'}. ${
+          hasLocalVerification
+            ? `Recorded local checks passed: ${verificationStatus.local_checks_passed.slice(0, 4).join(', ')}.`
+            : ''
+        }`,
       ),
       affected_files: changedSourceFiles.map(safeText),
       affected_entities: graphAffectedEntities,
+      confidence: hasLocalVerification ? 'inferred' : 'verified',
+      recommendation: hasLocalVerification
+        ? 'Use the recorded checks as local regression evidence, then add focused tests if the behavior changed.'
+        : 'Run the quality gate and add focused tests or document sufficient existing coverage.',
+    });
+  }
+
+  if (changedGeneratedArtifactFiles.length > 0) {
+    addFinding({
+      slug: 'generated-artifacts',
+      severity: 'low',
+      category: 'Maintainability',
+      title: 'Generated or vendor artifacts changed',
+      description: safeText(
+        `The diff includes ${changedGeneratedArtifactFiles.length} generated/vendor-like artifact(s): ${changedGeneratedArtifactFiles
+          .slice(0, 6)
+          .join(
+            ', ',
+          )}. Rizz keeps them visible but does not treat them as authored runtime source or state/data blast radius.`,
+      ),
+      affected_files: changedGeneratedArtifactFiles.map(safeText),
+      affected_entities: unique(
+        changedGeneratedArtifactFiles.map((file) => entityId('file', file)),
+      ),
+      confidence: 'inferred',
+      recommendation:
+        'Verify the generator, lockfile, or source artifact instead of generated churn.',
+    });
+  }
+
+  if (
+    changedTestFiles.length > 0 &&
+    changedSourceFiles.length === 0 &&
+    changedConfigFiles.length === 0 &&
+    changedDependencyFiles.length === 0
+  ) {
+    addFinding({
+      slug: 'test-evidence-only',
+      severity: 'low',
+      category: 'Correctness',
+      title: 'Test evidence changed without runtime surface changes',
+      description: safeText(
+        `The diff updates ${changedTestFiles.length} test artifact(s). Rizz treats this as confidence/evidence movement for affected journeys, not direct runtime behavior change. ${
+          testEvidenceChanges.slice(0, 3).join(' ') || ''
+        }`,
+      ),
+      affected_files: changedTestFiles.map(safeText),
+      affected_entities: graphAffectedEntities,
       confidence: 'verified',
       recommendation:
-        'Run the existing quality gate and add focused tests for the changed behavior or document why existing coverage is sufficient.',
+        'Use changed tests to calibrate confidence; require runtime review only for source/config/dependency inputs.',
     });
   }
 
   if (changedConfigFiles.length > 0 || changedDependencyFiles.length > 0) {
+    const impactDescription =
+      dependencyRuntimeImpact === null
+        ? 'No local flow, service, component, script, or dependency evidence was linked to these package/config files.'
+        : `Runtime/dependency impact links ${dependencyRuntimeImpact.changed_files.length} package/config, ${dependencyRuntimeImpact.affected_flows.length} flow(s), ${dependencyRuntimeImpact.affected_services.length} service(s), ${dependencyRuntimeImpact.affected_components.length} component(s), ${dependencyRuntimeImpact.package_scripts.length} script(s). Verify: ${
+            dependencyRuntimeImpact.verification_focus.slice(0, 4).join('; ') || 'none recorded'
+          }.`;
     addFinding({
       slug: 'config-dependency-change',
       severity: changedDependencyFiles.length > 0 ? 'medium' : 'low',
       category: changedDependencyFiles.length > 0 ? 'Backward compatibility' : 'Architecture drift',
       title: 'Configuration or dependency surface changed',
-      description: 'The diff touches setup, package, build, CI, or dependency metadata.',
+      description: safeText(
+        `The diff touches setup, package, build, CI, or dependency metadata. ${impactDescription}`,
+      ),
       affected_files: unique([...changedConfigFiles, ...changedDependencyFiles]),
-      affected_entities: graphAffectedEntities,
+      affected_entities: unique([
+        ...graphAffectedEntities,
+        ...(dependencyRuntimeImpact?.dependency_entities ?? []),
+        ...(dependencyRuntimeImpact?.affected_components ?? []),
+        ...(dependencyRuntimeImpact?.affected_services ?? []),
+        ...(dependencyRuntimeImpact?.affected_flows ?? []),
+      ]),
       confidence: 'verified',
-      recommendation: 'Verify install, build, and public package contents before merge.',
+      recommendation:
+        dependencyRuntimeImpact === null
+          ? 'Verify install, build, and public package contents before merge.'
+          : `Verify the linked runtime blast radius before merge: ${dependencyRuntimeImpact.verification_focus
+              .slice(0, 5)
+              .join('; ')}.`,
       safer_alternative:
         'Keep package/config movement in a separate PR unless the runtime change depends on it.',
     });
@@ -15881,6 +23363,8 @@ function buildReview(params: {
           ])
             .slice(0, 6)
             .join(', ') || 'none detected'
+        }. User-visible risks: ${
+          userVisibleFailureModes.slice(0, 4).join(' ') || 'none recorded'
         }.`,
       ),
       affected_files: unique(affectedFlows.flatMap((flow) => flow.changed_files)),
@@ -15889,6 +23373,86 @@ function buildReview(params: {
       confidence: 'inferred',
       recommendation:
         'Open the affected flow explanation and verify linked tests before relying on the change.',
+    });
+  }
+
+  if (affectedDataDependencies.length > 0) {
+    const stateWriteImpact = affectedStateOperations.some((operation) =>
+      ['schema', 'write', 'update', 'delete', 'cache', 'session'].includes(operation),
+    );
+    addFinding({
+      slug: 'state-data-impact',
+      severity: stateWriteImpact ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'State/data dependency overlaps the diff',
+      description: safeText(
+        `The diff touches ${affectedDataDependencies.length} state/data dependency signal(s): ${affectedDataDependencies
+          .map(formatDataDependencyForReview)
+          .slice(0, 5)
+          .join(' ')} Affected operation(s): ${
+          affectedStateOperations.slice(0, 6).join(', ') || 'unknown'
+        }.`,
+      ),
+      affected_files: unique(affectedDataDependencies.flatMap((dependency) => dependency.files)),
+      affected_entities: unique([...graphAffectedEntities, ...affectedFlowIds]),
+      evidenceIds: unique(
+        affectedDataDependencies.flatMap((dependency) => dependency.evidence_ids),
+      ),
+      confidence: affectedDataDependencies.every(
+        (dependency) => dependency.confidence === 'verified',
+      )
+        ? 'verified'
+        : 'inferred',
+      recommendation:
+        'Verify migrations, repositories, cache/session behavior, and linked journey tests before treating the change as isolated.',
+    });
+  }
+
+  if (affectedServices.length > 0) {
+    addFinding({
+      slug: 'affected-services',
+      severity: affectedServices.some((service) => service.risks.length > 0) ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'Service intelligence overlaps the diff',
+      description: safeText(
+        `${affectedServices.length} service(s) are affected: ${affectedServices
+          .map((service) => service.name)
+          .slice(0, 5)
+          .join(
+            ', ',
+          )}. Review routes, flows, storage, env vars, external APIs, deployment configs, and smoke checks before merge.`,
+      ),
+      affected_files: unique(affectedServices.flatMap((service) => service.changed_files)),
+      affected_entities: unique([...graphAffectedEntities, ...affectedServiceIds]),
+      evidenceIds: unique(affectedServices.flatMap((service) => service.evidence_ids)),
+      confidence: 'inferred',
+      recommendation:
+        'Open the service explanation and verify affected flows plus storage/auth/CORS/deployment checks when relevant.',
+    });
+  }
+
+  if (serviceCausalityPaths.length > 0) {
+    addFinding({
+      slug: 'service-causality',
+      severity: serviceCausalityEffects.length > 0 ? 'medium' : 'low',
+      category: 'Hidden coupling',
+      title: 'Service causality explains affected flow blast radius',
+      description: safeText(
+        `${serviceCausalityPaths.length} flow-to-service causality path(s) are affected. Effects: ${
+          serviceCausalityEffects.slice(0, 6).join(', ') || 'none recorded'
+        }.`,
+      ),
+      affected_files: unique(affectedFlows.flatMap((flow) => flow.changed_files)),
+      affected_entities: unique([
+        ...affectedFlowIds,
+        ...serviceCausalityPaths.map((item) => item.service_id),
+      ]),
+      evidenceIds: unique(serviceCausalityPaths.flatMap((item) => item.evidence_ids)),
+      confidence: serviceCausalityPaths.every((item) => item.confidence === 'verified')
+        ? 'verified'
+        : 'inferred',
+      recommendation:
+        'Review the affected flow path, service behavior, and recorded side effects before treating this change as local.',
     });
   }
 
@@ -15905,6 +23469,8 @@ function buildReview(params: {
       description: safeText(
         `${architectureImpactMap.length} impact-map surface(s) connect the diff to likely breakage: ${
           architectureWhatBreaks.slice(0, 3).join(' ') || 'no what-breaks note recorded'
+        } Risk reasoning: ${
+          architectureRiskReasoning.slice(0, 2).join(' ') || 'no risk reasoning recorded'
         }.`,
       ),
       affected_files: unique(architectureImpactMap.flatMap((entry) => entry.matched_changed_files)),
@@ -15953,15 +23519,16 @@ function buildReview(params: {
     });
   }
 
-  const overengineeringRisk = changedFiles.length > 12 && changedTestFiles.length < 2;
-  if (overengineeringRisk) {
+  const reviewableOverengineeringRisk =
+    reviewableChangedFiles.length > 12 && changedTestFiles.length < 2;
+  if (reviewableOverengineeringRisk) {
     addFinding({
       slug: 'large-low-test-diff',
       severity: 'medium',
       category: 'Overengineering',
       title: 'Large diff has little visible test movement',
       description:
-        'The change may be carrying too much product surface for the amount of verification in the diff.',
+        'The change may carry too much product surface for the verification in the diff.',
       affected_files: publicChangedFiles,
       affected_entities: graphAffectedEntities,
       confidence: 'inferred',
@@ -15971,9 +23538,29 @@ function buildReview(params: {
     });
   }
 
-  const requiredTests = requiredTestCommands(params.entitySets.commands, changedFiles);
+  const requiredTests = requiredTestCommands(params.entitySets.commands, reviewableChangedFiles);
+  const verificationPlan = reviewVerificationPlan({
+    changedSourceFiles,
+    changedTestFiles,
+    changedConfigFiles,
+    changedDependencyFiles,
+    affectedFlows,
+    affectedServices,
+    affectedComponents: unique([...affectedComponentIds, ...dependentComponentIds]),
+    affectedDataDependencies,
+    affectedStateOperations,
+    dependencyRuntimeImpact,
+    architectureImpactMap,
+    findings,
+    requiredTests,
+    verificationStatus,
+  });
+  const verificationEvidenceScore = bves({
+    planItems: verificationPlan,
+    evidenceItems: params.verificationEvidence.items,
+  });
   const surgicalityScore = scoreSurgicality(
-    changedFiles.length,
+    reviewableChangedFiles.length,
     affectedComponents.length + dependentComponents.length,
     findings,
   );
@@ -15983,26 +23570,51 @@ function buildReview(params: {
     generated_at: params.now,
     changed_files: publicChangedFiles,
     direct_affected_components: directAffectedComponentData,
+    affected_services: affectedServices,
     dependent_components: dependentComponentData,
     affected_components: unique([...affectedComponentIds, ...dependentComponentIds]),
     affected_flows: affectedFlows,
     affected_relationships: affectedRelationships,
     architecture_impact_map: architectureImpactMap,
+    dependency_runtime_impact: dependencyRuntimeImpact,
     affected_entities: graphAffectedEntities,
     blast_radius_reasons: blastRadiusReasons,
+    review_governance: reviewGovernance,
     review_evidence_summary: {
       changed_files: changedFiles.length,
+      generated_artifacts: changedGeneratedArtifactFiles.map(safeText),
+      test_evidence_changes: testEvidenceChanges,
       direct_components: affectedComponents.length,
+      affected_services: affectedServices.length,
       dependent_components: dependentComponents.length,
       affected_flows: affectedFlows.length,
+      dependency_runtime_impacts: dependencyRuntimeImpact === null ? 0 : 1,
+      dependency_runtime_changed_files: dependencyRuntimeImpact?.changed_files ?? [],
+      dependency_runtime_surfaces: dependencyRuntimeImpact?.runtime_surfaces ?? [],
+      dependency_runtime_verification_focus: dependencyRuntimeImpact?.verification_focus ?? [],
+      service_causality_paths: serviceCausalityPaths.length,
+      service_causality_effects: serviceCausalityEffects,
+      affected_journeys: affectedJourneyNames,
+      affected_journey_steps: affectedJourneySteps.length,
+      affected_data_dependencies: affectedDataDependencies.map((dependency) =>
+        safeText(dependency.label),
+      ),
+      affected_state_operations: affectedStateOperations,
+      user_visible_failure_modes: userVisibleFailureModes,
+      journey_missing_evidence: journeyMissingEvidence,
       architecture_impact_surfaces: architectureImpactMap.length,
       architecture_confidence_gaps: architectureConfidenceGaps.map(safeText),
       architecture_evidence_gap_ids: architectureEvidenceGapIds,
       architecture_what_breaks: architectureWhatBreaks,
+      architecture_risk_reasoning: architectureRiskReasoning,
       affected_tests: affectedTests,
       affected_configs: affectedConfigs,
+      verification_evidence_ids: params.verificationEvidence.items.map((item) => item.id),
       evidence_ids: reviewEvidenceIds.slice(0, 40),
     },
+    verification_status: verificationStatus,
+    verification_plan: verificationPlan,
+    verification_evidence_score: verificationEvidenceScore,
     findings,
     overall_risk: overallRisk,
     surgicality_score: surgicalityScore,
@@ -16014,6 +23626,7 @@ function buildReview(params: {
       affectedComponents,
       dependentComponents,
       affectedFlows,
+      dependencyRuntimeImpact,
       blastRadiusReasons,
     ),
     recommended_action: recommendAction(overallRisk, findings),
@@ -16061,6 +23674,9 @@ function scoreReviewReadiness(
 ): number {
   const evidenceBonus = Math.min(12, review.review_evidence_summary.evidence_ids.length);
   const testBonus = Math.min(8, review.required_tests.length * 2);
+  const verificationPlanBonus = Math.min(8, review.verification_plan.length * 2);
+  const requiredVerificationPenalty =
+    review.verification_plan.filter((item) => item.priority === 'required').length * 2;
   const findingPenalty = review.findings.length * 4;
   const secretPenalty = unsafeSensitiveReferenceCount * 25;
   return Math.max(
@@ -16069,7 +23685,9 @@ function scoreReviewReadiness(
       100,
       review.surgicality_score * 10 +
         evidenceBonus +
-        testBonus -
+        testBonus +
+        verificationPlanBonus -
+        requiredVerificationPenalty -
         findingPenalty -
         riskPenalty(review.overall_risk) -
         blastRadiusPenalty(review.blast_radius) -
@@ -16078,10 +23696,510 @@ function scoreReviewReadiness(
   );
 }
 
+function reviewBlastRadiusActionabilityStatus(
+  score: number,
+): ReviewBlastRadiusActionabilityData['status'] {
+  if (score >= 80) return 'strong';
+  if (score >= 55) return 'partial';
+  return 'weak';
+}
+
+function buildReviewBlastRadiusActionability(
+  review: ReviewSummaryData,
+): ReviewBlastRadiusActionabilityData {
+  const summary = review.review_evidence_summary;
+  const affectedJourneyCount = summary.affected_journeys.length;
+  const affectedJourneyStepCount = summary.affected_journey_steps;
+  const userVisibleFailureModeCount = summary.user_visible_failure_modes.length;
+  const evidenceIdCount = summary.evidence_ids.length;
+  const verificationPlanCount = review.verification_plan.length;
+  const requiredVerificationCount = review.verification_plan.filter(
+    (item) => item.priority === 'required',
+  ).length;
+  const architectureWhatBreaksNoteCount = summary.architecture_what_breaks.length;
+  const serviceCausalityPathCount = summary.service_causality_paths;
+  const affectedTestCount = summary.affected_tests.length;
+  const missingEvidenceCount =
+    summary.journey_missing_evidence.length +
+    summary.architecture_evidence_gap_ids.length +
+    summary.architecture_confidence_gaps.length;
+  const signalEntries = [
+    affectedJourneyCount > 0
+      ? `${affectedJourneyCount} affected journey name(s) connect the diff to user behavior.`
+      : undefined,
+    affectedJourneyStepCount > 0
+      ? `${affectedJourneyStepCount} affected journey step(s) identify where behavior can break.`
+      : undefined,
+    userVisibleFailureModeCount > 0
+      ? `${userVisibleFailureModeCount} user-visible failure mode(s) were recorded.`
+      : undefined,
+    architectureWhatBreaksNoteCount > 0
+      ? `${architectureWhatBreaksNoteCount} architecture what-breaks note(s) explain causal impact.`
+      : undefined,
+    serviceCausalityPathCount > 0
+      ? `${serviceCausalityPathCount} service causality path(s) link files to runtime behavior.`
+      : undefined,
+    affectedTestCount > 0
+      ? `${affectedTestCount} affected test artifact(s) can verify the blast radius.`
+      : undefined,
+    evidenceIdCount > 0
+      ? `${evidenceIdCount} evidence record(s) support review claims.`
+      : undefined,
+    verificationPlanCount > 0
+      ? `${verificationPlanCount} targeted verification step(s) were generated.`
+      : undefined,
+  ];
+  const gapEntries = [
+    affectedJourneyCount === 0
+      ? 'No affected product/business journey was named for this diff.'
+      : undefined,
+    affectedJourneyStepCount === 0
+      ? 'No journey step was linked to the changed surface.'
+      : undefined,
+    userVisibleFailureModeCount === 0
+      ? 'No user-visible failure mode was available for the affected surface.'
+      : undefined,
+    affectedTestCount === 0
+      ? 'No affected test artifact was linked to the changed surface.'
+      : undefined,
+    architectureWhatBreaksNoteCount === 0
+      ? 'No architecture what-breaks note was linked to the changed surface.'
+      : undefined,
+    evidenceIdCount === 0 ? 'No evidence IDs were attached to review claims.' : undefined,
+    ...summary.journey_missing_evidence.map((item) => `Journey evidence gap: ${safeText(item)}`),
+    ...summary.architecture_evidence_gap_ids.map(
+      (item) => `Architecture evidence gap: ${safeText(item)}`,
+    ),
+    ...summary.architecture_confidence_gaps.map(
+      (item) => `Architecture confidence gap: ${safeText(item)}`,
+    ),
+  ];
+  const signals = unique(signalEntries.filter((item): item is string => item !== undefined)).map(
+    safeText,
+  );
+  const gaps = unique(gapEntries.filter((item): item is string => item !== undefined)).map(
+    safeText,
+  );
+  const score = boundedScore(
+    (affectedJourneyCount > 0 ? 14 : 0) +
+      (affectedJourneyStepCount > 0 ? 14 : 0) +
+      (userVisibleFailureModeCount > 0 ? 16 : 0) +
+      (architectureWhatBreaksNoteCount > 0 ? 12 : 0) +
+      (serviceCausalityPathCount > 0 ? 10 : 0) +
+      (affectedTestCount > 0 ? 10 : 0) +
+      (evidenceIdCount > 0 ? 12 : 0) +
+      (verificationPlanCount > 0 ? 8 : 0) +
+      (requiredVerificationCount > 0 ? 4 : 0) -
+      Math.min(18, missingEvidenceCount * 3),
+  );
+  return {
+    score,
+    status: reviewBlastRadiusActionabilityStatus(score),
+    changed_file_count: review.changed_files.length,
+    affected_journey_count: affectedJourneyCount,
+    affected_journey_step_count: affectedJourneyStepCount,
+    user_visible_failure_mode_count: userVisibleFailureModeCount,
+    evidence_id_count: evidenceIdCount,
+    verification_plan_count: verificationPlanCount,
+    required_verification_count: requiredVerificationCount,
+    architecture_what_breaks_note_count: architectureWhatBreaksNoteCount,
+    service_causality_path_count: serviceCausalityPathCount,
+    affected_test_count: affectedTestCount,
+    missing_evidence_count: missingEvidenceCount,
+    signals: signals.slice(0, 10),
+    gaps: gaps.slice(0, 10),
+  };
+}
+
+function reviewPrecisionStatus(score: number): ReviewPrecisionCalibrationData['status'] {
+  if (score >= 85) return 'strong';
+  if (score >= 65) return 'partial';
+  return 'weak';
+}
+
+function hasReviewFinding(
+  review: ReviewSummaryData,
+  params: { readonly category: ReviewCategory; readonly titleIncludes?: string },
+): boolean {
+  return review.findings.some(
+    (finding) =>
+      finding.category === params.category &&
+      (params.titleIncludes === undefined || finding.title.includes(params.titleIncludes)),
+  );
+}
+
+function buildReviewPrecisionCalibration(
+  review: ReviewSummaryData,
+): ReviewPrecisionCalibrationData {
+  const changedFiles = review.changed_files;
+  const generatedArtifacts = review.review_evidence_summary.generated_artifacts;
+  const runtimeSourceFiles = changedFiles.filter(
+    (file) =>
+      isSourceFile(file) &&
+      !isTestPath(file) &&
+      !isGeneratedArtifactPath(file) &&
+      !isConfigPath(file) &&
+      !isDependencyPath(file),
+  );
+  const testOnlyChange = changedFiles.length > 0 && changedFiles.every(isTestPath);
+  const generatedArtifactOnlyChange =
+    changedFiles.length > 0 && changedFiles.every((file) => generatedArtifacts.includes(file));
+  const dependencyOrConfigOnlyChange =
+    changedFiles.length > 0 &&
+    changedFiles.every((file) => isConfigPath(file) || isDependencyPath(file));
+  const lockfileOnlyChange =
+    changedFiles.length > 0 &&
+    changedFiles.every(
+      (file) =>
+        isDependencyPath(file) &&
+        /(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?)$/i.test(file),
+    );
+  const hasMissingTestsFinding = hasReviewFinding(review, {
+    category: 'Missing tests',
+    titleIncludes: 'Runtime files changed',
+  });
+  const hasStateDataFinding = hasReviewFinding(review, {
+    category: 'Hidden coupling',
+    titleIncludes: 'State/data dependency overlaps',
+  });
+  const hasArchitectureImpactFinding = hasReviewFinding(review, {
+    category: 'Architecture drift',
+    titleIncludes: 'Architecture impact map overlaps',
+  });
+  const falsePositiveGuards = unique([
+    ...(testOnlyChange ? ['test_only_confidence_guard'] : []),
+    ...(generatedArtifactOnlyChange ? ['generated_artifact_visibility_guard'] : []),
+    ...(dependencyOrConfigOnlyChange ? ['dependency_config_runtime_guard'] : []),
+    ...(lockfileOnlyChange ? ['lockfile_install_resolution_guard'] : []),
+    ...(review.review_evidence_summary.affected_data_dependencies.length === 0 &&
+    review.review_evidence_summary.affected_state_operations.length === 0 &&
+    !hasStateDataFinding
+      ? ['state_data_overstatement_guard']
+      : []),
+    ...(review.architecture_impact_map.length === 0 && !hasArchitectureImpactFinding
+      ? ['architecture_overstatement_guard']
+      : []),
+    ...(!hasMissingTestsFinding ? ['missing_tests_overstatement_guard'] : []),
+    ...(review.review_evidence_summary.user_visible_failure_modes.length === 0
+      ? ['user_visible_failure_overstatement_guard']
+      : []),
+  ]);
+  const falseNegativeSignals = unique([
+    ...(review.affected_flows.length > 0 ? ['affected_flow_context_preserved'] : []),
+    ...(review.review_evidence_summary.affected_tests.length > 0
+      ? ['test_evidence_preserved']
+      : []),
+    ...(review.dependency_runtime_impact !== null ? ['dependency_runtime_context_preserved'] : []),
+    ...(generatedArtifacts.length > 0 ? ['generated_artifact_change_visible'] : []),
+    ...(review.review_evidence_summary.user_visible_failure_modes.length > 0
+      ? ['user_visible_failure_context_preserved']
+      : []),
+    ...(review.review_evidence_summary.architecture_what_breaks.length > 0
+      ? ['architecture_what_breaks_context_preserved']
+      : []),
+    ...(review.review_evidence_summary.evidence_ids.length > 0 ? ['evidence_links_preserved'] : []),
+  ]);
+  const precisionGaps = unique([
+    ...(runtimeSourceFiles.length > 0 && review.affected_flows.length === 0
+      ? ['runtime_source_change_without_flow_context']
+      : []),
+    ...(changedFiles.some(isDependencyPath) && review.dependency_runtime_impact === null
+      ? ['dependency_change_without_runtime_context']
+      : []),
+    ...(review.affected_flows.length > 0 &&
+    review.review_evidence_summary.user_visible_failure_modes.length === 0
+      ? ['affected_flow_without_user_visible_failure_mode']
+      : []),
+    ...(review.review_evidence_summary.evidence_ids.length === 0
+      ? ['review_claims_without_evidence_links']
+      : []),
+  ]);
+  const score = boundedScore(
+    50 +
+      Math.min(28, falsePositiveGuards.length * 4) +
+      Math.min(22, falseNegativeSignals.length * 4) -
+      Math.min(35, precisionGaps.length * 9),
+  );
+  return {
+    score,
+    status: reviewPrecisionStatus(score),
+    changed_file_count: changedFiles.length,
+    runtime_source_change_count: runtimeSourceFiles.length,
+    test_only_change: testOnlyChange,
+    generated_artifact_only_change: generatedArtifactOnlyChange,
+    dependency_or_config_only_change: dependencyOrConfigOnlyChange,
+    lockfile_only_change: lockfileOnlyChange,
+    false_positive_guard_count: falsePositiveGuards.length,
+    false_negative_signal_count: falseNegativeSignals.length,
+    precision_gap_count: precisionGaps.length,
+    false_positive_guards: falsePositiveGuards.map(safeText),
+    false_negative_signals: falseNegativeSignals.map(safeText),
+    precision_gaps: precisionGaps.map(safeText),
+  };
+}
+
+function emptyReviewClaimSurfaceCounts(): Record<ReviewClaimEvidenceSurface, number> {
+  return {
+    blast_radius_reason: 0,
+    finding: 0,
+    affected_flow: 0,
+    verification_plan: 0,
+  };
+}
+
+function emptyConfidenceCounts(): Record<Confidence, number> {
+  return { verified: 0, inferred: 0, uncertain: 0 };
+}
+
+function reviewClaimRedactionCount(
+  claim: Omit<ReviewClaimEvidenceData, 'redacted_evidence_count'>,
+): number {
+  return redactedReferenceCount(safeResearchValue(claim));
+}
+
+function architectureImpactClaimRedactionCount(
+  claim: Omit<ReviewArchitectureImpactClaimEvidenceData, 'redacted_evidence_count'>,
+): number {
+  return redactedReferenceCount(safeResearchValue(claim));
+}
+
+function buildArchitectureImpactClaimEvidence(
+  review: ReviewSummaryData,
+): ReviewArchitectureImpactClaimEvidenceData[] {
+  return review.architecture_impact_map.map((impact, index) => {
+    const affectedEntities = unique([
+      impact.entity_id,
+      ...impact.matched_components,
+      ...impact.dependent_components,
+      ...impact.matched_flows,
+      ...impact.affected_flows,
+    ]);
+    const unknowns = unique([
+      ...(impact.evidence_gap_ids.length > 0
+        ? [`Architecture evidence gaps remain: ${impact.evidence_gap_ids.slice(0, 6).join(', ')}.`]
+        : []),
+      ...(impact.confidence !== 'verified'
+        ? [`Architecture impact confidence is ${impact.confidence}; confirm source evidence.`]
+        : []),
+      ...(impact.evidence_ids.length === 0
+        ? ['No direct evidence IDs were linked to this architecture impact surface.']
+        : []),
+    ]);
+    const claimWithoutRedaction = {
+      claim_id: entityId('evidence', `review-architecture-impact-claim-${index + 1}`),
+      impact_id: safeText(impact.impact_id),
+      surface_type: impact.surface_type,
+      claim: safeText(
+        `${impact.impact_id} links ${impact.matched_changed_files.join(', ') || 'changed files'} to ${
+          impact.name
+        }; likely breakage: ${impact.what_breaks.slice(0, 3).join(' ') || 'none recorded'}.`,
+      ),
+      confidence: impact.confidence,
+      evidence_ids: unique(impact.evidence_ids.map(safeText)),
+      source_files: unique(
+        [...impact.matched_changed_files, ...impact.affected_files].map(safeText),
+      ),
+      affected_entities: affectedEntities.map(safeText),
+      matched_components: impact.matched_components.map(safeText),
+      matched_flows: impact.matched_flows.map(safeText),
+      affected_flows: impact.affected_flows.map(safeText),
+      affected_tests: impact.affected_tests.map(safeText),
+      affected_configs: impact.affected_configs.map(safeText),
+      what_breaks: impact.what_breaks.map(safeText),
+      review_focus: impact.risk_reasoning.review_focus.map(safeText),
+      rules: unique(
+        [
+          'architecture_impact_map',
+          `surface:${impact.surface_type}`,
+          `coupling:${impact.coupling_level}`,
+          `risk:${impact.risk_reasoning.risk_level}`,
+          ...impact.reasons,
+        ].map(safeText),
+      ),
+      unknowns: unknowns.map(safeText),
+    };
+    return {
+      ...claimWithoutRedaction,
+      redacted_evidence_count: architectureImpactClaimRedactionCount(claimWithoutRedaction),
+    };
+  });
+}
+
+function buildReviewClaimEvidenceArtifact(
+  review: ReviewSummaryData,
+): ReviewClaimEvidenceArtifactData {
+  const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
+  const claims: ReviewClaimEvidenceData[] = [];
+  const pushClaim = (
+    surface: ReviewClaimEvidenceSurface,
+    params: {
+      readonly claim: string;
+      readonly confidence: Confidence;
+      readonly evidenceIds: readonly string[];
+      readonly sourceFiles: readonly string[];
+      readonly affectedEntities: readonly string[];
+      readonly rules: readonly string[];
+      readonly unknowns: readonly string[];
+    },
+  ): void => {
+    const claimWithoutRedaction = {
+      claim_id: entityId('evidence', `review-claim-${surface}-${claims.length + 1}`),
+      surface,
+      claim: safeText(params.claim),
+      confidence: params.confidence,
+      evidence_ids: unique(params.evidenceIds.map(safeText)),
+      source_files: unique(params.sourceFiles.map(safeText)),
+      affected_entities: unique(params.affectedEntities.map(safeText)),
+      rules: unique(params.rules.map(safeText)),
+      unknowns: unique(params.unknowns.map(safeText)),
+    };
+    claims.push({
+      ...claimWithoutRedaction,
+      redacted_evidence_count: reviewClaimRedactionCount(claimWithoutRedaction),
+    });
+  };
+
+  for (const reason of review.blast_radius_reasons) {
+    pushClaim('blast_radius_reason', {
+      claim: reason,
+      confidence: review.review_evidence_summary.evidence_ids.length > 0 ? 'inferred' : 'uncertain',
+      evidenceIds: review.review_evidence_summary.evidence_ids,
+      sourceFiles: review.changed_files,
+      affectedEntities: review.affected_entities,
+      rules: ['blast_radius_reason', `blast_radius:${review.blast_radius}`],
+      unknowns:
+        review.review_evidence_summary.evidence_ids.length === 0
+          ? ['No direct evidence IDs were linked to this blast-radius reason.']
+          : [],
+    });
+  }
+
+  for (const finding of review.findings) {
+    pushClaim('finding', {
+      claim: `${finding.title}: ${finding.description}`,
+      confidence: finding.confidence,
+      evidenceIds: finding.evidence_ids,
+      sourceFiles: finding.affected_files,
+      affectedEntities: finding.affected_entities,
+      rules: [`finding:${finding.category}`, `severity:${finding.severity}`],
+      unknowns:
+        finding.evidence_ids.length === 0
+          ? ['No direct evidence IDs were linked to this finding.']
+          : [],
+    });
+  }
+
+  for (const flow of review.affected_flows) {
+    pushClaim('affected_flow', {
+      claim: `${reviewFlowDescriptionLabel(flow)} is affected by changed files ${
+        flow.changed_files.join(', ') || 'none recorded'
+      }.`,
+      confidence: flow.confidence,
+      evidenceIds: flow.evidence_ids,
+      sourceFiles: unique([...flow.changed_files, ...flow.entrypoints]),
+      affectedEntities: unique([flow.id, ...flow.components, ...flow.services]),
+      rules: ['affected_flow_overlap', `flow_kind:${flow.kind}`],
+      unknowns: (() => {
+        if (flow.missing_evidence.length > 0) return flow.missing_evidence;
+        if (flow.evidence_ids.length === 0) {
+          return ['No direct evidence IDs were linked to this affected flow.'];
+        }
+        return [];
+      })(),
+    });
+  }
+
+  for (const item of review.verification_plan) {
+    pushClaim('verification_plan', {
+      claim: `${item.priority} ${item.verification_type} verification: ${item.reason}`,
+      confidence: item.confidence,
+      evidenceIds: item.evidence_ids,
+      sourceFiles: item.linked_files,
+      affectedEntities: unique([
+        ...item.linked_findings,
+        ...item.linked_flows,
+        ...item.linked_components,
+      ]),
+      rules: [`verification_plan:${item.verification_type}`, `priority:${item.priority}`],
+      unknowns:
+        item.evidence_ids.length === 0
+          ? ['No direct evidence IDs were linked to this verification step.']
+          : [],
+    });
+  }
+
+  const architectureImpactClaims = buildArchitectureImpactClaimEvidence(review);
+  const claimsBySurface = emptyReviewClaimSurfaceCounts();
+  const claimsByConfidence = emptyConfidenceCounts();
+  for (const claim of claims) {
+    claimsBySurface[claim.surface] += 1;
+    claimsByConfidence[claim.confidence] += 1;
+  }
+  const safeClaims = safeResearchValue(claims);
+  const safeArchitectureImpactClaims = safeResearchValue(architectureImpactClaims);
+  const claimsWithEvidence =
+    claims.filter((claim) => claim.evidence_ids.length > 0).length +
+    architectureImpactClaims.filter((claim) => claim.evidence_ids.length > 0).length;
+  const totalClaimCount = claims.length + architectureImpactClaims.length;
+  const safeEvidencePayload = {
+    claims: safeClaims,
+    architecture_impact_claims: safeArchitectureImpactClaims,
+  };
+  const redactedReferenceCountValue = redactedReferenceCount(safeEvidencePayload);
+  const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeEvidencePayload);
+  return {
+    schema_version: 1,
+    generated_at: review.generated_at,
+    review_id: review.id,
+    basis: {
+      source: 'pre_change_project_brain_plus_git_diff',
+      description:
+        'Derived from the Project Intelligence Layer plus the current git diff; no runtime certainty is claimed.',
+      review_fields: [
+        'changed_files',
+        'blast_radius_reasons',
+        'findings',
+        'affected_flows',
+        'verification_plan',
+        'architecture_impact_map',
+      ],
+    },
+    changed_files: review.changed_files,
+    deterministic: true,
+    provider_calls_required: false,
+    network_required: false,
+    total_claims: claims.length,
+    architecture_impact_claim_count: architectureImpactClaims.length,
+    claim_counts: {
+      total: totalClaimCount,
+      generic_claims: claims.length,
+      architecture_impact_claims: architectureImpactClaims.length,
+      with_evidence: claimsWithEvidence,
+      without_evidence: totalClaimCount - claimsWithEvidence,
+    },
+    claims_by_surface: claimsBySurface,
+    claims_by_confidence: claimsByConfidence,
+    blast_radius_actionability: blastRadiusActionability,
+    redacted_evidence_count: redactedReferenceCountValue,
+    secret_safety: {
+      redacted_reference_count: redactedReferenceCountValue,
+      unsafe_sensitive_reference_count: unsafeSensitiveReferenceCount,
+      output_secret_safe: unsafeSensitiveReferenceCount === 0,
+    },
+    claims: safeClaims as ReviewClaimEvidenceData[],
+    architecture_impact_claims:
+      safeArchitectureImpactClaims as ReviewArchitectureImpactClaimEvidenceData[],
+  };
+}
+
 function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactData {
   const safeReview = safeResearchValue(review);
   const redactedCount = redactedReferenceCount(safeReview);
   const unsafeSensitiveReferenceCount = unredactedSensitiveReferenceCount(safeReview);
+  const serviceCausality = review.affected_flows.flatMap((flow) => flow.service_causality);
+  const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
+  const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
+  const precisionCalibration = buildReviewPrecisionCalibration(review);
   return {
     schema_version: 1,
     generated_at: review.generated_at,
@@ -16092,10 +24210,30 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     total_findings: review.findings.length,
     findings_by_severity: countReviewFindingsBySeverity(review.findings),
     findings_by_category: countReviewFindingsByCategory(review.findings),
+    generated_artifact_count: review.review_evidence_summary.generated_artifacts.length,
+    test_evidence_change_count: review.review_evidence_summary.test_evidence_changes.length,
     affected_component_count: review.affected_components.length,
+    affected_service_count: review.affected_services.length,
     direct_affected_component_count: review.direct_affected_components.length,
     dependent_component_count: review.dependent_components.length,
     affected_flow_count: review.affected_flows.length,
+    dependency_runtime_impact_count: review.dependency_runtime_impact === null ? 0 : 1,
+    dependency_runtime_changed_file_count:
+      review.dependency_runtime_impact?.changed_files.length ?? 0,
+    dependency_runtime_surface_count:
+      review.dependency_runtime_impact?.runtime_surfaces.length ?? 0,
+    dependency_runtime_verification_focus_count:
+      review.dependency_runtime_impact?.verification_focus.length ?? 0,
+    service_causality_path_count: serviceCausality.length,
+    service_causality_effect_count: serviceCausalityEffects.length,
+    affected_journey_count: review.review_evidence_summary.affected_journeys.length,
+    affected_journey_step_count: review.review_evidence_summary.affected_journey_steps,
+    affected_data_dependency_count:
+      review.review_evidence_summary.affected_data_dependencies.length,
+    affected_state_operation_count: review.review_evidence_summary.affected_state_operations.length,
+    user_visible_failure_mode_count:
+      review.review_evidence_summary.user_visible_failure_modes.length,
+    journey_missing_evidence_count: review.review_evidence_summary.journey_missing_evidence.length,
     affected_relationship_count: review.affected_relationships.length,
     architecture_impact_surface_count: review.architecture_impact_map.length,
     architecture_impact_component_surface_count: review.architecture_impact_map.filter(
@@ -16106,10 +24244,29 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     ).length,
     architecture_what_breaks_note_count:
       review.review_evidence_summary.architecture_what_breaks.length,
+    architecture_risk_reasoning_count:
+      review.review_evidence_summary.architecture_risk_reasoning.length,
     architecture_evidence_gap_count:
       review.review_evidence_summary.architecture_evidence_gap_ids.length,
     architecture_confidence_gap_count:
       review.review_evidence_summary.architecture_confidence_gaps.length,
+    verification_evidence_count: review.verification_status.total_checks,
+    verification_passed_count: review.verification_status.passed_checks.length,
+    verification_failed_count: review.verification_status.failed_checks.length,
+    verification_evidence_score: review.verification_evidence_score.score,
+    verification_plan_count: review.verification_plan.length,
+    verification_plan_required_count: review.verification_plan.filter(
+      (item) => item.priority === 'required',
+    ).length,
+    verification_plan_recommended_count: review.verification_plan.filter(
+      (item) => item.priority === 'recommended',
+    ).length,
+    verification_plan_optional_count: review.verification_plan.filter(
+      (item) => item.priority === 'optional',
+    ).length,
+    human_approval_state: review.human_approval?.state ?? 'awaiting_agent_repair',
+    human_signoff_recorded: review.human_approval?.human_signoff_recorded ?? false,
+    merge_release_ready: review.human_approval?.merge_release_ready ?? false,
     architecture_affected_test_count: unique(
       review.architecture_impact_map.flatMap((entry) => entry.affected_tests),
     ).length,
@@ -16122,6 +24279,23 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
     overall_risk: review.overall_risk,
     surgicality_score: review.surgicality_score,
     review_readiness_score: scoreReviewReadiness(review, unsafeSensitiveReferenceCount),
+    blast_radius_actionability_score: blastRadiusActionability.score,
+    blast_radius_actionability_status: blastRadiusActionability.status,
+    actionable_signal_count: blastRadiusActionability.signals.length,
+    actionability_gap_count: blastRadiusActionability.gaps.length,
+    blast_radius_actionability: blastRadiusActionability,
+    review_precision_score: precisionCalibration.score,
+    review_precision_status: precisionCalibration.status,
+    false_positive_guard_count: precisionCalibration.false_positive_guard_count,
+    false_negative_signal_count: precisionCalibration.false_negative_signal_count,
+    precision_gap_count: precisionCalibration.precision_gap_count,
+    precision_calibration: precisionCalibration,
+    review_governance_score: review.review_governance.score,
+    review_governance_status: review.review_governance.status,
+    version_control_warning_count: review.review_governance.version_control_warnings.length,
+    scope_drift_signal_count: review.review_governance.scope_drift_signals.length,
+    duplicate_change_signal_count: review.review_governance.duplicate_change_signals.length,
+    review_governance: review.review_governance,
     secret_safety: {
       redaction_applied: redactedCount > 0,
       redacted_reference_count: redactedCount,
@@ -16137,41 +24311,132 @@ function buildReviewEvalArtifact(review: ReviewSummaryData): ReviewEvalArtifactD
           : 'Review eval output still contains unsafe sensitive references.',
     },
     scoring_notes: [
-      'Review eval is computed from deterministic local review, brain, graph, and evidence artifacts.',
-      'Architecture impact counts are populated only when changed files, components, or flows overlap the local impact map.',
-      'Readiness combines surgicality, risk, blast radius, findings, test guidance, evidence, and secret safety.',
+      'Computed from deterministic local review, brain, graph, diff, and evidence artifacts.',
+      'Verification evidence reduces risk only when checks are explicitly recorded.',
     ],
   };
-}
-
-async function updateBrainIndexReviewEvalPath(indexPath: string): Promise<void> {
-  const index = (await readJsonFile<Record<string, unknown>>(indexPath)) ?? {};
-  const researchPaths = isRecord(index.research_paths) ? index.research_paths : {};
-  await writeVerifiedFile(
-    indexPath,
-    jsonString(
-      safeBrainValue({
-        ...index,
-        research_paths: {
-          ...researchPaths,
-          review_eval: '.rizz/research/review_eval.json',
-        },
-      }),
-    ),
-  );
 }
 
 function isSourceFile(path: string): boolean {
   return /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php)$/.test(path) && !isTestPath(path);
 }
 
+type DiffFileChange = {
+  readonly addedLines: readonly string[];
+  readonly deletedLines: readonly string[];
+  readonly isDeleted: boolean;
+  readonly isRenamed: boolean;
+  readonly isNew: boolean;
+};
+
+function hasRuntimeRelevantSourceDiff(path: string, diffText: string): boolean {
+  if (isTypeOnlySupportFile(path)) return false;
+  const change = diffChangeForFile(diffText, path);
+  if (change === undefined) return true;
+  if (change.isDeleted || change.isRenamed || change.isNew) return true;
+  return changedCodeLines(change).length > 0;
+}
+
+function hasStateDataRelevantDiff(path: string, diffText: string): boolean {
+  if (isTypeOnlySupportFile(path)) return false;
+  const change = diffChangeForFile(diffText, path);
+  if (change === undefined) return true;
+  if (change.isDeleted || change.isRenamed || change.isNew) return true;
+  return changedCodeLines(change).length > 0;
+}
+
+function changedCodeLines(change: DiffFileChange): string[] {
+  return [...change.addedLines, ...change.deletedLines].filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed === '') return false;
+    if (
+      trimmed.startsWith('//') ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('/*') ||
+      trimmed.startsWith('*') ||
+      trimmed.startsWith('*/') ||
+      trimmed.startsWith('<!--') ||
+      trimmed.startsWith('--')
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function diffChangeForFile(diffText: string, path: string): DiffFileChange | undefined {
+  return parseDiffFileChanges(diffText).get(path);
+}
+
+function parseDiffFileChanges(diffText: string): Map<string, DiffFileChange> {
+  const changes = new Map<string, DiffFileChange>();
+  let current:
+    | {
+        oldPath: string;
+        newPath: string;
+        addedLines: string[];
+        deletedLines: string[];
+        isDeleted: boolean;
+        isRenamed: boolean;
+        isNew: boolean;
+      }
+    | undefined;
+  const commitCurrent = (): void => {
+    if (current === undefined) return;
+    const value: DiffFileChange = {
+      addedLines: current.addedLines,
+      deletedLines: current.deletedLines,
+      isDeleted: current.isDeleted,
+      isRenamed: current.isRenamed,
+      isNew: current.isNew,
+    };
+    changes.set(current.newPath, value);
+    changes.set(current.oldPath, value);
+  };
+  for (const line of diffText.split(/\r?\n/)) {
+    const header = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+    if (header !== null) {
+      commitCurrent();
+      current = {
+        oldPath: header[1] ?? '',
+        newPath: header[2] ?? '',
+        addedLines: [],
+        deletedLines: [],
+        isDeleted: false,
+        isRenamed: false,
+        isNew: false,
+      };
+      continue;
+    }
+    if (current === undefined) continue;
+    if (line.startsWith('deleted file mode')) {
+      current.isDeleted = true;
+      continue;
+    }
+    if (line.startsWith('new file mode')) {
+      current.isNew = true;
+      continue;
+    }
+    if (line.startsWith('rename from ') || line.startsWith('rename to ')) {
+      current.isRenamed = true;
+      continue;
+    }
+    if (line.startsWith('+++ ') || line.startsWith('--- ')) continue;
+    if (line.startsWith('+')) current.addedLines.push(line.slice(1));
+    if (line.startsWith('-')) current.deletedLines.push(line.slice(1));
+  }
+  commitCurrent();
+  return changes;
+}
+
 function isTestPath(path: string): boolean {
-  return /(__tests__|\.test\.|\.spec\.)/.test(path);
+  return /(__tests__|(^|\/)tests?(\/|$)|\.test\.|\.spec\.)/.test(path);
 }
 
 function isConfigPath(path: string): boolean {
   return (
     path.startsWith('.github/') ||
+    isDeploymentConfigPath(path) ||
     CONFIG_FILES.has(basename(path)) ||
     /(^|\/)(Dockerfile|Makefile|.*config\.(ts|js|mjs|cjs|json|yml|yaml))$/.test(path)
   );
@@ -16188,6 +24453,7 @@ function affectedComponentEntities(
   components: readonly BrainEntity[],
 ): BrainEntity[] {
   return components.filter((component) => {
+    if (component.latest_status === 'stale') return false;
     const componentPath =
       typeof component.data?.purpose === 'string' ? component.name : component.name;
     return changedFiles.some(
@@ -16210,7 +24476,11 @@ function dependentComponentEntities(
   components: readonly BrainEntity[],
 ): BrainEntity[] {
   const directIds = new Set(directComponentIds);
-  const componentsById = new Map(components.map((component) => [component.id, component]));
+  const componentsById = new Map(
+    components
+      .filter((component) => component.latest_status !== 'stale')
+      .map((component) => [component.id, component]),
+  );
   const dependentIds = new Set<string>();
   for (const rel of relationships) {
     if (rel.relation === 'imports' || rel.relation === 'calls' || rel.relation === 'depends_on') {
@@ -16255,10 +24525,16 @@ function dependentComponentReason(
 function affectedReviewRelationships(
   relationships: readonly BrainRelationship[],
   affectedEntityIds: readonly string[],
+  staleEntityIds: ReadonlySet<string>,
 ): ReviewAffectedRelationshipData[] {
   const affectedIds = new Set(affectedEntityIds);
   return relationships
-    .filter((rel) => affectedIds.has(rel.from) || affectedIds.has(rel.to))
+    .filter(
+      (rel) =>
+        (affectedIds.has(rel.from) || affectedIds.has(rel.to)) &&
+        !staleEntityIds.has(rel.from) &&
+        !staleEntityIds.has(rel.to),
+    )
     .slice(0, 80)
     .map((rel) => ({
       from: safeText(rel.from),
@@ -16270,6 +24546,536 @@ function affectedReviewRelationships(
     .sort((a, b) =>
       `${a.from}:${a.relation}:${a.to}`.localeCompare(`${b.from}:${b.relation}:${b.to}`),
     );
+}
+
+function staleReviewEntityIds(
+  entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>,
+): Set<string> {
+  return new Set(
+    [
+      ...entitySets.files,
+      ...entitySets.components,
+      ...entitySets.services,
+      ...entitySets.flows,
+      ...entitySets.configs,
+      ...entitySets.commands,
+      ...entitySets.tests,
+      ...entitySets.dependencies,
+      ...entitySets.risks,
+    ]
+      .filter((entity) => entity.latest_status === 'stale')
+      .map((entity) => entity.id),
+  );
+}
+
+function reviewDependencyRuntimeImpact(params: {
+  readonly changedConfigFiles: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly entitySets: Awaited<ReturnType<typeof readReviewEntitySets>>;
+  readonly directComponents: readonly BrainEntity[];
+  readonly dependentComponents: readonly BrainEntity[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+  readonly affectedTests: readonly string[];
+  readonly affectedConfigs: readonly string[];
+  readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
+}): ReviewDependencyRuntimeImpactData | null {
+  const changedFiles = unique([...params.changedDependencyFiles, ...params.changedConfigFiles]);
+  if (changedFiles.length === 0) return null;
+
+  const packageManifests = params.changedDependencyFiles.filter((file) =>
+    /(^|\/)package\.json$/.test(file),
+  );
+  const lockfiles = params.changedDependencyFiles.filter(
+    (file) => !packageManifests.includes(file),
+  );
+  const changedDependencyFileSet = new Set(params.changedDependencyFiles);
+  const packageScripts = reviewPackageScriptsForChangedFiles(
+    params.entitySets.commands,
+    params.changedDependencyFiles,
+  );
+  const dependencyEntities = reviewDependencyEntitiesForChangedFiles({
+    dependencies: params.entitySets.dependencies,
+    changedDependencyFiles: params.changedDependencyFiles,
+    includeAllDependencies: lockfiles.length > 0,
+  });
+  const runtimeSurfaces = reviewDependencyRuntimeSurfaces({
+    changedConfigFiles: params.changedConfigFiles,
+    changedDependencyFiles: params.changedDependencyFiles,
+    packageScripts,
+    affectedFlows: params.affectedFlows,
+    affectedServices: params.affectedServices,
+  });
+  const affectedComponents = unique([
+    ...params.directComponents.map((component) => component.id),
+    ...params.dependentComponents.map((component) => component.id),
+    ...params.architectureImpactMap.flatMap((entry) => [
+      entry.entity_id,
+      ...entry.matched_components,
+      ...entry.dependent_components,
+    ]),
+  ]).map(safeText);
+  const affectedServices = params.affectedServices.map((service) => service.id);
+  const affectedFlows = params.affectedFlows.map((flow) => flow.id);
+  const affectedTests = unique([
+    ...params.affectedTests,
+    ...params.architectureImpactMap.flatMap((entry) => entry.affected_tests),
+  ]).map(safeText);
+  const affectedConfigs = unique([
+    ...params.affectedConfigs,
+    ...params.architectureImpactMap.flatMap((entry) => entry.affected_configs),
+  ]).map(safeText);
+  const verificationFocus = reviewDependencyVerificationFocus({
+    packageScripts,
+    affectedFlows: params.affectedFlows,
+    affectedServices: params.affectedServices,
+    affectedTests,
+    changedDependencyFiles: params.changedDependencyFiles,
+    changedConfigFiles: params.changedConfigFiles,
+  });
+
+  return {
+    changed_files: changedFiles.map(safeText),
+    package_manifests: packageManifests.map(safeText),
+    lockfiles: lockfiles.map(safeText),
+    config_files: params.changedConfigFiles.map(safeText),
+    dependency_entities: dependencyEntities.map((dependency) => dependency.id),
+    package_scripts: packageScripts,
+    runtime_surfaces: runtimeSurfaces,
+    affected_components: affectedComponents,
+    affected_services: affectedServices,
+    affected_flows: affectedFlows,
+    affected_tests: affectedTests,
+    affected_configs: affectedConfigs,
+    verification_focus: verificationFocus,
+    reasons: unique([
+      ...(packageManifests.length > 0
+        ? [`Changed package manifest(s): ${packageManifests.slice(0, 5).join(', ')}.`]
+        : []),
+      ...(lockfiles.length > 0
+        ? [`Changed lockfile(s): ${lockfiles.slice(0, 5).join(', ')}.`]
+        : []),
+      ...(params.changedConfigFiles.length > 0
+        ? [`Changed config file(s): ${params.changedConfigFiles.slice(0, 5).join(', ')}.`]
+        : []),
+      ...(packageScripts.length > 0
+        ? [
+            `${packageScripts.length} package script(s) can change install/build/test/runtime behavior.`,
+          ]
+        : []),
+      ...(dependencyEntities.length > 0
+        ? [
+            `${dependencyEntities.length} declared dependency entity/entities are linked to changed package evidence.`,
+          ]
+        : []),
+      ...(changedDependencyFileSet.size > 0 && affectedFlows.length > 0
+        ? [
+            `Package/dependency evidence is linked to affected flow(s): ${affectedFlows.slice(0, 5).join(', ')}.`,
+          ]
+        : []),
+      ...(params.affectedServices.length > 0
+        ? [
+            `Affected service(s) inherit package/config risk: ${affectedServices.slice(0, 5).join(', ')}.`,
+          ]
+        : []),
+    ]).map(safeText),
+    confidence:
+      affectedComponents.length > 0 ||
+      affectedFlows.length > 0 ||
+      affectedServices.length > 0 ||
+      packageScripts.length > 0
+        ? 'inferred'
+        : 'verified',
+  };
+}
+
+function reviewDependencyEntitiesForChangedFiles(params: {
+  readonly dependencies: readonly BrainEntity[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly includeAllDependencies: boolean;
+}): BrainEntity[] {
+  const changedFileSet = new Set(params.changedDependencyFiles);
+  return params.dependencies
+    .filter((dependency) => {
+      if (dependency.latest_status === 'stale') return false;
+      if (params.includeAllDependencies) return true;
+      return dependency.source_files.some((file) => changedFileSet.has(file));
+    })
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, 20);
+}
+
+function reviewPackageScriptsForChangedFiles(
+  commands: readonly BrainEntity[],
+  changedDependencyFiles: readonly string[],
+): ReviewPackageScriptData[] {
+  const changedFileSet = new Set(changedDependencyFiles);
+  return commands
+    .filter((command) => command.latest_status !== 'stale')
+    .filter((command) => command.source_files.some((file) => changedFileSet.has(file)))
+    .map((command) => {
+      const manifest = stringData(command, 'manifest') ?? command.source_files[0] ?? '';
+      const commandText = stringData(command, 'command') ?? '';
+      return {
+        manifest: safeText(manifest),
+        name: safeText(command.name),
+        command: safeText(commandText),
+        category: reviewPackageScriptCategory(command.name, commandText),
+      };
+    })
+    .sort(
+      (a, b) =>
+        a.manifest.localeCompare(b.manifest) ||
+        reviewPackageScriptCategoryRank(a.category) - reviewPackageScriptCategoryRank(b.category) ||
+        a.name.localeCompare(b.name),
+    )
+    .slice(0, 20);
+}
+
+function reviewPackageScriptCategory(name: string, command: string): ReviewPackageScriptCategory {
+  const scriptName = name.toLowerCase();
+  if (/typecheck|type-check/.test(scriptName)) return 'typecheck';
+  if (/test/.test(scriptName)) return 'test';
+  if (/lint/.test(scriptName)) return 'lint';
+  if (/pack/.test(scriptName)) return 'pack';
+  if (/build|compile|bundle/.test(scriptName)) return 'build';
+  if (/deploy/.test(scriptName)) return 'deploy';
+  if (/start|dev|serve/.test(scriptName)) return 'start';
+  if (/runtime|smoke|e2e/.test(scriptName)) return 'runtime';
+  const text = command.toLowerCase();
+  if (/typecheck|tsc|type-check/.test(text)) return 'typecheck';
+  if (/test|vitest|jest|pytest|playwright|cypress/.test(text)) return 'test';
+  if (/lint|biome|eslint/.test(text)) return 'lint';
+  if (/pack|npm pack|pnpm pack/.test(text)) return 'pack';
+  if (/build|compile|bundle/.test(text)) return 'build';
+  if (/deploy|vercel|netlify|wrangler|sst/.test(text)) return 'deploy';
+  if (/start|dev|serve|node /.test(text)) return 'start';
+  if (/runtime|smoke|e2e/.test(text)) return 'runtime';
+  return 'other';
+}
+
+function reviewPackageScriptCategoryRank(category: ReviewPackageScriptCategory): number {
+  switch (category) {
+    case 'typecheck':
+      return 1;
+    case 'test':
+      return 2;
+    case 'lint':
+      return 3;
+    case 'build':
+      return 4;
+    case 'pack':
+      return 5;
+    case 'start':
+      return 6;
+    case 'deploy':
+      return 7;
+    case 'runtime':
+      return 8;
+    case 'other':
+      return 9;
+  }
+}
+
+function reviewDependencyRuntimeSurfaces(params: {
+  readonly changedConfigFiles: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly packageScripts: readonly ReviewPackageScriptData[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+}): string[] {
+  return unique([
+    ...(params.changedDependencyFiles.length > 0 ? ['install/dependency resolution'] : []),
+    ...(params.changedConfigFiles.length > 0 ? ['configuration/runtime setup'] : []),
+    ...params.packageScripts.map((script) => `package script:${script.category}`),
+    ...(params.affectedFlows.length > 0 ? ['reconstructed flows'] : []),
+    ...(params.affectedServices.length > 0 ? ['service runtime behavior'] : []),
+    ...(params.affectedServices.some((service) => service.deployment_configs.length > 0)
+      ? ['deployment config']
+      : []),
+    ...(params.affectedServices.some((service) => service.environment_variables.length > 0)
+      ? ['environment variables']
+      : []),
+    ...(params.affectedFlows.some((flow) => flow.route_path !== undefined)
+      ? ['route runtime']
+      : []),
+  ]).map(safeText);
+}
+
+function reviewDependencyVerificationFocus(params: {
+  readonly packageScripts: readonly ReviewPackageScriptData[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+  readonly affectedTests: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly changedConfigFiles: readonly string[];
+}): string[] {
+  const priorityScripts = params.packageScripts.filter((script) =>
+    ['typecheck', 'test', 'lint', 'build', 'pack'].includes(script.category),
+  );
+  return uniqueInOrder([
+    ...(params.changedDependencyFiles.length > 0
+      ? ['Validate package install and lockfile resolution for the changed dependency files.']
+      : []),
+    ...(params.changedConfigFiles.length > 0
+      ? ['Run the config-backed build/test path that consumes the changed config files.']
+      : []),
+    ...priorityScripts.map(
+      (script) => `Run package script ${script.manifest}#${script.name}: ${script.command}.`,
+    ),
+    ...params.affectedFlows
+      .slice(0, 6)
+      .map((flow) => `Exercise affected flow ${reviewFlowDescriptionLabel(flow)}.`),
+    ...params.affectedServices
+      .slice(0, 6)
+      .map((service) => `Smoke affected service ${service.id}.`),
+    ...params.affectedTests.slice(0, 6).map((test) => `Run linked test artifact ${test}.`),
+    ...(params.packageScripts.some((script) => script.category === 'pack')
+      ? ['Inspect packed package contents after the dependency/config change.']
+      : []),
+  ])
+    .map(safeText)
+    .slice(0, 12);
+}
+
+function reviewVerificationPlan(params: {
+  readonly changedSourceFiles: readonly string[];
+  readonly changedTestFiles: readonly string[];
+  readonly changedConfigFiles: readonly string[];
+  readonly changedDependencyFiles: readonly string[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
+  readonly affectedComponents: readonly string[];
+  readonly affectedDataDependencies: readonly FlowDataDependency[];
+  readonly affectedStateOperations: readonly string[];
+  readonly dependencyRuntimeImpact: ReviewDependencyRuntimeImpactData | null;
+  readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
+  readonly findings: readonly ReviewFindingData[];
+  readonly requiredTests: readonly string[];
+  readonly verificationStatus: ReviewVerificationStatusData;
+}): ReviewVerificationPlanItemData[] {
+  const items: ReviewVerificationPlanItemData[] = [];
+  const addItem = (
+    item: Omit<ReviewVerificationPlanItemData, 'id'> & { readonly slug: string },
+  ): void => {
+    items.push({
+      id: entityId('task', `review-verification-${item.slug}-${items.length + 1}`),
+      priority: item.priority,
+      verification_type: item.verification_type,
+      reason: safeText(item.reason),
+      commands: unique(item.commands.map(safeText)).slice(0, 8),
+      manual_checks: unique(item.manual_checks.map(safeText)).slice(0, 10),
+      linked_findings: unique(item.linked_findings.map(safeText)),
+      linked_flows: unique(item.linked_flows.map(safeText)).slice(0, 12),
+      linked_components: unique(item.linked_components.map(safeText)).slice(0, 12),
+      linked_files: unique(item.linked_files.map(safeText)).slice(0, 16),
+      evidence_ids: unique(item.evidence_ids.map(safeText)).slice(0, 20),
+      confidence: item.confidence,
+    });
+  };
+  const findingIds = (predicate: (finding: ReviewFindingData) => boolean): string[] =>
+    params.findings.filter(predicate).map((finding) => finding.id);
+  const hasRecordedLocalChecks = params.verificationStatus.local_checks_passed.length > 0;
+
+  if (params.changedSourceFiles.length > 0) {
+    const linkedTests = unique(params.affectedFlows.flatMap((flow) => flow.tests));
+    addItem({
+      slug: 'runtime-tests',
+      priority:
+        params.changedTestFiles.length === 0 && !hasRecordedLocalChecks
+          ? 'required'
+          : 'recommended',
+      verification_type: 'test',
+      reason:
+        params.changedTestFiles.length === 0
+          ? 'Runtime/source files changed without a matching test file in the diff.'
+          : 'Runtime/source files changed and should be verified through the linked test surface.',
+      commands: params.requiredTests,
+      manual_checks: [
+        ...(linkedTests.length === 0
+          ? ['Add or identify focused tests for the changed runtime behavior.']
+          : linkedTests.map((test) => `Run or inspect linked test artifact ${test}.`)),
+        ...params.affectedFlows
+          .slice(0, 5)
+          .map((flow) => `Exercise affected journey ${reviewFlowDescriptionLabel(flow)}.`),
+      ],
+      linked_findings: findingIds((finding) => finding.category === 'Missing tests'),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: params.changedSourceFiles,
+      evidence_ids: unique(params.affectedFlows.flatMap((flow) => flow.evidence_ids)),
+      confidence:
+        linkedTests.length > 0 || params.requiredTests.length > 0 ? 'inferred' : 'uncertain',
+    });
+  }
+
+  if (params.affectedDataDependencies.length > 0) {
+    const stateWriteImpact = params.affectedStateOperations.some((operation) =>
+      ['schema', 'write', 'update', 'delete', 'cache/session'].includes(operation),
+    );
+    addItem({
+      slug: 'state-data',
+      priority: stateWriteImpact ? 'required' : 'recommended',
+      verification_type: stateWriteImpact ? 'data' : 'state',
+      reason: `Changed files overlap ${params.affectedDataDependencies.length} state/data dependency signal(s) and operation(s): ${params.affectedStateOperations.join(', ') || 'unknown'}.`,
+      commands: params.requiredTests,
+      manual_checks: unique([
+        'Verify data contract compatibility for affected readers and writers.',
+        ...params.affectedDataDependencies.map(formatDataDependencyForReview),
+        ...params.affectedFlows
+          .slice(0, 5)
+          .map(
+            (flow) =>
+              `Confirm ${reviewFlowDescriptionLabel(flow)} still handles persisted state correctly.`,
+          ),
+      ]),
+      linked_findings: findingIds((finding) => finding.title.includes('State/data dependency')),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: unique(
+        params.affectedDataDependencies.flatMap((dependency) => dependency.files),
+      ),
+      evidence_ids: unique(
+        params.affectedDataDependencies.flatMap((dependency) => dependency.evidence_ids),
+      ),
+      confidence: params.affectedDataDependencies.every(
+        (dependency) => dependency.confidence === 'verified',
+      )
+        ? 'verified'
+        : 'inferred',
+    });
+  }
+
+  if (params.dependencyRuntimeImpact !== null) {
+    addItem({
+      slug: 'dependency-runtime',
+      priority: params.changedDependencyFiles.length > 0 ? 'required' : 'recommended',
+      verification_type: 'dependency',
+      reason:
+        'Package, dependency, or runtime configuration changes can alter install, build, route, service, or package behavior.',
+      commands: params.requiredTests,
+      manual_checks: params.dependencyRuntimeImpact.verification_focus,
+      linked_findings: findingIds(
+        (finding) => finding.title === 'Configuration or dependency surface changed',
+      ),
+      linked_flows: params.dependencyRuntimeImpact.affected_flows,
+      linked_components: params.dependencyRuntimeImpact.affected_components,
+      linked_files: params.dependencyRuntimeImpact.changed_files,
+      evidence_ids: unique(params.dependencyRuntimeImpact.changed_files.map(evidenceId)),
+      confidence: params.dependencyRuntimeImpact.confidence,
+    });
+  } else if (params.changedConfigFiles.length > 0 || params.changedDependencyFiles.length > 0) {
+    addItem({
+      slug: 'config-manual',
+      priority: 'recommended',
+      verification_type: 'manual',
+      reason:
+        'Configuration or dependency files changed, but no richer runtime impact model was linked.',
+      commands: params.requiredTests,
+      manual_checks: [
+        'Run install/build/test checks that consume the changed config files.',
+        'Inspect runtime/deployment assumptions affected by the changed config.',
+      ],
+      linked_findings: findingIds(
+        (finding) => finding.title === 'Configuration or dependency surface changed',
+      ),
+      linked_flows: [],
+      linked_components: params.affectedComponents,
+      linked_files: unique([...params.changedConfigFiles, ...params.changedDependencyFiles]),
+      evidence_ids: unique(
+        [...params.changedConfigFiles, ...params.changedDependencyFiles].map(evidenceId),
+      ),
+      confidence: 'uncertain',
+    });
+  }
+
+  const serviceCausality = params.affectedFlows.flatMap((flow) => flow.service_causality);
+  if (serviceCausality.length > 0) {
+    addItem({
+      slug: 'service-causality',
+      priority: 'recommended',
+      verification_type: 'service-causality',
+      reason: `${serviceCausality.length} flow-to-service causality path(s) explain the affected blast radius.`,
+      commands: params.requiredTests,
+      manual_checks: unique([
+        ...serviceCausality.map(
+          (item) =>
+            `Smoke ${item.service_id} through ${item.effects.join(', ') || 'recorded service effects'}.`,
+        ),
+        ...params.affectedServices.map((service) => `Smoke affected service ${service.id}.`),
+      ]),
+      linked_findings: findingIds((finding) => finding.title.includes('Service causality')),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: unique(serviceCausality.flatMap((item) => item.files)),
+      evidence_ids: unique(serviceCausality.flatMap((item) => item.evidence_ids)),
+      confidence: serviceCausality.every((item) => item.confidence === 'verified')
+        ? 'verified'
+        : 'inferred',
+    });
+  }
+
+  if (params.architectureImpactMap.length > 0) {
+    addItem({
+      slug: 'architecture-contract',
+      priority: params.architectureImpactMap.some((entry) => entry.coupling_level === 'high')
+        ? 'required'
+        : 'recommended',
+      verification_type: 'contract',
+      reason: `${params.architectureImpactMap.length} architecture impact-map surface(s) connect this diff to likely breakage.`,
+      commands: params.requiredTests,
+      manual_checks: unique([
+        ...params.architectureImpactMap.flatMap((entry) => entry.what_breaks).slice(0, 6),
+        ...params.architectureImpactMap
+          .flatMap((entry) => entry.risk_reasoning.review_focus)
+          .slice(0, 6),
+      ]),
+      linked_findings: findingIds((finding) => finding.title.includes('Architecture impact map')),
+      linked_flows: unique(params.architectureImpactMap.flatMap((entry) => entry.affected_flows)),
+      linked_components: unique(
+        params.architectureImpactMap.flatMap((entry) => [
+          entry.entity_id,
+          ...entry.dependent_components,
+        ]),
+      ),
+      linked_files: unique(params.architectureImpactMap.flatMap((entry) => entry.affected_files)),
+      evidence_ids: unique(params.architectureImpactMap.flatMap((entry) => entry.evidence_ids)),
+      confidence: params.architectureImpactMap.every((entry) => entry.confidence === 'verified')
+        ? 'verified'
+        : 'inferred',
+    });
+  }
+
+  if (items.length === 0 && params.findings.length > 0) {
+    addItem({
+      slug: 'findings-manual',
+      priority: 'recommended',
+      verification_type: 'manual',
+      reason: 'Review findings exist, but no targeted runnable verification evidence was inferred.',
+      commands: params.requiredTests,
+      manual_checks: params.findings.slice(0, 5).map((finding) => finding.recommendation),
+      linked_findings: params.findings.map((finding) => finding.id),
+      linked_flows: params.affectedFlows.map((flow) => flow.id),
+      linked_components: params.affectedComponents,
+      linked_files: unique(params.findings.flatMap((finding) => finding.affected_files)),
+      evidence_ids: unique(params.findings.flatMap((finding) => finding.evidence_ids)),
+      confidence: 'uncertain',
+    });
+  }
+
+  const priorityRank: Record<ReviewVerificationPriority, number> = {
+    required: 0,
+    recommended: 1,
+    optional: 2,
+  };
+  return uniqueBy(items, (item) => `${item.priority}:${item.verification_type}:${item.reason}`)
+    .sort(
+      (a, b) =>
+        priorityRank[a.priority] - priorityRank[b.priority] ||
+        confidenceScoreForValue(b.confidence) - confidenceScoreForValue(a.confidence) ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, 12);
 }
 
 function reviewAffectedComponents(params: {
@@ -16317,10 +25123,76 @@ function reviewAffectedComponents(params: {
   });
 }
 
+function affectedServiceEntities(params: {
+  readonly changedFiles: readonly string[];
+  readonly services: readonly BrainEntity[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+}): ReviewAffectedServiceData[] {
+  const changedFileSet = new Set(params.changedFiles);
+  const flowServiceIds = new Set(params.affectedFlows.flatMap((flow) => flow.services));
+  return params.services
+    .filter((service) => {
+      if (service.latest_status === 'stale') return false;
+      if (flowServiceIds.has(service.id)) return true;
+      return service.source_files.some((file) => changedFileSet.has(file));
+    })
+    .map((service) => {
+      const changedFiles = service.source_files.filter((file) => changedFileSet.has(file));
+      const affectedFlows = unique([
+        ...serviceDataStringArray(service, 'related_flows'),
+        ...params.affectedFlows
+          .filter((flow) => flow.services.includes(service.id))
+          .map((flow) => flow.id),
+      ]);
+      const flowMatches = params.affectedFlows.filter((flow) => affectedFlows.includes(flow.id));
+      const tests = unique(flowMatches.flatMap((flow) => flow.tests));
+      const configs = unique([
+        ...flowMatches.flatMap((flow) => flow.configs),
+        ...serviceDataStringArray(service, 'deployment_configs'),
+      ]);
+      return {
+        id: safeText(service.id),
+        name: safeText(service.name),
+        runtime: safeText(stringData(service, 'runtime') ?? 'unknown'),
+        framework: safeText(stringData(service, 'framework') ?? 'unknown'),
+        changed_files: changedFiles.map(safeText),
+        entrypoints: serviceDataStringArray(service, 'entrypoints'),
+        routes: serviceDataStringArray(service, 'routes'),
+        jobs: serviceDataStringArray(service, 'jobs'),
+        storage_dependencies: serviceDataStringArray(service, 'storage_dependencies'),
+        environment_variables: serviceDataStringArray(service, 'environment_variables'),
+        external_services: serviceDataStringArray(service, 'external_services'),
+        deployment_configs: serviceDataStringArray(service, 'deployment_configs'),
+        affected_flows: affectedFlows.map(safeText),
+        tests: tests.map(safeText),
+        configs: configs.map(safeText),
+        risks: serviceDataStringArray(service, 'risks'),
+        confidence: service.confidence,
+        evidence_ids: service.evidence_ids.map(safeText),
+        reasons: unique([
+          ...(changedFiles.length > 0
+            ? [`${changedFiles.length} changed file(s) are owned by this service.`]
+            : []),
+          ...(affectedFlows.length > 0
+            ? [`${affectedFlows.length} affected flow(s) link to this service.`]
+            : []),
+          ...(serviceDataStringArray(service, 'deployment_configs').length > 0
+            ? ['Deployment config evidence is linked to this service.']
+            : []),
+          ...(serviceDataStringArray(service, 'storage_dependencies').length > 0
+            ? ['Storage dependency evidence is linked to this service.']
+            : []),
+        ]).map(safeText),
+      };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 function affectedFlowEntities(
   changedFiles: readonly string[],
   affectedComponents: readonly BrainEntity[],
   flows: readonly BrainEntity[],
+  diffText: string,
 ): AffectedFlowData[] {
   const affectedComponentIds = new Set(affectedComponents.map((component) => component.id));
   const affectedComponentFiles = new Set(
@@ -16332,14 +25204,22 @@ function affectedFlowEntities(
       ...flowStringArray(flow, 'files'),
       ...flowStringArray(flow, 'configs'),
       ...flowStringArray(flow, 'tests'),
+      ...safeFlowDataDependencies(flow).flatMap((dependency) => dependency.files),
       ...flow.source_files,
     ]);
     const flowComponents = flowStringArray(flow, 'components');
+    const flowServices = flowStringArray(flow, 'services');
     const directChangedFiles = changedFiles.filter((file) => flowFiles.includes(file));
     const componentChangedFiles = flowComponents.some((componentId) =>
       affectedComponentIds.has(componentId),
     )
-      ? changedFiles.filter((file) => affectedComponentFiles.has(file))
+      ? changedFiles
+          .filter((file) => affectedComponentFiles.has(file))
+          .filter(
+            (file) =>
+              !isRouteOrControllerFile(file) ||
+              routeChangedFileMatchesRoutePath(file, stringData(flow, 'route_path')),
+          )
       : [];
     const matchedChangedFiles = unique([...directChangedFiles, ...componentChangedFiles]);
     if (matchedChangedFiles.length === 0) return [];
@@ -16348,17 +25228,47 @@ function affectedFlowEntities(
       matchedChangedFiles,
       componentChangedFiles,
     });
+    const journey = flowJourneySummaryData(flow);
+    const affectedSteps = affectedJourneyStepsForChangedFiles(flow, matchedChangedFiles);
+    const affectedDataDependencies = affectedDataDependenciesForChangedFiles(
+      flow,
+      matchedChangedFiles,
+      diffText,
+    );
+    const missingEvidence = unique([
+      ...(journey?.missing_evidence ?? []),
+      ...affectedSteps.flatMap((step) => step.missing_evidence),
+      ...affectedDataDependencies.flatMap((dependency) => dependency.missing_evidence),
+      ...(flowStringArray(flow, 'tests').length === 0
+        ? ['No directly linked tests were detected for this affected journey.']
+        : []),
+    ]).map(safeText);
     return [
       {
         id: safeText(flow.id),
         name: safeText(flow.name),
+        ...(journey !== undefined
+          ? { journey_name: journey.name, journey_confidence: journey.confidence }
+          : {}),
         kind: flowKind(flow),
         ...reviewRouteFlowFields(flow),
         confidence: flow.confidence,
         score: asFlowConfidenceScore(flow),
         entrypoints: reviewFlowEntrypointLabels(flow),
+        affected_steps: affectedSteps,
+        runtime_surfaces: flowStringArray(flow, 'runtime_surfaces').map(safeText),
+        data_dependencies: affectedDataDependencies,
+        user_visible_failure_modes: userVisibleFailureModesForFlow({
+          flow,
+          affectedSteps,
+          affectedDataDependencies,
+          matchedChangedFiles,
+        }),
+        missing_evidence: missingEvidence,
         changed_files: matchedChangedFiles.map(safeText),
         components: flowComponents.map(safeText),
+        services: flowServices.map(safeText),
+        service_causality: safeFlowServiceCausality(flow),
         tests: flowStringArray(flow, 'tests').map(safeText),
         configs: flowStringArray(flow, 'configs').map(safeText),
         risks: flowRisks(flow).length,
@@ -16368,6 +25278,121 @@ function affectedFlowEntities(
     ];
   });
   return [...affectedFlows].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function reviewTestEvidenceChanges(params: {
+  readonly changedTestFiles: readonly string[];
+  readonly affectedFlows: readonly AffectedFlowData[];
+}): string[] {
+  return params.changedTestFiles
+    .map((file) => {
+      const linkedFlows = params.affectedFlows
+        .filter((flow) => flow.tests.includes(file))
+        .map(reviewFlowDescriptionLabel)
+        .slice(0, 4);
+      return safeText(
+        `${file} updates test evidence for ${
+          linkedFlows.length > 0 ? linkedFlows.join(', ') : 'an unmapped test surface'
+        }.`,
+      );
+    })
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function affectedDataDependenciesForChangedFiles(
+  flow: BrainEntity,
+  changedFiles: readonly string[],
+  diffText: string,
+): FlowDataDependency[] {
+  const changedFileSet = new Set(changedFiles);
+  return safeFlowDataDependencies(flow).filter((dependency) =>
+    dependency.files.some(
+      (file) => changedFileSet.has(file) && hasStateDataRelevantDiff(file, diffText),
+    ),
+  );
+}
+
+function affectedJourneyStepsForChangedFiles(
+  flow: BrainEntity,
+  changedFiles: readonly string[],
+): FlowJourneyStep[] {
+  const changedFileSet = new Set(changedFiles);
+  const matched = safeFlowJourneySteps(flow).filter((step) =>
+    [...step.files, ...step.configs, ...step.tests].some((file) => changedFileSet.has(file)),
+  );
+  if (matched.length > 0) return matched;
+  return safeFlowJourneySteps(flow)
+    .filter((step) => step.type === 'trigger')
+    .slice(0, 1);
+}
+
+function userVisibleFailureModesForFlow(params: {
+  readonly flow: BrainEntity;
+  readonly affectedSteps: readonly FlowJourneyStep[];
+  readonly affectedDataDependencies: readonly FlowDataDependency[];
+  readonly matchedChangedFiles: readonly string[];
+}): string[] {
+  const journeyName = flowJourneySummaryData(params.flow)?.name ?? params.flow.name;
+  const stepTypes = new Set(params.affectedSteps.map((step) => step.type));
+  const stateOperations = new Set(
+    params.affectedDataDependencies.flatMap((dependency) => dependency.operations),
+  );
+  return unique([
+    ...(stepTypes.has('validation_auth')
+      ? [`${journeyName} can reject valid users, admit invalid users, or break protected access.`]
+      : []),
+    ...(stepTypes.has('read_write_storage')
+      ? [`${journeyName} can read stale data, fail writes, or corrupt persisted state.`]
+      : []),
+    ...(stepTypes.has('external_service_call')
+      ? [
+          `${journeyName} can fail when an external provider contract, token, or network surface changes.`,
+        ]
+      : []),
+    ...(stepTypes.has('rendering_response')
+      ? [
+          `${journeyName} can render the wrong UI, return the wrong response, or break route output.`,
+        ]
+      : []),
+    ...(stepTypes.has('background_job_async')
+      ? [`${journeyName} can drop, delay, or duplicate background processing.`]
+      : []),
+    ...(stepTypes.has('business_logic')
+      ? [`${journeyName} can change user-visible decisions, calculations, or state transitions.`]
+      : []),
+    ...(stepTypes.has('runtime_config')
+      ? [
+          `${journeyName} can break through runtime config, routing, environment, build, or deployment drift.`,
+        ]
+      : []),
+    ...(stepTypes.has('test_coverage')
+      ? [`${journeyName} confidence changed because linked test evidence changed.`]
+      : []),
+    ...(stateOperations.has('schema')
+      ? [`${journeyName} can break when a schema/model/table contract drifts from callers.`]
+      : []),
+    ...(stateOperations.has('read')
+      ? [`${journeyName} can read stale, missing, or mis-shaped data.`]
+      : []),
+    ...(stateOperations.has('write') ||
+    stateOperations.has('update') ||
+    stateOperations.has('delete')
+      ? [`${journeyName} can fail to persist, mutate, or delete state correctly.`]
+      : []),
+    ...(stateOperations.has('cache/session')
+      ? [`${journeyName} can serve stale cache/session data or lose session continuity.`]
+      : []),
+    ...params.affectedDataDependencies.map(
+      (dependency) =>
+        `${journeyName} depends on ${dependency.label} (${dependency.operations.join(', ') || 'state dependency'}).`,
+    ),
+    ...flowStringArray(params.flow, 'failure_modes').slice(0, 4),
+    ...(params.matchedChangedFiles.length > 0
+      ? [
+          `Review ${params.matchedChangedFiles.slice(0, 4).join(', ')} before relying on this journey.`,
+        ]
+      : []),
+  ]).map(safeText);
 }
 
 type FlowEvidenceCategory =
@@ -16384,16 +25409,30 @@ function affectedFlowReasons(params: {
   readonly matchedChangedFiles: readonly string[];
   readonly componentChangedFiles: readonly string[];
 }): string[] {
+  const journey = flowJourneySummaryData(params.flow);
   const routeLabel = reviewFlowDescriptionLabel({
     id: params.flow.id,
     name: params.flow.name,
+    ...(journey !== undefined
+      ? {
+          journey_name: journey.name,
+          journey_confidence: journey.confidence,
+        }
+      : {}),
     kind: flowKind(params.flow),
     ...reviewRouteFlowFields(params.flow),
     confidence: params.flow.confidence,
     score: asFlowConfidenceScore(params.flow),
     entrypoints: reviewFlowEntrypointLabels(params.flow),
+    affected_steps: [],
+    runtime_surfaces: flowStringArray(params.flow, 'runtime_surfaces'),
+    data_dependencies: [],
+    user_visible_failure_modes: [],
+    missing_evidence: flowJourneySummaryData(params.flow)?.missing_evidence ?? [],
     changed_files: [],
     components: flowStringArray(params.flow, 'components'),
+    services: flowStringArray(params.flow, 'services'),
+    service_causality: safeFlowServiceCausality(params.flow),
     tests: flowStringArray(params.flow, 'tests'),
     configs: flowStringArray(params.flow, 'configs'),
     risks: flowRisks(params.flow).length,
@@ -16472,25 +25511,6 @@ function containsSecretLikeValue(value: string): boolean {
   return safeText(value) !== value;
 }
 
-function requiredTestCommands(
-  commands: readonly BrainEntity[],
-  changedFiles: readonly string[],
-): string[] {
-  const commandTexts = commands
-    .map((command) => {
-      const text = typeof command.data?.command === 'string' ? command.data.command : undefined;
-      return text === undefined ? undefined : safeText(`${command.name}: ${text}`);
-    })
-    .filter((command): command is string => command !== undefined);
-  const quality = commandTexts.filter((command) =>
-    /test|check|lint|typecheck|vitest/i.test(command),
-  );
-  if (quality.length > 0) return quality.slice(0, 5);
-  if (changedFiles.some(isSourceFile))
-    return ['Run the project test command; none was detected in the brain.'];
-  return ['Review-only change: verify docs/report output manually.'];
-}
-
 function classifyBlastRadius(fileCount: number, componentCount: number): BlastRadius {
   if (fileCount > 12 || componentCount > 4) return 'broad';
   if (fileCount > 4 || componentCount > 1) return 'moderate';
@@ -16537,23 +25557,39 @@ function blastRadiusReasonLines(params: {
   readonly directComponents: readonly BrainEntity[];
   readonly dependentComponents: readonly BrainEntity[];
   readonly affectedFlows: readonly AffectedFlowData[];
+  readonly affectedServices: readonly ReviewAffectedServiceData[];
   readonly affectedRelationships: readonly ReviewAffectedRelationshipData[];
   readonly architectureImpactMap: readonly ReviewArchitectureImpactData[];
+  readonly dependencyRuntimeImpact: ReviewDependencyRuntimeImpactData | null;
   readonly affectedTests: readonly string[];
   readonly affectedConfigs: readonly string[];
 }): string[] {
   const directNames = params.directComponents.map((component) => component.name);
   const dependentNames = params.dependentComponents.map((component) => component.name);
   const routeFlowReasons = affectedRouteFlowReasons(params.affectedFlows);
+  const serviceCausality = params.affectedFlows.flatMap((flow) => flow.service_causality);
+  const serviceCausalityEffects = unique(serviceCausality.flatMap((item) => item.effects));
   const impactMapReasons = architectureImpactReasonLines(params.architectureImpactMap);
+  const dependencyRuntimeReasons =
+    params.dependencyRuntimeImpact === null
+      ? []
+      : [
+          `Dependency/runtime impact links changed package/config files to ${params.dependencyRuntimeImpact.affected_flows.length} flow(s), ${params.dependencyRuntimeImpact.affected_services.length} service(s), ${params.dependencyRuntimeImpact.affected_components.length} component(s), ${params.dependencyRuntimeImpact.package_scripts.length} script(s).`,
+          `Focused dependency/runtime verification: ${params.dependencyRuntimeImpact.verification_focus.slice(0, 5).join('; ') || 'none recorded'}.`,
+        ];
   return [
     `${params.changedFiles.length} changed file(s) map to ${params.directComponents.length} direct component(s): ${directNames.slice(0, 5).join(', ') || 'none'}.`,
     params.dependentComponents.length === 0
-      ? 'No dependent consumer components were found from import/call/dependency graph edges.'
+      ? 'No dependent consumer components were found.'
       : `${params.dependentComponents.length} dependent consumer component(s) require review: ${dependentNames.slice(0, 5).join(', ')}.`,
     `${params.affectedFlows.length} affected flow(s) link the change to ${params.affectedTests.length} test artifact(s) and ${params.affectedConfigs.length} config artifact(s).`,
+    serviceCausality.length === 0
+      ? 'No service causality path was recorded for the affected flows.'
+      : `${serviceCausality.length} service causality path(s) explain flow-to-service blast radius; effects: ${serviceCausalityEffects.slice(0, 6).join(', ') || 'none recorded'}.`,
+    `${params.affectedServices.length} affected service(s) link the change to routes, jobs, storage, API, env, or deploy evidence.`,
     ...routeFlowReasons,
     ...impactMapReasons,
+    ...dependencyRuntimeReasons,
     `${params.affectedRelationships.length} graph relationship(s) touch the review blast radius.`,
   ].map(safeText);
 }
@@ -16604,7 +25640,7 @@ function affectedRouteFlowReasons(flows: readonly AffectedFlowData[]): string[] 
       const entrypointSummary = reviewRouteListSummary('Entrypoints', flow.entrypoints);
       const componentSummary = reviewRouteListSummary('Components', flow.components);
       const reasonSummary = reviewRouteListSummary('Causality', flow.reasons, 5);
-      return `${routePath} route flow (${routeType}) is affected through ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${reasonSummary} ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
+      return `${routePath} route flow (${routeType}) is affected by ${flow.changed_files.length} changed file(s): ${flow.changed_files.slice(0, 5).join(', ')}. ${reasonSummary} ${entrypointSummary} ${componentSummary} ${artifactSummary}`;
     });
 }
 
@@ -16673,17 +25709,26 @@ function suggestedFocusAreas(
   components: readonly BrainEntity[],
   dependentComponents: readonly BrainEntity[],
   affectedFlows: readonly AffectedFlowData[],
+  dependencyRuntimeImpact: ReviewDependencyRuntimeImpactData | null,
   blastRadiusReasons: readonly string[],
 ): string[] {
   const categories = findings.map((finding) => finding.category);
   const componentNames = components.map((component) => component.name);
   const dependentNames = dependentComponents.map((component) => component.name);
-  return unique([
+  return uniqueInOrder([
     ...categories,
     ...componentNames.map((name) => `component: ${name}`),
     ...dependentNames.map((name) => `dependent component: ${name}`),
     ...affectedFlows.map(reviewFlowFocusLabel),
     ...affectedFlows.flatMap(reviewFlowCausalityFocusLabels),
+    ...(dependencyRuntimeImpact === null
+      ? []
+      : [
+          ...dependencyRuntimeImpact.runtime_surfaces.map(
+            (surface) => `dependency/runtime: ${surface}`,
+          ),
+          ...dependencyRuntimeImpact.verification_focus.slice(0, 4),
+        ]),
     ...blastRadiusReasons.slice(0, 2),
     ...(changedFiles.some(isDependencyPath) ? ['install/package behavior'] : []),
     ...(changedFiles.some(isConfigPath) ? ['configuration and CI behavior'] : []),
@@ -16696,11 +25741,17 @@ function reviewFlowFocusLabel(flow: AffectedFlowData): string {
 }
 
 function reviewFlowCausalityFocusLabels(flow: AffectedFlowData): string[] {
-  if (flow.route_path === undefined) return [];
-  return flow.reasons
-    .map((reason) => routeEvidenceCategoryFromReason(reason))
-    .filter((category): category is FlowEvidenceCategory => category !== undefined)
-    .map((category) => `route flow: ${flow.route_path} ${category} evidence`);
+  const routeLabels =
+    flow.route_path === undefined
+      ? []
+      : flow.reasons
+          .map((reason) => routeEvidenceCategoryFromReason(reason))
+          .filter((category): category is FlowEvidenceCategory => category !== undefined)
+          .map((category) => `route flow: ${flow.route_path} ${category} evidence`);
+  const serviceLabels = flow.service_causality.map(
+    (item) => `flow service causality: ${item.service_id}`,
+  );
+  return [...routeLabels, ...serviceLabels];
 }
 
 function routeEvidenceCategoryFromReason(reason: string): FlowEvidenceCategory | undefined {
@@ -16723,11 +25774,12 @@ function routeEvidenceCategoryFromReason(reason: string): FlowEvidenceCategory |
 }
 
 function reviewFlowDescriptionLabel(flow: AffectedFlowData): string {
+  const label = flow.journey_name ?? flow.name;
   if (flow.route_path !== undefined) {
     const routeType = flow.route_type ?? flow.kind;
-    return `${flow.route_path} route flow (${routeType})`;
+    return `${label} (${flow.route_path} ${routeType})`;
   }
-  return flow.name;
+  return label;
 }
 
 function mergeStrings(value: unknown, additions: readonly string[]): string[] {
@@ -16757,16 +25809,151 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
   if (flows.length === 0) {
     return '<p class="muted">No reconstructed flows overlap this diff.</p>';
   }
-  return `<table><thead><tr><th>Flow</th><th>Entrypoints</th><th>Changed Files</th><th>Components</th><th>Tests</th><th>Configs</th><th>Confidence</th></tr></thead><tbody>${flows
+  return `<table><thead><tr><th>Journey</th><th>Steps</th><th>State/Data Impact</th><th>User-Visible Risk</th><th>Runtime</th><th>Files</th><th>Components</th><th>Services</th><th>Tests/Configs</th><th>Confidence</th></tr></thead><tbody>${flows
     .map(
       (flow) => `<tr>
-        <td><strong>${htmlEscape(flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
-        <td>${renderList(flow.entrypoints)}</td>
+        <td><strong>${htmlEscape(flow.journey_name ?? flow.name)}</strong><br><span class="muted">${htmlEscape(reviewFlowTableMeta(flow))}</span></td>
+        <td>${renderList(flow.affected_steps.map(formatJourneyStepForReview))}</td>
+        <td>${renderList(flow.data_dependencies.map(formatDataDependencyForReview))}</td>
+        <td>${renderList(flow.user_visible_failure_modes)}</td>
+        <td>${renderList(flow.runtime_surfaces)}</td>
         <td>${renderList(flow.changed_files)}</td>
         <td>${renderList(flow.components)}</td>
-        <td>${renderList(flow.tests)}</td>
-        <td>${renderList(flow.configs)}</td>
+        <td>${renderList(flow.services)}</td>
+        <td>${renderList([...flow.tests, ...flow.configs, ...flow.missing_evidence])}</td>
         <td>${htmlEscape(flow.confidence)} · ${flow.score}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
+function formatJourneyStepForReview(step: FlowJourneyStep): string {
+  const files = step.files.length === 0 ? 'no files' : step.files.slice(0, 3).join(', ');
+  return `${step.label}: ${files} (${step.confidence})`;
+}
+
+function formatDataDependencyForReview(dependency: FlowDataDependency): string {
+  const files =
+    dependency.files.length === 0 ? 'no files' : dependency.files.slice(0, 3).join(', ');
+  const operations =
+    dependency.operations.length === 0 ? 'state dependency' : dependency.operations.join(', ');
+  return `${dependency.label}: ${operations}; ${files} (${dependency.confidence})`;
+}
+
+function renderAffectedServiceRows(services: readonly ReviewAffectedServiceData[]): string {
+  if (services.length === 0) {
+    return '<p class="muted">No service intelligence overlaps this diff.</p>';
+  }
+  return `<table><thead><tr><th>Service</th><th>Reasons</th><th>Files</th><th>Flows</th><th>Tests/Configs</th><th>Routes/Jobs</th><th>Storage/Env/API/Deploy</th><th>Risks</th></tr></thead><tbody>${services
+    .map(
+      (service) => `<tr>
+        <td><strong>${htmlEscape(service.name)}</strong><br><span class="muted">${htmlEscape(
+          service.id,
+        )} · ${htmlEscape(service.framework)} · ${htmlEscape(service.confidence)}</span></td>
+        <td>${renderList(service.reasons)}</td>
+        <td>${renderList(service.changed_files)}</td>
+        <td>${renderList(service.affected_flows)}</td>
+        <td>${renderList([...service.tests, ...service.configs])}</td>
+        <td>${renderList([...service.routes, ...service.jobs])}</td>
+        <td>${renderList([
+          ...service.storage_dependencies,
+          ...service.environment_variables,
+          ...service.external_services,
+          ...service.deployment_configs,
+        ])}</td>
+        <td>${renderList(service.risks)}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
+function renderDependencyRuntimeImpact(impact: ReviewDependencyRuntimeImpactData | null): string {
+  if (impact === null) {
+    return '<p class="muted">No dependency or runtime package/config impact was detected for this diff.</p>';
+  }
+  return `<table><thead><tr><th>Changed Package / Config</th><th>Runtime Surfaces</th><th>Components / Services / Flows</th><th>Scripts</th><th>Focused Verification</th></tr></thead><tbody><tr>
+    <td>${renderList(impact.changed_files)}</td>
+    <td>${renderList(impact.runtime_surfaces)}</td>
+    <td>${renderList([
+      ...impact.affected_components,
+      ...impact.affected_services,
+      ...impact.affected_flows,
+    ])}</td>
+    <td>${renderList(
+      impact.package_scripts.map(
+        (script) => `${script.manifest}#${script.name} (${script.category}): ${script.command}`,
+      ),
+    )}</td>
+    <td>${renderList(impact.verification_focus)}</td>
+  </tr></tbody></table>
+  ${renderList(impact.reasons)}`;
+}
+
+function renderBlastRadiusActionability(actionability: ReviewBlastRadiusActionabilityData): string {
+  return `<div class="grid">
+    <article class="card"><h2>Actionability</h2><p>${actionability.score}/100 · ${htmlEscape(actionability.status)}</p></article>
+    <article class="card"><h2>Journey Steps</h2><p>${actionability.affected_journey_step_count}</p></article>
+    <article class="card"><h2>User-Visible Modes</h2><p>${actionability.user_visible_failure_mode_count}</p></article>
+    <article class="card"><h2>Evidence Records</h2><p>${actionability.evidence_id_count}</p></article>
+  </div>
+  <h3>Actionable Signals</h3>
+  ${renderList(actionability.signals)}
+  <h3>Evidence Gaps</h3>
+  ${renderList(
+    actionability.gaps.length === 0
+      ? ['No actionability gaps were detected for this review.']
+      : actionability.gaps,
+  )}`;
+}
+
+function renderReviewPrecisionCalibration(calibration: ReviewPrecisionCalibrationData): string {
+  return `<div class="grid">
+    <article class="card"><h2>Precision</h2><p>${calibration.score}/100 · ${htmlEscape(calibration.status)}</p></article>
+    <article class="card"><h2>False-Positive Guards</h2><p>${calibration.false_positive_guard_count}</p></article>
+    <article class="card"><h2>False-Negative Signals</h2><p>${calibration.false_negative_signal_count}</p></article>
+    <article class="card"><h2>Precision Gaps</h2><p>${calibration.precision_gap_count}</p></article>
+  </div>
+  <h3>False-Positive Guards</h3>
+  ${renderList(calibration.false_positive_guards)}
+  <h3>False-Negative Signals</h3>
+  ${renderList(calibration.false_negative_signals)}
+  <h3>Precision Gaps</h3>
+  ${renderList(
+    calibration.precision_gaps.length === 0
+      ? ['No review precision gaps were detected for this diff.']
+      : calibration.precision_gaps,
+  )}`;
+}
+
+function renderArchitectureImpactClaimEvidenceRows(
+  claims: readonly ReviewArchitectureImpactClaimEvidenceData[],
+): string {
+  if (claims.length === 0) {
+    return '<p class="muted">No architecture impact claims were recorded for this diff.</p>';
+  }
+  return `<div class="grid">
+    <article class="card">
+      <h2>Claim Summary</h2>
+      ${renderList([
+        `${claims.length} architecture impact claim(s)`,
+        `${unique(claims.flatMap((claim) => claim.source_files)).length} changed/source file reference(s)`,
+        `${unique(claims.flatMap((claim) => claim.evidence_ids)).length} evidence record(s)`,
+        `${claims.reduce((count, claim) => count + claim.redacted_evidence_count, 0)} redacted evidence reference(s)`,
+      ])}
+    </article>
+  </div>
+  <p class="muted">Based on the pre-change Project Intelligence Layer plus the current git diff. This is evidence-backed review context, not post-change runtime certainty.</p>
+  <table><thead><tr><th>Impact</th><th>Surface</th><th>Confidence</th><th>Changed Files</th><th>Evidence</th><th>What Could Break</th><th>Review Focus / Unknowns</th></tr></thead><tbody>${claims
+    .slice(0, 5)
+    .map(
+      (claim) => `<tr>
+        <td><strong>${htmlEscape(claim.impact_id)}</strong><br><span class="muted">${htmlEscape(claim.claim)}</span></td>
+        <td>${htmlEscape(claim.surface_type)}</td>
+        <td>${htmlEscape(claim.confidence)}</td>
+        <td>${renderList(claim.source_files.slice(0, 6))}</td>
+        <td>${renderList(claim.evidence_ids.slice(0, 6))}</td>
+        <td>${renderList(claim.what_breaks.slice(0, 5))}</td>
+        <td>${renderList([...claim.review_focus.slice(0, 4), ...claim.unknowns.slice(0, 4)])}</td>
       </tr>`,
     )
     .join('')}</tbody></table>`;
@@ -16775,7 +25962,9 @@ function renderAffectedFlowRows(flows: readonly AffectedFlowData[]): string {
 function reviewFlowTableMeta(flow: AffectedFlowData): string {
   const route =
     flow.route_path !== undefined ? ` · ${flow.route_path} ${flow.route_type ?? 'route'}` : '';
-  return `${flow.id} · ${flow.kind}${route}`;
+  const journey =
+    flow.journey_confidence === undefined ? '' : ` · journey ${flow.journey_confidence}`;
+  return `${flow.id} · ${flow.kind}${route}${journey}`;
 }
 
 function renderAffectedComponentRows(
@@ -16815,7 +26004,34 @@ function renderAffectedRelationshipRows(
     .join('')}</tbody></table>`;
 }
 
+function renderVerificationPlanRows(plan: readonly ReviewVerificationPlanItemData[]): string {
+  if (plan.length === 0) {
+    return '<p class="muted">No review verification plan generated.</p>';
+  }
+  return `<table><thead><tr><th>Priority</th><th>Type</th><th>Reason</th><th>Commands</th><th>Manual Checks</th><th>Linked Evidence</th></tr></thead><tbody>${plan
+    .map(
+      (item) => `<tr>
+        <td>${htmlEscape(item.priority)}</td>
+        <td>${htmlEscape(item.verification_type)}</td>
+        <td>${htmlEscape(item.reason)}</td>
+        <td>${renderList(item.commands)}</td>
+        <td>${renderList(item.manual_checks)}</td>
+        <td>${renderList([
+          ...item.linked_findings,
+          ...item.linked_flows,
+          ...item.linked_components,
+          ...item.linked_files,
+          ...item.evidence_ids,
+        ])}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
 function renderReviewReport(review: ReviewSummaryData): string {
+  const architectureImpactClaims = buildArchitectureImpactClaimEvidence(review);
+  const blastRadiusActionability = buildReviewBlastRadiusActionability(review);
+  const precisionCalibration = buildReviewPrecisionCalibration(review);
   const findingRows = review.findings
     .map(
       (finding) => `<tr>
@@ -16859,6 +26075,7 @@ function renderReviewReport(review: ReviewSummaryData): string {
       <article class="card"><h2>Action</h2><p>${htmlEscape(review.recommended_action)}</p></article>
       <article class="card"><h2>Surgicality</h2><p>${review.surgicality_score}/10</p></article>
       <article class="card"><h2>Files</h2><p>${review.changed_files.length}</p></article>
+      <article class="card"><h2>Affected Services</h2><p>${review.affected_services.length}</p></article>
       <article class="card"><h2>Affected Flows</h2><p>${review.affected_flows.length}</p></article>
       <article class="card"><h2>Findings</h2><p>${review.findings.length}</p></article>
     </section>
@@ -16873,12 +26090,69 @@ function renderReviewReport(review: ReviewSummaryData): string {
       ${renderList(review.blast_radius_reasons)}
     </section>
     <section>
+      <h2>Blast Radius Actionability</h2>
+      ${renderBlastRadiusActionability(blastRadiusActionability)}
+    </section>
+    <section>
+      <h2>Review Precision Calibration</h2>
+      ${renderReviewPrecisionCalibration(precisionCalibration)}
+    </section>
+    <section>
+      <h2>Review Governance</h2>
+      ${renderReviewGovernance(review.review_governance)}
+    </section>
+    <section>
+      <h2>Architecture Impact Evidence</h2>
+      ${renderArchitectureImpactClaimEvidenceRows(architectureImpactClaims)}
+    </section>
+    <section>
+      <h2>Verification Calibration</h2>
+      <div class="grid">
+        <article class="card"><h2>Recorded Checks</h2><p>${review.verification_status.total_checks}</p></article>
+        <article class="card"><h2>Passed</h2><p>${review.verification_status.passed_checks.length}</p></article>
+        <article class="card"><h2>Failed</h2><p>${review.verification_status.failed_checks.length}</p></article>
+        <article class="card"><h2>Proof Score</h2><p>${review.verification_evidence_score.score}/100</p></article>
+      </div>
+      <p class="muted">${htmlEscape(review.verification_status.calibration_note)}</p>
+      <p class="muted">${htmlEscape(review.verification_evidence_score.approval_summary)}</p>
+      <h3>Approval State</h3>
+      ${renderList([
+        review.verification_evidence_score.approval_state,
+        ...review.verification_evidence_score.score_explanation,
+      ])}
+      <h3>Human Signoff</h3>
+      ${renderHumanApprovalPacket(review.human_approval)}
+      <h3>Missing Proof</h3>
+      ${renderList([
+        ...review.verification_evidence_score.missing_summary,
+        ...review.verification_evidence_score.agent_next_actions,
+      ])}
+      <h3>Covered Proof</h3>
+      ${renderList(review.verification_evidence_score.covered_summary)}
+      <h3>Risks Reduced</h3>
+      ${renderList(review.verification_status.risks_reduced)}
+      <h3>Remaining Unknowns</h3>
+      ${renderList(review.verification_status.remaining_unknowns)}
+    </section>
+    <section>
+      <h2>Targeted Verification</h2>
+      ${renderVerificationPlanRows(review.verification_plan)}
+    </section>
+    <section>
       <h2>Direct Components</h2>
       ${renderAffectedComponentRows(review.direct_affected_components, 'No direct component boundary was mapped for this diff.')}
     </section>
     <section>
       <h2>Dependent Components</h2>
       ${renderAffectedComponentRows(review.dependent_components, 'No dependent consumer components were found.')}
+    </section>
+    <section>
+      <h2>Affected Services</h2>
+      ${renderAffectedServiceRows(review.affected_services)}
+    </section>
+    <section>
+      <h2>Dependency Runtime Impact</h2>
+      ${renderDependencyRuntimeImpact(review.dependency_runtime_impact)}
     </section>
     <section>
       <h2>Affected Flows</h2>
@@ -16895,6 +26169,15 @@ function renderReviewReport(review: ReviewSummaryData): string {
     <section>
       <h2>Reviewer Focus</h2>
       ${renderList(review.suggested_reviewer_focus_areas)}
+    </section>
+    <section>
+      <h2>Research Artifacts</h2>
+      ${renderArtifactLinks([
+        '.rizz/research/review_eval.json',
+        '.rizz/research/review_claim_evidence.json',
+        '.rizz/research/verification_evidence.json',
+        '.rizz/research/human_approval.json',
+      ])}
     </section>
     <section>
       <h2>Findings</h2>

@@ -1,0 +1,150 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-lockfile-only-precision",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Lockfile-only review precision benchmark seed",
+  "prompt": "Review a lockfile-only change and verify that Rizz preserves dependency/runtime install risk without treating the lockfile as generated artifact noise or authored runtime source.",
+  "fixture": {
+    "root": "pi-bench-review-lockfile-only-precision",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-lockfile-only-precision\",\"scripts\":{\"build\":\"tsc -b\",\"test\":\"vitest run\"},\"dependencies\":{\"express\":\"^4.19.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\",\"typescript\":\"^5.0.0\"}}\n"
+      },
+      {
+        "path": "pnpm-lock.yaml",
+        "contents": "lockfileVersion: 9.0\npackages:\n  express@4.19.0:\n    resolution: {}\n"
+      },
+      {
+        "path": "src/index.ts",
+        "contents": "export const ready = true;\n"
+      },
+      {
+        "path": "src/index.test.ts",
+        "contents": "import { it } from \"vitest\";\n\nit(\"is ready\", () => {});\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "pnpm-lock.yaml",
+          "contents": "lockfileVersion: 9.0\npackages:\n  express@4.19.0:\n    resolution: {}\n  vitest@2.1.0:\n    resolution: {}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["pnpm-lock.yaml"],
+      "dependency_runtime_changed_files_include": ["pnpm-lock.yaml"],
+      "dependency_runtime_lockfiles_include": ["pnpm-lock.yaml"],
+      "dependency_runtime_runtime_surfaces_include": ["install/dependency resolution"],
+      "dependency_runtime_verification_focus_include": [
+        "Validate package install and lockfile resolution"
+      ],
+      "minimum_dependency_runtime_impacts": 1,
+      "maximum_direct_components": 0,
+      "maximum_affected_flows": 0,
+      "maximum_architecture_impact_surfaces": 0,
+      "maximum_affected_data_dependencies": 0,
+      "maximum_affected_state_operations": 0,
+      "findings_include": [
+        {
+          "category": "Backward compatibility",
+          "title_includes": "Configuration or dependency surface changed"
+        }
+      ],
+      "findings_exclude": [
+        { "category": "Missing tests" },
+        {
+          "category": "Maintainability",
+          "title_includes": "Generated or vendor artifacts changed"
+        },
+        { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" },
+        { "category": "Architecture drift", "title_includes": "Architecture impact map overlaps" }
+      ],
+      "forbidden_output_substrings": [
+        "Runtime files changed without test artifacts",
+        "Generated or vendor artifacts changed",
+        "State/data dependency overlaps the diff",
+        "Architecture impact map overlaps the diff"
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "generated_artifact_count",
+        "dependency_runtime_impact_count",
+        "affected_flow_count",
+        "affected_data_dependency_count",
+        "affected_state_operation_count",
+        "architecture_impact_surface_count",
+        "review_precision_score",
+        "review_precision_status",
+        "false_positive_guard_count",
+        "false_negative_signal_count",
+        "precision_calibration.dependency_or_config_only_change",
+        "precision_calibration.lockfile_only_change",
+        "precision_calibration.runtime_source_change_count",
+        "precision_calibration.false_positive_guards",
+        "precision_calibration.false_negative_signals",
+        "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": [
+        "\"dependency_config_runtime_guard\"",
+        "\"lockfile_install_resolution_guard\"",
+        "\"state_data_overstatement_guard\"",
+        "\"architecture_overstatement_guard\"",
+        "\"dependency_runtime_context_preserved\""
+      ],
+      "expected_json_values": {
+        "generated_artifact_count": 0,
+        "dependency_runtime_impact_count": 1,
+        "affected_flow_count": 0,
+        "affected_data_dependency_count": 0,
+        "affected_state_operation_count": 0,
+        "architecture_impact_surface_count": 0,
+        "precision_calibration.dependency_or_config_only_change": true,
+        "precision_calibration.lockfile_only_change": true,
+        "precision_calibration.runtime_source_change_count": 0,
+        "secret_safety.output_secret_safe": true
+      }
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "Dependency Runtime Impact",
+        "Review Precision Calibration",
+        "lockfile_install_resolution_guard",
+        "pnpm-lock.yaml",
+        "Validate package install and lockfile resolution"
+      ],
+      "forbidden_substrings": [
+        "Runtime files changed without test artifacts",
+        "Generated or vendor artifacts changed",
+        "State/data dependency overlaps the diff"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "Lockfile-only changes preserve dependency/runtime install-resolution risk.",
+      "Lockfiles are not treated as generated artifact noise or authored runtime source."
+    ],
+    "fail": [
+      "Lockfile-only changes are hidden as generated churn.",
+      "Lockfile-only changes create runtime source, architecture, or state/data blast-radius findings."
+    ]
+  }
+}

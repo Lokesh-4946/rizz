@@ -1,0 +1,111 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-review-state-data-rename",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Renamed state/data file blast-radius benchmark seed",
+  "prompt": "Review a schema/model rename and verify that Rizz keeps the old and new changed paths connected to affected journeys, state/data dependencies, evidence, and targeted verification.",
+  "fixture": {
+    "root": "pi-bench-review-state-data-rename",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-review-state-data-rename\",\"scripts\":{\"test\":\"vitest run\",\"start\":\"node dist/server.js\"},\"dependencies\":{\"express\":\"^4.19.0\"},\"devDependencies\":{\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { loadProfile } from \"./accounts/repository.js\";\n\nconst app = express();\napp.get(\"/profile\", async (_req, res) => res.json(await loadProfile(\"guest\")));\nexport { app };\n"
+      },
+      {
+        "path": "src/accounts/repository.ts",
+        "contents": "import { profileSchema } from \"../db/schema.js\";\n\nconst profiles = new Map<string, { id: string }>();\n\nexport async function loadProfile(id: string) {\n  const cached = profiles.get(id);\n  return cached ?? { id, table: profileSchema.table };\n}\n"
+      },
+      {
+        "path": "src/db/schema.ts",
+        "contents": "export const profileSchema = {\n  table: \"profiles\",\n  columns: [\"id\"]\n};\n"
+      },
+      {
+        "path": "src/accounts/repository.test.ts",
+        "contents": "import { it } from \"vitest\";\n\nit(\"loads a profile\", () => {});\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/db/profile-schema.ts",
+          "rename_from": "src/db/schema.ts",
+          "contents": "export const profileSchema = {\n  table: \"profiles\",\n  columns: [\"id\", \"plan\"]\n};\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/db/schema.ts", "src/db/profile-schema.ts"],
+      "minimum_affected_flows": 1,
+      "minimum_affected_data_dependencies": 1,
+      "minimum_affected_state_operations": 1,
+      "minimum_verification_plan_items": 2,
+      "minimum_verification_plan_required": 1,
+      "affected_data_dependencies_include": ["data schema/model"],
+      "affected_state_operations_include": ["schema"],
+      "verification_plan_types_include": ["data", "test"],
+      "verification_plan_priorities_include": ["required"],
+      "verification_plan_reasons_include": [
+        "state/data dependency",
+        "Runtime/source files changed"
+      ],
+      "affected_tests_include": ["src/accounts/repository.test.ts"],
+      "blast_radius_reasons_include": [
+        "affected flow(s) link the change",
+        "graph relationship(s) touch the review blast radius"
+      ],
+      "findings_include": [
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" },
+        { "category": "Hidden coupling", "title_includes": "State/data dependency overlaps" }
+      ]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_data_dependency_count",
+        "affected_state_operation_count",
+        "verification_plan_count",
+        "secret_safety.output_secret_safe"
+      ],
+      "required_substrings": ["\"affected_data_dependency_count\"", "\"verification_plan_count\""],
+      "expected_json_values": {
+        "secret_safety.output_secret_safe": true
+      }
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "State/Data Impact",
+        "Targeted Verification",
+        "State/data dependency overlaps the diff",
+        "src/db/profile-schema.ts"
+      ]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The review changed-file set preserves both sides of a renamed state/data file.",
+      "The renamed file still maps to affected journeys, data dependencies, state operations, and verification work."
+    ],
+    "fail": [
+      "The old schema path disappears from review blast-radius reasoning.",
+      "The rename is treated only as a generic file move without state/data causality."
+    ]
+  }
+}

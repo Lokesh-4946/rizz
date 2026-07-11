@@ -29,6 +29,9 @@
     ".rizz/research/component_intelligence.json",
     ".rizz/research/flow_coverage.json",
     ".rizz/research/evidence_quality.json",
+    ".rizz/research/security_scan.json",
+    ".rizz/research/tool_inventory.json",
+    ".rizz/research/understanding_score.json",
     ".rizz/research/benchmark_ready.json",
     ".rizz/research/benchmark_tasks.json",
     ".rizz/research/pie_acceptance.json"
@@ -68,7 +71,64 @@
         "actionability.low_confidence_claim_areas",
         "actionability.redaction_hidden_evidence.hidden_evidence_count",
         "actionability.suggested_read_first",
+        "actionability.confidence_inspection_queue.items",
+        "actionability.confidence_inspection_queue.sources.security",
+        "actionability.confidence_inspection_queue.sources.tools",
+        "confidence_inspection_queue.items",
         "actionability.calibration_summary.summary"
+      ]
+    },
+    {
+      "path": ".rizz/research/security_scan.json",
+      "type": "json",
+      "required_fields": [
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "scan_mode",
+        "posture_score",
+        "finding_count",
+        "findings",
+        "calibration_rule"
+      ]
+    },
+    {
+      "path": ".rizz/research/tool_inventory.json",
+      "type": "json",
+      "required_fields": [
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "scan_mode",
+        "surface_count",
+        "mcp_config_count",
+        "package_script_count",
+        "surfaces",
+        "calibration_rule"
+      ]
+    },
+    {
+      "path": ".rizz/research/understanding_score.json",
+      "type": "json",
+      "required_fields": [
+        "overall_score",
+        "capability_scorecard.target_score",
+        "capability_scorecard.average_score",
+        "capability_scorecard.average_remaining_to_100",
+        "capability_scorecard.foundation_average_score",
+        "capability_scorecard.capability_count",
+        "capability_scorecard.capabilities"
+      ],
+      "required_substrings": [
+        "\"flow_understanding\"",
+        "\"architecture_reasoning\"",
+        "\"evidence_quality_scoring\"",
+        "\"mission_control_ux\"",
+        "\"pi_bench_seed_dataset_task_format\"",
+        "\"incremental_understanding_metrics\"",
+        "\"review_intelligence_true_blast_radius\"",
+        "\"rizz_ask\"",
+        "\"remaining_to_100\""
       ]
     },
     {

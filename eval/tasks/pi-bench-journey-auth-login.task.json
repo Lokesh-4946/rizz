@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "id": "pi-bench-journey-auth-login",
+  "suite": "pi-bench-seed",
+  "mode": "local",
+  "category": "review-blast-radius",
+  "title": "Journey-aware auth login blast-radius benchmark seed",
+  "prompt": "Review an auth service change and verify that Rizz names the user login journey, extracts journey steps, reports user-visible blast radius, calibrates confidence, and keeps outputs deterministic.",
+  "fixture": {
+    "root": "pi-bench-journey-auth-login",
+    "files": [
+      {
+        "path": "package.json",
+        "contents": "{\"name\":\"pi-bench-journey-auth-login\",\"scripts\":{\"dev\":\"tsx src/server.ts\",\"test\":\"vitest run\"},\"dependencies\":{\"express\":\"5.0.0\"},\"devDependencies\":{\"tsx\":\"^4.0.0\",\"typescript\":\"^5.0.0\",\"vitest\":\"^2.0.0\"}}\n"
+      },
+      {
+        "path": "src/server.ts",
+        "contents": "import express from \"express\";\nimport { loginUser } from \"./auth/login-service.js\";\nconst app = express();\napp.post(\"/login\", (_req, res) => res.json(loginUser({ email: \"user@example.com\" })));\n"
+      },
+      {
+        "path": "src/auth/login-service.ts",
+        "contents": "export function loginUser(input: { email?: string }) {\n  if (!input.email) throw new Error(\"invalid login\");\n  return { sessionId: \"session-1\", token: \"issued\" };\n}\n"
+      },
+      {
+        "path": "src/auth/login-service.test.ts",
+        "contents": "import { expect, it } from \"vitest\";\nimport { loginUser } from \"./login-service.js\";\nit(\"covers valid login\", () => expect(loginUser({ email: \"u@example.com\" }).sessionId).toBe(\"session-1\"));\n"
+      }
+    ]
+  },
+  "review": {
+    "diff": {
+      "files": [
+        {
+          "path": "src/auth/login-service.ts",
+          "contents": "export function loginUser(input: { email?: string }) {\n  if (!input.email) throw new Error(\"missing login email\");\n  return { sessionId: \"session-2\", token: \"issued\" };\n}\n"
+        }
+      ]
+    },
+    "assertions": {
+      "changed_files_include": ["src/auth/login-service.ts"],
+      "affected_flows_include": ["flow:http--post--login--src--server.ts"],
+      "affected_tests_include": ["src/auth/login-service.test.ts"],
+      "minimum_affected_flows": 1,
+      "required_tests_include": ["vitest run"],
+      "blast_radius_reasons_include": ["affected flow(s) link the change"],
+      "findings_include": [
+        { "category": "Hidden coupling", "title_includes": "Known flows overlap" }
+      ],
+      "forbidden_output_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+    }
+  },
+  "expected_artifacts": [
+    ".rizz/research/flow_understanding.json",
+    ".rizz/research/review_eval.json",
+    ".rizz/reports/review.html"
+  ],
+  "artifact_assertions": [
+    {
+      "path": ".rizz/research/flow_understanding.json",
+      "type": "json",
+      "required_fields": ["journeys", "journey_steps_by_type", "contracts"],
+      "required_substrings": [
+        "User login journey",
+        "auth_login",
+        "validation_auth",
+        "test_coverage",
+        "flow:http--post--login--src--server.ts"
+      ]
+    },
+    {
+      "path": ".rizz/research/review_eval.json",
+      "type": "json",
+      "required_fields": [
+        "affected_journey_count",
+        "affected_journey_step_count",
+        "user_visible_failure_mode_count",
+        "review_readiness_score",
+        "blast_radius_actionability_score",
+        "blast_radius_actionability_status",
+        "blast_radius_actionability.affected_journey_count",
+        "blast_radius_actionability.affected_journey_step_count",
+        "blast_radius_actionability.user_visible_failure_mode_count",
+        "blast_radius_actionability.signals"
+      ],
+      "required_substrings": [
+        "\"affected_journey_count\"",
+        "\"user_visible_failure_mode_count\"",
+        "\"blast_radius_actionability\"",
+        "\"status\""
+      ]
+    },
+    {
+      "path": ".rizz/reports/review.html",
+      "type": "file",
+      "required_substrings": [
+        "User login journey",
+        "Blast Radius Actionability",
+        "Validation/auth",
+        "User-Visible Risk",
+        "src/auth/login-service.test.ts"
+      ],
+      "forbidden_substrings": ["sk-or-v1", "OPENROUTER_API_KEY"]
+    }
+  ],
+  "rubric": {
+    "pass": [
+      "The login route is named as a user login journey from local route and handler evidence.",
+      "Review output connects the changed auth file to affected journey steps and user-visible risk."
+    ],
+    "fail": [
+      "The task requires network access or provider calls.",
+      "The auth change is reported only as a generic file change without journey context."
+    ]
+  }
+}

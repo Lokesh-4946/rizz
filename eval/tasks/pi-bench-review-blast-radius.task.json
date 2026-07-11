@@ -97,6 +97,15 @@
       "minimum_affected_flows": 4,
       "minimum_affected_relationships": 8,
       "minimum_architecture_impact_surfaces": 1,
+      "minimum_review_claims": 1,
+      "claim_surfaces_include": [
+        "blast_radius_reason",
+        "finding",
+        "affected_flow",
+        "verification_plan"
+      ],
+      "require_review_claim_coverage": true,
+      "require_architecture_impact_claim_coverage": true,
       "architecture_what_breaks_include": [
         "dependent component(s) can break",
         "component:packages--shared changes can affect"
@@ -123,6 +132,8 @@
     ".rizz/brain/entities/reviews.json",
     ".rizz/brain/entities/findings.json",
     ".rizz/research/review_eval.json",
+    ".rizz/research/review_claim_evidence.json",
+    ".rizz/reports/index.html",
     ".rizz/reports/review.html"
   ],
   "artifact_assertions": [
@@ -165,6 +176,19 @@
         "overall_risk",
         "surgicality_score",
         "review_readiness_score",
+        "blast_radius_actionability_score",
+        "blast_radius_actionability_status",
+        "actionable_signal_count",
+        "actionability_gap_count",
+        "blast_radius_actionability.score",
+        "blast_radius_actionability.status",
+        "blast_radius_actionability.affected_journey_count",
+        "blast_radius_actionability.affected_journey_step_count",
+        "blast_radius_actionability.user_visible_failure_mode_count",
+        "blast_radius_actionability.architecture_what_breaks_note_count",
+        "blast_radius_actionability.affected_test_count",
+        "blast_radius_actionability.signals",
+        "blast_radius_actionability.gaps",
         "secret_safety.output_secret_safe",
         "secret_safety.unsafe_sensitive_reference_count",
         "redaction.redacted_reference_count"
@@ -174,6 +198,7 @@
         "\"provider_calls_required\": false",
         "\"network_required\": false",
         "\"blast_radius\": \"moderate\"",
+        "\"blast_radius_actionability\"",
         "\"architecture_impact_route_surface_count\": 0",
         "\"output_secret_safe\": true"
       ],
@@ -184,8 +209,91 @@
       ]
     },
     {
+      "path": ".rizz/research/review_claim_evidence.json",
+      "type": "json",
+      "validate_architecture_impact_claims": true,
+      "required_fields": [
+        "schema_version",
+        "deterministic",
+        "provider_calls_required",
+        "network_required",
+        "review_id",
+        "basis.source",
+        "basis.review_fields",
+        "changed_files",
+        "total_claims",
+        "architecture_impact_claim_count",
+        "claim_counts.total",
+        "claim_counts.architecture_impact_claims",
+        "claim_counts.with_evidence",
+        "claims_by_surface.blast_radius_reason",
+        "claims_by_surface.finding",
+        "claims_by_surface.affected_flow",
+        "claims_by_surface.verification_plan",
+        "claims_by_confidence.inferred",
+        "blast_radius_actionability.score",
+        "blast_radius_actionability.status",
+        "blast_radius_actionability.signals",
+        "secret_safety.output_secret_safe",
+        "secret_safety.unsafe_sensitive_reference_count",
+        "claims"
+      ],
+      "required_substrings": [
+        "\"surface\": \"blast_radius_reason\"",
+        "\"surface\": \"finding\"",
+        "\"surface\": \"affected_flow\"",
+        "\"surface\": \"verification_plan\"",
+        "\"architecture_impact_claims\"",
+        "\"impact_id\": \"impact:component:packages--shared\"",
+        "\"architecture_impact_claim_count\"",
+        "\"blast_radius_actionability\"",
+        "\"output_secret_safe\": true",
+        "redacted:sensitive-file:"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ],
+      "expected_json_values": {
+        "deterministic": true,
+        "provider_calls_required": false,
+        "network_required": false,
+        "secret_safety.output_secret_safe": true,
+        "secret_safety.unsafe_sensitive_reference_count": 0
+      }
+    },
+    {
+      "path": ".rizz/reports/index.html",
+      "type": "file",
+      "required_substrings": [
+        "Architecture Impact Claims",
+        "Basis: pre-change Project Intelligence Layer plus current git diff",
+        "impact:component:packages--shared",
+        "review_claim_evidence.json"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ]
+    },
+    {
       "path": ".rizz/reports/review.html",
-      "type": "file"
+      "type": "file",
+      "required_substrings": [
+        "Architecture Impact Evidence",
+        "Blast Radius Actionability",
+        "Actionable Signals",
+        "Based on the pre-change Project Intelligence Layer plus the current git diff",
+        "impact:component:packages--shared",
+        "review_claim_evidence.json"
+      ],
+      "forbidden_substrings": [
+        "sk-or-v1-review-eval-secret",
+        "sk-or-v1-eval-review-secret.env",
+        "OPENROUTER_API_KEY"
+      ]
     }
   ],
   "rubric": {
