@@ -19,6 +19,7 @@ export interface ReviewGitBasisData {
   readonly diff_basis: ReviewDiffBasis;
   readonly working_tree_dirty: boolean;
   readonly untracked_files: readonly string[];
+  readonly generated_untracked_files: readonly string[];
   readonly working_tree_changed_files: readonly string[];
   readonly branch_changed_files: readonly string[];
   readonly working_tree_only_files: readonly string[];
@@ -228,6 +229,7 @@ function gitBasis(params: {
   readonly diffBasis: ReviewDiffBasis;
   readonly baseSha: string | null;
   readonly untrackedFiles: readonly string[];
+  readonly generatedUntrackedFiles: readonly string[];
   readonly workingTreeChangedFiles: readonly string[];
   readonly branchChangedFiles: readonly string[];
   readonly workingTreeDirty: boolean;
@@ -254,6 +256,7 @@ function gitBasis(params: {
     diff_basis: params.diffBasis,
     working_tree_dirty: params.workingTreeDirty,
     untracked_files: params.untrackedFiles.map(params.sanitizeText),
+    generated_untracked_files: params.generatedUntrackedFiles.map(params.sanitizeText),
     working_tree_changed_files: workingTreeChangedFiles,
     branch_changed_files: branchChangedFiles,
     working_tree_only_files: workingTreeChangedFiles.filter((file) => !branchChangedSet.has(file)),
@@ -317,9 +320,11 @@ export function readReviewGitChanges(params: {
         .map((line) => line.trim())
         .filter((line) => line !== '')
     : [];
+  const generatedUntrackedFileList = untrackedFileList.filter((path) => path.startsWith('.rizz/'));
+  const authoredUntrackedFileList = untrackedFileList.filter((path) => !path.startsWith('.rizz/'));
   const worktreeChanged = unique([
     ...changedPathsFromNameStatus(worktreeFiles.stdout),
-    ...untrackedFileList,
+    ...authoredUntrackedFileList,
   ]);
   const base = runGit(params.rootDir, ['merge-base', 'HEAD', baseRef]);
   const baseSha = base.ok && base.stdout.trim() !== '' ? base.stdout.trim() : null;
@@ -332,7 +337,7 @@ export function readReviewGitChanges(params: {
   }
   const branchChanged =
     branchFiles?.ok === true ? changedPathsFromNameStatus(branchFiles.stdout) : [];
-  if (worktreeChanged.length > 0) {
+  if (worktreeChanged.length > 0 || generatedUntrackedFileList.length > 0) {
     const diff = runGit(params.rootDir, ['diff', '--no-ext-diff', '--find-renames', 'HEAD', '--']);
     const untrackedDiffText = untrackedFiles.ok
       ? readUntrackedFileText({
@@ -349,12 +354,13 @@ export function readReviewGitChanges(params: {
         git: gitBasis({
           rootDir: params.rootDir,
           baseRef,
-          diffBasis: 'working_tree',
+          diffBasis: worktreeChanged.length > 0 ? 'working_tree' : 'none',
           baseSha,
-          untrackedFiles: untrackedFileList,
+          untrackedFiles: authoredUntrackedFileList,
+          generatedUntrackedFiles: generatedUntrackedFileList,
           workingTreeChangedFiles: worktreeChanged,
           branchChangedFiles: branchChanged,
-          workingTreeDirty: true,
+          workingTreeDirty: worktreeChanged.length > 0,
           sanitizeText: params.sanitizeText,
         }),
       },
@@ -381,6 +387,7 @@ export function readReviewGitChanges(params: {
           diffBasis: branchChanged.length > 0 ? 'branch' : 'none',
           baseSha,
           untrackedFiles: [],
+          generatedUntrackedFiles: [],
           workingTreeChangedFiles: [],
           branchChangedFiles: branchChanged,
           workingTreeDirty: false,
@@ -401,6 +408,7 @@ export function readReviewGitChanges(params: {
         diffBasis: 'none',
         baseSha: null,
         untrackedFiles: [],
+        generatedUntrackedFiles: [],
         workingTreeChangedFiles: [],
         branchChangedFiles: [],
         workingTreeDirty: false,
