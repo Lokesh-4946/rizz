@@ -1,5 +1,20 @@
 # Release Notes
 
+## 0.3.1
+
+Rizz `0.3.1` is a backward-compatible precision and approval-lifecycle patch.
+
+- Review governance separates Rizz-generated `.rizz/**` files from authored untracked work, so
+  generated intelligence does not inflate dirty-tree severity.
+- Secret detection distinguishes credential-shaped values from design-token documentation while
+  preserving redaction for real keys, credentials, and sensitive files.
+- File explain and `rizz ask` surface evidence-backed Next.js route consumers without contradictory
+  generic fallback text.
+- Human signoff supports exact ISO-8601 expiry and auditable revocation; expired or revoked decisions
+  cannot make a review merge/release-ready.
+- The default path remains dependency-minimal and single-agent; workspace/multi-agent behavior stays
+  opt-in.
+
 ## 0.3.0
 
 Rizz `0.3.0` expands the local Project Intelligence Engine with deeper architecture causality,

@@ -139,7 +139,7 @@ Release-facing changes should also run:
 pnpm pack:check
 ```
 
-Latest `0.3.0` release gate:
+Latest `0.3.1` release gate:
 
 - `pnpm check` passed
 - Vitest: 38 files / 383 tests

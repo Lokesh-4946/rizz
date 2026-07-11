@@ -4,7 +4,7 @@
 
 import type { Result } from '@valoir/rizz-providers';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 
 export type { Result };
 export { type Session, createSession } from './session.js';
