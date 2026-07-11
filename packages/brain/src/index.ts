@@ -24,6 +24,7 @@ import {
 import {
   fileExplainFlowProjection,
   fileExplainIntelligence as fxi,
+  mergeFileConsumers,
   explainRelationshipContext as relationshipContextFor,
 } from './file-explain-intelligence.js';
 import {
@@ -21692,11 +21693,11 @@ function buildExplanation(params: {
       entrypointEvidenceIds: safeFlowEntrypoints(flow).flatMap((item) => item.evidence),
     })),
   });
-  const consumers = unique([
-    ...explainArray(targetData.consumers, componentData.consumers),
-    ...relationshipContext.dependedOnBy,
-    ...flowProjection.consumers,
-  ]);
+  const consumers = mergeFileConsumers({
+    recorded: explainArray(targetData.consumers, componentData.consumers),
+    relationships: relationshipContext.dependedOnBy,
+    routes: flowProjection.consumers,
+  });
   const importantFiles = unique([
     ...explainArray(targetData.important_files, componentData.important_files),
     ...target.source_files,

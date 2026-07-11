@@ -6039,6 +6039,27 @@ describe('project brain generation', () => {
       );
       expect(componentFileExplain.value.explanation.confidence).toBe('inferred');
 
+      const componentFileAsk = await askProjectQuestion({
+        rootDir: dir,
+        question: 'who depends on src/components/Hero.tsx?',
+        now: new Date('2026-06-28T12:41:45.000Z'),
+      });
+      expect(componentFileAsk.ok).toBe(true);
+      if (!componentFileAsk.ok) return;
+      expect(componentFileAsk.value.answer.answer_items).toContain(
+        'route consumer: / via src/app/page.tsx',
+      );
+      expect(componentFileAsk.value.answer.answer_items).not.toContain(
+        'Other project components; exact consumers need deeper flow analysis.',
+      );
+      expect(componentFileAsk.value.answer.evidence_ids).toEqual(
+        expect.arrayContaining([
+          'evidence:file-src--app--page.tsx',
+          'evidence:file-src--components--hero.tsx',
+        ]),
+      );
+      expect(componentFileAsk.value.answer.confidence).toBe('inferred');
+
       const missionControlReport = await readFile(
         join(dir, '.rizz', 'reports', 'index.html'),
         'utf8',

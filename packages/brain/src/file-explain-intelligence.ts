@@ -3,6 +3,21 @@ export interface FileExplainIntelligence {
   readonly responsibilities: readonly string[];
 }
 
+const GENERIC_CONSUMER_FALLBACK =
+  'Other project components; exact consumers need deeper flow analysis.';
+
+export function mergeFileConsumers(params: {
+  readonly recorded: readonly string[];
+  readonly relationships: readonly string[];
+  readonly routes: readonly string[];
+}): string[] {
+  const hasExactConsumer = params.relationships.length > 0 || params.routes.length > 0;
+  const recorded = hasExactConsumer
+    ? params.recorded.filter((consumer) => consumer !== GENERIC_CONSUMER_FALLBACK)
+    : params.recorded;
+  return unique([...recorded, ...params.relationships, ...params.routes]);
+}
+
 export function fileExplainFlowProjection(params: {
   readonly targetPath: string;
   readonly flows: readonly {
