@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -31,6 +32,7 @@ export interface ReviewGitBasisData {
 export interface ReviewGovernanceData {
   readonly status: ReviewGovernanceStatus;
   readonly score: number;
+  readonly review_fingerprint: string;
   readonly git: ReviewGitBasisData;
   readonly mission_contract: ReviewMissionComparisonData;
   readonly reviewable_changed_files: readonly string[];
@@ -162,6 +164,25 @@ function boundedScore(value: number): number {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function reviewFingerprint(params: {
+  readonly git: ReviewGitBasisData;
+  readonly changedFiles: readonly string[];
+  readonly diffText: string;
+  readonly missionComparison: ReviewMissionComparisonData;
+}): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        schema_version: 1,
+        git: params.git,
+        changed_files: params.changedFiles,
+        mission_contract: params.missionComparison,
+        diff_text: params.diffText,
+      }),
+    )
+    .digest('hex');
 }
 
 function runGit(
@@ -728,7 +749,7 @@ export function buildReviewGovernance(params: {
           `Review has mixed basis: selected working-tree diff has ${params.git.working_tree_changed_files.length} file(s), while committed branch diff has ${params.git.branch_changed_files.length} file(s) against ${params.git.base_ref}.`,
         ]
       : []),
-    ...(params.git.branch_only_files.length > 0
+    ...(params.git.branch_only_files.length > 0 && params.git.diff_basis !== 'branch'
       ? [
           `${params.git.branch_only_files.length} branch-only file(s) are outside the selected ${params.git.diff_basis} diff: ${params.git.branch_only_files
             .slice(0, 6)
@@ -820,6 +841,12 @@ export function buildReviewGovernance(params: {
   return {
     status,
     score: boundedScore(100 - Math.min(70, issueCount * 12)),
+    review_fingerprint: reviewFingerprint({
+      git: params.git,
+      changedFiles: params.changedFiles,
+      diffText: params.diffText,
+      missionComparison,
+    }),
     git: params.git,
     mission_contract: missionComparison,
     reviewable_changed_files: params.reviewableChangedFiles.map(params.sanitizeText),

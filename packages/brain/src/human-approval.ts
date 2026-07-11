@@ -12,6 +12,7 @@ export interface HumanApprovalPacket {
   readonly schema_version: number;
   readonly generated_at: string;
   readonly review_id: string;
+  readonly review_fingerprint: string;
   readonly state: HumanApprovalState;
   readonly agent_evidence_ready: boolean;
   readonly human_signoff_required: boolean;
@@ -19,6 +20,8 @@ export interface HumanApprovalPacket {
   readonly merge_release_ready: boolean;
   readonly signoff_source: string | null;
   readonly signoff_summary: string | null;
+  readonly matching_signoff_review_id: string | null;
+  readonly signoff_history_count: number;
   readonly blockers: readonly string[];
   readonly evidence_summary: readonly string[];
   readonly next_actions: readonly string[];
@@ -32,6 +35,7 @@ export interface HumanSignoffHistoryItem {
   readonly approver: string;
   readonly recorded_at: string;
   readonly review_id: string;
+  readonly review_fingerprint: string | null;
   readonly human_approval_state: HumanApprovalState;
   readonly source: 'rizz approve signoff';
 }
@@ -43,6 +47,7 @@ export interface HumanSignoffRecord {
   readonly approver: string;
   readonly recorded_at: string;
   readonly review_id: string;
+  readonly review_fingerprint: string;
   readonly human_approval_state: HumanApprovalState;
   readonly source: 'rizz approve signoff';
   readonly agent_self_approval_allowed: false;
@@ -114,11 +119,36 @@ function signoffHistory(value: unknown): HumanSignoffHistoryItem[] {
         approver: recordString(item, 'approver', 'unknown-human'),
         recorded_at: recordString(item, 'recorded_at'),
         review_id: recordString(item, 'review_id', 'unknown-review'),
+        review_fingerprint: reviewFingerprint(item),
         human_approval_state: state,
         source: 'rizz approve signoff' as const,
       };
     })
     .filter((item): item is HumanSignoffHistoryItem => item !== undefined);
+}
+
+function reviewFingerprint(value: unknown): string | null {
+  const fingerprint = recordString(value, 'review_fingerprint');
+  return /^[a-f0-9]{64}$/.test(fingerprint) ? fingerprint : null;
+}
+
+function matchingSignoff(
+  value: unknown,
+  fingerprint: string,
+): Readonly<Record<string, unknown>> | null {
+  if (!/^[a-f0-9]{64}$/.test(fingerprint)) return null;
+  const history = recordArray(value, 'history').filter(isRecord).reverse();
+  const candidates = [value, ...history].filter(isRecord);
+  for (const candidate of candidates) {
+    const status = recordString(candidate, 'status').toLowerCase();
+    if (
+      (status === 'signed_off' || status === 'approved') &&
+      reviewFingerprint(candidate) === fingerprint
+    ) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function unique(values: readonly string[]): string[] {
@@ -214,6 +244,16 @@ export async function recordHumanSignoff(options: {
     }
     const now = (options.now ?? new Date()).toISOString();
     const reviewId = recordString(packet, 'review_id', 'unknown-review');
+    const fingerprint = reviewFingerprint(packet);
+    if (fingerprint === null) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_PACKET_INVALID',
+          message: '.rizz/research/human_approval.json has no valid review fingerprint.',
+        },
+      };
+    }
     const previous = await readHumanSignoffRecord(options.rootDir);
     const item: HumanSignoffHistoryItem = {
       status: 'signed_off',
@@ -221,6 +261,7 @@ export async function recordHumanSignoff(options: {
       approver,
       recorded_at: now,
       review_id: reviewId,
+      review_fingerprint: fingerprint,
       human_approval_state: state,
       source: 'rizz approve signoff',
     };
@@ -231,6 +272,7 @@ export async function recordHumanSignoff(options: {
       approver,
       recorded_at: now,
       review_id: reviewId,
+      review_fingerprint: fingerprint,
       human_approval_state: state,
       source: 'rizz approve signoff',
       agent_self_approval_allowed: false,
@@ -287,8 +329,10 @@ export function buildHumanApprovalPacket(params: {
   const failedCount = recordNumber(proof, 'failed_count');
   const missingRequired = recordNumber(proof, 'missing_required_count');
   const governanceStatus = recordString(governance, 'status', 'unknown');
-  const signoffStatus = recordString(params.signoffRecord, 'status').toLowerCase();
-  const signoffRecorded = signoffStatus === 'signed_off' || signoffStatus === 'approved';
+  const fingerprint = recordString(governance, 'review_fingerprint');
+  const history = signoffHistory(params.signoffRecord);
+  const currentSignoff = matchingSignoff(params.signoffRecord, fingerprint);
+  const signoffRecorded = currentSignoff !== null;
   const agentEvidenceReady =
     recommendedAction === 'approve' &&
     proofState === 'ready_for_human_approval' &&
@@ -317,6 +361,7 @@ export function buildHumanApprovalPacket(params: {
     schema_version: 1,
     generated_at: params.generatedAt,
     review_id: reviewId,
+    review_fingerprint: fingerprint,
     state,
     agent_evidence_ready: agentEvidenceReady,
     human_signoff_required: true,
@@ -324,21 +369,30 @@ export function buildHumanApprovalPacket(params: {
     merge_release_ready: state === 'signed_off',
     signoff_source: signoffRecorded ? '.rizz/human-signoff.json' : null,
     signoff_summary:
-      signoffRecorded && isRecord(params.signoffRecord)
-        ? recordString(params.signoffRecord, 'summary', 'Human signed off this review.')
+      currentSignoff !== null
+        ? recordString(currentSignoff, 'summary', 'Human signed off this review.')
         : null,
+    matching_signoff_review_id:
+      currentSignoff === null ? null : recordString(currentSignoff, 'review_id', 'unknown-review'),
+    signoff_history_count: history.length,
     blockers,
     evidence_summary: [
       `Review action: ${recommendedAction}.`,
       `Verification proof: ${proofScore}/100 (${proofState}).`,
       `Governance: ${governanceStatus}.`,
       `${findingCount} review finding(s) recorded.`,
+      `${history.length} human signoff history item(s); current review fingerprint matched: ${signoffRecorded}.`,
     ],
     next_actions:
       state === 'signed_off'
         ? ['Proceed only within the signed-off mission and release boundary.']
         : state === 'awaiting_human_signoff'
           ? [
+              ...(history.length > 0
+                ? [
+                    'Previous signoff history is preserved, but no signoff matches this review fingerprint.',
+                  ]
+                : []),
               'Human reviews .rizz/reports/review.html, then records signoff in .rizz/human-signoff.json.',
             ]
           : blockers.length > 0
@@ -349,9 +403,10 @@ export function buildHumanApprovalPacket(params: {
       '.rizz/research/review_eval.json',
       '.rizz/research/verification_evidence.json',
       '.rizz/research/human_approval.json',
+      '.rizz/human-signoff.json',
     ],
     calibration_rule:
-      'Agent evidence can make a review ready for human signoff, but merge/release approval is true only when human_signoff_recorded is true.',
+      'Agent evidence can make a review ready for human signoff, but merge/release approval is true only when a recorded human signoff matches the deterministic review fingerprint.',
   };
 }
 
@@ -362,6 +417,7 @@ export function renderHumanApprovalPacket(packet: HumanApprovalPacket | undefine
       `State: ${packet.state}`,
       `Agent evidence ready: ${packet.agent_evidence_ready}`,
       `Human signoff recorded: ${packet.human_signoff_recorded}`,
+      `Signoff history: ${packet.signoff_history_count}`,
       `Merge/release ready: ${packet.merge_release_ready}`,
     ])}</article>
     <article class="card compact"><h3>Approval Evidence</h3>${renderList(packet.evidence_summary)}</article>

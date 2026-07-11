@@ -6,11 +6,12 @@ import { buildHumanApprovalPacket, recordHumanSignoff } from './human-approval.j
 
 describe('human approval packet', () => {
   it('keeps agent evidence readiness separate from human signoff', () => {
+    const fingerprint = 'a'.repeat(64);
     const review = {
       id: 'review:clean',
       recommended_action: 'approve',
       findings: [],
-      review_governance: { status: 'clean' },
+      review_governance: { status: 'clean', review_fingerprint: fingerprint },
       verification_evidence_score: {
         approval_state: 'ready_for_human_approval',
         score: 96,
@@ -36,7 +37,13 @@ describe('human approval packet', () => {
       buildHumanApprovalPacket({
         generatedAt: '2026-06-28T10:41:00.000Z',
         review,
-        signoffRecord: { status: 'signed_off', summary: 'Human approved release.' },
+        signoffRecord: {
+          status: 'signed_off',
+          summary: 'Human approved release.',
+          review_id: 'review:clean',
+          review_fingerprint: fingerprint,
+          history: [],
+        },
       }),
     ).toMatchObject({
       state: 'signed_off',
@@ -45,6 +52,42 @@ describe('human approval packet', () => {
       merge_release_ready: true,
       signoff_source: '.rizz/human-signoff.json',
       signoff_summary: 'Human approved release.',
+      matching_signoff_review_id: 'review:clean',
+      signoff_history_count: 0,
+    });
+
+    expect(
+      buildHumanApprovalPacket({
+        generatedAt: '2026-06-28T10:42:00.000Z',
+        review,
+        signoffRecord: {
+          status: 'signed_off',
+          summary: 'Human approved an earlier diff.',
+          review_id: 'review:earlier',
+          review_fingerprint: 'b'.repeat(64),
+          history: [
+            {
+              status: 'signed_off',
+              summary: 'Human approved an earlier diff.',
+              approver: 'Lokesh',
+              recorded_at: '2026-06-28T10:30:00.000Z',
+              review_id: 'review:earlier',
+              review_fingerprint: 'b'.repeat(64),
+              human_approval_state: 'awaiting_human_signoff',
+              source: 'rizz approve signoff',
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({
+      state: 'awaiting_human_signoff',
+      human_signoff_recorded: false,
+      merge_release_ready: false,
+      matching_signoff_review_id: null,
+      signoff_history_count: 1,
+      next_actions: expect.arrayContaining([
+        'Previous signoff history is preserved, but no signoff matches this review fingerprint.',
+      ]),
     });
   });
 
@@ -57,6 +100,7 @@ describe('human approval packet', () => {
         JSON.stringify({
           schema_version: 1,
           review_id: 'review:ready',
+          review_fingerprint: 'a'.repeat(64),
           state: 'awaiting_human_signoff',
           next_actions: ['Human signs off.'],
         }),
@@ -77,6 +121,7 @@ describe('human approval packet', () => {
             summary: 'Approved after reviewing evidence.',
             approver: 'Lokesh',
             review_id: 'review:ready',
+            review_fingerprint: 'a'.repeat(64),
             agent_self_approval_allowed: false,
             history: [{ review_id: 'review:ready' }],
           },
