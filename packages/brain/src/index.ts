@@ -49,6 +49,7 @@ import {
   containsSensitiveReference,
   redactSensitiveText,
   redactedReferenceCount,
+  redactSensitiveSet as rs,
   sensitiveIdentityKey,
   shouldOmitSensitivePath,
   unredactedSensitiveReferenceCount,
@@ -2516,9 +2517,9 @@ function entitySemanticValue(entity: BrainEntity): EntitySemanticValue {
     name: entity.name,
     description: entity.description,
     confidence: entity.confidence,
-    evidence_ids: unique([...entity.evidence_ids]),
-    related_entity_ids: unique([...entity.related_entity_ids]),
-    source_files: unique([...entity.source_files]),
+    evidence_ids: rs(entity.evidence_ids),
+    related_entity_ids: rs(entity.related_entity_ids),
+    source_files: rs(entity.source_files),
     data: entity.data ?? {},
   };
 }
@@ -14820,10 +14821,13 @@ function buildIncrementalUnderstandingMetrics(params: {
       .filter((entity) => entity.latest_status === 'stale')
       .map((entity) => entity.id),
   ]);
-  const recomputedUnderstandingCount =
-    addedEntities.length + changedEntities.length + relationshipDelta.added_count;
-  const efficiencyDenominator =
-    stableEntityCount + recomputedUnderstandingCount + staleFactCandidates.length;
+  const recomputed =
+    addedEntities.length +
+    changedEntities.length +
+    relationshipDelta.added_count +
+    relationshipDelta.removed_count +
+    relationshipDelta.changed_count;
+  const efficiencyDenominator = stableEntityCount + recomputed + staleFactCandidates.length;
   const understandingDeltas = buildUnderstandingDeltas({
     previousFingerprint: params.previous.fingerprint,
     previousEntities,
@@ -14875,7 +14879,7 @@ function buildIncrementalUnderstandingMetrics(params: {
     evidence_delta: evidenceDelta,
     service_causality_delta: serviceCausalityDelta,
     reused_understanding_count: stableEntityCount,
-    recomputed_understanding_count: recomputedUnderstandingCount,
+    recomputed_understanding_count: recomputed,
     stale_fact_count: staleFactCandidates.length,
     stale_fact_candidates: staleFactCandidates,
     scan_efficiency_score: scorePercent(stableEntityCount, efficiencyDenominator),

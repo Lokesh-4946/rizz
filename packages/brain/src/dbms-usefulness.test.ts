@@ -363,6 +363,96 @@ describe('DBMS usefulness hardening', () => {
     });
   });
 
+  it('counts removed Alembic relationships as recomputed architecture understanding', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'database', 'migrations'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'alembic-delta-app' }));
+      const migrationPath = join(dir, 'database', 'migrations', '001_items.py');
+      const migration = (includeForeignKey: boolean): string =>
+        [
+          'from alembic import op',
+          'import sqlalchemy as sa',
+          '',
+          'def upgrade():',
+          '    op.create_table(',
+          '        "users",',
+          '        sa.Column("id", sa.Integer(), primary_key=True),',
+          '    )',
+          '    op.create_table(',
+          '        "items",',
+          '        sa.Column("id", sa.Integer(), primary_key=True),',
+          '        sa.Column("owner_id", sa.Integer()),',
+          ...(includeForeignKey
+            ? ['        sa.ForeignKeyConstraint(["owner_id"], ["users.id"]),']
+            : []),
+          '    )',
+        ].join('\n');
+      await writeFile(migrationPath, migration(true));
+
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:35:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      await writeFile(migrationPath, migration(false));
+      const second = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:36:00.000Z'),
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+
+      const incremental = await readJson<{
+        changed_files: string[];
+        changed_entity_count: number;
+        added_entity_count: number;
+        recomputed_understanding_count: number;
+        scan_efficiency_score: number;
+        relationship_delta: {
+          added_count: number;
+          removed_count: number;
+          changed_count: number;
+          removed: Array<{ from: string; relation: string; to: string }>;
+        };
+        understanding_deltas: {
+          changed_surfaces: Array<{ surface_id: string; status: string; reasons: string[] }>;
+          stale_surface_count: number;
+        };
+      }>(join(second.value.researchDir, 'incremental_update.json'));
+      expect(incremental.changed_files).toEqual(['database/migrations/001_items.py']);
+      expect(incremental.relationship_delta).toMatchObject({
+        added_count: 0,
+        removed_count: 2,
+        changed_count: 0,
+      });
+      expect(incremental.relationship_delta.removed).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            from: 'database/table:database--migrations--001_items.py-items',
+            relation: 'depends_on',
+            to: 'database/table:database--migrations--001_items.py-users',
+          }),
+        ]),
+      );
+      expect(incremental.recomputed_understanding_count).toBe(
+        incremental.added_entity_count +
+          incremental.changed_entity_count +
+          incremental.relationship_delta.removed_count,
+      );
+      expect(incremental.scan_efficiency_score).toBeLessThan(100);
+      expect(incremental.understanding_deltas.changed_surfaces).toContainEqual(
+        expect.objectContaining({
+          surface_id: 'architecture:relationship-map',
+          status: 'changed',
+          reasons: expect.arrayContaining(['2 removed relationship(s)']),
+        }),
+      );
+      expect(incremental.understanding_deltas.stale_surface_count).toBe(0);
+    });
+  });
+
   it('detects multi-column raw SQL and Alembic foreign keys', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'database', 'migrations'), { recursive: true });

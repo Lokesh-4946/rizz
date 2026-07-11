@@ -59,10 +59,9 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens Python/Flask DBMS causality. rizz now recognizes Flask route decorators,
-links Flask route handlers through statically used Python service imports into SQLAlchemy model
-files, carries exact `database/table:*` IDs into flow data dependencies, and keeps DBMS text
-heuristics in the helper module so the brain entry file stays under the lightweight size budget.
+The current slice hardens repeated-scan precision. Redaction is idempotent for persisted sensitive
+references, semantic set fields are normalized after redaction, and added, removed, or changed
+relationships all contribute to recomputed-understanding accounting.
 
 ## Capability Scorecard
 
@@ -76,38 +75,40 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Evidence Quality scoring | 100/100 | 0 | Preserve actionability while keeping packet output compact. |
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
-| Incremental Understanding metrics | 88/100 | 12 | Improve repeated-scan reuse and stale-surface explanations. |
+| Incremental Understanding metrics | 100/100 | 0 | Preserve exact reuse and relationship-delta accounting across broader real-repo scans. |
 | Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
 | Verification Plan + Evidence Ingest | 96/100 | 4 | Reuse approval/signoff history across repeated agent repair loops and make review ingestion more automatic. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `fix/large-repo-analysis-scaling`, local gate plus full Tasking Manager UAT.
+Run: `feature/incremental-reuse-precision`, local gate plus repeated FastAPI template UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused sensitivity tests | 7/7 passed |
+| Focused DBMS and sensitivity tests | 19/19 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 380/380 passed |
+| Full unit suite | 383/383 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,520 bytes |
-| Footprint | Passed: 48ms cold start, 198KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,547 bytes |
+| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: CPU profiling traced the large-repo timeout to a backtracking-sensitive redaction
-candidate regex that was repeatedly scanning generated graph, research, and report text. The linear
-token scan preserves path classification and secret redaction while reducing a 5,000-character
-benign scan from 33.5s to 0.06ms after warm-up. Full Tasking Manager analysis now completes in
-112.2s under the 180s cap, with redaction safety still 100 and zero unsafe sensitive references.
-Remaining work is stronger component boundary reasoning and repeated-scan reuse precision.
+Current verdict: an unchanged 217-file FastAPI template scan now reports 217 reused files, all 679
+understanding entities stable, 0 recomputed entities, 0 changed or stale surfaces, 100/100 scan
+efficiency, and Incremental Understanding at 100/100. A one-file Alembic foreign-key removal reports
+216 reused files, 676 stable entities, 3 changed entities, 2 removed cross-table relationships, 5
+recomputed understanding items, 2 changed surfaces, 0 stale surfaces, and 99/100 scan efficiency.
+The persisted brain remains secret-safe, and genuine architecture removal is no longer omitted from
+recomputation accounting. Remaining work is stronger component boundary reasoning and broader
+verification/signoff reuse.
 
 ## Latest Alembic Real-Repo UAT
 

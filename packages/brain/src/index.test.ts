@@ -7605,6 +7605,62 @@ describe('project brain generation', () => {
     });
   });
 
+  it('reuses redacted understanding without semantic drift on an unchanged scan', async () => {
+    await withTempProject(async (dir) => {
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(join(dir, 'src', 'a.ts'), 'export const first = true;\n');
+      await writeFile(
+        join(dir, 'src', 'client_secret_incremental.ts'),
+        'export const tokenHandler = "stable";\n',
+      );
+      await writeFile(join(dir, 'src', 'z.ts'), 'export const last = true;\n');
+      const first = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:10:00.000Z'),
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const second = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T11:11:00.000Z'),
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+
+      const incremental = await readJson<{
+        changed_file_count: number;
+        reused_files: number;
+        changed_entity_count: number;
+        stable_entity_count: number;
+        recomputed_understanding_count: number;
+        scan_efficiency_score: number;
+        understanding_deltas: {
+          changed_surface_count: number;
+          stable_surface_count: number;
+          stale_surface_count: number;
+        };
+      }>(join(second.value.researchDir, 'incremental_update.json'));
+      expect(incremental).toMatchObject({
+        changed_file_count: 0,
+        reused_files: 3,
+        changed_entity_count: 0,
+        recomputed_understanding_count: 0,
+        scan_efficiency_score: 100,
+        understanding_deltas: {
+          changed_surface_count: 0,
+          stale_surface_count: 0,
+        },
+      });
+      expect(incremental.stable_entity_count).toBeGreaterThan(0);
+      expect(incremental.understanding_deltas.stable_surface_count).toBeGreaterThan(0);
+
+      const generated = await readTreeText(join(dir, '.rizz'));
+      expect(generated).not.toContain('client_secret_incremental.ts');
+      expect(generated).toContain('redacted:sensitive-file:');
+    });
+  });
+
   it('redacts secret-like strings from generated brain and report output', async () => {
     await withTempProject(async (dir) => {
       await writeFile(

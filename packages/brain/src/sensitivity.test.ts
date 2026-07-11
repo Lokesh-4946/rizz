@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifySensitivePath,
+  redactSensitiveSet,
   redactSensitiveText,
   redactedSensitiveReference,
   sensitiveIdentityKey,
@@ -61,6 +62,17 @@ describe('sensitive path classification', () => {
     expect(output).not.toContain('client_secret');
     expect(output).not.toContain('/tmp/public-build');
     expect(output).toContain('redacted:sensitive-file:');
+  });
+
+  it('preserves embedded redacted references across repeated sanitization', () => {
+    const reference = redactedSensitiveReference('/tmp/private-secret/config.json');
+    const input = `Evidence ${reference}; inspect /tmp/another-private-secret/config.json.`;
+    const output = redactSensitiveText(input);
+
+    expect(output).toContain(reference);
+    expect(output).not.toContain('/tmp/another-private-secret');
+    expect(redactSensitiveText(output)).toBe(output);
+    expect(redactSensitiveSet(['/tmp/private-secret/config.json', reference])).toEqual([reference]);
   });
 
   it('keeps command structure while redacting secret values', () => {
