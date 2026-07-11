@@ -35,6 +35,9 @@ Usage:
   rizz verify add    record verification evidence for review calibration
   rizz approve signoff
                      record human signoff after rizz marks review ready
+                     optional: --expires-at <ISO-8601>
+  rizz approve revoke
+                     revoke the active human signoff with an audit reason
   rizz review        review current git diff with the project brain
                     optional: --mission <text|json>, --mission-file <path>
   rizz chat          launch model TUI
@@ -292,32 +295,62 @@ async function runApproveSignoffCommand(options: {
   readonly summary: string;
   readonly approver: string;
   readonly json: boolean;
+  readonly expiresAt?: string;
 }): Promise<number> {
   const { recordHumanSignoff } = await import('@valoir/rizz-brain');
   const result = await recordHumanSignoff({
     rootDir: process.cwd(),
     summary: options.summary,
     approver: options.approver,
+    ...(options.expiresAt !== undefined ? { expiresAt: options.expiresAt } : {}),
   });
+  return finishApproveCommand(result, options.json, 'recorded');
+}
+
+async function runApproveRevokeCommand(options: {
+  readonly summary: string;
+  readonly approver: string;
+  readonly json: boolean;
+}): Promise<number> {
+  const { revokeHumanSignoff } = await import('@valoir/rizz-brain');
+  const result = await revokeHumanSignoff({
+    rootDir: process.cwd(),
+    summary: options.summary,
+    approver: options.approver,
+  });
+  return finishApproveCommand(result, options.json, 'revoked');
+}
+
+async function finishApproveCommand(
+  result:
+    | {
+        readonly ok: true;
+        readonly value: {
+          readonly record: { readonly approver: string; readonly review_id: string };
+          readonly signoffPath: string;
+          readonly nextActions: readonly string[];
+        };
+      }
+    | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } },
+  json: boolean,
+  verb: 'recorded' | 'revoked',
+): Promise<number> {
   if (!result.ok) {
-    if (options.json) {
-      await writeJsonStdout(result);
-    } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
-    }
-    return result.error.code === 'SIGNOFF_NOT_READY' ? 1 : 2;
+    if (json) await writeJsonStdout(result);
+    else process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    return result.error.code === 'SIGNOFF_NOT_READY' || result.error.code === 'SIGNOFF_NOT_ACTIVE'
+      ? 1
+      : 2;
   }
-  if (options.json) {
+  if (json) {
     await writeJsonStdout(result.value);
     return 0;
   }
-  process.stdout.write('rizz recorded human signoff\n');
+  process.stdout.write(`rizz ${verb} human signoff\n`);
   process.stdout.write(`  approver: ${result.value.record.approver}\n`);
   process.stdout.write(`  review: ${result.value.record.review_id}\n`);
   process.stdout.write(`  artifact: ${displayLocalPath(result.value.signoffPath)}\n`);
-  for (const action of result.value.nextActions) {
-    process.stdout.write(`  next: ${action}\n`);
-  }
+  for (const action of result.value.nextActions) process.stdout.write(`  next: ${action}\n`);
   return 0;
 }
 
@@ -794,19 +827,20 @@ async function main(argv: readonly string[]): Promise<number> {
   }
   if (c.rest[0] === 'approve') {
     const approveArgs = c.rest.slice(1);
-    if (approveArgs[0] !== 'signoff') {
+    if (approveArgs[0] !== 'signoff' && approveArgs[0] !== 'revoke') {
       process.stderr.write(
-        'rizz: approve currently supports \'signoff\'\nTry \'rizz approve signoff --approver "Human" --summary "Approved for merge"\'.\n',
+        "rizz: approve supports 'signoff' and 'revoke'\nTry 'rizz approve signoff --approver \"Human\" --summary \"Approved for merge\"'.\n",
       );
       return 2;
     }
     const wantsJson = approveArgs.includes('--json');
     const approver = extractFlag(approveArgs.slice(1), '--approver');
     const summary = extractFlag(approver.rest, '--summary');
+    const expiresAt = extractFlag(summary.rest, '--expires-at');
     const allowed = new Set(['--json']);
-    const unknown = summary.rest.find((arg) => !allowed.has(arg));
-    if (approver.missingValue || summary.missingValue) {
-      process.stderr.write('rizz: approve signoff flags need values\n');
+    const unknown = expiresAt.rest.find((arg) => !allowed.has(arg));
+    if (approver.missingValue || summary.missingValue || expiresAt.missingValue) {
+      process.stderr.write('rizz: approve flags need values\n');
       return 2;
     }
     if (unknown !== undefined) {
@@ -814,14 +848,26 @@ async function main(argv: readonly string[]): Promise<number> {
       return 2;
     }
     if (approver.value === undefined || summary.value === undefined) {
-      process.stderr.write(
-        "rizz: approve signoff needs --approver and --summary\nTry 'rizz --help'.\n",
-      );
+      process.stderr.write("rizz: approve needs --approver and --summary\nTry 'rizz --help'.\n");
       return 2;
+    }
+    if (approveArgs[0] === 'revoke') {
+      if (expiresAt.value !== undefined) {
+        process.stderr.write(
+          "rizz: approve revoke does not accept --expires-at\nTry 'rizz --help'.\n",
+        );
+        return 2;
+      }
+      return runApproveRevokeCommand({
+        approver: approver.value,
+        summary: summary.value,
+        json: wantsJson,
+      });
     }
     return runApproveSignoffCommand({
       approver: approver.value,
       summary: summary.value,
+      ...(expiresAt.value !== undefined ? { expiresAt: expiresAt.value } : {}),
       json: wantsJson,
     });
   }
