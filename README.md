@@ -9,7 +9,7 @@ evidence close to the source files.
 
 ## Current Product
 
-The current `0.2.1` product surface is:
+The current `0.3.0` product surface is:
 
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
@@ -33,7 +33,7 @@ The current `0.2.1` product surface is:
 - no workspace agents, cloud sync, browser extension, mobile app, IDE integration, custom skills, or
   enterprise providers in the default install
 
-This release is `0.2.1`.
+This release is `0.3.0`.
 
 ## Requirements
 
@@ -210,14 +210,14 @@ This runs lint, type-check, tests, eval smoke, install smoke, and the footprint 
 checks also run `pnpm pack:check` to verify public package contents. Publishing to npm is a deliberate
 release step after CI and package checks pass; pushes to GitHub do not publish packages.
 
-`0.2.1` release verification:
+`0.3.0` release verification:
 
-- Biome: 110 files
-- Vitest: 31 files / 320 tests
-- PI-Bench: 10/10 tasks
+- Biome: 145 files
+- Vitest: 38 files / 383 tests
+- PI-Bench: 25/25 tasks, 76/100 average research readiness
 - CLI process smoke: 10/10 checks
 - install-local: 5/5 shim smokes
-- footprint: 53ms cold start / 188KB core, under the 200KB budget
+- footprint: 53ms cold start / 198KB core, under the 200KB budget
 
 ## Known Limits
 

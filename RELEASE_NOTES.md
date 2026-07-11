@@ -1,5 +1,39 @@
 # Release Notes
 
+## 0.3.0
+
+Rizz `0.3.0` expands the local Project Intelligence Engine with deeper architecture causality,
+review governance, verification evidence, and database-aware understanding while preserving the
+lightweight default path.
+
+### Highlights
+
+- Added evidence-backed service, route, state/data, dependency, and database causality across
+  Project Intelligence, explanations, and review blast radius.
+- Added SQLAlchemy, Alembic, raw SQL, and Mongoose schema relationship intelligence, including
+  foreign keys and cross-table impact.
+- Added deterministic verification plans, evidence scoring and ingestion, human approval packets,
+  CLI signoff, and fingerprint-bound signoff history reuse.
+- Added mission-contract governance, mixed-diff-basis reporting, unified repair packets, and
+  inspect-first confidence queues for coding agents.
+- Added incremental-understanding reuse metrics, large-repository UAT, PI-Bench depth, and scaling
+  fixes that keep sensitive-text handling deterministic.
+
+### Scope
+
+- No new runtime dependencies.
+- Workspace/multi-agent power remains opt-in and outside the default startup path.
+- The counted core remains under the 200KB footprint budget.
+
+### Verification
+
+- Biome: 145 files
+- Vitest: 38 files / 383 tests
+- PI-Bench: 25/25 tasks, 76/100 average research readiness
+- CLI process smoke: 10/10 checks
+- install-local smoke: 5/5 checks
+- footprint: 53ms cold start, 198KB counted core under the 200KB budget
+
 ## 0.2.1
 
 Rizz `0.2.1` is a patch release for the first-run Project Intelligence command contract.
