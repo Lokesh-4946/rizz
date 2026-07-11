@@ -34,8 +34,8 @@ Current loop readiness:
 | rizz review | 99/100 | 1 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, normalized duplicate code, mission-contract drift, semantic unrelated-work hints, and dirty-tree/branch-diff mixed-basis reporting. |
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 78/100 | 22 | Repair instructions are packetized and less duplicative for agents, and backend-scoped verification suggestions reduce agent churn, but agent-specific apply/repair loops are not yet first-class. |
-| rizz verification | 95/100 | 5 | rizz now scores proof, missing evidence, distinct human approval packet state, and a safe signoff handoff that must be ingested by review. |
-| Human approval | 86/100 | 14 | Reports separate agent evidence readiness from human signoff, and `rizz approve signoff` records explicit human decisions with audit history once review is ready. |
+| rizz verification | 100/100 | 0 | rizz scores proof and missing evidence, binds approval to a deterministic review fingerprint, and safely reuses exact-match signoff history across repeated repair reviews. |
+| Human approval | 94/100 | 6 | Reports separate agent evidence readiness from human signoff, and `rizz approve signoff` records fingerprint-bound decisions with audit history; explicit revoke and expiry UX remain. |
 
 ## Opt-In Expansion Map
 
@@ -59,9 +59,9 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens repeated-scan precision. Redaction is idempotent for persisted sensitive
-references, semantic set fields are normalized after redaction, and added, removed, or changed
-relationships all contribute to recomputed-understanding accounting.
+The current slice hardens repeated-review approval precision. Reviews persist a deterministic
+fingerprint of the Git basis, changed files, mission comparison, and exact diff; signoff history is
+reused only when that fingerprint matches, while repaired or amended diffs require fresh approval.
 
 ## Capability Scorecard
 
@@ -77,16 +77,16 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 100/100 | 0 | Preserve exact reuse and relationship-delta accounting across broader real-repo scans. |
 | Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
-| Verification Plan + Evidence Ingest | 96/100 | 4 | Reuse approval/signoff history across repeated agent repair loops and make review ingestion more automatic. |
+| Verification Plan + Evidence Ingest | 100/100 | 0 | Preserve fingerprint-bound evidence and signoff reuse while keeping ingestion deterministic and local. |
 | `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
 
 ## Latest Baton Result
 
-Run: `feature/incremental-reuse-precision`, local gate plus repeated FastAPI template UAT.
+Run: `feature/verification-signoff-reuse`, local gate plus compiled CLI review/signoff lifecycle UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused DBMS and sensitivity tests | 19/19 passed |
+| Focused human approval and review integration tests | Passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
@@ -98,17 +98,16 @@ Run: `feature/incremental-reuse-precision`, local gate plus repeated FastAPI tem
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,547 bytes |
-| Footprint | Passed: 49ms cold start, 198KB counted core against 200KB budget |
+| Footprint | Passed: 56ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: an unchanged 217-file FastAPI template scan now reports 217 reused files, all 679
-understanding entities stable, 0 recomputed entities, 0 changed or stale surfaces, 100/100 scan
-efficiency, and Incremental Understanding at 100/100. A one-file Alembic foreign-key removal reports
-216 reused files, 676 stable entities, 3 changed entities, 2 removed cross-table relationships, 5
-recomputed understanding items, 2 changed surfaces, 0 stale surfaces, and 99/100 scan efficiency.
-The persisted brain remains secret-safe, and genuine architecture removal is no longer omitted from
-recomputation accounting. Remaining work is stronger component boundary reasoning and broader
-verification/signoff reuse.
+Current verdict: a generated review plan accepts exact verification evidence and becomes ready for
+human approval. After `rizz approve signoff`, a repeated review of the same committed branch diff
+gets a new review ID but keeps the same fingerprint and safely reuses the recorded signoff. Amending
+the reviewed commit changes the fingerprint, invalidates the prior signoff, preserves its audit
+history, and blocks merge readiness until a new signoff is recorded. The second decision is then
+reused on another unchanged review, with both fingerprint-scoped history entries retained. Branch
+diff reviews also no longer report their own committed branch files as mixed-basis contamination.
 
 ## Latest Alembic Real-Repo UAT
 
