@@ -59,10 +59,9 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens real-repository review precision. Review governance separates Rizz's own
-untracked `.rizz/**` outputs from authored untracked files, credential detection no longer promotes
-design-token prose or redacted paths into critical secret findings, and file explain projects
-evidence-backed Next.js route consumers from reconstructed flows.
+The current slice hardens `rizz ask` file-consumer precision. Dependents answers retain exact graph
+and Next.js route-consumer evidence while suppressing the generic "exact consumers need deeper flow
+analysis" fallback whenever concrete consumers are available.
 
 ## Capability Scorecard
 
@@ -79,36 +78,35 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Incremental Understanding metrics | 100/100 | 0 | Preserve exact reuse and relationship-delta accounting across broader real-repo scans. |
 | Review Intelligence with true blast radius | 100/100 | 0 | Preserve authored/generated separation and credential precision across broader real-repo reviews. |
 | Verification Plan + Evidence Ingest | 100/100 | 0 | Preserve fingerprint-bound evidence and signoff reuse while keeping ingestion deterministic and local. |
-| `rizz ask` | 94/100 | 6 | Project direct importers and route consumers into ask answers while preserving evidence/confidence. |
+| `rizz ask` | 95/100 | 5 | Narrow broad component evidence and improve confidence calibration for exact file questions. |
 
 ## Latest Baton Result
 
-Run: `feature/real-repo-review-precision`, focused regression tests plus a disposable Valoir-like
-Next.js CLI UAT.
+Run: `feature/ask-file-consumer-precision`, focused consumer-projection tests plus a disposable
+Valoir-like Next.js CLI ask UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused review, sensitivity, and file-explain tests | 80/80 passed |
+| Focused ask, file-explain, and brain integration tests | 73/73 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 386/386 passed |
+| Full unit suite | 388/388 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,047,972 bytes |
-| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,030 bytes |
+| Footprint | Passed: 55ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: the disposable 171-file Valoir-like scan reported one authored untracked file
-(`AGENTS.md`) separately from 64 generated `.rizz/**` files, with zero security findings for
-CSS-variable/design-token prose. `rizz explain src/components/Hero.tsx` identified the `/` route
-consumer through `src/app/page.tsx`, retained page and Hero evidence IDs, and reported static
-confidence as uncertain rather than overstating runtime proof. The installed global command remains
-0.2.1; UAT used the built 0.3.0 branch CLI, while npm reports published `@valoir/rizz` 0.3.0.
+Current verdict: a fresh 54-file Valoir-like scan answered "who depends on
+`src/components/Hero.tsx`?" with the graph consumer and `route consumer: / via src/app/page.tsx`,
+without the stale generic fallback. The answer retained 24 evidence IDs including the page and Hero,
+reported limited/uncertain confidence instead of overstating proof, and required no provider or
+network call.
 
 ## Latest Alembic Real-Repo UAT
 
