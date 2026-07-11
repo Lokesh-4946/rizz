@@ -3,6 +3,35 @@ export interface FileExplainIntelligence {
   readonly responsibilities: readonly string[];
 }
 
+export function fileExplainFlowProjection(params: {
+  readonly targetPath: string;
+  readonly flows: readonly {
+    readonly routePath: string | undefined;
+    readonly entrypointPath: string | undefined;
+    readonly evidenceIds: readonly string[];
+    readonly entrypointEvidenceIds: readonly string[];
+  }[];
+}): { readonly consumers: readonly string[]; readonly evidenceIds: readonly string[] } {
+  const consumers = unique(
+    params.flows.flatMap((flow) => {
+      if (
+        flow.routePath === undefined ||
+        flow.entrypointPath === undefined ||
+        flow.entrypointPath === params.targetPath
+      ) {
+        return [];
+      }
+      return [`route consumer: ${flow.routePath} via ${flow.entrypointPath}`];
+    }),
+  );
+  return {
+    consumers,
+    evidenceIds: unique(
+      params.flows.flatMap((flow) => [...flow.evidenceIds, ...flow.entrypointEvidenceIds]),
+    ),
+  };
+}
+
 const DOMAIN_TERMS = [
   'workflow',
   'form',
@@ -20,6 +49,37 @@ const DOMAIN_TERMS = [
 
 function unique(items: readonly string[]): string[] {
   return [...new Set(items.filter((item) => item !== ''))];
+}
+
+export function explainRelationshipContext(
+  targetId: string,
+  relationships: readonly {
+    readonly from: string;
+    readonly to: string;
+    readonly relation: string;
+    readonly evidence_ids: readonly string[];
+  }[],
+): {
+  readonly dependsOn: readonly string[];
+  readonly dependedOnBy: readonly string[];
+  readonly dependsOnEntityIds: readonly string[];
+  readonly dependedOnByEntityIds: readonly string[];
+  readonly evidenceIds: readonly string[];
+} {
+  const dependencyRelations = new Set(['depends_on', 'calls', 'imports', 'configures']);
+  const outbound = relationships.filter(
+    (item) => item.from === targetId && dependencyRelations.has(item.relation),
+  );
+  const inbound = relationships.filter(
+    (item) => item.to === targetId && dependencyRelations.has(item.relation),
+  );
+  return {
+    dependsOn: unique(outbound.map((item) => `${item.relation}: ${item.to}`)),
+    dependedOnBy: unique(inbound.map((item) => `${item.relation}: ${item.from}`)),
+    dependsOnEntityIds: unique(outbound.map((item) => item.to)),
+    dependedOnByEntityIds: unique(inbound.map((item) => item.from)),
+    evidenceIds: unique([...outbound, ...inbound].flatMap((item) => item.evidence_ids)),
+  };
 }
 
 function basename(path: string): string {

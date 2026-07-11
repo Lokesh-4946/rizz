@@ -72,7 +72,7 @@ function emptyClassification(value: string): SensitivePathClassification {
   };
 }
 
-function hasSecretLikeValue(value: string): boolean {
+export function containsSecretLikeValue(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => {
     pattern.lastIndex = 0;
     return pattern.test(value);
@@ -115,7 +115,7 @@ function isLikelyPathOrFileName(value: string): boolean {
   if (PRIVATE_FILE_NAMES.has(lowerLeaf)) return true;
   if (lowerLeaf.startsWith('.env.')) return true;
   if (PRIVATE_EXTENSIONS.has(extensionOf(lowerLeaf))) return true;
-  if (hasSecretLikeValue(normalized) && extensionOf(lowerLeaf) !== '') return true;
+  if (containsSecretLikeValue(normalized) && extensionOf(lowerLeaf) !== '') return true;
   if (extensionOf(lowerLeaf) !== '' && SENSITIVE_SEGMENT_PATTERN.test(lowerLeaf)) return true;
   return SENSITIVE_SEGMENT_PATTERN.test(lowerLeaf) && /[-_.]/.test(lowerLeaf);
 }
@@ -142,7 +142,7 @@ export function classifySensitivePath(value: string): SensitivePathClassificatio
     reason,
   });
 
-  if (hasSecretLikeValue(normalized)) return sensitive('secret-like token in path');
+  if (containsSecretLikeValue(normalized)) return sensitive('secret-like token in path');
   if (PRIVATE_ABSOLUTE_PATH_PATTERN.test(normalized)) return sensitive('private absolute path');
   if (lowerLeaf === '.env.example') return emptyClassification(normalized);
   if (PRIVATE_FILE_NAMES.has(lowerLeaf)) return sensitive(`private filename ${lowerLeaf}`);

@@ -21,7 +21,11 @@ import {
   stateOperationsFromText,
   storageDependenciesFromText,
 } from './dbms-usefulness.js';
-import { fileExplainIntelligence as fxi } from './file-explain-intelligence.js';
+import {
+  fileExplainFlowProjection,
+  fileExplainIntelligence as fxi,
+  explainRelationshipContext as relationshipContextFor,
+} from './file-explain-intelligence.js';
 import {
   type HumanApprovalPacket,
   buildHumanApprovalPacket,
@@ -46,6 +50,7 @@ import {
 } from './script-flow-causality.js';
 import {
   classifySensitivePath,
+  containsSecretLikeValue,
   containsSensitiveReference,
   redactSensitiveText,
   redactedReferenceCount,
@@ -21612,7 +21617,7 @@ function buildExplanation(params: {
 
   const relatedComponents = relatedComponentContext(target, params.entitySets.components);
   const primaryComponent = target.type === 'component' ? target : relatedComponents[0];
-  const relationshipContext = explainRelationshipContext(target, params.relationships);
+  const relationshipContext = relationshipContextFor(target.id, params.relationships);
   const componentData = primaryComponent?.data ?? {};
   const targetData = target.data ?? {};
   const fp = stringData(target, 'relativePath') ?? target.name;
@@ -21678,9 +21683,19 @@ function buildExplanation(params: {
             (api) => `${api}: external API dependency`,
           ),
         ]);
+  const flowProjection = fileExplainFlowProjection({
+    targetPath: fp,
+    flows: relatedFlows.map((flow) => ({
+      routePath: stringData(flow, 'route_path'),
+      entrypointPath: safeFlowEntrypoints(flow)[0]?.path,
+      evidenceIds: flow.evidence_ids,
+      entrypointEvidenceIds: safeFlowEntrypoints(flow).flatMap((item) => item.evidence),
+    })),
+  });
   const consumers = unique([
     ...explainArray(targetData.consumers, componentData.consumers),
     ...relationshipContext.dependedOnBy,
+    ...flowProjection.consumers,
   ]);
   const importantFiles = unique([
     ...explainArray(targetData.important_files, componentData.important_files),
@@ -21723,10 +21738,12 @@ function buildExplanation(params: {
     ...target.evidence_ids,
     ...(primaryComponent?.evidence_ids ?? []),
     ...relationshipContext.evidenceIds,
+    ...flowProjection.evidenceIds,
   ]);
   const confidence = weakestConfidence([
     target.confidence,
     ...(primaryComponent === undefined ? [] : [primaryComponent.confidence]),
+    ...relatedFlows.map((flow) => flow.confidence),
   ]);
   const evidenceSummary = explainEvidenceSummary({
     evidenceIds,
@@ -21856,7 +21873,7 @@ function buildFlowExplanation(params: {
   readonly research: ExplainResearchArtifacts;
 }): ExplainSummaryData {
   const target = params.target;
-  const relationshipContext = explainRelationshipContext(target, params.relationships);
+  const relationshipContext = relationshipContextFor(target.id, params.relationships);
   const entrypoints = safeFlowEntrypoints(target);
   const steps = safeFlowSteps(target);
   const journey = flowJourneySummaryData(target);
@@ -22093,32 +22110,6 @@ function relatedComponentContext(
       return false;
     }),
   );
-}
-
-function explainRelationshipContext(
-  target: BrainEntity,
-  relationships: readonly BrainRelationship[],
-): {
-  readonly dependsOn: readonly string[];
-  readonly dependedOnBy: readonly string[];
-  readonly dependsOnEntityIds: readonly string[];
-  readonly dependedOnByEntityIds: readonly string[];
-  readonly evidenceIds: readonly string[];
-} {
-  const dependencyRelations = new Set(['depends_on', 'calls', 'imports', 'configures']);
-  const outbound = relationships.filter(
-    (rel) => rel.from === target.id && dependencyRelations.has(rel.relation),
-  );
-  const inbound = relationships.filter(
-    (rel) => rel.to === target.id && dependencyRelations.has(rel.relation),
-  );
-  return {
-    dependsOn: unique(outbound.map((rel) => `${rel.relation}: ${rel.to}`)),
-    dependedOnBy: unique(inbound.map((rel) => `${rel.relation}: ${rel.from}`)),
-    dependsOnEntityIds: unique(outbound.map((rel) => rel.to)),
-    dependedOnByEntityIds: unique(inbound.map((rel) => rel.from)),
-    evidenceIds: unique([...outbound, ...inbound].flatMap((rel) => rel.evidence_ids)),
-  };
 }
 
 function relatedFlowContext(
@@ -25505,10 +25496,6 @@ function reviewFlowEntrypointLabels(flow: BrainEntity): string[] {
       entrypoint.symbol === null ? entrypoint.path : `${entrypoint.path}#${entrypoint.symbol}`,
     )
     .map(safeText);
-}
-
-function containsSecretLikeValue(value: string): boolean {
-  return safeText(value) !== value;
 }
 
 function classifyBlastRadius(fileCount: number, componentCount: number): BlastRadius {

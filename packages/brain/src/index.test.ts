@@ -6021,6 +6021,24 @@ describe('project brain generation', () => {
       expect(explainReport).toContain('Rendered React route output.');
       expect(explainReport).not.toContain(dir);
 
+      const componentFileExplain = await explainProjectTarget({
+        rootDir: dir,
+        target: 'src/components/DocPage.tsx',
+        now: new Date('2026-06-28T12:41:30.000Z'),
+      });
+      expect(componentFileExplain.ok).toBe(true);
+      if (!componentFileExplain.ok) return;
+      expect(componentFileExplain.value.explanation.consumers).toContain(
+        'route consumer: /docs/[slug] via src/app/docs/[slug]/page.tsx',
+      );
+      expect(componentFileExplain.value.explanation.evidence_ids).toEqual(
+        expect.arrayContaining([
+          'evidence:file-src--app--docs---slug---page.tsx',
+          'evidence:file-src--components--docpage.tsx',
+        ]),
+      );
+      expect(componentFileExplain.value.explanation.confidence).toBe('inferred');
+
       const missionControlReport = await readFile(
         join(dir, '.rizz', 'reports', 'index.html'),
         'utf8',
@@ -9947,6 +9965,32 @@ describe('project brain generation', () => {
     });
   });
 
+  it('does not classify documentation about design tokens as a secret finding', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'docs-app' }));
+      await writeFile(join(dir, 'AGENTS.md'), '# Project\n');
+      await generateProjectBrain({ rootDir: dir, now: new Date('2026-06-28T10:45:30.000Z') });
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      await writeFile(
+        join(dir, 'AGENTS.md'),
+        '# Project\nTailwind uses CSS-variable design tokens. Colors are tokens; see notes/brand-tokens.md.\n',
+      );
+
+      const result = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T10:46:00.000Z'),
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.review.findings).not.toContainEqual(
+        expect.objectContaining({ category: 'Security', severity: 'critical' }),
+      );
+    });
+  });
+
   it('links transitive route flows to state/data dependencies and review blast radius', async () => {
     await withTempProject(async (dir) => {
       await initGitProject(dir);
@@ -10681,6 +10725,40 @@ describe('project brain generation', () => {
           ]),
         },
       });
+    });
+  });
+
+  it('separates self-produced .rizz files from authored untracked review files', async () => {
+    await withTempProject(async (dir) => {
+      await initGitProject(dir);
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'generated-review' }));
+      await git(dir, ['add', 'package.json']);
+      await git(dir, ['commit', '-m', 'initial']);
+      const brain = await generateProjectBrain({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:07:00.000Z'),
+      });
+      expect(brain.ok).toBe(true);
+      if (!brain.ok) return;
+
+      const review = await reviewProjectChanges({
+        rootDir: dir,
+        now: new Date('2026-06-28T12:07:30.000Z'),
+      });
+
+      expect(review.ok).toBe(true);
+      if (!review.ok) return;
+      expect(review.value.review.review_governance.git.untracked_files).toEqual([]);
+      expect(review.value.review.review_governance.git.working_tree_dirty).toBe(false);
+      expect(
+        review.value.review.review_governance.git.generated_untracked_files.length,
+      ).toBeGreaterThan(0);
+      expect(review.value.review.review_governance.version_control_warnings).not.toContainEqual(
+        expect.stringContaining('untracked file(s) are included in review scope'),
+      );
+      expect(review.value.review.review_governance.version_control_warnings).not.toContainEqual(
+        expect.stringContaining('working-tree changes'),
+      );
     });
   });
 

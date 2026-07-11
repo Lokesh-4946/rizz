@@ -59,9 +59,10 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens repeated-review approval precision. Reviews persist a deterministic
-fingerprint of the Git basis, changed files, mission comparison, and exact diff; signoff history is
-reused only when that fingerprint matches, while repaired or amended diffs require fresh approval.
+The current slice hardens real-repository review precision. Review governance separates Rizz's own
+untracked `.rizz/**` outputs from authored untracked files, credential detection no longer promotes
+design-token prose or redacted paths into critical secret findings, and file explain projects
+evidence-backed Next.js route consumers from reconstructed flows.
 
 ## Capability Scorecard
 
@@ -76,38 +77,38 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 | Mission Control UX | 100/100 | 0 | Keep unified packet drilldowns visible without clutter. |
 | PI-Bench seed/task format | 99/100 | 1 | Broaden deterministic task coverage and UAT fixtures. |
 | Incremental Understanding metrics | 100/100 | 0 | Preserve exact reuse and relationship-delta accounting across broader real-repo scans. |
-| Review Intelligence with true blast radius | 99/100 | 1 | Add richer branch/PR provider context and keep reducing false positives in unrelated-work hints. |
+| Review Intelligence with true blast radius | 100/100 | 0 | Preserve authored/generated separation and credential precision across broader real-repo reviews. |
 | Verification Plan + Evidence Ingest | 100/100 | 0 | Preserve fingerprint-bound evidence and signoff reuse while keeping ingestion deterministic and local. |
-| `rizz ask` | 93/100 | 7 | Keep gated until packet/verification confidence is stronger and file-level answers are less generic. |
+| `rizz ask` | 94/100 | 6 | Project direct importers and route consumers into ask answers while preserving evidence/confidence. |
 
 ## Latest Baton Result
 
-Run: `feature/verification-signoff-reuse`, local gate plus compiled CLI review/signoff lifecycle UAT.
+Run: `feature/real-repo-review-precision`, focused regression tests plus a disposable Valoir-like
+Next.js CLI UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused human approval and review integration tests | Passed |
+| Focused review, sensitivity, and file-explain tests | 80/80 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 383/383 passed |
+| Full unit suite | 386/386 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 10/10 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,547 bytes |
-| Footprint | Passed: 56ms cold start, 198KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,047,972 bytes |
+| Footprint | Passed: 51ms cold start, 198KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: a generated review plan accepts exact verification evidence and becomes ready for
-human approval. After `rizz approve signoff`, a repeated review of the same committed branch diff
-gets a new review ID but keeps the same fingerprint and safely reuses the recorded signoff. Amending
-the reviewed commit changes the fingerprint, invalidates the prior signoff, preserves its audit
-history, and blocks merge readiness until a new signoff is recorded. The second decision is then
-reused on another unchanged review, with both fingerprint-scoped history entries retained. Branch
-diff reviews also no longer report their own committed branch files as mixed-basis contamination.
+Current verdict: the disposable 171-file Valoir-like scan reported one authored untracked file
+(`AGENTS.md`) separately from 64 generated `.rizz/**` files, with zero security findings for
+CSS-variable/design-token prose. `rizz explain src/components/Hero.tsx` identified the `/` route
+consumer through `src/app/page.tsx`, retained page and Hero evidence IDs, and reported static
+confidence as uncertain rather than overstating runtime proof. The installed global command remains
+0.2.1; UAT used the built 0.3.0 branch CLI, while npm reports published `@valoir/rizz` 0.3.0.
 
 ## Latest Alembic Real-Repo UAT
 

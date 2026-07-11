@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifySensitivePath,
+  containsSecretLikeValue,
   redactSensitiveSet,
   redactSensitiveText,
   redactedSensitiveReference,
@@ -9,6 +10,17 @@ import {
 } from './sensitivity.js';
 
 describe('sensitive path classification', () => {
+  it('distinguishes design-token prose from credential-shaped values', () => {
+    expect(
+      containsSecretLikeValue(
+        'Tailwind with CSS-variable design tokens. Colors are tokens; see notes/brand-tokens.md.',
+      ),
+    ).toBe(false);
+    expect(containsSecretLikeValue('OPENAI_API_KEY=sk-or-v1-fixturesecret0000000000000000')).toBe(
+      true,
+    );
+  });
+
   it('classifies private env, credential, token, password, key, and cert names', () => {
     const sensitive = [
       '.env',
