@@ -35,7 +35,7 @@ Current loop readiness:
 | rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
 | Coding agent repair | 78/100 | 22 | Repair instructions are packetized and less duplicative for agents, and backend-scoped verification suggestions reduce agent churn, but agent-specific apply/repair loops are not yet first-class. |
 | rizz verification | 100/100 | 0 | rizz scores proof and missing evidence, binds approval to a deterministic review fingerprint, and safely reuses exact-match signoff history across repeated repair reviews. |
-| Human approval | 94/100 | 6 | Reports separate agent evidence readiness from human signoff, and `rizz approve signoff` records fingerprint-bound decisions with audit history; explicit revoke and expiry UX remain. |
+| Human approval | 100/100 | 0 | Fingerprint-bound signoff now supports explicit ISO expiry and auditable revocation while preserving agent/human separation. |
 
 ## Opt-In Expansion Map
 
@@ -59,9 +59,9 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice hardens `rizz ask` file-consumer precision. Dependents answers retain exact graph
-and Next.js route-consumer evidence while suppressing the generic "exact consumers need deeper flow
-analysis" fallback whenever concrete consumers are available.
+The current slice completes explicit human-approval lifecycle controls. Signoff can carry an exact
+ISO expiry, expired approvals cannot make a review release-ready, and `rizz approve revoke` records
+a human-authored reason while preserving signed and revoked audit history.
 
 ## Capability Scorecard
 
@@ -82,31 +82,30 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/ask-file-consumer-precision`, focused consumer-projection tests plus a disposable
-Valoir-like Next.js CLI ask UAT.
+Run: `feature/approval-revoke-expiry`, focused approval lifecycle tests plus compiled CLI
+signoff/expiry/revoke UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused ask, file-explain, and brain integration tests | 73/73 passed |
+| Focused human-approval lifecycle tests | 6/6 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 388/388 passed |
+| Full unit suite | 391/391 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 10/10 passed |
+| CLI process smoke | 11/11 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,030 bytes |
-| Footprint | Passed: 55ms cold start, 198KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,050 bytes |
+| Footprint | Passed: 51ms cold start, 199KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: a fresh 54-file Valoir-like scan answered "who depends on
-`src/components/Hero.tsx`?" with the graph consumer and `route consumer: / via src/app/page.tsx`,
-without the stale generic fallback. The answer retained 24 evidence IDs including the page and Hero,
-reported limited/uncertain confidence instead of overstating proof, and required no provider or
-network call.
+Current verdict: a ready fingerprint can receive a human signoff with `--expires-at`; the exact
+expiry instant returns the packet to `awaiting_human_signoff`, and `rizz approve revoke` immediately
+invalidates the active decision. Both transitions preserve audit history, stable error codes, and
+byte-for-byte verified local writes. Agents remain unable to self-approve.
 
 ## Latest Alembic Real-Repo UAT
 

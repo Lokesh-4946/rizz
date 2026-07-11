@@ -30,28 +30,32 @@ export interface HumanApprovalPacket {
 }
 
 export interface HumanSignoffHistoryItem {
-  readonly status: 'signed_off';
+  readonly status: 'signed_off' | 'revoked';
   readonly summary: string;
   readonly approver: string;
   readonly recorded_at: string;
   readonly review_id: string;
   readonly review_fingerprint: string | null;
   readonly human_approval_state: HumanApprovalState;
-  readonly source: 'rizz approve signoff';
+  readonly source: 'rizz approve signoff' | 'rizz approve revoke';
+  readonly expires_at?: string;
+  readonly revoked_by?: string;
 }
 
 export interface HumanSignoffRecord {
   readonly schema_version: number;
-  readonly status: 'signed_off';
+  readonly status: 'signed_off' | 'revoked';
   readonly summary: string;
   readonly approver: string;
   readonly recorded_at: string;
   readonly review_id: string;
   readonly review_fingerprint: string;
   readonly human_approval_state: HumanApprovalState;
-  readonly source: 'rizz approve signoff';
+  readonly source: 'rizz approve signoff' | 'rizz approve revoke';
   readonly agent_self_approval_allowed: false;
   readonly history: readonly HumanSignoffHistoryItem[];
+  readonly expires_at?: string;
+  readonly revoked_by?: string;
 }
 
 export interface RecordHumanSignoffSummary {
@@ -113,15 +117,20 @@ function signoffHistory(value: unknown): HumanSignoffHistoryItem[] {
     .map((item) => {
       const state = asHumanApprovalState(recordString(item, 'human_approval_state'));
       if (state === undefined) return undefined;
+      const status = recordString(item, 'status') === 'revoked' ? 'revoked' : 'signed_off';
+      const expiresAt = validTimestamp(recordString(item, 'expires_at'));
+      const revokedBy = recordString(item, 'revoked_by');
       return {
-        status: 'signed_off' as const,
+        status,
         summary: recordString(item, 'summary', 'Human signed off this review.'),
         approver: recordString(item, 'approver', 'unknown-human'),
         recorded_at: recordString(item, 'recorded_at'),
         review_id: recordString(item, 'review_id', 'unknown-review'),
         review_fingerprint: reviewFingerprint(item),
         human_approval_state: state,
-        source: 'rizz approve signoff' as const,
+        source: status === 'revoked' ? 'rizz approve revoke' : 'rizz approve signoff',
+        ...(expiresAt === null ? {} : { expires_at: expiresAt }),
+        ...(revokedBy === '' ? {} : { revoked_by: revokedBy }),
       };
     })
     .filter((item): item is HumanSignoffHistoryItem => item !== undefined);
@@ -132,19 +141,29 @@ function reviewFingerprint(value: unknown): string | null {
   return /^[a-f0-9]{64}$/.test(fingerprint) ? fingerprint : null;
 }
 
+function validTimestamp(value: string): string | null {
+  if (value === '' || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(value).toISOString();
+}
+
+function isExpired(value: unknown, at: string): boolean {
+  const expiresAt = validTimestamp(recordString(value, 'expires_at'));
+  return expiresAt !== null && Date.parse(expiresAt) <= Date.parse(at);
+}
+
 function matchingSignoff(
   value: unknown,
   fingerprint: string,
+  at: string,
 ): Readonly<Record<string, unknown>> | null {
   if (!/^[a-f0-9]{64}$/.test(fingerprint)) return null;
   const history = recordArray(value, 'history').filter(isRecord).reverse();
   const candidates = [value, ...history].filter(isRecord);
   for (const candidate of candidates) {
+    if (reviewFingerprint(candidate) !== fingerprint) continue;
     const status = recordString(candidate, 'status').toLowerCase();
-    if (
-      (status === 'signed_off' || status === 'approved') &&
-      reviewFingerprint(candidate) === fingerprint
-    ) {
+    if (status === 'revoked' || isExpired(candidate, at)) return null;
+    if (status === 'signed_off' || status === 'approved') {
       return candidate;
     }
   }
@@ -185,6 +204,7 @@ export async function recordHumanSignoff(options: {
   readonly summary: string;
   readonly approver: string;
   readonly now?: Date;
+  readonly expiresAt?: string;
 }): Promise<RecordHumanSignoffResult> {
   try {
     const summary = options.summary.trim();
@@ -243,6 +263,20 @@ export async function recordHumanSignoff(options: {
       };
     }
     const now = (options.now ?? new Date()).toISOString();
+    const expiresAt =
+      options.expiresAt === undefined ? null : validTimestamp(options.expiresAt.trim());
+    if (options.expiresAt !== undefined && expiresAt === null) {
+      return {
+        ok: false,
+        error: { code: 'SIGNOFF_EXPIRY_INVALID', message: 'Signoff expiry must be ISO-8601.' },
+      };
+    }
+    if (expiresAt !== null && Date.parse(expiresAt) <= Date.parse(now)) {
+      return {
+        ok: false,
+        error: { code: 'SIGNOFF_EXPIRY_PAST', message: 'Signoff expiry must be in the future.' },
+      };
+    }
     const reviewId = recordString(packet, 'review_id', 'unknown-review');
     const fingerprint = reviewFingerprint(packet);
     if (fingerprint === null) {
@@ -264,6 +298,7 @@ export async function recordHumanSignoff(options: {
       review_fingerprint: fingerprint,
       human_approval_state: state,
       source: 'rizz approve signoff',
+      ...(expiresAt === null ? {} : { expires_at: expiresAt }),
     };
     const record: HumanSignoffRecord = {
       schema_version: 1,
@@ -277,6 +312,7 @@ export async function recordHumanSignoff(options: {
       source: 'rizz approve signoff',
       agent_self_approval_allowed: false,
       history: [...signoffHistory(previous), item],
+      ...(expiresAt === null ? {} : { expires_at: expiresAt }),
     };
     const signoffPath = join(options.rootDir, '.rizz', 'human-signoff.json');
     await mkdir(join(options.rootDir, '.rizz'), { recursive: true });
@@ -312,6 +348,110 @@ export async function recordHumanSignoff(options: {
   }
 }
 
+export async function revokeHumanSignoff(options: {
+  readonly rootDir: string;
+  readonly summary: string;
+  readonly approver: string;
+  readonly now?: Date;
+}): Promise<RecordHumanSignoffResult> {
+  try {
+    const summary = options.summary.trim();
+    const approver = options.approver.trim();
+    if (summary === '') {
+      return {
+        ok: false,
+        error: { code: 'REVOKE_SUMMARY_REQUIRED', message: 'Revocation needs a summary.' },
+      };
+    }
+    if (approver === '') {
+      return {
+        ok: false,
+        error: { code: 'REVOKE_APPROVER_REQUIRED', message: 'Revocation needs an approver.' },
+      };
+    }
+    const previous = await readHumanSignoffRecord(options.rootDir);
+    const now = (options.now ?? new Date()).toISOString();
+    if (
+      !isRecord(previous) ||
+      recordString(previous, 'status') !== 'signed_off' ||
+      isExpired(previous, now)
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_NOT_ACTIVE',
+          message: 'No active human signoff is available to revoke.',
+        },
+      };
+    }
+    const fingerprint = reviewFingerprint(previous);
+    if (fingerprint === null) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_RECORD_INVALID',
+          message: 'The active signoff has no valid review fingerprint.',
+        },
+      };
+    }
+    const reviewId = recordString(previous, 'review_id', 'unknown-review');
+    const item: HumanSignoffHistoryItem = {
+      status: 'revoked',
+      summary,
+      approver,
+      revoked_by: approver,
+      recorded_at: now,
+      review_id: reviewId,
+      review_fingerprint: fingerprint,
+      human_approval_state: 'signed_off',
+      source: 'rizz approve revoke',
+    };
+    const record: HumanSignoffRecord = {
+      schema_version: 1,
+      status: 'revoked',
+      summary,
+      approver,
+      revoked_by: approver,
+      recorded_at: now,
+      review_id: reviewId,
+      review_fingerprint: fingerprint,
+      human_approval_state: 'signed_off',
+      source: 'rizz approve revoke',
+      agent_self_approval_allowed: false,
+      history: [...signoffHistory(previous), item],
+    };
+    const signoffPath = join(options.rootDir, '.rizz', 'human-signoff.json');
+    const contents = `${JSON.stringify(record, null, 2)}\n`;
+    await writeFile(signoffPath, contents, 'utf8');
+    if ((await readFile(signoffPath, 'utf8')) !== contents) {
+      return {
+        ok: false,
+        error: {
+          code: 'SIGNOFF_WRITE_VERIFY_FAILED',
+          message: 'Human signoff revocation could not be verified byte-for-byte.',
+        },
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        rootDir: options.rootDir,
+        signoffPath,
+        humanApprovalPath: join(options.rootDir, '.rizz', 'research', 'human_approval.json'),
+        record,
+        latestState: 'awaiting_human_signoff',
+        nextActions: [
+          'Rerun rizz review so the approval packet reflects the revocation.',
+          'Record a new human signoff only after reviewing the current fingerprint.',
+        ],
+      },
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: { code: 'SIGNOFF_REVOKE_FAILED', message } };
+  }
+}
+
 export function buildHumanApprovalPacket(params: {
   readonly generatedAt: string;
   readonly review: unknown;
@@ -331,7 +471,11 @@ export function buildHumanApprovalPacket(params: {
   const governanceStatus = recordString(governance, 'status', 'unknown');
   const fingerprint = recordString(governance, 'review_fingerprint');
   const history = signoffHistory(params.signoffRecord);
-  const currentSignoff = matchingSignoff(params.signoffRecord, fingerprint);
+  const currentSignoff = matchingSignoff(params.signoffRecord, fingerprint, params.generatedAt);
+  const expiredSignoff =
+    isRecord(params.signoffRecord) &&
+    reviewFingerprint(params.signoffRecord) === fingerprint &&
+    isExpired(params.signoffRecord, params.generatedAt);
   const signoffRecorded = currentSignoff !== null;
   const agentEvidenceReady =
     recommendedAction === 'approve' &&
@@ -391,6 +535,11 @@ export function buildHumanApprovalPacket(params: {
               ...(history.length > 0
                 ? [
                     'Previous signoff history is preserved, but no signoff matches this review fingerprint.',
+                  ]
+                : []),
+              ...(expiredSignoff
+                ? [
+                    'The matching human signoff expired; record a new signoff for this review fingerprint.',
                   ]
                 : []),
               'Human reviews .rizz/reports/review.html, then records signoff in .rizz/human-signoff.json.',
