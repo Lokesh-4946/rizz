@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, posix, win32 } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 
 export interface ProjectStore {
@@ -39,13 +39,19 @@ export function resolveRizzHome(params?: {
   const homeDir = params?.homeDir ?? homedir();
   const env = params?.env ?? process.env;
   if (env.RIZZ_HOME !== undefined && env.RIZZ_HOME.trim() !== '') return env.RIZZ_HOME;
-  if (currentPlatform === 'darwin') return join(homeDir, 'Library', 'Application Support', 'rizz');
+  const platformPath = currentPlatform === 'win32' ? win32 : posix;
+  if (currentPlatform === 'darwin') {
+    return platformPath.join(homeDir, 'Library', 'Application Support', 'rizz');
+  }
   if (currentPlatform === 'win32') {
     const localAppData = env.LOCALAPPDATA?.trim();
-    return `${localAppData === undefined || localAppData === '' ? homeDir : localAppData}/rizz`;
+    return platformPath.join(
+      localAppData === undefined || localAppData === '' ? homeDir : localAppData,
+      'rizz',
+    );
   }
   const xdgDataHome = env.XDG_DATA_HOME?.trim();
-  return join(
+  return platformPath.join(
     xdgDataHome === undefined || xdgDataHome === ''
       ? join(homeDir, '.local', 'share')
       : xdgDataHome,

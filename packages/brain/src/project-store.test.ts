@@ -29,7 +29,7 @@ describe('project store', () => {
         homeDir: 'C:\\Users\\tester',
         env: { LOCALAPPDATA: 'D:\\Local' },
       }),
-    ).toBe('D:\\Local/rizz');
+    ).toBe('D:\\Local\\rizz');
   });
 
   it('normalizes common Git remote forms to one repository identity', () => {
