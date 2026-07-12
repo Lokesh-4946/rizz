@@ -192,8 +192,8 @@ async function runReviewCommand(options: {
   readonly mission?: string;
   readonly missionFile?: string;
 }): Promise<number> {
-  const { reviewProjectChanges } = await import('@valoir/rizz-brain');
-  const result = await reviewProjectChanges({
+  const { reviewCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await reviewCurrentProject({
     rootDir: process.cwd(),
     ...(options.mission !== undefined ? { mission: options.mission } : {}),
     ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
@@ -273,8 +273,8 @@ async function runVerifyAddCommand(options: {
   readonly areas: readonly string[];
   readonly json: boolean;
 }): Promise<number> {
-  const { addVerificationEvidence } = await import('@valoir/rizz-brain');
-  const result = await addVerificationEvidence({
+  const { verifyCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await verifyCurrentProject({
     rootDir: process.cwd(),
     name: options.name,
     command: options.command,
@@ -319,8 +319,8 @@ async function runApproveSignoffCommand(options: {
   readonly json: boolean;
   readonly expiresAt?: string;
 }): Promise<number> {
-  const { recordHumanSignoff } = await import('@valoir/rizz-brain');
-  const result = await recordHumanSignoff({
+  const { signoffCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await signoffCurrentProject({
     rootDir: process.cwd(),
     summary: options.summary,
     approver: options.approver,
@@ -334,8 +334,8 @@ async function runApproveRevokeCommand(options: {
   readonly approver: string;
   readonly json: boolean;
 }): Promise<number> {
-  const { revokeHumanSignoff } = await import('@valoir/rizz-brain');
-  const result = await revokeHumanSignoff({
+  const { revokeCurrentProjectSignoff } = await import('@valoir/rizz-brain');
+  const result = await revokeCurrentProjectSignoff({
     rootDir: process.cwd(),
     summary: options.summary,
     approver: options.approver,
@@ -380,8 +380,11 @@ async function runAskCommand(options: {
   readonly question: string;
   readonly json: boolean;
 }): Promise<number> {
-  const { askProjectQuestion } = await import('@valoir/rizz-brain');
-  const result = await askProjectQuestion({ rootDir: process.cwd(), question: options.question });
+  const { askCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await askCurrentProject({
+    rootDir: process.cwd(),
+    question: options.question,
+  });
   if (!result.ok) {
     if (options.json) {
       await writeJsonStdout(result);
@@ -422,8 +425,11 @@ async function runExplainCommand(options: {
   readonly target: string;
   readonly json: boolean;
 }): Promise<number> {
-  const { explainProjectTarget } = await import('@valoir/rizz-brain');
-  const result = await explainProjectTarget({ rootDir: process.cwd(), target: options.target });
+  const { explainCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await explainCurrentProject({
+    rootDir: process.cwd(),
+    target: options.target,
+  });
   if (!result.ok) {
     if (options.json) {
       await writeJsonStdout(result);

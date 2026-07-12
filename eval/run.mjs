@@ -2782,23 +2782,35 @@ function runCliSync(args, input) {
   );
 }
 
-function runCliInCwdSync(cwd, args, input) {
+function runCliWithFixtureBridgeSync(cwd, args, input, includeGit) {
   return withTempHomeSync((home) => {
     const rizzHome = join(home, 'external-rizz');
-    if (args[0] === 'brain') {
-      const prepared = spawnSync(process.execPath, [cliBin, 'prepare'], {
-        cwd,
-        encoding: 'utf8',
-        env: { ...isolatedEnv(home), RIZZ_HOME: rizzHome },
-        timeout: CLI_SMOKE_TIMEOUT_MS,
-        maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-      });
-      if (prepared.status === 0 && existsSync(join(cwd, '.rizz'))) {
-        const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
-        const projectDir = Object.values(registry.projects)[0].project_dir;
-        for (const directory of ['brain', 'research', 'reports']) {
-          rmSync(join(projectDir, directory), { recursive: true, force: true });
-          cpSync(join(cwd, '.rizz', directory), join(projectDir, directory), { recursive: true });
+    const env = {
+      ...(includeGit ? isolatedEnvWithGit(home) : isolatedEnv(home)),
+      RIZZ_HOME: rizzHome,
+    };
+    const prepared = spawnSync(process.execPath, [cliBin, 'prepare'], {
+      cwd,
+      encoding: 'utf8',
+      env,
+      timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+    });
+    const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+    const projectDir = Object.values(registry.projects)[0].project_dir;
+    const stateEntries = [
+      ['brain', 'brain'],
+      ['research', 'research'],
+      ['reports', 'reports'],
+      ['human-signoff.json', join('governance', 'human-signoff.json')],
+    ];
+    if (prepared.status === 0 && existsSync(join(cwd, '.rizz'))) {
+      for (const [localEntry, externalEntry] of stateEntries) {
+        const source = join(cwd, '.rizz', localEntry);
+        const target = join(projectDir, externalEntry);
+        rmSync(target, { recursive: true, force: true });
+        if (existsSync(source)) {
+          cpSync(source, target, { recursive: true });
         }
       }
     }
@@ -2806,34 +2818,28 @@ function runCliInCwdSync(cwd, args, input) {
       cwd,
       input,
       encoding: 'utf8',
-      env: { ...isolatedEnv(home), RIZZ_HOME: rizzHome },
+      env,
       timeout: CLI_SMOKE_TIMEOUT_MS,
       maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     });
-    if (args[0] === 'brain' && result.status === 0) {
-      const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
-      const projectDir = Object.values(registry.projects)[0].project_dir;
-      rmSync(join(cwd, '.rizz'), { recursive: true, force: true });
-      mkdirSync(join(cwd, '.rizz'), { recursive: true });
-      for (const directory of ['brain', 'research', 'reports']) {
-        cpSync(join(projectDir, directory), join(cwd, '.rizz', directory), { recursive: true });
+    rmSync(join(cwd, '.rizz'), { recursive: true, force: true });
+    mkdirSync(join(cwd, '.rizz'), { recursive: true });
+    for (const [localEntry, externalEntry] of stateEntries) {
+      const source = join(projectDir, externalEntry);
+      if (existsSync(source)) {
+        cpSync(source, join(cwd, '.rizz', localEntry), { recursive: true });
       }
     }
     return result;
   });
 }
 
+function runCliInCwdSync(cwd, args, input) {
+  return runCliWithFixtureBridgeSync(cwd, args, input, false);
+}
+
 function runCliInCwdWithGitSync(cwd, args, input) {
-  return withTempHomeSync((home) =>
-    spawnSync(process.execPath, [cliBin, ...args], {
-      cwd,
-      input,
-      encoding: 'utf8',
-      env: isolatedEnvWithGit(home),
-      timeout: CLI_SMOKE_TIMEOUT_MS,
-      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-    }),
-  );
+  return runCliWithFixtureBridgeSync(cwd, args, input, true);
 }
 
 function runPrepareCliSync(cwd) {
@@ -2876,6 +2882,34 @@ function runExternalBrainCliSync(cwd, args = []) {
         ]),
       ),
       report: readFileSync(join(projectDir, 'reports', 'index.html'), 'utf8'),
+    };
+  });
+}
+
+function runExternalCliSequenceSync(cwd, commands) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const env = { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome };
+    const results = commands.map((args) =>
+      spawnSync(process.execPath, [cliBin, ...args], {
+        cwd,
+        input: '',
+        encoding: 'utf8',
+        env,
+        timeout: CLI_SMOKE_TIMEOUT_MS,
+        maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+      }),
+    );
+    const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+    const projectDir = Object.values(registry.projects)[0].project_dir;
+    return {
+      results,
+      reviewExists: existsSync(join(projectDir, 'research', 'review_eval.json')),
+      verificationExists: existsSync(join(projectDir, 'research', 'verification_evidence.json')),
+      explainExists: readdirSync(join(projectDir, 'reports')).some((name) =>
+        name.startsWith('explain-'),
+      ),
+      askExists: existsSync(join(projectDir, 'reports', 'ask.html')),
     };
   });
 }
@@ -3367,6 +3401,54 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'review and context commands keep all state outside the repository',
+      run() {
+        withTempDirSync('rizz-external-context-smoke-', (dir) => {
+          gitInCwd(dir, ['init', '-b', 'develop']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'rizz eval']);
+          mkdirSync(join(dir, 'src'));
+          writeFileSync(join(dir, 'package.json'), '{"name":"external-context"}\n');
+          writeFileSync(join(dir, 'src', 'index.ts'), 'export const value = 1;\n');
+          gitInCwd(dir, ['add', '.']);
+          gitInCwd(dir, ['commit', '-m', 'initial']);
+          writeFileSync(join(dir, 'src', 'index.ts'), 'export const value = 2;\n');
+          const filesBefore = readdirSync(dir).sort();
+
+          const outcome = runExternalCliSequenceSync(dir, [
+            ['brain'],
+            ['review', '--json'],
+            [
+              'verify',
+              'add',
+              '--name',
+              'unit tests',
+              '--command',
+              'pnpm test',
+              '--status',
+              'passed',
+              '--json',
+            ],
+            ['explain', 'src/index.ts', '--json'],
+            ['ask', 'what should I read first?', '--json'],
+          ]);
+
+          for (const result of outcome.results) {
+            assert(result.status === 0, `external command failed: ${result.stderr}`);
+          }
+          assert(outcome.reviewExists, 'review artifact was not external');
+          assert(outcome.verificationExists, 'verification artifact was not external');
+          assert(outcome.explainExists, 'explain report was not external');
+          assert(outcome.askExists, 'ask report was not external');
+          assert(!existsSync(join(dir, '.rizz')), 'context command created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'context command changed repository files',
+          );
+        });
+      },
+    },
+    {
       name: 'rizz approve records expiry and revokes active human signoff',
       run() {
         withTempDirSync('rizz-approve-lifecycle-', (dir) => {
@@ -3424,7 +3506,7 @@ async function runHeadlessSmoke() {
       },
     },
     {
-      name: 'rizz explain explains a component from the local project brain',
+      name: 'rizz explain explains a component from the isolated project brain',
       run() {
         withTempDirSync('rizz-explain-smoke-', (dir) => {
           mkdirSync(join(dir, 'packages', 'brain', 'src'), { recursive: true });

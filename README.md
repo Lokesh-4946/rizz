@@ -19,14 +19,14 @@ The current `0.3.1` product surface is:
 - `rizz ask` gated Project Intelligence questions answered from the local brain
 - `rizz explain` evidence-backed component, file, and flow explanations
 - `rizz review` git-diff review using the local project brain
-- `.rizz/brain/latest.json` structured current-state summary
-- `.rizz/brain/entities/*.json` relational entity stores with stable IDs
-- `.rizz/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, state/data dependencies, evidence, tests, configs, and risks
-- `.rizz/brain/graph.json` relationships with evidence and confidence
-- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, security scan, tool inventory, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
+- `<project-workspace>/brain/latest.json` structured current-state summary
+- `<project-workspace>/brain/entities/*.json` relational entity stores with stable IDs
+- `<project-workspace>/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, state/data dependencies, evidence, tests, configs, and risks
+- `<project-workspace>/brain/graph.json` relationships with evidence and confidence
+- `<project-workspace>/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, security scan, tool inventory, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
 - confidence inspection queues that point agents to weak evidence, architecture confidence debt, security/tool risk surfaces, and stale understanding before broad reuse
-- `.rizz/reports/index.html` Mission Control local architecture intelligence portal
-- `.rizz/reports/review.html` local risk/blast-radius review report with journey, state/data impact, and targeted verification planning
+- `<project-workspace>/reports/index.html` Mission Control local architecture intelligence portal
+- `<project-workspace>/reports/review.html` local risk/blast-radius review report with journey, state/data impact, and targeted verification planning
 - `rizz setup` dependency doctor and provider route picker
 - OpenRouter BYOK as the primary fast route
 - Codex subscription route as a secondary local Codex CLI route
@@ -56,23 +56,24 @@ Then run:
 rizz prepare
 ```
 
-`rizz prepare` is the Agent OS migration path. It scans the current repository read-only and writes
+`rizz prepare` scans the current repository read-only and writes
 the registry, project identity, brain, research, and reports outside the repository. Set
 `RIZZ_HOME` only when automation needs an explicit external data root.
 
-`rizz`, `rizz understand`, and `rizz brain` now use the same isolated project store. Review, ask,
-explain, verification, and approval still use repository-local `.rizz` artifacts in the temporary
-0.3.1 compatibility path and are being migrated in subsequent Agent OS batons.
+All intelligence commands use the same isolated project store, including review, ask, explain,
+verification, and approval. They do not create `.rizz` or generated state in the repository.
+`<project-workspace>` below means the current project directory registered under the platform Rizz
+home, never a checked-in path.
 
-The legacy commands write:
+The commands write:
 
 ```text
-.rizz/brain/latest.json
-.rizz/brain/entities/
-.rizz/brain/flows/
-.rizz/brain/graph.json
-.rizz/research/
-.rizz/reports/index.html
+<project-workspace>/brain/latest.json
+<project-workspace>/brain/entities/
+<project-workspace>/brain/flows/
+<project-workspace>/brain/graph.json
+<project-workspace>/research/
+<project-workspace>/reports/index.html
 ```
 
 ## Understand A Repo
@@ -90,9 +91,10 @@ rizz brain
 rizz report
 ```
 
-Open `.rizz/reports/index.html` in your browser for Mission Control, the local intelligence portal.
-Agents and tools should read `.rizz/brain/latest.json` first, then relevant entity files, graph
-relationships, and evidence before rereading source files.
+The CLI prints the external workspace path after a scan. Open
+`<project-workspace>/reports/index.html` for Mission Control. Agents and tools should read
+`<project-workspace>/brain/latest.json` first, then relevant entity files, graph relationships, and
+evidence before rereading source files.
 
 The brain is meant to be a local interoperability contract: other agents can read stable entity IDs,
 relationships, evidence, sessions, handoffs, findings, and status without scraping a chat log.
@@ -116,7 +118,7 @@ rizz explain packages/cli/src/index.ts
 rizz explain flow packages--cli--check
 ```
 
-`rizz explain flow <flow-id>` reads canonical flow entities from `.rizz/brain/entities/flows.json`
+`rizz explain flow <flow-id>` reads canonical flow entities from `<project-workspace>/brain/entities/flows.json`
 and reports entrypoints, ordered steps, mapped components/files, tests, configs, risks, confidence,
 unknowns, and evidence. Flow explanations are deterministic static reconstructions, not runtime
 traces.
@@ -133,10 +135,10 @@ rizz review
 brain does not exist yet, it creates a lightweight brain first. The review writes:
 
 ```text
-.rizz/brain/entities/reviews.json
-.rizz/brain/entities/findings.json
-.rizz/brain/latest.json
-.rizz/reports/review.html
+<project-workspace>/brain/entities/reviews.json
+<project-workspace>/brain/entities/findings.json
+<project-workspace>/brain/latest.json
+<project-workspace>/reports/review.html
 ```
 
 For automation:

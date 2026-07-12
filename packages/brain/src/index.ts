@@ -5,6 +5,7 @@ import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { buildAgentRepairPacketsArtifact } from './agent-repair-packets.js';
 import { aes, afc, ap, bc, bi, br, bu, ccp, cl, cqi } from './architecture-confidence.js';
 import { updateBrainIndexResearchPaths } from './brain-index-paths.js';
+import { validateBrainSchema } from './brain-schema.js';
 import {
   type DatabaseTableInference as Dti,
   databaseTableDependencyLabels as dbDepLabels,
@@ -43,6 +44,7 @@ export {
   type ProjectStore,
 } from './project-store.js';
 export { prepareRepository } from './prepare.js';
+export * from './current-project.js';
 import {
   type ReviewGitBasisData,
   type ReviewGovernanceData,
@@ -81,6 +83,11 @@ import {
   buildVerificationEvidenceScore as bves,
 } from './verification-evidence-score.js';
 import { buildAgentVerificationPlanArtifact as bavp } from './verification-plan.js';
+import {
+  outputDirFor as pod,
+  reviewEvidencePath as rep,
+  verificationPath as vp,
+} from './workspace-paths.js';
 
 type Confidence = 'verified' | 'inferred' | 'uncertain';
 
@@ -1588,7 +1595,7 @@ interface ExplainSummaryData {
 
 export interface GenerateProjectBrainOptions {
   readonly rootDir: string;
-  readonly outputDir?: string;
+  outputDir?: string;
   readonly now?: Date;
   readonly maxFiles?: number;
   readonly onProgress?: (progress: GenerateProjectBrainProgress) => void;
@@ -1624,6 +1631,7 @@ export type GenerateProjectBrainResult =
 
 export interface ReviewProjectChangesOptions {
   readonly rootDir: string;
+  outputDir?: string;
   readonly now?: Date;
   readonly mission?: string;
   readonly missionFile?: string;
@@ -1631,6 +1639,7 @@ export interface ReviewProjectChangesOptions {
 
 export interface AddVerificationEvidenceOptions {
   readonly rootDir: string;
+  outputDir?: string;
   readonly name: string;
   readonly command: string;
   readonly status: VerificationStatus;
@@ -1679,6 +1688,7 @@ export type ReviewProjectChangesResult =
 
 export interface ExplainProjectTargetOptions {
   readonly rootDir: string;
+  outputDir?: string;
   readonly target: string;
   readonly now?: Date;
 }
@@ -1715,6 +1725,7 @@ interface AskReadinessSummary {
 
 export interface AskProjectQuestionOptions {
   readonly rootDir: string;
+  readonly outputDir?: string;
   readonly question: string;
   readonly now?: Date;
 }
@@ -2079,14 +2090,6 @@ async function readJsonFile<T>(path: string): Promise<T | undefined> {
   }
 }
 
-function verificationEvidenceArtifactPath(rootDir: string): string {
-  return join(rootDir, '.rizz', 'research', RESEARCH_ARTIFACT_FILES.verificationEvidence);
-}
-
-function reviewClaimEvidenceArtifactPath(rootDir: string): string {
-  return join(rootDir, '.rizz', 'research', 'review_claim_evidence.json');
-}
-
 function emptyVerificationEvidenceArtifact(
   projectName: string,
   generatedAt: string,
@@ -2135,9 +2138,10 @@ function verificationItemFromRecord(value: unknown): VerificationEvidenceItem | 
 async function readVerificationEvidenceArtifact(
   rootDir: string,
   generatedAt: string,
+  outputDir?: string,
 ): Promise<VerificationEvidenceArtifactData> {
   const existing = await readJsonFile<{ readonly items?: readonly unknown[] }>(
-    verificationEvidenceArtifactPath(rootDir),
+    vp(rootDir, outputDir),
   );
   const items = (existing?.items ?? [])
     .map(verificationItemFromRecord)
@@ -20356,8 +20360,8 @@ export async function generateProjectBrain(
   }
 }
 
-export async function hasProjectBrain(rootDir: string): Promise<boolean> {
-  return exists(join(rootDir, '.rizz', 'brain', 'latest.json'));
+export async function hasProjectBrain(rootDir: string, outputDir?: string): Promise<boolean> {
+  return exists(join(pod(rootDir, outputDir), 'brain', 'latest.json'));
 }
 
 export async function addVerificationEvidence(
@@ -20382,10 +20386,11 @@ export async function addVerificationEvidence(
       };
     }
     const rootDir = options.rootDir;
+    const outputDir = pod(rootDir, options.outputDir);
     const now = (options.now ?? new Date()).toISOString();
-    const researchDir = join(rootDir, '.rizz', 'research');
+    const researchDir = join(outputDir, 'research');
     await mkdir(researchDir, { recursive: true });
-    const existing = await readVerificationEvidenceArtifact(rootDir, now);
+    const existing = await readVerificationEvidenceArtifact(rootDir, now, outputDir);
     const item: VerificationEvidenceItem = {
       id: `verification:${stableSlug(name)}:${createHash('sha256')
         .update(`${name}\0${command}\0${now}`)
@@ -20409,10 +20414,10 @@ export async function addVerificationEvidence(
       generatedAt: now,
       items: [...existing.items, item],
     });
-    const artifactPath = verificationEvidenceArtifactPath(rootDir);
+    const artifactPath = vp(rootDir, outputDir);
     await writeVerifiedFile(artifactPath, jsonString(safeResearchValue(artifact)));
-    if (await hasProjectBrain(rootDir)) {
-      const brainDir = join(rootDir, '.rizz', 'brain');
+    if (await hasProjectBrain(rootDir, outputDir)) {
+      const brainDir = join(outputDir, 'brain');
       const latestPath = join(brainDir, 'latest.json');
       const latest = (await readJsonFile<Record<string, unknown>>(latestPath)) ?? {};
       await writeVerifiedFile(
@@ -20453,23 +20458,25 @@ export async function reviewProjectChanges(
 ): Promise<ReviewProjectChangesResult> {
   try {
     const rootDir = options.rootDir;
-    if (!(await hasProjectBrain(rootDir))) {
+    const outputDir = pod(rootDir, options.outputDir);
+    if (!(await hasProjectBrain(rootDir, outputDir))) {
       const generated = await generateProjectBrain({
         rootDir,
+        outputDir,
         ...(options.now !== undefined ? { now: options.now } : {}),
       });
       if (!generated.ok) return generated;
     }
 
-    const brainDir = join(rootDir, '.rizz', 'brain');
+    const brainDir = join(outputDir, 'brain');
     const entitiesDir = join(brainDir, 'entities');
-    const researchDir = join(rootDir, '.rizz', 'research');
-    const reportsDir = join(rootDir, '.rizz', 'reports');
+    const researchDir = join(outputDir, 'research');
+    const reportsDir = join(outputDir, 'reports');
     await mkdir(entitiesDir, { recursive: true });
     await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
 
-    const schemaErrors = await validateBrainSchema(rootDir);
+    const schemaErrors = await validateBrainSchema(brainDir);
     if (schemaErrors.length > 0) {
       return {
         ok: false,
@@ -20500,7 +20507,7 @@ export async function reviewProjectChanges(
       ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
       sanitizeText: safeText,
     });
-    const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now);
+    const verificationEvidence = await readVerificationEvidenceArtifact(rootDir, now, outputDir);
 
     const reviewBase = buildReview({
       rootDir,
@@ -20517,7 +20524,7 @@ export async function reviewProjectChanges(
     const humanApproval = buildHumanApprovalPacket({
       generatedAt: now,
       review: reviewBase,
-      signoffRecord: await readHumanSignoffRecord(rootDir),
+      signoffRecord: await readHumanSignoffRecord(rootDir, options.outputDir),
     });
     const review: ReviewSummaryData = { ...reviewBase, human_approval: humanApproval };
     const reviewEval = buildReviewEvalArtifact(review);
@@ -20647,12 +20654,9 @@ export async function reviewProjectChanges(
     };
     await writeVerifiedFile(latestPath, jsonString(safeBrainValue(updatedLatest)));
     await writeVerifiedFile(join(researchDir, 'review_eval.json'), jsonString(reviewEval));
+    await writeVerifiedFile(rep(rootDir, outputDir), jsonString(reviewClaimEvidence));
     await writeVerifiedFile(
-      reviewClaimEvidenceArtifactPath(rootDir),
-      jsonString(reviewClaimEvidence),
-    );
-    await writeVerifiedFile(
-      verificationEvidenceArtifactPath(rootDir),
+      vp(rootDir, outputDir),
       jsonString(safeResearchValue(verificationEvidence)),
     );
     await writeVerifiedFile(
@@ -20698,7 +20702,7 @@ export async function reviewProjectChanges(
         rootDir,
         reviewPath: join(entitiesDir, 'reviews.json'),
         reviewEvalPath: join(researchDir, 'review_eval.json'),
-        reviewClaimEvidencePath: reviewClaimEvidenceArtifactPath(rootDir),
+        reviewClaimEvidencePath: rep(rootDir, outputDir),
         latestPath,
         reportPath,
         changedFiles: review.changed_files.length,
@@ -20727,7 +20731,8 @@ export async function explainProjectTarget(
 ): Promise<ExplainProjectTargetResult> {
   try {
     const rootDir = options.rootDir;
-    if (!(await hasProjectBrain(rootDir))) {
+    const outputDir = pod(rootDir, options.outputDir);
+    if (!(await hasProjectBrain(rootDir, outputDir))) {
       return {
         ok: false,
         error: {
@@ -20737,7 +20742,7 @@ export async function explainProjectTarget(
       };
     }
 
-    const schemaErrors = await validateBrainSchema(rootDir);
+    const schemaErrors = await validateBrainSchema(join(outputDir, 'brain'));
     if (schemaErrors.length > 0) {
       return {
         ok: false,
@@ -20748,7 +20753,7 @@ export async function explainProjectTarget(
       };
     }
 
-    const brainDir = join(rootDir, '.rizz', 'brain');
+    const brainDir = join(outputDir, 'brain');
     const entitiesDir = join(brainDir, 'entities');
 
     const latestPath = join(brainDir, 'latest.json');
@@ -20758,7 +20763,7 @@ export async function explainProjectTarget(
       (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
       {};
     const entitySets = await readExplainEntitySets(entitiesDir);
-    const research = await readExplainResearchArtifacts(rootDir);
+    const research = await readExplainResearchArtifacts(rootDir, outputDir);
     const explainableEntities = [
       ...entitySets.components,
       ...entitySets.services,
@@ -20780,7 +20785,7 @@ export async function explainProjectTarget(
       entitySets,
       research,
     });
-    const reportsDir = join(rootDir, '.rizz', 'reports');
+    const reportsDir = join(outputDir, 'reports');
     await mkdir(reportsDir, { recursive: true });
     const reportPath = join(
       reportsDir,
@@ -20810,10 +20815,11 @@ export async function askProjectQuestion(
 ): Promise<AskProjectQuestionResult> {
   try {
     const rootDir = options.rootDir;
+    const outputDir = pod(rootDir, options.outputDir);
     const parsed = parseAskQuestion(options.question);
     if (!parsed.ok) return { ok: false, error: parsed.error };
 
-    if (!(await hasProjectBrain(rootDir))) {
+    if (!(await hasProjectBrain(rootDir, outputDir))) {
       return {
         ok: false,
         error: {
@@ -20823,7 +20829,7 @@ export async function askProjectQuestion(
       };
     }
 
-    const schemaErrors = await validateBrainSchema(rootDir);
+    const schemaErrors = await validateBrainSchema(join(outputDir, 'brain'));
     if (schemaErrors.length > 0) {
       return {
         ok: false,
@@ -20834,7 +20840,7 @@ export async function askProjectQuestion(
       };
     }
 
-    const brainDir = join(rootDir, '.rizz', 'brain');
+    const brainDir = join(outputDir, 'brain');
     const entitiesDir = join(brainDir, 'entities');
     const latestPath = join(brainDir, 'latest.json');
     const graphPath = join(brainDir, 'graph.json');
@@ -20843,7 +20849,7 @@ export async function askProjectQuestion(
       (await readJsonFile<{ readonly relationships?: readonly BrainRelationship[] }>(graphPath)) ??
       {};
     const entitySets = await readExplainEntitySets(entitiesDir);
-    const research = await readExplainResearchArtifacts(rootDir);
+    const research = await readExplainResearchArtifacts(rootDir, outputDir);
     const readiness = askReadinessFromBenchmark(research.benchmarkReady);
     const now = (options.now ?? new Date()).toISOString();
 
@@ -20868,7 +20874,7 @@ export async function askProjectQuestion(
           });
     if (!answer.ok) return { ok: false, error: answer.error };
 
-    const reportsDir = join(rootDir, '.rizz', 'reports');
+    const reportsDir = join(outputDir, 'reports');
     await mkdir(reportsDir, { recursive: true });
     const reportPath = join(reportsDir, 'ask.html');
     await writeVerifiedFile(reportPath, renderAskReport(answer.value));
@@ -21483,8 +21489,11 @@ async function readExplainEntitySets(entitiesDir: string): Promise<{
   };
 }
 
-async function readExplainResearchArtifacts(rootDir: string): Promise<ExplainResearchArtifacts> {
-  const researchDir = join(rootDir, '.rizz', 'research');
+async function readExplainResearchArtifacts(
+  rootDir: string,
+  outputDir?: string,
+): Promise<ExplainResearchArtifacts> {
+  const researchDir = join(pod(rootDir, outputDir), 'research');
   const evidenceQualityPath = join(researchDir, RESEARCH_ARTIFACT_FILES.evidenceQuality);
   const benchmarkReadyPath = join(researchDir, RESEARCH_ARTIFACT_FILES.benchmarkReady);
   const benchmarkTasksPath = join(researchDir, RESEARCH_ARTIFACT_FILES.benchmarkTasks);
@@ -26185,95 +26194,4 @@ function renderReviewReport(review: ReviewSummaryData): string {
 </body>
 </html>
 `;
-}
-
-async function validateBrainSchema(rootDir: string): Promise<string[]> {
-  const brainDir = join(rootDir, '.rizz', 'brain');
-  const entitiesDir = join(brainDir, 'entities');
-  const errors: string[] = [];
-  const latest = await readJsonFile<unknown>(join(brainDir, 'latest.json'));
-  if (!isRecord(latest)) {
-    errors.push('latest.json must be an object');
-  } else {
-    if (typeof latest.generated_at !== 'string') errors.push('latest.json missing generated_at');
-    if (!Array.isArray(latest.latest_component_map)) {
-      errors.push('latest.json missing latest_component_map array');
-    }
-    if (!Array.isArray(latest.latest_flow_map)) {
-      errors.push('latest.json missing latest_flow_map array');
-    }
-  }
-
-  const graph = await readJsonFile<unknown>(join(brainDir, 'graph.json'));
-  if (!isRecord(graph) || !Array.isArray(graph.relationships)) {
-    errors.push('graph.json missing relationships array');
-  } else {
-    for (const [index, rel] of graph.relationships.entries()) {
-      if (!isRecord(rel) || typeof rel.from !== 'string' || typeof rel.to !== 'string') {
-        errors.push(`graph.json relationship ${index} is invalid`);
-        break;
-      }
-    }
-  }
-
-  const flowIndex = await readJsonFile<unknown>(join(brainDir, 'flows', 'index.json'));
-  if (!isRecord(flowIndex) || !Array.isArray(flowIndex.flows)) {
-    errors.push('flows/index.json missing flows array');
-  }
-
-  for (const fileName of ['components.json', 'files.json', 'folders.json', 'flows.json']) {
-    const path = join(entitiesDir, fileName);
-    if (!(await exists(path))) {
-      errors.push(`${fileName} missing entities array`);
-      continue;
-    }
-    const file = await readJsonFile<unknown>(path);
-    if (!isRecord(file) || !Array.isArray(file.entities)) {
-      errors.push(`${fileName} missing entities array`);
-      continue;
-    }
-    for (const [index, entity] of file.entities.entries()) {
-      if (!isBrainEntityShape(entity)) {
-        errors.push(`${fileName} entity ${index} is invalid`);
-        break;
-      }
-    }
-  }
-
-  for (const fileName of ['evidence.json', 'reviews.json']) {
-    const path = join(entitiesDir, fileName);
-    if (!(await exists(path))) continue;
-    const file = await readJsonFile<unknown>(path);
-    if (!isRecord(file) || !Array.isArray(file.entities)) {
-      errors.push(`${fileName} missing entities array`);
-      continue;
-    }
-    for (const [index, entity] of file.entities.entries()) {
-      if (!isBrainEntityShape(entity)) {
-        errors.push(`${fileName} entity ${index} is invalid`);
-        break;
-      }
-    }
-  }
-
-  return errors;
-}
-
-function isBrainEntityShape(value: unknown): value is BrainEntity {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.id === 'string' &&
-    typeof value.type === 'string' &&
-    typeof value.name === 'string' &&
-    typeof value.description === 'string' &&
-    typeof value.created_at === 'string' &&
-    typeof value.updated_at === 'string' &&
-    (value.confidence === 'verified' ||
-      value.confidence === 'inferred' ||
-      value.confidence === 'uncertain') &&
-    Array.isArray(value.evidence_ids) &&
-    Array.isArray(value.related_entity_ids) &&
-    Array.isArray(value.source_files) &&
-    typeof value.latest_status === 'string'
-  );
 }
