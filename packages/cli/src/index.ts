@@ -18,22 +18,13 @@ import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-pr
 
 const VERSION = '0.3.1';
 
-const USAGE = `rizz - understand a software system
+const USAGE = `rizz - prepare software for AI development
 
 Usage:
-  rizz prepare                  prepare isolated intelligence
-  rizz project relink [id]      reconnect a moved repository
-  rizz brief <task> [--json]    compile an evidence-backed packet
-  rizz loop <action> [--json]   manage isolated work continuity
-  rizz vault <action> [--json]  inspect or import a product vault
-  rizz | brain                  refresh project intelligence
-  rizz ask <question>           query the local brain
-  rizz explain <target>         explain a file, component, flow, or service
-  rizz review                   review the current Git diff
-  rizz verify add               record verification evidence
-  rizz approve signoff|revoke   manage human approval
-  rizz chat | setup | doctor    model UI, setup, and readiness
-  rizz --json | --rpc           machine protocols
+  rizz prepare | brain | brief <task> | review | explain <target>
+  rizz loop <action> | vault <action> | project relink [id]
+  rizz mcp | --json | --rpc
+  rizz chat | setup | doctor | verify add | approve signoff|revoke
   rizz --version | --help`;
 
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
@@ -663,6 +654,19 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
+  if (c.rest[0] === 'mcp') {
+    if (c.rest.length !== 1) {
+      process.stderr.write("rizz: mcp does not accept arguments\nTry 'rizz mcp'.\n");
+      return 2;
+    }
+    const { serveMcpStdio } = await import('@valoir/rizz-brain');
+    await serveMcpStdio({
+      rootDir: process.cwd(),
+      input: process.stdin,
+      write: (line) => process.stdout.write(line),
+    });
+    return 0;
+  }
   if (c.rest[0] === 'brief' || c.rest[0] === 'loop' || c.rest[0] === 'vault') {
     const { executeContextCommand } = await import('@valoir/rizz-brain');
     const result = await executeContextCommand({ rootDir: process.cwd(), args: c.rest });

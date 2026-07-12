@@ -3120,6 +3120,24 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz mcp initializes and lists model-independent tools over stdio',
+      run() {
+        const input = [
+          JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+          JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+          '',
+        ].join('\n');
+        const result = runCliSync(['mcp'], input);
+        assert(result.status === 0, `expected MCP exit 0: ${result.stderr}`);
+        const messages = parseJsonLines(result.stdout);
+        assert(messages[0]?.result?.serverInfo?.name === 'rizz', 'missing MCP initialize result');
+        assert(
+          messages[1]?.result?.tools?.some((tool) => tool.name === 'get_task_brief'),
+          'missing MCP task brief tool',
+        );
+      },
+    },
+    {
       name: 'rizz setup --dry-run exits 0 without leaking provider env or creating ~/.rizz',
       run() {
         const secret = 'sk-ant-eval-setup-smoke-secret';

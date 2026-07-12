@@ -48,6 +48,28 @@ Current loop readiness:
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
 | Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
 
+## Resource Governance Tracker
+
+Rizz should provide the useful outcomes of Headroom-style context optimization while preserving its
+evidence contract. Resource efficiency is subordinate to correctness: source code, exact diffs,
+security evidence, failing assertions, and verification proof are never lossy-compressed by default.
+
+| Capability | Status | Acceptance evidence |
+| --- | --- | --- |
+| Task-scoped context budgets | Shipped foundation | `rizz brief` reports its claim budget, omissions, revision, and stale evidence. |
+| Content-addressed context cache | Planned | Repeated file/tool payloads reuse a digest-addressed local object; cache hits and avoided bytes are measured. |
+| Evidence-preserving tool-output compaction | Planned | Repeated logs/boilerplate may be compacted, but errors, project frames, head/tail, citations, and retrievable originals remain available. |
+| Agent dispatch resource leases | Planned after MCP bridges | Every opt-in agent receives concurrency, wall-time, context, command, and provider-budget limits; zombie work and expired leases are reclaimed. |
+| Shared multi-agent context | Planned after MCP bridges | Agents exchange bounded packets through the isolated project workspace, never by copying whole transcripts or reading another project. |
+| Resource-aware scheduling | Planned | Dispatch chooses serial/parallel work from dependency independence, available slots, provider limits, and expected verification cost. |
+| Local observability | Planned | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, verification cost, and quality outcome. |
+| Quality fallback | Planned | If compaction causes an evidence gap, repeated read, failed verification, or lower review confidence, Rizz serves the exact original and records the miss. |
+| Agent wrappers | Current baton | Codex, Claude Code, and Copilot query the same MCP/CLI context and resource policy without repository-local adapters. |
+
+The product target is not maximum compression. It is minimum wasted cognition per accepted,
+verified change. A cheaper loop that produces slop, rereads the repository, or weakens evidence is a
+resource regression.
+
 ## Current Loop
 
 1. Calibrate Architecture Reasoning so capped large-repo UAT scores service-to-flow causality,
@@ -59,10 +81,10 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice imports existing product/planning knowledge through an explicit inspect, preview,
-apply, and reconcile boundary. The external tracker makes the product rule measurable: Rizz prevents
-agent slop by requiring scoped intent, cited evidence, verification, review, and durable handoff so
-developers ship substantial, inspectable work.
+The current slice exposes the isolated project OS through a zero-dependency stdio MCP server. Every
+supported read has a stable `rizz://` resource or structured tool result; mutations require exact
+project, repository revision, and loop sequence matches. Rizz remains the evidence/orchestration
+layer and performs no model call.
 
 ## Capability Scorecard
 
@@ -83,29 +105,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/vault-import-planning`, previewed vault import and external product tracker.
+Run: `feature/mcp-agent-bridges`, milestone 1: model-independent MCP server and CLI parity.
 
 | Check | Result |
 | --- | ---: |
-| Focused vault import and planning tests | 5/5 passed |
+| Focused MCP protocol tests | 6/6 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 416/416 passed |
+| Full unit suite | 422/422 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 16/16 passed, including external-only vault inspect/preview/apply/reconcile |
+| CLI process smoke | 17/17 passed, including MCP initialize and tool discovery over stdio |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,538 bytes |
-| Footprint | Passed: 51ms cold start, 200KB counted core |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,604 bytes |
+| Footprint | Passed: 52ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: existing Markdown product vaults can be inspected and previewed without source
-mutation, then copied only into the isolated project workspace. The generated board tracks evidence,
-verification, review, agent, and PR state; secret-like material blocks apply, while reconciliation
-reports later source drift without silently overwriting accepted local planning state.
+Current verdict: any MCP-capable agent can discover and read the same current Rizz project context.
+Task brief results preserve structured and text compatibility, stdio uses ordered newline-delimited
+JSON-RPC, and guarded mutation tools reject cross-project or stale-revision writes before loop state
+is touched.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

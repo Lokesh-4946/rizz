@@ -11,8 +11,11 @@ import {
 } from './index.js';
 import { prepareProjectStore } from './project-store.js';
 
-async function currentOutputDir(rootDir: string) {
-  const project = await prepareProjectStore({ rootDir });
+async function currentOutputDir(rootDir: string, rizzHome?: string) {
+  const project = await prepareProjectStore({
+    rootDir,
+    ...(rizzHome === undefined ? {} : { rizzHome }),
+  });
   return project.ok ? { ok: true as const, value: project.value.projectDir } : project;
 }
 
@@ -31,9 +34,9 @@ export async function verifyCurrentProject(
 }
 
 export async function explainCurrentProject(
-  options: Omit<ExplainProjectTargetOptions, 'outputDir'>,
+  options: Omit<ExplainProjectTargetOptions, 'outputDir'> & { readonly rizzHome?: string },
 ) {
-  const output = await currentOutputDir(options.rootDir);
+  const output = await currentOutputDir(options.rootDir, options.rizzHome);
   return output.ok ? explainProjectTarget({ ...options, outputDir: output.value }) : output;
 }
 
