@@ -4,6 +4,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -2782,16 +2783,44 @@ function runCliSync(args, input) {
 }
 
 function runCliInCwdSync(cwd, args, input) {
-  return withTempHomeSync((home) =>
-    spawnSync(process.execPath, [cliBin, ...args], {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    if (args[0] === 'brain') {
+      const prepared = spawnSync(process.execPath, [cliBin, 'prepare'], {
+        cwd,
+        encoding: 'utf8',
+        env: { ...isolatedEnv(home), RIZZ_HOME: rizzHome },
+        timeout: CLI_SMOKE_TIMEOUT_MS,
+        maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+      });
+      if (prepared.status === 0 && existsSync(join(cwd, '.rizz'))) {
+        const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+        const projectDir = Object.values(registry.projects)[0].project_dir;
+        for (const directory of ['brain', 'research', 'reports']) {
+          rmSync(join(projectDir, directory), { recursive: true, force: true });
+          cpSync(join(cwd, '.rizz', directory), join(projectDir, directory), { recursive: true });
+        }
+      }
+    }
+    const result = spawnSync(process.execPath, [cliBin, ...args], {
       cwd,
       input,
       encoding: 'utf8',
-      env: isolatedEnv(home),
+      env: { ...isolatedEnv(home), RIZZ_HOME: rizzHome },
       timeout: CLI_SMOKE_TIMEOUT_MS,
       maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-    }),
-  );
+    });
+    if (args[0] === 'brain' && result.status === 0) {
+      const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+      const projectDir = Object.values(registry.projects)[0].project_dir;
+      rmSync(join(cwd, '.rizz'), { recursive: true, force: true });
+      mkdirSync(join(cwd, '.rizz'), { recursive: true });
+      for (const directory of ['brain', 'research', 'reports']) {
+        cpSync(join(projectDir, directory), join(cwd, '.rizz', directory), { recursive: true });
+      }
+    }
+    return result;
+  });
 }
 
 function runCliInCwdWithGitSync(cwd, args, input) {
@@ -2818,6 +2847,36 @@ function runPrepareCliSync(cwd) {
       maxBuffer: CLI_OUTPUT_MAX_BUFFER,
     });
     return { result, registryExists: existsSync(join(rizzHome, 'registry.json')) };
+  });
+}
+
+function runExternalBrainCliSync(cwd, args = []) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const result = spawnSync(process.execPath, [cliBin, ...args], {
+      cwd,
+      input: '',
+      encoding: 'utf8',
+      env: { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome },
+      timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+    });
+    const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+    const project = Object.values(registry.projects)[0];
+    const projectDir = project.project_dir;
+    return {
+      result,
+      latestExists: existsSync(join(projectDir, 'brain', 'latest.json')),
+      graphExists: existsSync(join(projectDir, 'brain', 'graph.json')),
+      filesExists: existsSync(join(projectDir, 'brain', 'entities', 'files.json')),
+      research: Object.fromEntries(
+        readdirSync(join(projectDir, 'research')).map((fileName) => [
+          fileName,
+          readFileSync(join(projectDir, 'research', fileName), 'utf8'),
+        ]),
+      ),
+      report: readFileSync(join(projectDir, 'reports', 'index.html'), 'utf8'),
+    };
   });
 }
 
@@ -3154,7 +3213,7 @@ async function runHeadlessSmoke() {
       },
     },
     {
-      name: 'bare rizz writes local project brain in headless empty-stdin mode',
+      name: 'bare rizz writes isolated project brain without changing the repository',
       run() {
         withTempDirSync('rizz-bare-brain-smoke-', (dir) => {
           writeFileSync(
@@ -3163,19 +3222,24 @@ async function runHeadlessSmoke() {
           );
           writeFileSync(join(dir, 'index.js'), 'export const ok = true;\n');
 
-          const result = runCliInCwdSync(dir, [], '');
+          const filesBefore = readdirSync(dir).sort();
+          const { result, latestExists, report } = runExternalBrainCliSync(dir);
           assert(result.error === undefined, String(result.error));
           assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
           assert(result.stdout.includes('rizz understood 2 file(s)'), 'expected brain summary');
           assert(!result.stdout.includes('Usage:'), 'bare rizz printed help instead of scanning');
-          assert(existsSync(join(dir, '.rizz', 'brain', 'latest.json')), 'missing latest.json');
-          assert(existsSync(join(dir, '.rizz', 'reports', 'index.html')), 'missing report');
-          assert(existsSync(join(dir, '.rizz', 'research')), 'missing research artifacts');
+          assert(latestExists, 'missing external latest.json');
+          assert(report.includes('Mission Control ·'), 'missing external report');
+          assert(!existsSync(join(dir, '.rizz')), 'bare rizz created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'bare rizz changed repository files',
+          );
         });
       },
     },
     {
-      name: 'rizz brain writes local project brain without provider credentials',
+      name: 'rizz brain writes isolated project brain without provider credentials',
       run() {
         withTempDirSync('rizz-brain-smoke-', (dir) => {
           writeFileSync(
@@ -3184,17 +3248,15 @@ async function runHeadlessSmoke() {
           );
           writeFileSync(join(dir, 'index.ts'), 'export const ok = true;\n');
 
-          const result = runCliInCwdSync(dir, ['brain'], '');
+          const filesBefore = readdirSync(dir).sort();
+          const { result, latestExists, graphExists, filesExists, research, report } =
+            runExternalBrainCliSync(dir, ['brain']);
           assert(result.error === undefined, String(result.error));
           assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
           assert(result.stdout.includes('rizz understood 2 file(s)'), 'expected brain summary');
-          assert(existsSync(join(dir, '.rizz', 'brain', 'latest.json')), 'missing latest.json');
-          assert(existsSync(join(dir, '.rizz', 'brain', 'graph.json')), 'missing graph.json');
-          assert(
-            existsSync(join(dir, '.rizz', 'brain', 'entities', 'files.json')),
-            'missing files entity store',
-          );
-          const researchDir = join(dir, '.rizz', 'research');
+          assert(latestExists, 'missing external latest.json');
+          assert(graphExists, 'missing external graph.json');
+          assert(filesExists, 'missing external files entity store');
           for (const fileName of [
             'metrics.json',
             'coverage.json',
@@ -3204,16 +3266,13 @@ async function runHeadlessSmoke() {
             'incremental_update.json',
             'benchmark_ready.json',
           ]) {
-            const artifactPath = join(researchDir, fileName);
-            assert(existsSync(artifactPath), `missing research artifact ${fileName}`);
-            JSON.parse(readFileSync(artifactPath, 'utf8'));
+            assert(typeof research[fileName] === 'string', `missing research artifact ${fileName}`);
+            JSON.parse(research[fileName]);
           }
-          const metrics = JSON.parse(readFileSync(join(researchDir, 'metrics.json'), 'utf8'));
+          const metrics = JSON.parse(research['metrics.json']);
           assert(metrics.scanned_files === 2, 'research metrics missed scanned files');
           assert(metrics.evidence_records === 2, 'research metrics missed evidence records');
-          const componentIntelligence = JSON.parse(
-            readFileSync(join(researchDir, 'component_intelligence.json'), 'utf8'),
-          );
+          const componentIntelligence = JSON.parse(research['component_intelligence.json']);
           assert(
             typeof componentIntelligence.component_understanding_score === 'number',
             'component intelligence missing understanding score',
@@ -3222,9 +3281,11 @@ async function runHeadlessSmoke() {
             Array.isArray(componentIntelligence.components),
             'component intelligence missing component rows',
           );
-          const reportPath = join(dir, '.rizz', 'reports', 'index.html');
-          assert(existsSync(reportPath), 'missing HTML report');
-          const report = readFileSync(reportPath, 'utf8');
+          assert(!existsSync(join(dir, '.rizz')), 'rizz brain created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'rizz brain changed repository files',
+          );
           assert(report.includes('Mission Control ·'), 'missing Mission Control title');
           assert(report.includes('local project intelligence'), 'missing portal positioning');
           assert(report.includes('Mission Control scorecard'), 'missing Mission Control scorecard');
