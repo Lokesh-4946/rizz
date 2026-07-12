@@ -115,6 +115,11 @@ runtime. The isolated policy bounds concurrency, context bytes, lease time, comm
 provider cost. Sanitized exact context objects are content-addressed; compacted context falls back
 to an exact object on any evidence gap. Per-work resource usage is recorded as local evidence.
 
+`rizz skills inspect/audit/add --pin` establishes the global, immutable source boundary for
+third-party skills. Inspection never executes bundled content, rejects symlinks, records every file
+digest, source revision, license, scripts, supported agents, and shell/network/credential posture.
+Approved content is copied and byte-verified in the global cache but is not enabled for any project.
+
 ## Research Artifacts
 
 Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:

@@ -179,6 +179,21 @@ tool output only while evidence remains complete, and fall back to the exact cac
 an evidence gap appears. Per-work usage records capture bytes, estimated tokens, cache hits,
 rereads, elapsed time, provider cost, and verification time outside the repository.
 
+## Audit And Pin An Upstream Skill
+
+Rizz never executes skill content during inspection, audit, or installation:
+
+```sh
+rizz skills inspect /path/to/checkout/skills/example --json
+rizz skills audit /path/to/checkout/skills/example --json
+rizz skills add /path/to/checkout/skills/example --pin <git-sha> --approve --json
+```
+
+The source must be a clean directory inside a Git checkout. Rizz inventories every file, rejects
+symlinks, parses the skill manifest, records the exact revision and content digest, detects license,
+scripts, shell/network/credential requirements, and requires explicit approval before copying
+byte-verified content into the global Rizz cache. Nothing is enabled for a project during this step.
+
 ## Connect Any MCP Agent
 
 Run the model-independent local server from the project checkout:
