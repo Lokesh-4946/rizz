@@ -104,6 +104,12 @@ brain summary, product, sprint, loop, and latest review. Tools cover bounded tas
 explanations, review packets, checkpoints, completion, and handoffs. Mutation tools must match the
 current project ID, repository revision, and loop sequence before any verified write occurs.
 
+`rizz agents detect`, `rizz agents configure --user`, and `rizz agents doctor` provide the global
+bridge for Codex, Claude Code, GitHub Copilot, and the canonical Agent Skills directory. The five
+bridge skills contain no project state: they resolve the current checkout and request briefs,
+review packets, checkpoints, or handoffs dynamically. Configuration is explicit, conflict-safe,
+and byte-verified; repository instructions and manifests remain untouched.
+
 ## Research Artifacts
 
 Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:
