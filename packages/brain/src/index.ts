@@ -50,6 +50,7 @@ export { executeContextCommand, type ContextCommandResult } from './context-comm
 export * from './vault-import.js';
 export { createMcpServer, serveMcpStdio } from './mcp-server.js';
 export { executeAgentCommand } from './agent-bridges.js';
+export * from './resource-governance.js';
 export * from './current-project.js';
 import {
   type ReviewGitBasisData,

@@ -162,6 +162,23 @@ The governing product principle is explicit in the generated local tracker: Rizz
 slop by requiring scoped intent, evidence-backed context, verification, review, and durable handoff
 so developers can ship substantial, inspectable work.
 
+## Govern Loop Resources
+
+Inspect or explicitly change the isolated project policy, then acquire bounded work leases:
+
+```sh
+rizz resources status --json
+rizz resources configure --max-agents 1 --context-bytes 262144 --lease-ms 1800000
+rizz resources lease --work-id baton-1 --agent codex --json
+rizz resources release --lease-id <lease-id> --json
+```
+
+The default remains single-agent with zero provider spend. Leases enforce concurrency and expire so
+abandoned work can be reclaimed. Rizz can cache sanitized exact context by SHA-256, use compacted
+tool output only while evidence remains complete, and fall back to the exact cached original when
+an evidence gap appears. Per-work usage records capture bytes, estimated tokens, cache hits,
+rereads, elapsed time, provider cost, and verification time outside the repository.
+
 ## Connect Any MCP Agent
 
 Run the model-independent local server from the project checkout:

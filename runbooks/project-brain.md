@@ -110,6 +110,11 @@ bridge skills contain no project state: they resolve the current checkout and re
 review packets, checkpoints, or handoffs dynamically. Configuration is explicit, conflict-safe,
 and byte-verified; repository instructions and manifests remain untouched.
 
+`rizz resources status/configure/lease/release` governs opt-in work without loading a multi-agent
+runtime. The isolated policy bounds concurrency, context bytes, lease time, command time, and
+provider cost. Sanitized exact context objects are content-addressed; compacted context falls back
+to an exact object on any evidence gap. Per-work resource usage is recorded as local evidence.
+
 ## Research Artifacts
 
 Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:

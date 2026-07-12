@@ -3171,6 +3171,42 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz resources enforces an isolated lease policy without repository writes',
+      run() {
+        withTempHomeSync((home) => {
+          const env = isolatedEnvWithGit(home);
+          const before = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          const configured = spawnSync(
+            process.execPath,
+            [cliBin, 'resources', 'configure', '--max-agents', '1', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(configured.status === 0, configured.stderr);
+          const leased = spawnSync(
+            process.execPath,
+            [cliBin, 'resources', 'lease', '--work-id', 'smoke', '--agent', 'codex', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(leased.status === 0, leased.stderr);
+          const leaseId = JSON.parse(leased.stdout).lease_id;
+          const released = spawnSync(
+            process.execPath,
+            [cliBin, 'resources', 'release', '--lease-id', leaseId, '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(released.status === 0 && JSON.parse(released.stdout).released, released.stderr);
+          const after = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          assert(after === before, 'resource policy changed repository status');
+        });
+      },
+    },
+    {
       name: 'rizz setup --dry-run exits 0 without leaking provider env or creating ~/.rizz',
       run() {
         const secret = 'sk-ant-eval-setup-smoke-secret';

@@ -12,6 +12,7 @@ import {
 } from './context-loop.js';
 import { explainCurrentProject } from './current-project.js';
 import { prepareProjectStore } from './project-store.js';
+import { readResourceStatus } from './resource-governance.js';
 import { redactSensitiveText } from './sensitivity.js';
 
 interface McpServerOptions {
@@ -40,6 +41,7 @@ const RESOURCES = [
   ['rizz://sprint/current', 'Current sprint context', 'text/markdown'],
   ['rizz://loop/status', 'Current engineering loop state', 'application/json'],
   ['rizz://review/latest', 'Latest deterministic review packet', 'application/json'],
+  ['rizz://resources/status', 'Current resource policy and active leases', 'application/json'],
 ] as const;
 
 const TOOLS = [
@@ -184,6 +186,13 @@ async function resourceValue(
         mimeType: 'application/json',
         text: await readOptional(join(store.value.brainDir, 'entities', 'reviews.json')),
       };
+    case 'rizz://resources/status': {
+      const status = await readResourceStatus(options);
+      return {
+        mimeType: 'application/json',
+        text: JSON.stringify(status.ok ? status.value : status.error),
+      };
+    }
     default:
       return null;
   }

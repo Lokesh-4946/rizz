@@ -57,13 +57,13 @@ security evidence, failing assertions, and verification proof are never lossy-co
 | Capability | Status | Acceptance evidence |
 | --- | --- | --- |
 | Task-scoped context budgets | Shipped foundation | `rizz brief` reports its claim budget, omissions, revision, and stale evidence. |
-| Content-addressed context cache | Planned | Repeated file/tool payloads reuse a digest-addressed local object; cache hits and avoided bytes are measured. |
-| Evidence-preserving tool-output compaction | Planned | Repeated logs/boilerplate may be compacted, but errors, project frames, head/tail, citations, and retrievable originals remain available. |
-| Agent dispatch resource leases | Planned after MCP bridges | Every opt-in agent receives concurrency, wall-time, context, command, and provider-budget limits; zombie work and expired leases are reclaimed. |
+| Content-addressed context cache | Shipped foundation | Sanitized exact payloads use SHA-256 local objects; duplicate content is verified byte-for-byte. |
+| Evidence-preserving tool-output compaction | Shipped foundation | Compacted payloads fall back to the sanitized exact original whenever an evidence gap is reported. |
+| Agent dispatch resource leases | Shipped foundation | Opt-in work receives concurrency and expiry limits; capacity is rejected and expired leases are deterministically reclaimed. |
 | Shared multi-agent context | Planned after MCP bridges | Agents exchange bounded packets through the isolated project workspace, never by copying whole transcripts or reading another project. |
 | Resource-aware scheduling | Planned | Dispatch chooses serial/parallel work from dependency independence, available slots, provider limits, and expected verification cost. |
-| Local observability | Planned | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, verification cost, and quality outcome. |
-| Quality fallback | Planned | If compaction causes an evidence gap, repeated read, failed verification, or lower review confidence, Rizz serves the exact original and records the miss. |
+| Local observability | Shipped foundation | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, and verification time. |
+| Quality fallback | Shipped foundation | An evidence gap serves the exact sanitized original or fails clearly when the object is missing. |
 | Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; 20 target files are conflict-safe and byte-verified without repository-local adapters. |
 
 The product target is not maximum compression. It is minimum wasted cognition per accepted,
@@ -105,29 +105,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/user-agent-bridges`, milestone 2: user-level universal agent bridges.
+Run: `feature/resource-governed-loop`, milestone 3: resource-governed loop foundation.
 
 | Check | Result |
 | --- | ---: |
-| Focused agent bridge tests | 4/4 passed |
+| Focused resource governance tests | 5/5 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 426/426 passed |
+| Full unit suite | 431/431 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 18/18 passed, including user-level bridge configuration and diagnosis |
+| CLI process smoke | 19/19 passed, including isolated resource policy, lease, and release |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,662 bytes |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,704 bytes |
 | Footprint | Passed: 51ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: Codex, Claude Code, GitHub Copilot, and canonical Agent Skills consumers can install
-the same five minimal Rizz bridge skills at user scope. Preview is non-mutating, identical content is
-idempotent, conflicting user content is preserved, successful writes are byte-verified, and the
-repository remains unchanged.
+Current verdict: Rizz now bounds opt-in work with an isolated single-agent-default policy and
+expiring leases, rejects exhausted capacity, and reclaims stale leases. Sanitized exact context is
+content-addressed and byte-verified; compaction falls back to that exact object on evidence gaps.
+Per-work resource observations remain local, and every CLI operation leaves the repository unchanged.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

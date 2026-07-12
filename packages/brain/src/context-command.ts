@@ -9,6 +9,13 @@ import {
   startLoopWork,
 } from './context-loop.js';
 import {
+  type ResourcePolicy,
+  acquireResourceLease,
+  configureResourcePolicy,
+  readResourceStatus,
+  releaseResourceLease,
+} from './resource-governance.js';
+import {
   applyVaultImport,
   inspectVault,
   previewVaultImport,
@@ -110,6 +117,76 @@ function nextLoopAction(status: string): string {
   }
 }
 
+async function executeResourceCommand(
+  rootDir: string,
+  args: readonly string[],
+  wantsJson: boolean,
+): Promise<ContextCommandResult> {
+  const action = args[1];
+  if (action === 'status' && args.length === 2) {
+    const result = await readResourceStatus({ rootDir });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
+  if (action === 'lease') {
+    const work = flag(args.slice(2), '--work-id');
+    const agent = flag(work.rest, '--agent');
+    if (work.missing || agent.missing || work.value === undefined || agent.value === undefined) {
+      return failed('RESOURCE_LEASE_USAGE', 'Resource lease needs --work-id and --agent.');
+    }
+    if (agent.rest.length > 0)
+      return failed('RESOURCE_OPTION_UNKNOWN', `Unknown option '${agent.rest[0]}'.`);
+    const result = await acquireResourceLease({ rootDir, workId: work.value, agent: agent.value });
+    return result.ok
+      ? rendered(result.value, wantsJson, `rizz resource lease ${result.value.lease_id}`)
+      : resultError(result);
+  }
+  if (action === 'release') {
+    const lease = flag(args.slice(2), '--lease-id');
+    if (lease.missing || lease.value === undefined || lease.rest.length > 0) {
+      return failed('RESOURCE_RELEASE_USAGE', 'Resource release needs --lease-id.');
+    }
+    const result = await releaseResourceLease({ rootDir, leaseId: lease.value });
+    return result.ok
+      ? rendered(result.value, wantsJson, `rizz resource released ${result.value.released}`)
+      : resultError(result);
+  }
+  if (action === 'configure') {
+    const mapping = [
+      ['--max-agents', 'max_concurrent_agents'],
+      ['--context-bytes', 'max_context_bytes'],
+      ['--lease-ms', 'lease_ms'],
+      ['--command-ms', 'max_command_ms'],
+      ['--provider-cents', 'max_provider_cost_cents'],
+    ] as const;
+    let rest: readonly string[] = args.slice(2);
+    const policy: { -readonly [Key in keyof ResourcePolicy]?: number } = {};
+    for (const [option, field] of mapping) {
+      const parsed = flag(rest, option);
+      if (parsed.missing) return failed('RESOURCE_FLAG_VALUE_REQUIRED', `${option} needs a value.`);
+      if (parsed.value !== undefined) {
+        const value = Number(parsed.value);
+        if (!Number.isInteger(value))
+          return failed('RESOURCE_FLAG_INVALID', `${option} must be an integer.`);
+        policy[field] = value;
+      }
+      rest = parsed.rest;
+    }
+    if (rest.length > 0) return failed('RESOURCE_OPTION_UNKNOWN', `Unknown option '${rest[0]}'.`);
+    if (Object.keys(policy).length === 0)
+      return failed('RESOURCE_POLICY_REQUIRED', 'Configure needs at least one policy flag.');
+    const result = await configureResourcePolicy({ rootDir, policy });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
+  return failed(
+    'RESOURCE_ACTION_UNKNOWN',
+    'Resources supports status, configure, lease, and release.',
+  );
+}
+
 async function executeVaultCommand(
   rootDir: string,
   args: readonly string[],
@@ -166,6 +243,7 @@ export async function executeContextCommand(options: {
       stderr: '',
     };
   }
+  if (args[0] === 'resources') return executeResourceCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
     const task = args.slice(1).join(' ').trim();

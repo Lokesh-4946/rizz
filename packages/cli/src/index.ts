@@ -22,7 +22,7 @@ const USAGE = `rizz - prepare software for AI development
 
 Usage:
   rizz prepare | brain | brief <task> | review | explain <target>
-  rizz loop <action> | vault <action> | agents <action>
+  rizz loop <action> | vault <action> | agents <action> | resources <action>
   rizz project relink [id]
   rizz mcp | --json | --rpc
   rizz chat | setup | doctor | verify add | approve signoff|revoke
@@ -672,7 +672,8 @@ async function main(argv: readonly string[]): Promise<number> {
     c.rest[0] === 'brief' ||
     c.rest[0] === 'loop' ||
     c.rest[0] === 'vault' ||
-    c.rest[0] === 'agents'
+    c.rest[0] === 'agents' ||
+    c.rest[0] === 'resources'
   ) {
     const { executeContextCommand } = await import('@valoir/rizz-brain');
     const result = await executeContextCommand({ rootDir: process.cwd(), args: c.rest });
