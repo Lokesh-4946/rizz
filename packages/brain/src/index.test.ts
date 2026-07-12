@@ -103,6 +103,24 @@ async function setAskReadiness(
 }
 
 describe('project brain generation', () => {
+  it('writes artifacts to an explicit external output directory without touching the repository', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rizz-brain-external-'));
+    const outputDir = await mkdtemp(join(tmpdir(), 'rizz-brain-output-'));
+    try {
+      await writeFile(join(dir, 'package.json'), '{"name":"external-output"}\n', 'utf8');
+
+      const result = await generateProjectBrain({ rootDir: dir, outputDir });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.brainDir).toBe(join(outputDir, 'brain'));
+      expect(await fileExists(join(outputDir, 'brain', 'latest.json'))).toBe(true);
+      expect(await fileExists(join(dir, '.rizz'))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
   it('prioritizes manifests, configs, and tests before content-heavy trees under scan caps', async () => {
     await withTempProject(async (dir) => {
       await mkdir(join(dir, 'aaa-content'), { recursive: true });

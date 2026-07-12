@@ -11,6 +11,8 @@ evidence close to the source files.
 
 The current `0.3.1` product surface is:
 
+- `rizz prepare` isolated project intelligence under the platform user-data directory without
+  changing repository files or Git status
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
@@ -51,10 +53,18 @@ npm install -g @valoir/rizz
 Then run:
 
 ```sh
-rizz
+rizz prepare
 ```
 
-`rizz` scans the current repository and writes:
+`rizz prepare` is the Agent OS migration path. It scans the current repository read-only and writes
+the registry, project identity, brain, research, and reports outside the repository. Set
+`RIZZ_HOME` only when automation needs an explicit external data root.
+
+Legacy `rizz`, `rizz brain`, review, ask, and explain commands still use repository-local `.rizz`
+artifacts in 0.3.1. They are being migrated to the isolated project store in subsequent Agent OS
+batons; use `rizz prepare` when repository non-mutation is required.
+
+The legacy commands write:
 
 ```text
 .rizz/brain/latest.json

@@ -24,7 +24,8 @@ const VERSION = '0.3.1';
 const USAGE = `rizz - understand a software system
 
 Usage:
-  rizz               generate .rizz/brain and .rizz/reports
+  rizz prepare       prepare isolated intelligence outside the repository
+  rizz               generate .rizz/brain and .rizz/reports (legacy)
   rizz brain         refresh project brain
   rizz ask <q>       answer a gated Project Intelligence question from the local brain
   rizz explain <x>   explain a component or file from the project brain
@@ -149,6 +150,28 @@ async function runBrainCommand(): Promise<number> {
   process.stdout.write(`  tests: ${summary.tests}\n`);
   process.stdout.write(`  changed: ${summary.changedFiles}\n`);
   process.stdout.write(`  stale: ${summary.staleFiles}\n`);
+  return 0;
+}
+
+async function runPrepareCommand(): Promise<number> {
+  const { prepareRepository } = await import('@valoir/rizz-brain');
+  const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
+  if (!maxFiles.ok) {
+    process.stderr.write(`rizz: ${maxFiles.error}\n`);
+    return 2;
+  }
+  const result = await prepareRepository({
+    rootDir: process.cwd(),
+    ...(maxFiles.value === undefined ? {} : { maxFiles: maxFiles.value }),
+  });
+  if (!result.ok) {
+    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    return 1;
+  }
+  const { project, brain } = result.value;
+  process.stdout.write(`rizz prepared ${brain.scannedFiles} file(s)\n`);
+  process.stdout.write(`  project: ${project.projectId}\n`);
+  process.stdout.write(`  workspace: ${project.projectDir}\n`);
   return 0;
 }
 
@@ -967,6 +990,8 @@ async function main(argv: readonly string[]): Promise<number> {
   if (c.rest.includes('--json')) return runJson(select);
   const arg = rest[0];
   switch (arg) {
+    case 'prepare':
+      return runPrepareCommand();
     case 'understand':
     case 'brain':
     case 'report':
