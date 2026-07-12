@@ -3297,6 +3297,53 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz brief and loop expose isolated JSON continuity without repository writes',
+      run() {
+        withTempDirSync('rizz-context-loop-smoke-', (dir) => {
+          writeFileSync(join(dir, 'package.json'), '{"name":"context-loop-smoke"}\n');
+          writeFileSync(join(dir, 'hero.ts'), 'export const hero = true;\n');
+          gitInCwd(dir, ['init', '-q']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(dir, ['add', '.']);
+          gitInCwd(dir, ['commit', '-qm', 'init']);
+          const filesBefore = readdirSync(dir).sort();
+          const { results } = runExternalCliSequenceSync(dir, [
+            ['brain'],
+            ['brief', 'Update Hero', '--json'],
+            ['loop', 'start', '--task', 'Update Hero', '--agent', 'codex', '--json'],
+            ['loop', 'checkpoint', '--summary', 'Inspected Hero', '--sequence', '1', '--json'],
+            [
+              'loop',
+              'handoff',
+              '--summary',
+              'Ready',
+              '--next-baton',
+              'Verify Hero',
+              '--sequence',
+              '2',
+              '--json',
+            ],
+            ['loop', 'complete', '--summary', 'Verified', '--sequence', '3', '--json'],
+          ]);
+          for (const result of results) {
+            assert(result.status === 0, `context/loop command failed: ${result.stderr}`);
+          }
+          const brief = JSON.parse(results[1].stdout);
+          const completed = JSON.parse(results[5].stdout);
+          assert(brief.repository_revision.length === 40, 'brief missed repository revision');
+          assert(brief.claims.length > 0, 'brief missed evidence-backed claims');
+          assert(completed.status === 'completed', 'loop did not complete');
+          assert(completed.sequence === 4, 'loop sequence did not advance deterministically');
+          assert(!existsSync(join(dir, '.rizz')), 'context loop created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'context loop changed repository files',
+          );
+        });
+      },
+    },
+    {
       name: 'bare rizz writes isolated project brain without changing the repository',
       run() {
         withTempDirSync('rizz-bare-brain-smoke-', (dir) => {

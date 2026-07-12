@@ -59,9 +59,10 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice completes explicit human-approval lifecycle controls. Signoff can carry an exact
-ISO expiry, expired approvals cannot make a review release-ready, and `rizz approve revoke` records
-a human-authored reason while preserving signed and revoked audit history.
+The current slice adds the first model-independent Agent OS continuity contract: bounded task briefs
+carry repository revision, project identity, evidence citations, omissions, and stale warnings;
+sequence-guarded loop state records agent, scope, checkpoints, verification/review phases,
+completion, and durable handoffs outside the repository.
 
 ## Capability Scorecard
 
@@ -82,29 +83,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/project-relink-identity`, explicit move/reclone recovery and project identity UAT.
+Run: `feature/context-compiler-loop`, revision-stamped task briefs and isolated loop continuity.
 
 | Check | Result |
 | --- | ---: |
-| Focused project registry and relink tests | 9/9 passed |
+| Focused context compiler and loop tests | 8/8 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 403/403 passed |
+| Full unit suite | 411/411 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 14/14 passed, including explicit relink with unchanged repository files |
+| CLI process smoke | 15/15 passed, including brief/loop JSON continuity and unchanged repository files |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,379 bytes |
-| Footprint | Passed: 50ms cold start, 200KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,503 bytes |
+| Footprint | Passed: 51ms cold start, 200KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: moved remote-backed and local-only Git repositories cannot silently create a second
-identity after the old path disappears. `rizz project relink` reconnects the existing workspace;
-live clones remain isolated, ambiguous/live-source relinks require explicit project selection, and
-legacy registry entries remain recoverable by ID.
+Current verdict: Codex, Claude, Copilot, or any shell-capable agent can consume the same deterministic
+task packet and record guarded continuity without project-local Rizz files. Claims remain bounded
+and cited; missing preparation, stale writers, duplicate starts, and unsupported task context fail
+explicitly.
 
 ## Latest Alembic Real-Repo UAT
 
