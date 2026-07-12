@@ -3258,6 +3258,52 @@ async function runHeadlessSmoke() {
           );
           assert(enabled.status === 0, enabled.stderr);
           assert(JSON.parse(enabled.stdout).agents[0] === 'codex', 'skill enablement mismatch');
+          writeFileSync(
+            join(source, 'SKILL.md'),
+            '---\nname: review-loop\ndescription: Review changes with exact evidence.\n---\n',
+          );
+          writeFileSync(join(source, 'examples.md'), '# Evidence example\n');
+          spawnSync('git', ['add', '.'], { cwd: repository });
+          spawnSync('git', ['commit', '-qm', 'skill update'], { cwd: repository });
+          const updateRevision = spawnSync('git', ['rev-parse', 'HEAD'], {
+            cwd: repository,
+            encoding: 'utf8',
+          }).stdout.trim();
+          const previewed = spawnSync(
+            process.execPath,
+            [cliBin, 'skills', 'update', source, '--pin', updateRevision, '--preview', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(previewed.status === 0, previewed.stderr);
+          assert(
+            JSON.parse(previewed.stdout).files.added[0] === 'examples.md',
+            'skill preview mismatch',
+          );
+          const updated = spawnSync(
+            process.execPath,
+            [
+              cliBin,
+              'skills',
+              'update',
+              source,
+              '--pin',
+              updateRevision,
+              '--apply',
+              '--approve',
+              '--json',
+            ],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(
+            updated.status === 0 && JSON.parse(updated.stdout).project_updated,
+            updated.stderr,
+          );
+          const removed = spawnSync(
+            process.execPath,
+            [cliBin, 'skills', 'remove', 'review-loop', '--approve', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(removed.status === 0 && JSON.parse(removed.stdout).removed, removed.stderr);
           const after = spawnSync('git', ['status', '--porcelain'], {
             cwd: repoRoot,
             encoding: 'utf8',

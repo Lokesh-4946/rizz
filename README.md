@@ -206,6 +206,19 @@ revision, audit posture, requirements, and selected agents under `<project-works
 Enabled skills are projected into `rizz brief` packets so connected agents can select relevant
 capabilities without reading another project or installing anything into the repository.
 
+Preview every upstream change before applying it, and remove only Rizz-owned project selection:
+
+```sh
+rizz skills update /path/to/skill --pin <git-sha> --preview --json
+rizz skills update /path/to/skill --pin <git-sha> --apply --approve --json
+rizz skills remove review-evidence --approve --json
+```
+
+Preview reports added, changed, and removed files without writing. Apply retains the old immutable
+cache object for rollback, updates the global pin, and refreshes current-project enablement while
+preserving selected agents. Removal deletes only the Rizz-owned project manifest entry, records an
+isolated history event, preserves the global cache, and refuses user-owned state.
+
 ## Connect Any MCP Agent
 
 Run the model-independent local server from the project checkout:

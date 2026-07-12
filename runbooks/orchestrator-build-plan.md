@@ -49,6 +49,7 @@ Current loop readiness:
 | Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
 | Audited upstream skill cache | Pin inspected skill content without execution or project enablement. | Shipped foundation: exact revision, digest, license, requirements, explicit approval. |
 | Project skill enablement | Select compatible pinned skills without repository installation. | Shipped foundation: project-isolated manifest, cache verification, explicit approval, brief projection. |
+| Skill update/removal lifecycle | Preview changes, retain rollback objects, and remove only owned enablement. | Shipped foundation: file-exact preview, approved apply, ownership guard, isolated history. |
 
 ## Resource Governance Tracker
 
@@ -107,29 +108,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/project-skill-enablement`, next track milestone 2: isolated skill enablement.
+Run: `feature/skill-lifecycle`, next track milestone 3: previewed update and owned removal.
 
 | Check | Result |
 | --- | ---: |
-| Focused enablement and context tests | 14/14 passed |
+| Focused skill lifecycle tests | 4/4 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 442/442 passed |
+| Full unit suite | 446/446 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,794 bytes |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,832 bytes |
 | Footprint | Passed: 55ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: an explicitly approved project can select a pinned skill only for compatible agents
-after its global cache digest is re-verified. The Rizz-owned enablement manifest remains isolated per
-project, similar repositories cannot share selection accidentally, and bounded task briefs expose
-only skill identity, digest, agents, and permission requirements—not private or executable content.
+Current verdict: skill updates have a read-only, file-exact preview and an explicit apply boundary.
+Apply retains the prior immutable cache for rollback and preserves current-project agent selection.
+Removal affects only Rizz-owned project enablement, records isolated history, preserves the global
+pin/cache, rejects foreign ownership, and never changes repository or user-agent files.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

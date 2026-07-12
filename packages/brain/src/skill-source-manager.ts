@@ -330,38 +330,8 @@ export async function addPinnedSkill(
         message: 'Pinned skill installation requires explicit approval.',
       },
     };
-  const audited = await auditSkillSource(options);
+  const audited = await inspectPinnedSkillCandidate(options);
   if (!audited.ok) return audited;
-  if (audited.value.revision !== options.revision) {
-    return {
-      ok: false,
-      error: {
-        code: 'SKILL_REVISION_MISMATCH',
-        message: 'Requested pin does not match the checked-out source revision.',
-      },
-    };
-  }
-  const repositoryRoot = git(audited.value.source_dir, ['rev-parse', '--show-toplevel']);
-  if (repositoryRoot === null)
-    return {
-      ok: false,
-      error: { code: 'SKILL_GIT_REQUIRED', message: 'Skill source must belong to Git.' },
-    };
-  const relativeSource = relative(repositoryRoot, audited.value.source_dir);
-  const dirty = git(audited.value.source_dir, [
-    'status',
-    '--porcelain',
-    '--',
-    `:(top)${relativeSource}`,
-  ]);
-  if (dirty !== null)
-    return {
-      ok: false,
-      error: {
-        code: 'SKILL_SOURCE_DIRTY',
-        message: 'Pinned skill source contains changes outside the requested revision.',
-      },
-    };
   const base = join(options.rizzHome, 'global', 'skills');
   const cacheDir = join(base, 'cache', audited.value.digest);
   await mkdir(cacheDir, { recursive: true });
@@ -447,4 +417,62 @@ export async function verifyPinnedSkillCache(options: {
   } catch (error) {
     return failure(error);
   }
+}
+
+export async function listPinnedSkillFiles(options: {
+  readonly record: PinnedSkillRecord;
+}): Promise<SkillResult<readonly SkillFile[]>> {
+  const verified = await verifyPinnedSkillCache(options);
+  if (!verified.ok) return verified;
+  const files = await sourceFiles(options.record.cache_dir);
+  return {
+    ok: true,
+    value: files.map((file) => ({
+      path: file.path,
+      bytes: file.content.byteLength,
+      digest: createHash('sha256').update(file.content).digest('hex'),
+    })),
+  };
+}
+
+export async function inspectPinnedSkillCandidate(
+  options: SourceOptions & {
+    readonly revision: string;
+  },
+): Promise<SkillResult<SkillAudit>> {
+  const audited = await auditSkillSource(options);
+  if (!audited.ok) return audited;
+  if (audited.value.revision !== options.revision) {
+    return {
+      ok: false,
+      error: {
+        code: 'SKILL_REVISION_MISMATCH',
+        message: 'Requested pin does not match the checked-out source revision.',
+      },
+    };
+  }
+  const repositoryRoot = git(audited.value.source_dir, ['rev-parse', '--show-toplevel']);
+  if (repositoryRoot === null) {
+    return {
+      ok: false,
+      error: { code: 'SKILL_GIT_REQUIRED', message: 'Skill source must belong to Git.' },
+    };
+  }
+  const relativeSource = relative(repositoryRoot, audited.value.source_dir);
+  const dirty = git(audited.value.source_dir, [
+    'status',
+    '--porcelain',
+    '--',
+    `:(top)${relativeSource}`,
+  ]);
+  if (dirty !== null) {
+    return {
+      ok: false,
+      error: {
+        code: 'SKILL_SOURCE_DIRTY',
+        message: 'Pinned skill source contains changes outside the requested revision.',
+      },
+    };
+  }
+  return audited;
 }
