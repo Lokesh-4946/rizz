@@ -2904,6 +2904,7 @@ function runExternalCliSequenceSync(cwd, commands) {
     const projectDir = Object.values(registry.projects)[0].project_dir;
     return {
       results,
+      vaultManifestExists: existsSync(join(projectDir, 'history', 'vault-import.json')),
       reviewExists: existsSync(join(projectDir, 'research', 'review_eval.json')),
       verificationExists: existsSync(join(projectDir, 'research', 'verification_evidence.json')),
       explainExists: readdirSync(join(projectDir, 'reports')).some((name) =>
@@ -3339,6 +3340,42 @@ async function runHeadlessSmoke() {
           assert(
             JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
             'context loop changed repository files',
+          );
+        });
+      },
+    },
+    {
+      name: 'rizz vault previews and imports planning state outside the repository',
+      run() {
+        withTempDirSync('rizz-vault-smoke-', (sandbox) => {
+          const target = join(sandbox, 'target');
+          const vault = join(sandbox, 'vault');
+          mkdirSync(target);
+          mkdirSync(vault);
+          writeFileSync(join(target, 'package.json'), '{"name":"vault-target"}\n');
+          writeFileSync(join(vault, 'product.md'), '# Product\n\nSubstantial work only.\n');
+          gitInCwd(target, ['init', '-q']);
+          gitInCwd(target, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(target, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(target, ['add', '.']);
+          gitInCwd(target, ['commit', '-qm', 'init']);
+          const { results, vaultManifestExists } = runExternalCliSequenceSync(target, [
+            ['vault', 'inspect', vault, '--json'],
+            ['vault', 'import', vault, '--preview', '--json'],
+            ['vault', 'import', vault, '--apply', '--json'],
+            ['vault', 'reconcile', '--json'],
+          ]);
+          for (const result of results) {
+            assert(result.status === 0, `vault command failed: ${result.stderr}`);
+          }
+          const preview = JSON.parse(results[1].stdout);
+          assert(preview.mode === 'copy', 'vault preview did not use copy mode');
+          assert(vaultManifestExists, 'vault apply missed external manifest');
+          assert(!existsSync(join(target, '.rizz')), 'vault import created repository-local state');
+          assert(
+            spawnSync('git', ['status', '--porcelain'], { cwd: target, encoding: 'utf8' })
+              .stdout === '',
+            'vault import changed repository Git status',
           );
         });
       },

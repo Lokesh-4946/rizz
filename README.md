@@ -17,6 +17,8 @@ The current `0.3.1` product surface is:
   evidence gaps
 - `rizz loop ...` isolated work continuity for starts, checkpoints, verification, review,
   completion, handoffs, and next-action discovery
+- `rizz vault inspect/import/reconcile` previewed migration of existing Markdown product knowledge
+  into the isolated project workspace
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
@@ -135,6 +137,26 @@ rizz loop next --json
 
 Sequence checks reject stale writers. State and handoffs are atomic, byte-verified files under
 `<project-workspace>/loop/` and `<project-workspace>/handoffs/`; Git status remains unchanged.
+
+## Import An Existing Product Vault
+
+Inspect and preview before copying anything:
+
+```sh
+rizz vault inspect "/path/to/vault" --json
+rizz vault import "/path/to/vault" --preview --json
+rizz vault import "/path/to/vault" --apply --json
+rizz vault reconcile --json
+```
+
+Rizz reads the source vault without modifying it, classifies bounded Markdown documents, and reports
+duplicate claims, conflicting names, stale absolute paths, and redacted secret-like findings. Apply
+copies only into the isolated project workspace and creates product principles plus sprint, backlog,
+and evidence-oriented work-board documents. Secret-bearing previews are blocked from apply.
+
+The governing product principle is explicit in the generated local tracker: Rizz prevents agent
+slop by requiring scoped intent, evidence-backed context, verification, review, and durable handoff
+so developers can ship substantial, inspectable work.
 
 By default, the scanner skips generated output, local agent operating folders, package archives,
 binary media, private env files, key material, and TypeScript build-info. Add a root `.rizzignore`

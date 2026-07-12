@@ -53,6 +53,12 @@ recover the current project state without depending on a hidden chat transcript.
 <project-workspace>/reports/review.html
 <project-workspace>/loop/state.json
 <project-workspace>/handoffs/<work-id>.md
+<project-workspace>/product/current.md
+<project-workspace>/product/principles.md
+<project-workspace>/planning/sprint.md
+<project-workspace>/planning/backlog.md
+<project-workspace>/planning/board.md
+<project-workspace>/history/vault-import.json
 ```
 
 `latest.json` is the front door. It summarizes the latest architecture summary, component map, flow
@@ -85,6 +91,13 @@ records the project ID, current repository revision, brain generation time, exac
 references, omitted claim count, evidence gaps, and stale-evidence warnings. `rizz loop` records the
 active work item and sequence-guarded checkpoints in the isolated workspace; it never writes agent
 state into the repository.
+
+`rizz vault inspect`, `rizz vault import --preview`, `rizz vault import --apply`, and
+`rizz vault reconcile` migrate existing Markdown product knowledge without changing its source.
+Classification, duplicate claims, naming conflicts, stale absolute paths, and secret-like surfaces
+are previewed before byte-verified copy into this project workspace. The planning board tracks agent,
+evidence, verification, review, and PR state so completion means substantial proof, not generated
+output alone.
 
 ## Research Artifacts
 

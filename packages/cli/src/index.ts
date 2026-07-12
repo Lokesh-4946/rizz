@@ -25,6 +25,7 @@ Usage:
   rizz project relink [id]      reconnect a moved repository
   rizz brief <task> [--json]    compile an evidence-backed packet
   rizz loop <action> [--json]   manage isolated work continuity
+  rizz vault <action> [--json]  inspect or import a product vault
   rizz | brain                  refresh project intelligence
   rizz ask <question>           query the local brain
   rizz explain <target>         explain a file, component, flow, or service
@@ -662,7 +663,7 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
-  if (c.rest[0] === 'brief' || c.rest[0] === 'loop') {
+  if (c.rest[0] === 'brief' || c.rest[0] === 'loop' || c.rest[0] === 'vault') {
     const { executeContextCommand } = await import('@valoir/rizz-brain');
     const result = await executeContextCommand({ rootDir: process.cwd(), args: c.rest });
     if (result.stdout !== '') await writeStdout(result.stdout);
