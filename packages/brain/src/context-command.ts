@@ -6,6 +6,12 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import {
+  applyVaultImport,
+  inspectVault,
+  previewVaultImport,
+  reconcileVaultImport,
+} from './vault-import.js';
 
 export interface ContextCommandResult {
   readonly exitCode: number;
@@ -102,12 +108,52 @@ function nextLoopAction(status: string): string {
   }
 }
 
+async function executeVaultCommand(
+  rootDir: string,
+  args: readonly string[],
+  wantsJson: boolean,
+): Promise<ContextCommandResult> {
+  const action = args[1];
+  if (action === 'inspect') {
+    const sourceDir = args[2];
+    if (sourceDir === undefined || args.length !== 3)
+      return failed('VAULT_SOURCE_REQUIRED', 'Vault inspect needs one source directory.');
+    const result = await inspectVault({ sourceDir });
+    if (!result.ok) return resultError(result);
+    return rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2));
+  }
+  if (action === 'import') {
+    const sourceDir = args[2];
+    const mode = args[3];
+    if (
+      sourceDir === undefined ||
+      (mode !== '--preview' && mode !== '--apply') ||
+      args.length !== 4
+    ) {
+      return failed('VAULT_IMPORT_USAGE', 'Use vault import <source> --preview or --apply.');
+    }
+    const result =
+      mode === '--apply'
+        ? await applyVaultImport({ rootDir, sourceDir })
+        : await previewVaultImport({ rootDir, sourceDir });
+    if (!result.ok) return resultError(result);
+    return rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2));
+  }
+  if (action === 'reconcile' && args.length === 2) {
+    const result = await reconcileVaultImport({ rootDir });
+    if (!result.ok) return resultError(result);
+    return rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2));
+  }
+  return failed('VAULT_ACTION_UNKNOWN', 'Vault supports inspect, import, and reconcile.');
+}
+
 export async function executeContextCommand(options: {
   readonly rootDir: string;
   readonly args: readonly string[];
 }): Promise<ContextCommandResult> {
   const wantsJson = options.args.includes('--json');
   const args = options.args.filter((arg) => arg !== '--json');
+  if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
     const task = args.slice(1).join(' ').trim();
     if (task === '') return failed('BRIEF_TASK_REQUIRED', 'Brief needs a task.');

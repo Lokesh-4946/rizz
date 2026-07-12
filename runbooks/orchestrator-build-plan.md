@@ -59,10 +59,10 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice adds the first model-independent Agent OS continuity contract: bounded task briefs
-carry repository revision, project identity, evidence citations, omissions, and stale warnings;
-sequence-guarded loop state records agent, scope, checkpoints, verification/review phases,
-completion, and durable handoffs outside the repository.
+The current slice imports existing product/planning knowledge through an explicit inspect, preview,
+apply, and reconcile boundary. The external tracker makes the product rule measurable: Rizz prevents
+agent slop by requiring scoped intent, cited evidence, verification, review, and durable handoff so
+developers ship substantial, inspectable work.
 
 ## Capability Scorecard
 
@@ -83,29 +83,35 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/context-compiler-loop`, revision-stamped task briefs and isolated loop continuity.
+Run: `feature/vault-import-planning`, previewed vault import and external product tracker.
 
 | Check | Result |
 | --- | ---: |
-| Focused context compiler and loop tests | 8/8 passed |
+| Focused vault import and planning tests | 5/5 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 411/411 passed |
+| Full unit suite | 416/416 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 15/15 passed, including brief/loop JSON continuity and unchanged repository files |
+| CLI process smoke | 16/16 passed, including external-only vault inspect/preview/apply/reconcile |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,503 bytes |
-| Footprint | Passed: 51ms cold start, 200KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,538 bytes |
+| Footprint | Passed: 51ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: Codex, Claude, Copilot, or any shell-capable agent can consume the same deterministic
-task packet and record guarded continuity without project-local Rizz files. Claims remain bounded
-and cited; missing preparation, stale writers, duplicate starts, and unsupported task context fail
-explicitly.
+Current verdict: existing Markdown product vaults can be inspected and previewed without source
+mutation, then copied only into the isolated project workspace. The generated board tracks evidence,
+verification, review, agent, and PR state; secret-like material blocks apply, while reconciliation
+reports later source drift without silently overwriting accepted local planning state.
+
+Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
+documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The
+preview reported 1,657 duplicate claims, 28 naming conflicts, 408 stale absolute paths, and 4
+redacted secret-like findings; apply was intentionally not attempted because reconciliation is
+required.
 
 ## Latest Alembic Real-Repo UAT
 
