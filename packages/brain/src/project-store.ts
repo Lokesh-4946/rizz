@@ -13,6 +13,7 @@ export interface ProjectStore {
   readonly reportsDir: string;
   readonly rootPath: string;
   readonly remoteIdentity: string | null;
+  readonly repositoryFingerprint: string;
 }
 
 export type PrepareProjectStoreResult =
@@ -23,6 +24,8 @@ interface ProjectRegistryEntry {
   readonly root_path: string;
   readonly remote_identity: string | null;
   readonly project_dir: string;
+  readonly repository_fingerprint?: string;
+  readonly root_fingerprint?: string;
 }
 
 interface ProjectRegistry {
@@ -83,6 +86,25 @@ function gitRemote(rootDir: string): string | null {
   return value === '' ? null : value;
 }
 
+function repositoryFingerprint(rootDir: string): string {
+  const result = spawnSync('git', ['rev-list', '--max-parents=0', '--all'], {
+    cwd: rootDir,
+    encoding: 'utf8',
+  });
+  const roots = result.status === 0 ? result.stdout.trim().split(/\s+/).filter(Boolean).sort() : [];
+  const identity = roots.length === 0 ? `unborn\0${rootDir}` : `roots\0${roots.join('\0')}`;
+  return createHash('sha256').update(identity).digest('hex');
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await realpath(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readRegistry(path: string): Promise<ProjectRegistry> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
@@ -130,6 +152,77 @@ async function acquireRegistryLock(rizzHome: string): Promise<() => Promise<void
   throw new Error(`timed out acquiring project registry lock: ${lockPath}`);
 }
 
+const PROJECT_DIRECTORIES = [
+  'product',
+  'planning',
+  'brain',
+  'governance',
+  'loop',
+  'work',
+  'handoffs',
+  'evidence',
+  'reviews',
+  'skills',
+  'cache',
+  'history',
+  'research',
+  'reports',
+] as const;
+
+function projectStore(
+  projectId: string,
+  entry: ProjectRegistryEntry,
+  repositoryId: string,
+): ProjectStore {
+  return {
+    projectId,
+    projectDir: entry.project_dir,
+    brainDir: join(entry.project_dir, 'brain'),
+    researchDir: join(entry.project_dir, 'research'),
+    reportsDir: join(entry.project_dir, 'reports'),
+    rootPath: entry.root_path,
+    remoteIdentity: entry.remote_identity,
+    repositoryFingerprint: repositoryId,
+  };
+}
+
+async function writeProjectMetadata(
+  store: ProjectStore,
+  entry: ProjectRegistryEntry,
+): Promise<void> {
+  await Promise.all(
+    PROJECT_DIRECTORIES.map((directory) =>
+      mkdir(join(store.projectDir, directory), { recursive: true }),
+    ),
+  );
+  await writeVerified(
+    join(store.projectDir, 'project.json'),
+    `${JSON.stringify(
+      {
+        schema_version: 1,
+        project_id: store.projectId,
+        name: basename(store.rootPath),
+        ...entry,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+function matchesRepository(
+  entry: ProjectRegistryEntry,
+  remoteIdentity: string | null,
+  repositoryId: string,
+): boolean {
+  if (remoteIdentity !== null) return entry.remote_identity === remoteIdentity;
+  return (
+    entry.remote_identity === null &&
+    entry.repository_fingerprint !== undefined &&
+    entry.repository_fingerprint === repositoryId
+  );
+}
+
 export async function prepareProjectStore(options: {
   readonly rootDir: string;
   readonly rizzHome?: string;
@@ -140,68 +233,160 @@ export async function prepareProjectStore(options: {
     const rizzHome = options.rizzHome ?? resolveRizzHome();
     const rawRemote = options.remote === undefined ? gitRemote(rootPath) : options.remote;
     const remoteIdentity = rawRemote === null ? null : normalizeGitRemote(rawRemote);
+    const repositoryId = repositoryFingerprint(rootPath);
     const rootFingerprint = createHash('sha256').update(rootPath).digest('hex');
-    const identity = `${remoteIdentity ?? 'local'}\0${rootFingerprint}`;
-    const projectId = createHash('sha256').update(identity).digest('hex').slice(0, 24);
-    const projectDir = join(rizzHome, 'projects', projectId);
-    const directories = [
-      'product',
-      'planning',
-      'brain',
-      'governance',
-      'loop',
-      'work',
-      'handoffs',
-      'evidence',
-      'reviews',
-      'skills',
-      'cache',
-      'history',
-      'research',
-      'reports',
-    ];
     await Promise.all([
       mkdir(join(rizzHome, 'global', 'skills'), { recursive: true }),
       mkdir(join(rizzHome, 'global', 'adapters'), { recursive: true }),
-      ...directories.map((directory) => mkdir(join(projectDir, directory), { recursive: true })),
     ]);
-    const entry: ProjectRegistryEntry = {
-      root_path: rootPath,
-      remote_identity: remoteIdentity,
-      project_dir: projectDir,
-    };
-    await writeVerified(
-      join(projectDir, 'project.json'),
-      `${JSON.stringify({ schema_version: 1, project_id: projectId, name: basename(rootPath), ...entry }, null, 2)}\n`,
-    );
     const registryPath = join(rizzHome, 'registry.json');
     const releaseRegistryLock = await acquireRegistryLock(rizzHome);
     try {
       const registry = await readRegistry(registryPath);
+      const entries = Object.entries(registry.projects);
+      const exact = entries.find(
+        ([, entry]) => entry.root_path === rootPath && entry.remote_identity === remoteIdentity,
+      );
+      const staleMatches = [];
+      for (const candidate of entries) {
+        const [, entry] = candidate;
+        if (
+          entry.root_path !== rootPath &&
+          matchesRepository(entry, remoteIdentity, repositoryId) &&
+          !(await pathExists(entry.root_path))
+        ) {
+          staleMatches.push(candidate);
+        }
+      }
+      if (exact === undefined && staleMatches.length > 0) {
+        return {
+          ok: false,
+          error: {
+            code: 'PROJECT_RELINK_REQUIRED',
+            message: `This repository matches ${staleMatches.length} project workspace(s) whose registered path no longer exists. Run rizz project relink.`,
+          },
+        };
+      }
+      const identity = `${remoteIdentity ?? 'local'}\0${rootFingerprint}`;
+      const projectId =
+        exact?.[0] ?? createHash('sha256').update(identity).digest('hex').slice(0, 24);
+      const entry: ProjectRegistryEntry = {
+        root_path: rootPath,
+        remote_identity: remoteIdentity,
+        project_dir: exact?.[1].project_dir ?? join(rizzHome, 'projects', projectId),
+        repository_fingerprint: repositoryId,
+        root_fingerprint: rootFingerprint,
+      };
+      const store = projectStore(projectId, entry, repositoryId);
+      await writeProjectMetadata(store, entry);
       await writeVerified(
         registryPath,
         `${JSON.stringify({ schema_version: 1, projects: { ...registry.projects, [projectId]: entry } }, null, 2)}\n`,
       );
+      return { ok: true, value: store };
     } finally {
       await releaseRegistryLock();
     }
-    return {
-      ok: true,
-      value: {
-        projectId,
-        projectDir,
-        brainDir: join(projectDir, 'brain'),
-        researchDir: join(projectDir, 'research'),
-        reportsDir: join(projectDir, 'reports'),
-        rootPath,
-        remoteIdentity,
-      },
-    };
   } catch (error: unknown) {
     return {
       ok: false,
       error: {
         code: 'PROJECT_STORE_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+export async function relinkProjectStore(options: {
+  readonly rootDir: string;
+  readonly rizzHome?: string;
+  readonly remote?: string | null;
+  readonly projectId?: string;
+}): Promise<PrepareProjectStoreResult> {
+  try {
+    const rootPath = await realpath(options.rootDir);
+    const rizzHome = options.rizzHome ?? resolveRizzHome();
+    const rawRemote = options.remote === undefined ? gitRemote(rootPath) : options.remote;
+    const remoteIdentity = rawRemote === null ? null : normalizeGitRemote(rawRemote);
+    const repositoryId = repositoryFingerprint(rootPath);
+    const rootFingerprint = createHash('sha256').update(rootPath).digest('hex');
+    await mkdir(rizzHome, { recursive: true });
+    const registryPath = join(rizzHome, 'registry.json');
+    const releaseRegistryLock = await acquireRegistryLock(rizzHome);
+    try {
+      const registry = await readRegistry(registryPath);
+      const candidates = Object.entries(registry.projects).filter(
+        ([projectId, entry]) =>
+          (options.projectId === undefined || options.projectId === projectId) &&
+          (options.projectId !== undefined ||
+            matchesRepository(entry, remoteIdentity, repositoryId)),
+      );
+      const exact = candidates.find(([, entry]) => entry.root_path === rootPath);
+      if (exact !== undefined) {
+        return { ok: true, value: projectStore(exact[0], exact[1], repositoryId) };
+      }
+      if (candidates.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: 'PROJECT_RELINK_NOT_FOUND',
+            message: 'No registered project workspace matches this repository.',
+          },
+        };
+      }
+      if (candidates.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: 'PROJECT_RELINK_AMBIGUOUS',
+            message: `Multiple project workspaces match. Rerun with one of these project IDs: ${candidates.map(([id]) => id).join(', ')}.`,
+          },
+        };
+      }
+      const selected = candidates[0];
+      if (selected === undefined) {
+        return {
+          ok: false,
+          error: { code: 'PROJECT_RELINK_NOT_FOUND', message: 'No project workspace selected.' },
+        };
+      }
+      const [projectId, previous] = selected;
+      if ((await pathExists(previous.root_path)) && options.projectId === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: 'PROJECT_RELINK_SOURCE_ACTIVE',
+            message: `The registered path still exists: ${previous.root_path}. Pass its project ID only if replacing that registration is intentional.`,
+          },
+        };
+      }
+      const entry: ProjectRegistryEntry = {
+        ...previous,
+        root_path: rootPath,
+        remote_identity: remoteIdentity,
+        repository_fingerprint: repositoryId,
+        root_fingerprint: rootFingerprint,
+      };
+      const store = projectStore(projectId, entry, repositoryId);
+      await writeProjectMetadata(store, entry);
+      await writeVerified(
+        registryPath,
+        `${JSON.stringify(
+          { schema_version: 1, projects: { ...registry.projects, [projectId]: entry } },
+          null,
+          2,
+        )}\n`,
+      );
+      return { ok: true, value: store };
+    } finally {
+      await releaseRegistryLock();
+    }
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: 'PROJECT_RELINK_FAILED',
         message: error instanceof Error ? error.message : String(error),
       },
     };

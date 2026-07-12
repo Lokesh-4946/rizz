@@ -17,6 +17,11 @@ All intelligence commands use the isolated project store, including review, ask,
 verification, and approval. `<project-workspace>` below means the registered external project
 directory under the platform Rizz home. No generated brain path is repository-local.
 
+Repository moves are explicit. When the prior registered path is gone and the remote or root-commit
+fingerprint matches, ordinary commands return `PROJECT_RELINK_REQUIRED`. Run
+`rizz project relink`; pass the project ID as the optional positional argument only when Rizz reports
+multiple candidates. A second live clone keeps a separate project identity.
+
 It is intentionally local and deterministic. It does not require a provider key, model call, cloud
 account, Workspace Mode, or OS connector.
 

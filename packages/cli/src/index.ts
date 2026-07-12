@@ -25,7 +25,9 @@ const USAGE = `rizz - understand a software system
 
 Usage:
   rizz prepare       prepare isolated intelligence outside the repository
-  rizz               generate .rizz/brain and .rizz/reports (legacy)
+  rizz project relink
+                     reconnect a moved repository to its project workspace
+  rizz               generate isolated project intelligence
   rizz brain         refresh project brain
   rizz ask <q>       answer a gated Project Intelligence question from the local brain
   rizz explain <x>   explain a component or file from the project brain
@@ -56,6 +58,12 @@ function displayLocalPath(path: string): string {
   const local = relative(process.cwd(), path).replace(/\\/g, '/');
   if (local === '') return '.';
   return local.startsWith('..') ? path : local;
+}
+
+function writeResultError(result: {
+  readonly error: { readonly code: string; readonly message: string };
+}): void {
+  process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
 }
 
 function writeStdout(text: string): Promise<void> {
@@ -117,7 +125,7 @@ async function startTuiLazy(options: StartTuiOptions): Promise<void> {
   await startTui(options);
 }
 
-async function runBrainCommand(): Promise<number> {
+async function runBrainCommand(mode: 'brain' | 'prepare' = 'brain'): Promise<number> {
   const { prepareRepository } = await import('@valoir/rizz-brain');
   const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
   if (maxFiles.ok === false) {
@@ -127,22 +135,29 @@ async function runBrainCommand(): Promise<number> {
   const result = await prepareRepository({
     rootDir: process.cwd(),
     ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
-    onProgress: (progress) => {
-      const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
-      const detail = progress.detail === undefined ? '' : `/${progress.detail}`;
-      process.stderr.write(
-        `[rizz brain] ${progress.phase}${detail}: ${progress.message}${elapsed}\n`,
-      );
-    },
+    ...(mode === 'prepare'
+      ? {}
+      : {
+          onProgress: (progress) => {
+            const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
+            const detail = progress.detail === undefined ? '' : `/${progress.detail}`;
+            process.stderr.write(
+              `[rizz brain] ${progress.phase}${detail}: ${progress.message}${elapsed}\n`,
+            );
+          },
+        }),
   });
   if (!result.ok) {
-    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    writeResultError(result);
     return 1;
   }
   const summary = result.value.brain;
-  process.stdout.write(`rizz understood ${summary.scannedFiles} file(s)\n`);
+  process.stdout.write(
+    `rizz ${mode === 'prepare' ? 'prepared' : 'understood'} ${summary.scannedFiles} file(s)\n`,
+  );
   process.stdout.write(`  project: ${result.value.project.projectId}\n`);
   process.stdout.write(`  workspace: ${result.value.project.projectDir}\n`);
+  if (mode === 'prepare') return 0;
   process.stdout.write(`  components: ${summary.components}\n`);
   process.stdout.write(`  flows: ${summary.flows}\n`);
   process.stdout.write(`  commands: ${summary.commands}\n`);
@@ -152,25 +167,17 @@ async function runBrainCommand(): Promise<number> {
   return 0;
 }
 
-async function runPrepareCommand(): Promise<number> {
-  const { prepareRepository } = await import('@valoir/rizz-brain');
-  const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
-  if (!maxFiles.ok) {
-    process.stderr.write(`rizz: ${maxFiles.error}\n`);
-    return 2;
-  }
-  const result = await prepareRepository({
+async function runProjectRelinkCommand(projectId?: string): Promise<number> {
+  const { relinkProjectStore } = await import('@valoir/rizz-brain');
+  const result = await relinkProjectStore({
     rootDir: process.cwd(),
-    ...(maxFiles.value === undefined ? {} : { maxFiles: maxFiles.value }),
+    ...(projectId === undefined ? {} : { projectId }),
   });
   if (!result.ok) {
-    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    writeResultError(result);
     return 1;
   }
-  const { project, brain } = result.value;
-  process.stdout.write(`rizz prepared ${brain.scannedFiles} file(s)\n`);
-  process.stdout.write(`  project: ${project.projectId}\n`);
-  process.stdout.write(`  workspace: ${project.projectDir}\n`);
+  process.stdout.write(`rizz relinked project ${result.value.projectId}\n`);
   return 0;
 }
 
@@ -202,7 +209,7 @@ async function runReviewCommand(options: {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return 1;
   }
@@ -286,7 +293,7 @@ async function runVerifyAddCommand(options: {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return 1;
   }
@@ -359,7 +366,7 @@ async function finishApproveCommand(
 ): Promise<number> {
   if (!result.ok) {
     if (json) await writeJsonStdout(result);
-    else process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    else writeResultError(result);
     return result.error.code === 'SIGNOFF_NOT_READY' || result.error.code === 'SIGNOFF_NOT_ACTIVE'
       ? 1
       : 2;
@@ -389,7 +396,7 @@ async function runAskCommand(options: {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return result.error.code === 'ASK_UNSUPPORTED_QUESTION' ||
       result.error.code === 'ASK_QUESTION_REQUIRED' ||
@@ -434,7 +441,7 @@ async function runExplainCommand(options: {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return result.error.code === 'EXPLAIN_TARGET_REQUIRED' ? 2 : 1;
   }
@@ -614,7 +621,7 @@ async function runPrint(select: SelectOpts): Promise<number> {
     ...(resolved.model ? { model: resolved.model } : {}),
   });
   if (!result.ok) {
-    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    writeResultError(result);
     return 1;
   }
   process.stdout.write(`${result.value.content}\n`);
@@ -677,6 +684,14 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
+  if (c.rest[0] === 'project') {
+    const projectArgs = c.rest.slice(1);
+    if (projectArgs[0] !== 'relink' || projectArgs.length > 2) {
+      process.stderr.write("rizz: use 'rizz project relink [project-id]'\n");
+      return 2;
+    }
+    return runProjectRelinkCommand(projectArgs[1]);
+  }
   if (c.rest[0] === 'setup') {
     const { SETUP_USAGE, parseSetupArgs, runSetupDryRun, runSetupInteractive } = await import(
       './setup.js'
@@ -996,7 +1011,7 @@ async function main(argv: readonly string[]): Promise<number> {
   const arg = rest[0];
   switch (arg) {
     case 'prepare':
-      return runPrepareCommand();
+      return runBrainCommand('prepare');
     case 'understand':
     case 'brain':
     case 'report':

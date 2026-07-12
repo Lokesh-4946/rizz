@@ -1,8 +1,14 @@
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { normalizeGitRemote, prepareProjectStore, resolveRizzHome } from './project-store.js';
+import {
+  normalizeGitRemote,
+  prepareProjectStore,
+  relinkProjectStore,
+  resolveRizzHome,
+} from './project-store.js';
 
 const cleanup: string[] = [];
 
@@ -94,6 +100,100 @@ describe('project store', () => {
     expect(first.value.remoteIdentity).toBe(second.value.remoteIdentity);
     expect(first.value.projectId).not.toBe(second.value.projectId);
     expect(first.value.projectDir).not.toBe(second.value.projectDir);
+  });
+
+  it('requires an explicit relink when a registered repository path moved', async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), 'rizz-project-store-move-'));
+    cleanup.push(sandbox);
+    const rizzHome = join(sandbox, 'rizz-home');
+    const firstRoot = join(sandbox, 'before');
+    const movedRoot = join(sandbox, 'after');
+    const remote = 'git@github.com:valoir/moved-project.git';
+    await mkdir(firstRoot);
+    const first = await prepareProjectStore({ rootDir: firstRoot, rizzHome, remote });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await rename(firstRoot, movedRoot);
+
+    const blocked = await prepareProjectStore({ rootDir: movedRoot, rizzHome, remote });
+
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_RELINK_REQUIRED' },
+    });
+    expect(
+      Object.keys(JSON.parse(await readFile(join(rizzHome, 'registry.json'), 'utf8')).projects),
+    ).toHaveLength(1);
+
+    const relinked = await relinkProjectStore({ rootDir: movedRoot, rizzHome, remote });
+    expect(relinked.ok).toBe(true);
+    if (!relinked.ok) return;
+    expect(relinked.value.projectId).toBe(first.value.projectId);
+    expect(relinked.value.rootPath).toBe(await realpath(movedRoot));
+
+    const prepared = await prepareProjectStore({ rootDir: movedRoot, rizzHome, remote });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.value.projectId).toBe(first.value.projectId);
+  });
+
+  it('relinks a moved repository without a remote by its root commit fingerprint', async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), 'rizz-project-store-local-move-'));
+    cleanup.push(sandbox);
+    const rizzHome = join(sandbox, 'rizz-home');
+    const firstRoot = join(sandbox, 'before');
+    const movedRoot = join(sandbox, 'after');
+    await mkdir(firstRoot);
+    spawnSync('git', ['init', '-q'], { cwd: firstRoot });
+    spawnSync('git', ['config', 'user.email', 'rizz@example.com'], { cwd: firstRoot });
+    spawnSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: firstRoot });
+    await writeFile(join(firstRoot, 'README.md'), '# Local\n', 'utf8');
+    spawnSync('git', ['add', 'README.md'], { cwd: firstRoot });
+    spawnSync('git', ['commit', '-qm', 'initial'], { cwd: firstRoot });
+    const first = await prepareProjectStore({ rootDir: firstRoot, rizzHome, remote: null });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await rename(firstRoot, movedRoot);
+
+    await expect(
+      prepareProjectStore({ rootDir: movedRoot, rizzHome, remote: null }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'PROJECT_RELINK_REQUIRED' },
+    });
+    const relinked = await relinkProjectStore({ rootDir: movedRoot, rizzHome, remote: null });
+    expect(relinked.ok).toBe(true);
+    if (!relinked.ok) return;
+    expect(relinked.value.projectId).toBe(first.value.projectId);
+    expect(relinked.value.repositoryFingerprint).toBe(first.value.repositoryFingerprint);
+  });
+
+  it('uses an explicit project id to relink a legacy registry entry without a fingerprint', async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), 'rizz-project-store-legacy-move-'));
+    cleanup.push(sandbox);
+    const rizzHome = join(sandbox, 'rizz-home');
+    const firstRoot = join(sandbox, 'before');
+    const movedRoot = join(sandbox, 'after');
+    await mkdir(firstRoot);
+    const first = await prepareProjectStore({ rootDir: firstRoot, rizzHome, remote: null });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const registryPath = join(rizzHome, 'registry.json');
+    const registry = JSON.parse(await readFile(registryPath, 'utf8'));
+    Reflect.deleteProperty(registry.projects[first.value.projectId], 'repository_fingerprint');
+    await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`, 'utf8');
+    await rename(firstRoot, movedRoot);
+
+    const relinked = await relinkProjectStore({
+      rootDir: movedRoot,
+      rizzHome,
+      remote: null,
+      projectId: first.value.projectId,
+    });
+
+    expect(relinked.ok).toBe(true);
+    if (!relinked.ok) return;
+    expect(relinked.value.projectId).toBe(first.value.projectId);
   });
 
   it('preserves every project when prepares update one registry concurrently', async () => {

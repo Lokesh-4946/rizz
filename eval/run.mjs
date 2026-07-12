@@ -3247,6 +3247,56 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz project relink explicitly reconnects a moved repository workspace',
+      run() {
+        withTempDirSync('rizz-project-relink-smoke-', (sandbox) => {
+          const before = join(sandbox, 'before');
+          const after = join(sandbox, 'after');
+          mkdirSync(before);
+          writeFileSync(join(before, 'package.json'), '{"name":"relink-smoke"}\n');
+          gitInCwd(before, ['init', '-b', 'develop']);
+          gitInCwd(before, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(before, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(before, ['remote', 'add', 'origin', 'git@github.com:valoir/relink-smoke.git']);
+          gitInCwd(before, ['add', '.']);
+          gitInCwd(before, ['commit', '-m', 'initial']);
+
+          withTempHomeSync((home) => {
+            const rizzHome = join(home, 'external-rizz');
+            const env = { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome };
+            const run = (cwd, args) =>
+              spawnSync(process.execPath, [cliBin, ...args], {
+                cwd,
+                encoding: 'utf8',
+                env,
+                timeout: CLI_SMOKE_TIMEOUT_MS,
+                maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+              });
+            const first = run(before, ['prepare']);
+            assert(first.status === 0, `initial prepare failed: ${first.stderr}`);
+            const firstRegistry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+            const projectId = Object.keys(firstRegistry.projects)[0];
+            renameSync(before, after);
+            const filesBefore = readdirSync(after).sort();
+
+            const blocked = run(after, ['brain']);
+            assert(blocked.status === 1, `moved repository was not blocked: ${blocked.stderr}`);
+            assert(blocked.stderr.includes('PROJECT_RELINK_REQUIRED'), 'missing relink error code');
+            const relinked = run(after, ['project', 'relink']);
+            assert(relinked.status === 0, `relink failed: ${relinked.stderr}`);
+            assert(relinked.stdout.includes(projectId), 'relink changed the project identity');
+            const prepared = run(after, ['brain']);
+            assert(prepared.status === 0, `post-relink brain failed: ${prepared.stderr}`);
+            assert(!existsSync(join(after, '.rizz')), 'relink created repository-local state');
+            assert(
+              JSON.stringify(readdirSync(after).sort()) === JSON.stringify(filesBefore),
+              'relink changed repository files',
+            );
+          });
+        });
+      },
+    },
+    {
       name: 'bare rizz writes isolated project brain without changing the repository',
       run() {
         withTempDirSync('rizz-bare-brain-smoke-', (dir) => {

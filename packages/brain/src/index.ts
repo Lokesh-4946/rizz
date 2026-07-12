@@ -39,6 +39,7 @@ export { recordHumanSignoff, revokeHumanSignoff } from './human-approval.js';
 export {
   normalizeGitRemote,
   prepareProjectStore,
+  relinkProjectStore,
   resolveRizzHome,
   type PrepareProjectStoreResult,
   type ProjectStore,

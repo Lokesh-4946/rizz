@@ -65,6 +65,10 @@ verification, and approval. They do not create `.rizz` or generated state in the
 `<project-workspace>` below means the current project directory registered under the platform Rizz
 home, never a checked-in path.
 
+If a registered repository is moved or recloned after its old path disappears, Rizz stops with
+`PROJECT_RELINK_REQUIRED` instead of creating a second identity. Run `rizz project relink` to
+reconnect the existing workspace. Live clones of the same remote remain separate by default.
+
 The commands write:
 
 ```text
