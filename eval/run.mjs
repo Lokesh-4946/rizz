@@ -2807,6 +2807,20 @@ function runCliInCwdWithGitSync(cwd, args, input) {
   );
 }
 
+function runPrepareCliSync(cwd) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const result = spawnSync(process.execPath, [cliBin, 'prepare'], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome },
+      timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+    });
+    return { result, registryExists: existsSync(join(rizzHome, 'registry.json')) };
+  });
+}
+
 function gitInCwd(cwd, args) {
   const result = spawnSync(
     'git',
@@ -3102,6 +3116,41 @@ async function runHeadlessSmoke() {
         assert(!result.stdout.includes('Demo / Harness'), 'old demo harness copy remained');
         assert(!combinedOutput.includes(secret), 'fake provider key was echoed');
         assert(!configExists, 'interactive setup wrote temp HOME/.rizz/config.json');
+      },
+    },
+    {
+      name: 'rizz prepare writes isolated intelligence without changing the repository',
+      run() {
+        withTempDirSync('rizz-external-prepare-smoke-', (dir) => {
+          writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'prepare-smoke' }));
+          gitInCwd(dir, ['init', '-q']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(dir, ['add', 'package.json']);
+          gitInCwd(dir, ['commit', '-qm', 'init']);
+          const filesBefore = readdirSync(dir).sort();
+          const statusBefore = spawnSync('git', ['status', '--porcelain'], {
+            cwd: dir,
+            encoding: 'utf8',
+          }).stdout;
+
+          const { result, registryExists } = runPrepareCliSync(dir);
+
+          assert(result.error === undefined, String(result.error));
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          assert(result.stdout.includes('rizz prepared 1 file(s)'), 'expected prepare summary');
+          assert(!existsSync(join(dir, '.rizz')), 'prepare created repository-local .rizz state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'prepare changed repository files',
+          );
+          assert(
+            spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).stdout ===
+              statusBefore,
+            'prepare changed git status',
+          );
+          assert(registryExists, 'missing external registry');
+        });
       },
     },
     {

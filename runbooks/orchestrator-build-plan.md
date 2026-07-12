@@ -82,30 +82,30 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/approval-revoke-expiry`, focused approval lifecycle tests plus compiled CLI
-signoff/expiry/revoke UAT.
+Run: `feature/project-isolated-store`, external project-store foundation and repository
+non-mutation UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused human-approval lifecycle tests | 6/6 passed |
+| Focused project-store, external-output, and prepare orchestration tests | 8/8 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 391/391 passed |
+| Full unit suite | 399/399 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 11/11 passed |
+| CLI process smoke | 12/12 passed, including external prepare with unchanged Git status |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,050 bytes |
-| Footprint | Passed: 51ms cold start, 199KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,345 bytes |
+| Footprint | Passed: 51ms cold start, 200KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: a ready fingerprint can receive a human signoff with `--expires-at`; the exact
-expiry instant returns the packet to `awaiting_human_signoff`, and `rizz approve revoke` immediately
-invalidates the active decision. Both transitions preserve audit history, stable error codes, and
-byte-for-byte verified local writes. Agents remain unable to self-approve.
+Current verdict: `rizz prepare` assigns a stable per-clone project ID, writes a verified registry and
+brain under the platform data directory, and leaves repository files and Git status unchanged.
+Legacy brain/review consumers remain repository-local and are the next migration baton; this slice
+does not overclaim full Agent OS isolation.
 
 ## Latest Alembic Real-Repo UAT
 

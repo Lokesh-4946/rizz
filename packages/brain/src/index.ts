@@ -35,6 +35,14 @@ import {
   renderLatestVerificationPlan,
 } from './human-approval.js';
 export { recordHumanSignoff, revokeHumanSignoff } from './human-approval.js';
+export {
+  normalizeGitRemote,
+  prepareProjectStore,
+  resolveRizzHome,
+  type PrepareProjectStoreResult,
+  type ProjectStore,
+} from './project-store.js';
+export { prepareRepository } from './prepare.js';
 import {
   type ReviewGitBasisData,
   type ReviewGovernanceData,
@@ -1580,6 +1588,7 @@ interface ExplainSummaryData {
 
 export interface GenerateProjectBrainOptions {
   readonly rootDir: string;
+  readonly outputDir?: string;
   readonly now?: Date;
   readonly maxFiles?: number;
   readonly onProgress?: (progress: GenerateProjectBrainProgress) => void;
@@ -20134,17 +20143,18 @@ export async function generateProjectBrain(
     };
     const now = (options.now ?? new Date()).toISOString();
     const projectName = basename(rootDir);
-    const brainDir = join(rootDir, '.rizz', 'brain');
+    const outputDir = options.outputDir ?? join(rootDir, '.rizz');
+    const brainDir = join(outputDir, 'brain');
     const entitiesDir = join(brainDir, 'entities');
     const flowDir = join(brainDir, 'flows');
     const snapshotsDir = join(brainDir, 'snapshots');
-    const researchDir = join(rootDir, '.rizz', 'research');
-    const reportsDir = join(rootDir, '.rizz', 'reports');
+    const researchDir = join(outputDir, 'research');
+    const reportsDir = join(outputDir, 'reports');
     await mkdir(entitiesDir, { recursive: true });
     await mkdir(snapshotsDir, { recursive: true });
     await mkdir(researchDir, { recursive: true });
     await mkdir(reportsDir, { recursive: true });
-    reportStep('prepare', 'workspace', `Prepared .rizz workspace for ${projectName}`);
+    reportStep('prepare', 'workspace', `Prepared external project workspace for ${projectName}`);
 
     reportStep('prepare', 'previous-state', 'Reading previous brain state');
     const previous = await readJsonFile<{ readonly entities?: readonly BrainEntity[] }>(
