@@ -13,9 +13,9 @@ rizz brain
 records the isolated project in `registry.json`. It must leave repository files and Git status
 unchanged. `RIZZ_HOME` may override the data root for tests and controlled automation.
 
-The scan commands above all write to the isolated project store. Review, ask, explain, verification,
-and approval remain on the temporary 0.3.1 repository-local compatibility path and will move to the
-same external store in follow-up batons before that path is removed.
+All intelligence commands use the isolated project store, including review, ask, explain,
+verification, and approval. `<project-workspace>` below means the registered external project
+directory under the platform Rizz home. No generated brain path is repository-local.
 
 It is intentionally local and deterministic. It does not require a provider key, model call, cloud
 account, Workspace Mode, or OS connector.
@@ -27,25 +27,25 @@ recover the current project state without depending on a hidden chat transcript.
 ## Files
 
 ```text
-.rizz/brain/index.json
-.rizz/brain/latest.json
-.rizz/brain/graph.json
-.rizz/brain/changelog.json
-.rizz/brain/entities/
-.rizz/brain/flows/index.json
-.rizz/brain/flows/<flow-id>.json
-.rizz/brain/snapshots/
-.rizz/research/metrics.json
-.rizz/research/coverage.json
-.rizz/research/confidence.json
-.rizz/research/evidence_quality.json
-.rizz/research/incremental_update.json
-.rizz/research/flow_understanding.json
-.rizz/research/flow_coverage.json
-.rizz/research/flow_confidence.json
-.rizz/research/architecture_reasoning.json
-.rizz/reports/index.html
-.rizz/reports/review.html
+<project-workspace>/brain/index.json
+<project-workspace>/brain/latest.json
+<project-workspace>/brain/graph.json
+<project-workspace>/brain/changelog.json
+<project-workspace>/brain/entities/
+<project-workspace>/brain/flows/index.json
+<project-workspace>/brain/flows/<flow-id>.json
+<project-workspace>/brain/snapshots/
+<project-workspace>/research/metrics.json
+<project-workspace>/research/coverage.json
+<project-workspace>/research/confidence.json
+<project-workspace>/research/evidence_quality.json
+<project-workspace>/research/incremental_update.json
+<project-workspace>/research/flow_understanding.json
+<project-workspace>/research/flow_coverage.json
+<project-workspace>/research/flow_confidence.json
+<project-workspace>/research/architecture_reasoning.json
+<project-workspace>/reports/index.html
+<project-workspace>/reports/review.html
 ```
 
 `latest.json` is the front door. It summarizes the latest architecture summary, component map, flow
@@ -75,7 +75,7 @@ paths so an agent can verify a claim before acting on it.
 
 ## Research Artifacts
 
-Every `rizz brain` run also writes deterministic JSON artifacts under `.rizz/research/`:
+Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:
 
 - `metrics.json` summarizes scanned files, entity counts, relationship counts, commands, tests,
   evidence records, package manager, and detected stack.
@@ -117,16 +117,16 @@ rizz review --json
 
 The command:
 
-1. Loads `.rizz/brain/latest.json`.
-2. Loads `.rizz/brain/graph.json`.
-3. Loads relevant entity stores under `.rizz/brain/entities/`.
+1. Loads `<project-workspace>/brain/latest.json`.
+2. Loads `<project-workspace>/brain/graph.json`.
+3. Loads relevant entity stores under `<project-workspace>/brain/entities/`.
 4. Reads the current git diff, including untracked files.
 5. Maps changed files to file/component/flow/config/test/command entities.
 6. Produces skeptical findings for risk, drift, hidden coupling, missing tests, security,
    performance, maintainability, backward compatibility, and overengineering.
 7. Writes first-class `review` and `finding` entities.
 8. Updates `latest_review_status`.
-9. Writes `.rizz/reports/review.html`.
+9. Writes `<project-workspace>/reports/review.html`.
 
 If no brain exists, `rizz review` creates a lightweight brain first. If required brain files are
 malformed, the review fails with `BRAIN_SCHEMA_INVALID` instead of writing partial review state.
@@ -135,9 +135,9 @@ malformed, the review fails with `BRAIN_SCHEMA_INVALID` instead of writing parti
 
 Agents should not blindly reread the whole repository when a fresh brain exists.
 
-1. Read `.rizz/brain/latest.json`.
-2. Read relevant entity files under `.rizz/brain/entities/`.
-3. Read `.rizz/brain/graph.json`.
+1. Read `<project-workspace>/brain/latest.json`.
+2. Read relevant entity files under `<project-workspace>/brain/entities/`.
+3. Read `<project-workspace>/brain/graph.json`.
 4. Check evidence IDs and source files.
 5. Inspect source code only when the brain is stale, uncertain, or insufficient.
 6. Update entities/graph/status after work.
@@ -155,9 +155,9 @@ Every scan hashes source files and compares them to the previous file entities.
 - New files are marked `latest_status: "new"`.
 - Changed files are marked `latest_status: "changed"`.
 - Removed previously known files are preserved as `latest_status: "stale"`.
-- Snapshots are preserved under `.rizz/brain/snapshots/`.
+- Snapshots are preserved under `<project-workspace>/brain/snapshots/`.
 
-Generated `.rizz` output is ignored by git by default.
+Rizz generates no repository-local output, so scans and reviews do not contaminate Git status.
 
 ## Scan Scope
 
@@ -200,20 +200,20 @@ git diff --check
 
 Smoke the command in a temporary repo and confirm:
 
-- `.rizz/brain/latest.json` exists
-- `.rizz/brain/entities/files.json` exists
-- `.rizz/brain/entities/reviews.json` exists after `rizz review`
-- `.rizz/brain/graph.json` exists
-- `.rizz/research/metrics.json` exists
-- `.rizz/research/coverage.json` exists
-- `.rizz/research/confidence.json` exists
-- `.rizz/research/evidence_quality.json` exists
-- `.rizz/research/incremental_update.json` exists
-- `.rizz/research/flow_understanding.json` exists
-- `.rizz/research/flow_coverage.json` exists
-- `.rizz/research/flow_confidence.json` exists
-- `.rizz/research/architecture_reasoning.json` exists
-- `.rizz/brain/flows/index.json` exists
-- `.rizz/reports/index.html` exists
-- `.rizz/reports/review.html` exists after `rizz review`
+- `<project-workspace>/brain/latest.json` exists
+- `<project-workspace>/brain/entities/files.json` exists
+- `<project-workspace>/brain/entities/reviews.json` exists after `rizz review`
+- `<project-workspace>/brain/graph.json` exists
+- `<project-workspace>/research/metrics.json` exists
+- `<project-workspace>/research/coverage.json` exists
+- `<project-workspace>/research/confidence.json` exists
+- `<project-workspace>/research/evidence_quality.json` exists
+- `<project-workspace>/research/incremental_update.json` exists
+- `<project-workspace>/research/flow_understanding.json` exists
+- `<project-workspace>/research/flow_coverage.json` exists
+- `<project-workspace>/research/flow_confidence.json` exists
+- `<project-workspace>/research/architecture_reasoning.json` exists
+- `<project-workspace>/brain/flows/index.json` exists
+- `<project-workspace>/reports/index.html` exists
+- `<project-workspace>/reports/review.html` exists after `rizz review`
 - no provider key, token, or user secret appears in generated output

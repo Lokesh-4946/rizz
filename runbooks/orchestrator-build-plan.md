@@ -46,7 +46,7 @@ Current loop readiness:
 | Worktree lifecycle service | Run isolated experiments and PR loops from a clean branch. | Opt-in workspace mode. |
 | Manifest install/state ownership | Install and repair rizz packs without guessing what is owned. | Opt-in pack command. |
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
-| Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `.rizz/research/`. |
+| Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
 
 ## Current Loop
 
@@ -66,7 +66,7 @@ a human-authored reason while preserving signed and revoked audit history.
 ## Capability Scorecard
 
 These are the orchestrator baseline scores for planned work. UAT reports also include actual
-repo-derived scores from `.rizz/research/understanding_score.json`.
+repo-derived scores from `<project-workspace>/research/understanding_score.json`.
 
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
@@ -82,29 +82,29 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/external-brain-consumers`, default brain-command migration and repository
+Run: `feature/external-review-context`, review/context/approval migration and repository
 non-mutation UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused external `prepare`, bare `rizz`, and `rizz brain` UAT | 3/3 passed |
+| Focused external workspace and human-approval tests | 7/7 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 399/399 passed |
+| Full unit suite | 400/400 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 12/12 passed, including external bare/brain state with unchanged repository files |
+| CLI process smoke | 13/13 passed, including external review/context state with unchanged repository files |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,345 bytes |
-| Footprint | Passed: 50ms cold start, 200KB counted core against 200KB budget |
+| Brain entry size guard | Passed: schema validation extracted; `packages/brain/src/index.ts` is 1,045,357 bytes |
+| Footprint | Passed: 51ms cold start, 200KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: `rizz`, `rizz understand`, and `rizz brain` now share `rizz prepare`'s isolated
-project workspace and leave repository files unchanged. Review, ask/explain, verification, and
-approval remain repository-local and are the next storage-contract migration baton.
+Current verdict: every shipped intelligence command now resolves the current isolated project
+workspace. Review, ask/explain, verification, and approval no longer create repository-local state;
+external human decisions are stored under `governance/` with byte-verified writes.
 
 ## Latest Alembic Real-Repo UAT
 
@@ -148,7 +148,7 @@ Run: fresh DBMS brain scan on `/Users/lokesh/Downloads/projects/DBMS`, branch `d
 | Capability scorecard average | 93/100 |
 | Raw understanding score | 89/100 |
 
-Capability detail from `.rizz/research/understanding_score.json`:
+Capability detail from `<project-workspace>/research/understanding_score.json`:
 
 | Capability | Actual | Remaining | Notes |
 | --- | ---: | ---: | --- |
@@ -168,7 +168,7 @@ architecture causality, component-local proof, and compact agent entry summaries
 ## Latest 120-File UAT Actuals
 
 Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
-Report: `.rizz/uat/repair-packet-precision-120-report.json`
+Historical report: `<historical-uat-workspace>/repair-packet-precision-120-report.json`
 
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |

@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   addVerificationEvidence,
@@ -120,6 +120,57 @@ describe('project brain generation', () => {
       await rm(dir, { recursive: true, force: true });
       await rm(outputDir, { recursive: true, force: true });
     }
+  });
+
+  it('keeps review, context, verification, and approval state in an explicit external workspace', async () => {
+    await withTempProject(async (dir) => {
+      const outputDir = join(dir, '..', `${basename(dir)}-external`);
+      await writeFile(join(dir, 'package.json'), '{"name":"external-consumers"}\n', 'utf8');
+      await writeFile(join(dir, 'index.ts'), 'export const value = 1;\n', 'utf8');
+      await initGitProject(dir);
+      await git(dir, ['add', '.']);
+      await git(dir, ['commit', '-m', 'initial']);
+      const generated = await generateProjectBrain({ rootDir: dir, outputDir });
+      expect(generated.ok).toBe(true);
+      await writeFile(join(dir, 'index.ts'), 'export const value = 2;\n', 'utf8');
+
+      const review = await reviewProjectChanges({ rootDir: dir, outputDir });
+      const verification = await addVerificationEvidence({
+        rootDir: dir,
+        outputDir,
+        name: 'unit tests',
+        command: 'pnpm test',
+        status: 'passed',
+      });
+      const explanation = await explainProjectTarget({
+        rootDir: dir,
+        outputDir,
+        target: 'index.ts',
+      });
+      const question = await askProjectQuestion({
+        rootDir: dir,
+        outputDir,
+        question: 'what should I read first?',
+      });
+      const signoff = await recordHumanSignoff({
+        rootDir: dir,
+        outputDir,
+        summary: 'reviewed',
+        approver: 'human@example.com',
+      });
+
+      expect(review.ok).toBe(true);
+      expect(verification.ok).toBe(true);
+      expect(explanation.ok).toBe(true);
+      expect(question.ok).toBe(true);
+      expect(signoff.ok).toBe(false);
+      expect(await fileExists(join(outputDir, 'research', 'review_eval.json'))).toBe(true);
+      expect(await fileExists(join(outputDir, 'research', 'verification_evidence.json'))).toBe(
+        true,
+      );
+      expect(await fileExists(join(dir, '.rizz'))).toBe(false);
+      await rm(outputDir, { recursive: true, force: true });
+    });
   });
   it('prioritizes manifests, configs, and tests before content-heavy trees under scan caps', async () => {
     await withTempProject(async (dir) => {
