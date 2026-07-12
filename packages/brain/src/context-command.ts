@@ -8,6 +8,7 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import { resolveRizzHome } from './project-store.js';
 import {
   type ResourcePolicy,
   acquireResourceLease,
@@ -15,6 +16,7 @@ import {
   readResourceStatus,
   releaseResourceLease,
 } from './resource-governance.js';
+import { addPinnedSkill, auditSkillSource, inspectSkillSource } from './skill-source-manager.js';
 import {
   applyVaultImport,
   inspectVault,
@@ -187,6 +189,49 @@ async function executeResourceCommand(
   );
 }
 
+async function executeSkillCommand(
+  args: readonly string[],
+  wantsJson: boolean,
+): Promise<ContextCommandResult> {
+  const action = args[1];
+  const sourceDir = args[2];
+  if (
+    (action === 'inspect' || action === 'audit') &&
+    sourceDir !== undefined &&
+    args.length === 3
+  ) {
+    const result =
+      action === 'inspect'
+        ? await inspectSkillSource({ sourceDir })
+        : await auditSkillSource({ sourceDir });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
+  if (action === 'add' && sourceDir !== undefined) {
+    const pin = flag(args.slice(3), '--pin');
+    const approved = pin.rest.includes('--approve');
+    const rest = pin.rest.filter((arg) => arg !== '--approve');
+    if (pin.missing || pin.value === undefined || rest.length > 0) {
+      return failed('SKILL_ADD_USAGE', 'Use skills add <source> --pin <revision> --approve.');
+    }
+    const result = await addPinnedSkill({
+      sourceDir,
+      rizzHome: resolveRizzHome({ homeDir: homedir() }),
+      revision: pin.value,
+      approved,
+    });
+    return result.ok
+      ? rendered(
+          result.value,
+          wantsJson,
+          `rizz skill pinned ${result.value.name}@${result.value.source_revision}`,
+        )
+      : resultError(result);
+  }
+  return failed('SKILL_ACTION_UNKNOWN', 'Skills supports inspect, audit, and add --pin.');
+}
+
 async function executeVaultCommand(
   rootDir: string,
   args: readonly string[],
@@ -244,6 +289,7 @@ export async function executeContextCommand(options: {
     };
   }
   if (args[0] === 'resources') return executeResourceCommand(options.rootDir, args, wantsJson);
+  if (args[0] === 'skills') return executeSkillCommand(args, wantsJson);
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
     const task = args.slice(1).join(' ').trim();

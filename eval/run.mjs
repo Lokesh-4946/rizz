@@ -3207,6 +3207,50 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz skills audits and pins approved content without executing bundled scripts',
+      run() {
+        withTempHomeSync((home) => {
+          const env = isolatedEnvWithGit(home);
+          const repository = join(home, 'skill-source');
+          const source = join(repository, 'review-loop');
+          mkdirSync(source, { recursive: true });
+          writeFileSync(join(repository, 'LICENSE'), 'MIT License\n');
+          writeFileSync(
+            join(source, 'SKILL.md'),
+            '---\nname: review-loop\ndescription: Review changes with evidence.\n---\n',
+          );
+          spawnSync('git', ['init', '-q'], { cwd: repository });
+          spawnSync('git', ['config', 'user.email', 'rizz@example.test'], { cwd: repository });
+          spawnSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: repository });
+          spawnSync('git', ['add', '.'], { cwd: repository });
+          spawnSync('git', ['commit', '-qm', 'skill fixture'], { cwd: repository });
+          const revision = spawnSync('git', ['rev-parse', 'HEAD'], {
+            cwd: repository,
+            encoding: 'utf8',
+          }).stdout.trim();
+          const audited = spawnSync(
+            process.execPath,
+            [cliBin, 'skills', 'audit', source, '--json'],
+            {
+              cwd: repoRoot,
+              encoding: 'utf8',
+              env,
+              timeout: CLI_SMOKE_TIMEOUT_MS,
+            },
+          );
+          assert(audited.status === 0, audited.stderr);
+          assert(JSON.parse(audited.stdout).name === 'review-loop', 'missing audited skill name');
+          const added = spawnSync(
+            process.execPath,
+            [cliBin, 'skills', 'add', source, '--pin', revision, '--approve', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(added.status === 0, added.stderr);
+          assert(JSON.parse(added.stdout).source_revision === revision, 'skill pin mismatch');
+        });
+      },
+    },
+    {
       name: 'rizz setup --dry-run exits 0 without leaking provider env or creating ~/.rizz',
       run() {
         const secret = 'sk-ant-eval-setup-smoke-secret';

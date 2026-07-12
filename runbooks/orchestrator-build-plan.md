@@ -47,6 +47,7 @@ Current loop readiness:
 | Manifest install/state ownership | Install and repair rizz packs without guessing what is owned. | Opt-in pack command. |
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
 | Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
+| Audited upstream skill cache | Pin inspected skill content without execution or project enablement. | Shipped foundation: exact revision, digest, license, requirements, explicit approval. |
 
 ## Resource Governance Tracker
 
@@ -105,29 +106,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/resource-governed-loop`, milestone 3: resource-governed loop foundation.
+Run: `feature/skill-source-audit`, next track milestone 1: audited skill source pinning.
 
 | Check | Result |
 | --- | ---: |
-| Focused resource governance tests | 5/5 passed |
+| Focused skill source tests | 5/5 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 431/431 passed |
+| Full unit suite | 436/436 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 19/19 passed, including isolated resource policy, lease, and release |
+| CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,704 bytes |
-| Footprint | Passed: 51ms cold start, 200KB counted core |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,747 bytes |
+| Footprint | Passed: 54ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: Rizz now bounds opt-in work with an isolated single-agent-default policy and
-expiring leases, rejects exhausted capacity, and reclaims stale leases. Sanitized exact context is
-content-addressed and byte-verified; compaction falls back to that exact object on evidence gaps.
-Per-work resource observations remain local, and every CLI operation leaves the repository unchanged.
+Current verdict: Rizz can inspect and audit a skill without executing it, reject symlinked or dirty
+source content, identify license and shell/network/credential posture, and pin an exact approved Git
+revision into a byte-verified global cache. Pinning records immutable ownership metadata but does not
+enable the skill for any project.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The
