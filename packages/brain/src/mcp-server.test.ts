@@ -75,6 +75,7 @@ describe('Rizz MCP server', () => {
         'rizz://project/current',
         'rizz://brain/summary',
         'rizz://sprint/current',
+        'rizz://resources/status',
       ]),
     );
     const tools = (output.messages[2]?.result as { tools: Array<{ name: string }> }).tools;
