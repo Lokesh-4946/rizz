@@ -48,6 +48,7 @@ Current loop readiness:
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
 | Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
 | Audited upstream skill cache | Pin inspected skill content without execution or project enablement. | Shipped foundation: exact revision, digest, license, requirements, explicit approval. |
+| Project skill enablement | Select compatible pinned skills without repository installation. | Shipped foundation: project-isolated manifest, cache verification, explicit approval, brief projection. |
 
 ## Resource Governance Tracker
 
@@ -106,29 +107,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/skill-source-audit`, next track milestone 1: audited skill source pinning.
+Run: `feature/project-skill-enablement`, next track milestone 2: isolated skill enablement.
 
 | Check | Result |
 | --- | ---: |
-| Focused skill source tests | 5/5 passed |
+| Focused enablement and context tests | 14/14 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 436/436 passed |
+| Full unit suite | 442/442 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,747 bytes |
-| Footprint | Passed: 54ms cold start, 200KB counted core |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,794 bytes |
+| Footprint | Passed: 55ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: Rizz can inspect and audit a skill without executing it, reject symlinked or dirty
-source content, identify license and shell/network/credential posture, and pin an exact approved Git
-revision into a byte-verified global cache. Pinning records immutable ownership metadata but does not
-enable the skill for any project.
+Current verdict: an explicitly approved project can select a pinned skill only for compatible agents
+after its global cache digest is re-verified. The Rizz-owned enablement manifest remains isolated per
+project, similar repositories cannot share selection accidentally, and bounded task briefs expose
+only skill identity, digest, agents, and permission requirements—not private or executable content.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

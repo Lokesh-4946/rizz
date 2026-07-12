@@ -3247,6 +3247,22 @@ async function runHeadlessSmoke() {
           );
           assert(added.status === 0, added.stderr);
           assert(JSON.parse(added.stdout).source_revision === revision, 'skill pin mismatch');
+          const before = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          const enabled = spawnSync(
+            process.execPath,
+            [cliBin, 'skills', 'enable', 'review-loop', '--agent', 'codex', '--approve', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(enabled.status === 0, enabled.stderr);
+          assert(JSON.parse(enabled.stdout).agents[0] === 'codex', 'skill enablement mismatch');
+          const after = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          assert(after === before, 'skill enablement changed repository status');
         });
       },
     },

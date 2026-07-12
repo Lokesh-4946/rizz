@@ -8,6 +8,7 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import { enablePinnedSkill, listEnabledProjectSkills } from './project-skill-enablement.js';
 import { resolveRizzHome } from './project-store.js';
 import {
   type ResourcePolicy,
@@ -190,11 +191,38 @@ async function executeResourceCommand(
 }
 
 async function executeSkillCommand(
+  rootDir: string,
   args: readonly string[],
   wantsJson: boolean,
 ): Promise<ContextCommandResult> {
   const action = args[1];
   const sourceDir = args[2];
+  if (action === 'list' && args.length === 2) {
+    const result = await listEnabledProjectSkills({ rootDir });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
+  if (action === 'enable' && sourceDir !== undefined) {
+    const agents = repeatedFlag(args.slice(3), '--agent');
+    const approved = agents.rest.includes('--approve');
+    const rest = agents.rest.filter((arg) => arg !== '--approve');
+    if (agents.missing || agents.values.length === 0 || rest.length > 0) {
+      return failed(
+        'SKILL_ENABLE_USAGE',
+        'Use skills enable <name> --agent <agent> [--agent <agent>] --approve.',
+      );
+    }
+    const result = await enablePinnedSkill({
+      rootDir,
+      name: sourceDir,
+      agents: agents.values,
+      approved,
+    });
+    return result.ok
+      ? rendered(result.value, wantsJson, `rizz skill enabled ${result.value.name}`)
+      : resultError(result);
+  }
   if (
     (action === 'inspect' || action === 'audit') &&
     sourceDir !== undefined &&
@@ -229,7 +257,10 @@ async function executeSkillCommand(
         )
       : resultError(result);
   }
-  return failed('SKILL_ACTION_UNKNOWN', 'Skills supports inspect, audit, and add --pin.');
+  return failed(
+    'SKILL_ACTION_UNKNOWN',
+    'Skills supports inspect, audit, add --pin, enable, and list.',
+  );
 }
 
 async function executeVaultCommand(
@@ -289,7 +320,7 @@ export async function executeContextCommand(options: {
     };
   }
   if (args[0] === 'resources') return executeResourceCommand(options.rootDir, args, wantsJson);
-  if (args[0] === 'skills') return executeSkillCommand(args, wantsJson);
+  if (args[0] === 'skills') return executeSkillCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
     const task = args.slice(1).join(' ').trim();
