@@ -19,6 +19,8 @@ The current `0.3.1` product surface is:
   completion, handoffs, and next-action discovery
 - `rizz vault inspect/import/reconcile` previewed migration of existing Markdown product knowledge
   into the isolated project workspace
+- `rizz mcp` zero-dependency stdio MCP access to the same project, brain, product, sprint, loop,
+  review, brief, explain, checkpoint, completion, and handoff contracts
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
@@ -157,6 +159,20 @@ and evidence-oriented work-board documents. Secret-bearing previews are blocked 
 The governing product principle is explicit in the generated local tracker: Rizz prevents agent
 slop by requiring scoped intent, evidence-backed context, verification, review, and durable handoff
 so developers can ship substantial, inspectable work.
+
+## Connect Any MCP Agent
+
+Run the model-independent local server from the project checkout:
+
+```sh
+rizz mcp
+```
+
+It speaks newline-delimited JSON-RPC over stdio and exposes `rizz://` project resources plus task
+brief, file/flow explanation, review, checkpoint, completion, and handoff tools. Read operations use
+the current isolated project workspace. Mutations require an exact project ID, Git revision, and
+loop sequence; stale or cross-project writes are rejected. The server performs no model call and
+writes no adapter or state into the repository.
 
 By default, the scanner skips generated output, local agent operating folders, package archives,
 binary media, private env files, key material, and TypeScript build-info. Add a root `.rizzignore`

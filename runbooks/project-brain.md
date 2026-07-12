@@ -99,6 +99,11 @@ are previewed before byte-verified copy into this project workspace. The plannin
 evidence, verification, review, and PR state so completion means substantial proof, not generated
 output alone.
 
+`rizz mcp` projects the same isolated workspace through stdio MCP. Resources cover current project,
+brain summary, product, sprint, loop, and latest review. Tools cover bounded task briefs, file/flow
+explanations, review packets, checkpoints, completion, and handoffs. Mutation tools must match the
+current project ID, repository revision, and loop sequence before any verified write occurs.
+
 ## Research Artifacts
 
 Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:
