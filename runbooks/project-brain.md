@@ -120,6 +120,11 @@ third-party skills. Inspection never executes bundled content, rejects symlinks,
 digest, source revision, license, scripts, supported agents, and shell/network/credential posture.
 Approved content is copied and byte-verified in the global cache but is not enabled for any project.
 
+`rizz skills enable/list` creates the project-specific selection boundary. Enablement requires
+explicit approval, re-verifies the immutable cache digest, validates requested agents, and records
+Rizz ownership only in `<project-workspace>/skills/enabled.json`. Task briefs expose the enabled
+skill name, digest, agents, and permission requirements without copying skill content into the repo.
+
 ## Research Artifacts
 
 Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:

@@ -47,7 +47,7 @@ interface SourceOptions {
   readonly sourceDir: string;
 }
 
-interface RegistryEntry {
+export interface PinnedSkillRecord {
   readonly source_repository: string;
   readonly revision: string;
   readonly digest: string;
@@ -61,7 +61,7 @@ interface RegistryEntry {
 
 interface SkillRegistry {
   readonly schema_version: 1;
-  readonly skills: Readonly<Record<string, RegistryEntry>>;
+  readonly skills: Readonly<Record<string, PinnedSkillRecord>>;
 }
 
 function git(sourceDir: string, args: readonly string[]): string | null {
@@ -386,7 +386,7 @@ export async function addPinnedSkill(
   const registryPath = join(base, 'registry.json');
   await mkdir(dirname(registryPath), { recursive: true });
   const registry = await readRegistry(registryPath);
-  const entry: RegistryEntry = {
+  const entry: PinnedSkillRecord = {
     source_repository: audited.value.source_repository,
     revision: audited.value.revision,
     digest: audited.value.digest,
@@ -410,4 +410,41 @@ export async function addPinnedSkill(
       cache_dir: cacheDir,
     },
   };
+}
+
+export async function readPinnedSkillRecord(options: {
+  readonly rizzHome: string;
+  readonly name: string;
+}): Promise<SkillResult<PinnedSkillRecord>> {
+  const registry = await readRegistry(join(options.rizzHome, 'global', 'skills', 'registry.json'));
+  const record = registry.skills[options.name];
+  return record === undefined
+    ? {
+        ok: false,
+        error: { code: 'SKILL_NOT_PINNED', message: `Skill is not pinned: ${options.name}` },
+      }
+    : { ok: true, value: record };
+}
+
+export async function verifyPinnedSkillCache(options: {
+  readonly record: PinnedSkillRecord;
+}): Promise<SkillResult<{ readonly digest: string }>> {
+  try {
+    const hash = createHash('sha256');
+    for (const file of await sourceFiles(options.record.cache_dir)) {
+      hash.update(file.path).update('\0').update(file.content).update('\0');
+    }
+    const digest = hash.digest('hex');
+    return digest === options.record.digest
+      ? { ok: true, value: { digest } }
+      : {
+          ok: false,
+          error: {
+            code: 'SKILL_CACHE_TAMPERED',
+            message: 'Pinned skill cache content does not match its recorded digest.',
+          },
+        };
+  } catch (error) {
+    return failure(error);
+  }
 }

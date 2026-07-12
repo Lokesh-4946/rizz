@@ -194,6 +194,18 @@ symlinks, parses the skill manifest, records the exact revision and content dige
 scripts, shell/network/credential requirements, and requires explicit approval before copying
 byte-verified content into the global Rizz cache. Nothing is enabled for a project during this step.
 
+Enable a pinned skill only for the current isolated project:
+
+```sh
+rizz skills enable review-evidence --agent codex --agent claude --approve --json
+rizz skills list --json
+```
+
+Enablement re-verifies the cached digest, validates agent compatibility, and records Rizz ownership,
+revision, audit posture, requirements, and selected agents under `<project-workspace>/skills/`.
+Enabled skills are projected into `rizz brief` packets so connected agents can select relevant
+capabilities without reading another project or installing anything into the repository.
+
 ## Connect Any MCP Agent
 
 Run the model-independent local server from the project checkout:

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
+import { listEnabledProjectSkills } from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
 
@@ -37,6 +38,16 @@ export interface TaskBrief {
   readonly omissions: readonly string[];
   readonly stale_evidence_warnings: readonly string[];
   readonly evidence_gaps: readonly string[];
+  readonly compatible_skills: readonly {
+    readonly name: string;
+    readonly digest: string;
+    readonly agents: readonly string[];
+    readonly requirements: {
+      readonly shell: boolean;
+      readonly network: boolean;
+      readonly credentials: boolean;
+    };
+  }[];
   readonly size_budget: { readonly max_claims: number; readonly included_claims: number };
 }
 
@@ -223,6 +234,8 @@ export async function compileTaskBrief(options: {
       evidence_ids: entity.evidence_ids ?? [],
     }));
   const omitted = Math.max(0, allEntities.length - selected.length);
+  const enabledSkills = await listEnabledProjectSkills(options);
+  if (!enabledSkills.ok) return enabledSkills;
   return {
     ok: true,
     value: {
@@ -238,6 +251,12 @@ export async function compileTaskBrief(options: {
       ],
       evidence_gaps:
         selected.length === 0 ? ['No evidence-bearing repository claim matched the task.'] : [],
+      compatible_skills: enabledSkills.value.skills.map((skill) => ({
+        name: skill.name,
+        digest: skill.digest,
+        agents: skill.agents,
+        requirements: skill.requirements,
+      })),
       size_budget: { max_claims: maxClaims, included_claims: selected.length },
     },
   };
