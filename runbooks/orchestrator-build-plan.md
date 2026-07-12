@@ -64,7 +64,7 @@ security evidence, failing assertions, and verification proof are never lossy-co
 | Resource-aware scheduling | Planned | Dispatch chooses serial/parallel work from dependency independence, available slots, provider limits, and expected verification cost. |
 | Local observability | Planned | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, verification cost, and quality outcome. |
 | Quality fallback | Planned | If compaction causes an evidence gap, repeated read, failed verification, or lower review confidence, Rizz serves the exact original and records the miss. |
-| Agent wrappers | Current baton | Codex, Claude Code, and Copilot query the same MCP/CLI context and resource policy without repository-local adapters. |
+| Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; 20 target files are conflict-safe and byte-verified without repository-local adapters. |
 
 The product target is not maximum compression. It is minimum wasted cognition per accepted,
 verified change. A cheaper loop that produces slop, rereads the repository, or weakens evidence is a
@@ -105,29 +105,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/mcp-agent-bridges`, milestone 1: model-independent MCP server and CLI parity.
+Run: `feature/user-agent-bridges`, milestone 2: user-level universal agent bridges.
 
 | Check | Result |
 | --- | ---: |
-| Focused MCP protocol tests | 6/6 passed |
+| Focused agent bridge tests | 4/4 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 422/422 passed |
+| Full unit suite | 426/426 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 17/17 passed, including MCP initialize and tool discovery over stdio |
+| CLI process smoke | 18/18 passed, including user-level bridge configuration and diagnosis |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,604 bytes |
-| Footprint | Passed: 52ms cold start, 200KB counted core |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,662 bytes |
+| Footprint | Passed: 51ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: any MCP-capable agent can discover and read the same current Rizz project context.
-Task brief results preserve structured and text compatibility, stdio uses ordered newline-delimited
-JSON-RPC, and guarded mutation tools reject cross-project or stale-revision writes before loop state
-is touched.
+Current verdict: Codex, Claude Code, GitHub Copilot, and canonical Agent Skills consumers can install
+the same five minimal Rizz bridge skills at user scope. Preview is non-mutating, identical content is
+idempotent, conflicting user content is preserved, successful writes are byte-verified, and the
+repository remains unchanged.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

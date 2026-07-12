@@ -21,6 +21,8 @@ The current `0.3.1` product surface is:
   into the isolated project workspace
 - `rizz mcp` zero-dependency stdio MCP access to the same project, brain, product, sprint, loop,
   review, brief, explain, checkpoint, completion, and handoff contracts
+- `rizz agents detect/configure/doctor` explicit user-level bridge skills for Codex, Claude Code,
+  GitHub Copilot, and canonical Agent Skills consumers
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
@@ -40,8 +42,8 @@ The current `0.3.1` product surface is:
 - Codex subscription route as a secondary local Codex CLI route
 - OpenAI/Anthropic route placeholders for later setup wiring
 - visible `/status`, `/model`, `/theme`, `/workspace`, and `/help`
-- no workspace agents, cloud sync, browser extension, mobile app, IDE integration, custom skills, or
-  enterprise providers in the default install
+- no workspace agents, cloud sync, browser extension, mobile app, project-local skills, or
+  enterprise providers in the default path
 
 This release is `0.3.1`.
 
@@ -173,6 +175,23 @@ brief, file/flow explanation, review, checkpoint, completion, and handoff tools.
 the current isolated project workspace. Mutations require an exact project ID, Git revision, and
 loop sequence; stale or cross-project writes are rejected. The server performs no model call and
 writes no adapter or state into the repository.
+
+## Connect Codex, Claude Code, And Copilot
+
+Install the five minimal Rizz bridge skills at user scope:
+
+```sh
+rizz agents detect --json
+rizz agents configure --user --dry-run --json
+rizz agents configure --user
+rizz agents doctor --json
+```
+
+Configuration writes the same project-independent skills to `~/.agents/skills`,
+`~/.codex/skills`, `~/.claude/skills`, and `~/.copilot/skills`. Existing identical files are left
+unchanged; different user-owned skills cause a conflict error and are never overwritten. Every
+write is reread and verified. The skills discover the current repository at use time and query Rizz
+through CLI JSON or MCP, so no project adapter or private project state is copied into a tool config.
 
 By default, the scanner skips generated output, local agent operating folders, package archives,
 binary media, private env files, key material, and TypeScript build-info. Add a root `.rizzignore`

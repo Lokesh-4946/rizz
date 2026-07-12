@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+import { executeAgentCommand } from './agent-bridges.js';
 import {
   compileTaskBrief,
   completeLoopWork,
@@ -153,6 +155,17 @@ export async function executeContextCommand(options: {
 }): Promise<ContextCommandResult> {
   const wantsJson = options.args.includes('--json');
   const args = options.args.filter((arg) => arg !== '--json');
+  if (args[0] === 'agents') {
+    const result = await executeAgentCommand({ args: options.args, homeDir: homedir() });
+    if (!result.ok) return failed(result.error.code, result.error.message);
+    return {
+      exitCode: result.value.command === 'doctor' && !result.value.healthy ? 1 : 0,
+      stdout: wantsJson
+        ? `${JSON.stringify(result.value)}\n`
+        : `${JSON.stringify(result.value, null, 2)}\n`,
+      stderr: '',
+    };
+  }
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
     const task = args.slice(1).join(' ').trim();

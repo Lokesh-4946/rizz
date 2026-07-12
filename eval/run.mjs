@@ -3138,6 +3138,39 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz agents configures and diagnoses user-level bridges without repository writes',
+      run() {
+        withTempHomeSync((home) => {
+          const env = isolatedEnv(home);
+          const before = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          const configured = spawnSync(
+            process.execPath,
+            [cliBin, 'agents', 'configure', '--user', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(configured.status === 0, configured.stderr);
+          const result = JSON.parse(configured.stdout);
+          assert(result.writes.length === 20, 'expected 20 user-level bridge writes');
+          const doctor = spawnSync(process.execPath, [cliBin, 'agents', 'doctor', '--json'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            env,
+            timeout: CLI_SMOKE_TIMEOUT_MS,
+          });
+          assert(doctor.status === 0, doctor.stderr);
+          assert(JSON.parse(doctor.stdout).healthy === true, 'expected healthy agent bridges');
+          const after = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          assert(after === before, 'agent configuration changed repository status');
+        });
+      },
+    },
+    {
       name: 'rizz setup --dry-run exits 0 without leaking provider env or creating ~/.rizz',
       run() {
         const secret = 'sk-ant-eval-setup-smoke-secret';
