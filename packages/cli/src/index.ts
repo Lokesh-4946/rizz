@@ -118,13 +118,13 @@ async function startTuiLazy(options: StartTuiOptions): Promise<void> {
 }
 
 async function runBrainCommand(): Promise<number> {
-  const { generateProjectBrain } = await import('@valoir/rizz-brain');
+  const { prepareRepository } = await import('@valoir/rizz-brain');
   const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
   if (maxFiles.ok === false) {
     process.stderr.write(`rizz: ${maxFiles.error}\n`);
     return 2;
   }
-  const result = await generateProjectBrain({
+  const result = await prepareRepository({
     rootDir: process.cwd(),
     ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
     onProgress: (progress) => {
@@ -139,11 +139,10 @@ async function runBrainCommand(): Promise<number> {
     process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
     return 1;
   }
-  const summary = result.value;
+  const summary = result.value.brain;
   process.stdout.write(`rizz understood ${summary.scannedFiles} file(s)\n`);
-  process.stdout.write(`  brain: ${displayLocalPath(summary.latestPath)}\n`);
-  process.stdout.write(`  research: ${displayLocalPath(summary.researchDir)}\n`);
-  process.stdout.write(`  report: ${displayLocalPath(summary.reportPath)}\n`);
+  process.stdout.write(`  project: ${result.value.project.projectId}\n`);
+  process.stdout.write(`  workspace: ${result.value.project.projectDir}\n`);
   process.stdout.write(`  components: ${summary.components}\n`);
   process.stdout.write(`  flows: ${summary.flows}\n`);
   process.stdout.write(`  commands: ${summary.commands}\n`);

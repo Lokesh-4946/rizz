@@ -82,30 +82,29 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/project-isolated-store`, external project-store foundation and repository
+Run: `feature/external-brain-consumers`, default brain-command migration and repository
 non-mutation UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused project-store, external-output, and prepare orchestration tests | 8/8 passed |
+| Focused external `prepare`, bare `rizz`, and `rizz brain` UAT | 3/3 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
 | Full unit suite | 399/399 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 12/12 passed, including external prepare with unchanged Git status |
+| CLI process smoke | 12/12 passed, including external bare/brain state with unchanged repository files |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,345 bytes |
-| Footprint | Passed: 51ms cold start, 200KB counted core against 200KB budget |
+| Footprint | Passed: 50ms cold start, 200KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: `rizz prepare` assigns a stable per-clone project ID, writes a verified registry and
-brain under the platform data directory, and leaves repository files and Git status unchanged.
-Legacy brain/review consumers remain repository-local and are the next migration baton; this slice
-does not overclaim full Agent OS isolation.
+Current verdict: `rizz`, `rizz understand`, and `rizz brain` now share `rizz prepare`'s isolated
+project workspace and leave repository files unchanged. Review, ask/explain, verification, and
+approval remain repository-local and are the next storage-contract migration baton.
 
 ## Latest Alembic Real-Repo UAT
 

@@ -60,9 +60,9 @@ rizz prepare
 the registry, project identity, brain, research, and reports outside the repository. Set
 `RIZZ_HOME` only when automation needs an explicit external data root.
 
-Legacy `rizz`, `rizz brain`, review, ask, and explain commands still use repository-local `.rizz`
-artifacts in 0.3.1. They are being migrated to the isolated project store in subsequent Agent OS
-batons; use `rizz prepare` when repository non-mutation is required.
+`rizz`, `rizz understand`, and `rizz brain` now use the same isolated project store. Review, ask,
+explain, verification, and approval still use repository-local `.rizz` artifacts in the temporary
+0.3.1 compatibility path and are being migrated in subsequent Agent OS batons.
 
 The legacy commands write:
 

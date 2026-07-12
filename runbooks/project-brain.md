@@ -13,9 +13,9 @@ rizz brain
 records the isolated project in `registry.json`. It must leave repository files and Git status
 unchanged. `RIZZ_HOME` may override the data root for tests and controlled automation.
 
-The remaining commands below describe the 0.3.1 repository-local compatibility path. Review, ask,
-explain, verification, and approval will move to the same external project store in follow-up
-batons before the compatibility path is removed.
+The scan commands above all write to the isolated project store. Review, ask, explain, verification,
+and approval remain on the temporary 0.3.1 repository-local compatibility path and will move to the
+same external store in follow-up batons before that path is removed.
 
 It is intentionally local and deterministic. It does not require a provider key, model call, cloud
 account, Workspace Mode, or OS connector.
