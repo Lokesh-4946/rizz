@@ -53,6 +53,7 @@ export { executeAgentCommand } from './agent-bridges.js';
 export * from './resource-governance.js';
 export * from './skill-source-manager.js';
 export * from './project-skill-enablement.js';
+export * from './skill-lifecycle.js';
 export * from './current-project.js';
 import {
   type ReviewGitBasisData,

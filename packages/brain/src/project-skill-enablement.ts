@@ -180,3 +180,80 @@ export async function listEnabledProjectSkills(
     },
   };
 }
+
+export async function removeEnabledProjectSkill(
+  options: ProjectOptions & {
+    readonly name: string;
+    readonly approved: boolean;
+    readonly now?: Date;
+  },
+): Promise<
+  EnableResult<{
+    readonly removed: boolean;
+    readonly name: string;
+    readonly digest: string | null;
+    readonly history_path: string;
+  }>
+> {
+  if (!options.approved) {
+    return {
+      ok: false,
+      error: {
+        code: 'SKILL_REMOVE_APPROVAL_REQUIRED',
+        message: 'Project skill removal requires explicit approval.',
+      },
+    };
+  }
+  const prepared = await project(options);
+  if (!prepared.ok) return prepared;
+  const manifestPath = join(prepared.value.projectDir, 'skills', 'enabled.json');
+  const manifest = await readManifest(manifestPath, prepared.value.projectId);
+  if (!manifest.ok) return manifest;
+  const existing = manifest.value.skills[options.name];
+  if (existing === undefined) {
+    return {
+      ok: true,
+      value: { removed: false, name: options.name, digest: null, history_path: '' },
+    };
+  }
+  if ((existing as { owner?: unknown }).owner !== 'rizz') {
+    return {
+      ok: false,
+      error: {
+        code: 'SKILL_OWNERSHIP_MISMATCH',
+        message: 'Rizz refuses to remove skill state it does not own.',
+      },
+    };
+  }
+  const { [options.name]: removed, ...remaining } = manifest.value.skills;
+  const now = options.now ?? new Date();
+  const historyPath = join(
+    prepared.value.projectDir,
+    'history',
+    `skill-remove-${options.name}-${now.getTime()}.json`,
+  );
+  await writeVerified(historyPath, {
+    schema_version: 1,
+    project_id: prepared.value.projectId,
+    action: 'remove-intent',
+    requested_at: now.toISOString(),
+    skill: removed,
+  });
+  await writeVerified(manifestPath, { ...manifest.value, skills: remaining });
+  await writeVerified(historyPath, {
+    schema_version: 1,
+    project_id: prepared.value.projectId,
+    action: 'remove',
+    removed_at: now.toISOString(),
+    skill: removed,
+  });
+  return {
+    ok: true,
+    value: {
+      removed: true,
+      name: options.name,
+      digest: existing.digest,
+      history_path: historyPath,
+    },
+  };
+}

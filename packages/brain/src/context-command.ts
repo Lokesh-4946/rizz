@@ -17,6 +17,7 @@ import {
   readResourceStatus,
   releaseResourceLease,
 } from './resource-governance.js';
+import { applySkillUpdate, previewSkillUpdate, removeProjectSkill } from './skill-lifecycle.js';
 import { addPinnedSkill, auditSkillSource, inspectSkillSource } from './skill-source-manager.js';
 import {
   applyVaultImport,
@@ -223,6 +224,56 @@ async function executeSkillCommand(
       ? rendered(result.value, wantsJson, `rizz skill enabled ${result.value.name}`)
       : resultError(result);
   }
+  if (action === 'update' && sourceDir !== undefined) {
+    const pin = flag(args.slice(3), '--pin');
+    const isPreview = pin.rest.includes('--preview');
+    const isApply = pin.rest.includes('--apply');
+    const approved = pin.rest.includes('--approve');
+    const rest = pin.rest.filter(
+      (arg) => arg !== '--preview' && arg !== '--apply' && arg !== '--approve',
+    );
+    if (
+      pin.missing ||
+      pin.value === undefined ||
+      isPreview === isApply ||
+      rest.length > 0 ||
+      (isApply && !approved)
+    ) {
+      return failed(
+        'SKILL_UPDATE_USAGE',
+        'Use skills update <source> --pin <revision> --preview or --apply --approve.',
+      );
+    }
+    const rizzHome = resolveRizzHome({ homeDir: homedir() });
+    const result = isApply
+      ? await applySkillUpdate({
+          rootDir,
+          rizzHome,
+          sourceDir,
+          revision: pin.value,
+          approved,
+        })
+      : await previewSkillUpdate({ rootDir, rizzHome, sourceDir, revision: pin.value });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
+  if (action === 'remove' && sourceDir !== undefined) {
+    const approved = args.slice(3).includes('--approve');
+    const rest = args.slice(3).filter((arg) => arg !== '--approve');
+    if (!approved || rest.length > 0) {
+      return failed('SKILL_REMOVE_USAGE', 'Use skills remove <name> --approve.');
+    }
+    const result = await removeProjectSkill({
+      rootDir,
+      rizzHome: resolveRizzHome({ homeDir: homedir() }),
+      name: sourceDir,
+      approved,
+    });
+    return result.ok
+      ? rendered(result.value, wantsJson, `rizz skill removed ${result.value.removed}`)
+      : resultError(result);
+  }
   if (
     (action === 'inspect' || action === 'audit') &&
     sourceDir !== undefined &&
@@ -259,7 +310,7 @@ async function executeSkillCommand(
   }
   return failed(
     'SKILL_ACTION_UNKNOWN',
-    'Skills supports inspect, audit, add --pin, enable, and list.',
+    'Skills supports inspect, audit, add --pin, enable, list, update, and remove.',
   );
 }
 

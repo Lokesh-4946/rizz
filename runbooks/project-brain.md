@@ -125,6 +125,11 @@ explicit approval, re-verifies the immutable cache digest, validates requested a
 Rizz ownership only in `<project-workspace>/skills/enabled.json`. Task briefs expose the enabled
 skill name, digest, agents, and permission requirements without copying skill content into the repo.
 
+`rizz skills update --preview/--apply` and `rizz skills remove` complete the owned lifecycle.
+Preview is read-only and file-exact. Apply is approval-gated, retains the prior digest cache for
+rollback, and preserves current-project agent selection. Removal touches only a Rizz-owned project
+entry, records history, retains the global pin/cache, and rejects foreign ownership.
+
 ## Research Artifacts
 
 Every `rizz brain` run also writes deterministic JSON artifacts under `<project-workspace>/research/`:
