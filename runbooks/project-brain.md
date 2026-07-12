@@ -51,6 +51,8 @@ recover the current project state without depending on a hidden chat transcript.
 <project-workspace>/research/architecture_reasoning.json
 <project-workspace>/reports/index.html
 <project-workspace>/reports/review.html
+<project-workspace>/loop/state.json
+<project-workspace>/handoffs/<work-id>.md
 ```
 
 `latest.json` is the front door. It summarizes the latest architecture summary, component map, flow
@@ -77,6 +79,12 @@ runtime trace coverage.
 
 Every durable claim should point back to evidence. Evidence records use stable IDs and source file
 paths so an agent can verify a claim before acting on it.
+
+`rizz brief <task> --json` compiles a bounded agent packet from those evidence-bearing entities. It
+records the project ID, current repository revision, brain generation time, exact source/evidence
+references, omitted claim count, evidence gaps, and stale-evidence warnings. `rizz loop` records the
+active work item and sequence-guarded checkpoints in the isolated workspace; it never writes agent
+state into the repository.
 
 ## Research Artifacts
 

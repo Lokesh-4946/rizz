@@ -13,6 +13,10 @@ The current `0.3.1` product surface is:
 
 - `rizz prepare` isolated project intelligence under the platform user-data directory without
   changing repository files or Git status
+- `rizz brief <task>` bounded, revision-stamped task context with cited claims, omissions, and
+  evidence gaps
+- `rizz loop ...` isolated work continuity for starts, checkpoints, verification, review,
+  completion, handoffs, and next-action discovery
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
@@ -102,6 +106,35 @@ evidence before rereading source files.
 
 The brain is meant to be a local interoperability contract: other agents can read stable entity IDs,
 relationships, evidence, sessions, handoffs, findings, and status without scraping a chat log.
+
+## Brief And Engineering Loop
+
+Compile the same deterministic task packet for any shell-capable agent:
+
+```sh
+rizz brief "Update the homepage Hero"
+rizz brief "Update the homepage Hero" --json
+```
+
+Packets include the isolated project ID, current Git revision, brain timestamp, bounded relevant
+claims, exact source/evidence references, omissions, and stale-evidence warnings. Uncited or
+unsupported claims are not silently promoted to verified facts.
+
+Record durable work continuity outside the repository:
+
+```sh
+rizz loop start --task "Update Hero" --agent codex --scope src/components/Hero.tsx
+rizz loop checkpoint --summary "Inspected direct page importer" --sequence 1
+rizz loop verify --summary "Focused tests passed" --sequence 2
+rizz loop review --summary "No actionable findings" --sequence 3
+rizz loop handoff --summary "Ready" --next-baton "Browser UAT" --sequence 4
+rizz loop complete --summary "Merged" --sequence 5
+rizz loop status --json
+rizz loop next --json
+```
+
+Sequence checks reject stale writers. State and handoffs are atomic, byte-verified files under
+`<project-workspace>/loop/` and `<project-workspace>/handoffs/`; Git status remains unchanged.
 
 By default, the scanner skips generated output, local agent operating folders, package archives,
 binary media, private env files, key material, and TypeScript build-info. Add a root `.rizzignore`

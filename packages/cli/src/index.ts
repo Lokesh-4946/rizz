@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// @valoir/rizz — the `rizz` entrypoint. Orchestration: parse the command, then hand off to tui/core.
-// No args + a TTY → the interactive TUI; no args + piped stdin → one print-mode turn (scriptable,
-// job #3). Kept dependency-light so cold start stays fast (the footprint gate measures this binary).
 
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -24,34 +21,20 @@ const VERSION = '0.3.1';
 const USAGE = `rizz - understand a software system
 
 Usage:
-  rizz prepare       prepare isolated intelligence outside the repository
-  rizz project relink
-                     reconnect a moved repository to its project workspace
-  rizz               generate isolated project intelligence
-  rizz brain         refresh project brain
-  rizz ask <q>       answer a gated Project Intelligence question from the local brain
-  rizz explain <x>   explain a component or file from the project brain
-  rizz explain flow <id>
-                     explain a reconstructed flow from the project brain
-  rizz explain service <x>
-                     explain a detected service from the project brain
-  rizz verify add    record verification evidence for review calibration
-  rizz approve signoff
-                     record human signoff after rizz marks review ready
-                     optional: --expires-at <ISO-8601>
-  rizz approve revoke
-                     revoke the active human signoff with an audit reason
-  rizz review        review current git diff with the project brain
-                    optional: --mission <text|json>, --mission-file <path>
-  rizz chat          launch model TUI
-  rizz setup         choose model route
-  rizz doctor        readiness check
-  rizz --json < file one turn, JSON
-  rizz --rpc         JSONL RPC
-  rizz --version     print version
-  rizz --help        show help`;
+  rizz prepare                  prepare isolated intelligence
+  rizz project relink [id]      reconnect a moved repository
+  rizz brief <task> [--json]    compile an evidence-backed packet
+  rizz loop <action> [--json]   manage isolated work continuity
+  rizz | brain                  refresh project intelligence
+  rizz ask <question>           query the local brain
+  rizz explain <target>         explain a file, component, flow, or service
+  rizz review                   review the current Git diff
+  rizz verify add               record verification evidence
+  rizz approve signoff|revoke   manage human approval
+  rizz chat | setup | doctor    model UI, setup, and readiness
+  rizz --json | --rpc           machine protocols
+  rizz --version | --help`;
 
-/** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
 
 function displayLocalPath(path: string): string {
@@ -98,7 +81,6 @@ type StartTuiOptions = ResolvedProvider & {
   readonly resumeId?: string;
 };
 
-/** Model-selection options pulled from the CLI; composes with any mode. */
 interface SelectOpts {
   readonly profile?: string;
   readonly capability?: string;
@@ -559,7 +541,6 @@ async function askHidden(question: string): Promise<string | null> {
   });
 }
 
-/** Pull a `--flag <value>` pair out of argv; reports a missing value so the caller can error. */
 function extractFlag(
   argv: readonly string[],
   flag: string,
@@ -600,7 +581,6 @@ function isVerificationStatus(
   return value === 'passed' || value === 'failed' || value === 'skipped' || value === 'unknown';
 }
 
-/** Non-TTY: prompt input runs one turn; empty input falls back to repo understanding. */
 async function runPrint(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
@@ -628,7 +608,6 @@ async function runPrint(select: SelectOpts): Promise<number> {
   return 0;
 }
 
-/** One-shot headless JSON: a turn in on stdin, a structured JSON result on stdout (job #3). */
 async function runJson(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
@@ -640,11 +619,10 @@ async function runJson(select: SelectOpts): Promise<number> {
   const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
   const result = await runJsonTurn({ resolved, input, cwd: process.cwd() });
-  await writeJsonStdout(result); // stdout stays pure JSON; notices go to stderr
+  await writeJsonStdout(result);
   return result.ok ? 0 : 1;
 }
 
-/** RPC mode: drive rizz over a stdin/stdout JSON line protocol (job #3 — the interop hub). */
 async function runRpc(select: SelectOpts): Promise<number> {
   const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
@@ -684,6 +662,13 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
+  if (c.rest[0] === 'brief' || c.rest[0] === 'loop') {
+    const { executeContextCommand } = await import('@valoir/rizz-brain');
+    const result = await executeContextCommand({ rootDir: process.cwd(), args: c.rest });
+    if (result.stdout !== '') await writeStdout(result.stdout);
+    if (result.stderr !== '') process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
   if (c.rest[0] === 'project') {
     const projectArgs = c.rest.slice(1);
     if (projectArgs[0] !== 'relink' || projectArgs.length > 2) {
@@ -1004,7 +989,6 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return runExplainCommand({ target, json: wantsJson });
   }
-  // Headless modes (job #3) consume the remaining args as boolean flags; --rpc wins over --json.
   const rest = c.rest.filter((a) => a !== '--json' && a !== '--rpc');
   if (c.rest.includes('--rpc')) return runRpc(select);
   if (c.rest.includes('--json')) return runJson(select);
