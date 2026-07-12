@@ -82,29 +82,29 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/external-review-context`, review/context/approval migration and repository
-non-mutation UAT.
+Run: `feature/project-relink-identity`, explicit move/reclone recovery and project identity UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused external workspace and human-approval tests | 7/7 passed |
+| Focused project registry and relink tests | 9/9 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 400/400 passed |
+| Full unit suite | 403/403 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 13/13 passed, including external review/context state with unchanged repository files |
+| CLI process smoke | 14/14 passed, including explicit relink with unchanged repository files |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: schema validation extracted; `packages/brain/src/index.ts` is 1,045,357 bytes |
-| Footprint | Passed: 51ms cold start, 200KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,379 bytes |
+| Footprint | Passed: 50ms cold start, 200KB counted core against 200KB budget |
 | Full `pnpm check` | Passed |
 
-Current verdict: every shipped intelligence command now resolves the current isolated project
-workspace. Review, ask/explain, verification, and approval no longer create repository-local state;
-external human decisions are stored under `governance/` with byte-verified writes.
+Current verdict: moved remote-backed and local-only Git repositories cannot silently create a second
+identity after the old path disappears. `rizz project relink` reconnects the existing workspace;
+live clones remain isolated, ambiguous/live-source relinks require explicit project selection, and
+legacy registry entries remain recoverable by ID.
 
 ## Latest Alembic Real-Repo UAT
 
