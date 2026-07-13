@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
 import {
+  SUPPORTED_SKILL_AGENTS,
   compileTaskBrief,
   completeLoopWork,
   createLoopHandoff,
@@ -50,7 +51,10 @@ const TOOLS = [
     description: 'Compile a bounded, evidence-backed task packet for the current project.',
     inputSchema: {
       type: 'object',
-      properties: { task: { type: 'string' } },
+      properties: {
+        task: { type: 'string' },
+        agent: { type: 'string', enum: SUPPORTED_SKILL_AGENTS },
+      },
       required: ['task'],
       additionalProperties: false,
     },
@@ -230,7 +234,13 @@ async function callTool(
   if (name === 'get_task_brief') {
     if (typeof args.task !== 'string')
       return toolError('MCP_ARGUMENT_INVALID', 'task is required.');
-    const brief = await compileTaskBrief({ ...options, task: args.task });
+    if (args.agent !== undefined && typeof args.agent !== 'string')
+      return toolError('MCP_ARGUMENT_INVALID', 'agent must be a string.');
+    const brief = await compileTaskBrief({
+      ...options,
+      task: args.task,
+      ...(typeof args.agent === 'string' ? { agent: args.agent } : {}),
+    });
     return brief.ok ? result(brief.value) : toolError(brief.error.code, brief.error.message);
   }
   if (name === 'explain_file' || name === 'explain_flow') {

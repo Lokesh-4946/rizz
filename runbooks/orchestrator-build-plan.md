@@ -48,7 +48,7 @@ Current loop readiness:
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
 | Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
 | Audited upstream skill cache | Pin inspected skill content without execution or project enablement. | Shipped foundation: exact revision, digest, license, requirements, explicit approval. |
-| Project skill enablement | Select compatible pinned skills without repository installation. | Shipped foundation: project-isolated manifest, cache verification, explicit approval, brief projection. |
+| Project skill enablement | Select compatible pinned skills without repository installation. | Shipped foundation: project-isolated manifest, cache verification, explicit approval, agent-filtered CLI/MCP briefs, and exact upstream provenance. |
 | Skill update/removal lifecycle | Preview changes, retain rollback objects, and remove only owned enablement. | Shipped foundation: file-exact preview, approved apply, ownership guard, isolated history. |
 | Skill registry integrity | Preserve concurrent global pins and diagnose cache state without destructive cleanup. | Shipped foundation: serialized atomic registry updates, schema validation, read-only doctor, approval-gated quarantine repair. |
 | Approved skill source acquisition | Discover approved upstream collections and acquire exact revisions without executing content. | Shipped foundation: six-source catalog, local search, immutable commit preview, approval-gated global checkout, partial-fetch cleanup. |
@@ -113,50 +113,61 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/acquired-skill-pinning`, upstream skill-manager track milestone 2: exact selection and
-pinning from acquired collections.
+Run: `feature/agent-skill-context-uat`, upstream skill-manager track milestone 3: isolated,
+agent-compatible project context and live upstream UAT.
 
 | Check | Result |
 | --- | ---: |
-| Focused selection/discovery/cache/registry tests | 23/23 passed |
+| Focused context/enablement/discovery/MCP tests | 34/34 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 471/471 passed |
+| Full unit suite | 472/472 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
+| CLI process smoke | 20/20 passed |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Footprint | Passed: 50ms cold start, 200KB counted core |
-| Full `pnpm check` | Passed |
+| Footprint | Passed: 49ms cold start, 200KB counted core |
+| Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
 
-Current verdict: `rizz skills pin <source-id> --pin <commit> --path <skill-path> --preview` resolves
-one exact skill from a previously acquired approved collection. `--apply --approve` copies only the
-audited skill directory into its SHA-256 immutable global cache object and records source ID,
-repository, exact revision/path, whole-skill digest, `SKILL.md` digest, approved license,
-attribution, supported agents, requirements, audit status, and every audit finding. Preview and apply
-report `writes_repository: false` and `executes_content: false`.
+Current verdict: project enablement now carries the pinned skill's exact source ID, repository,
+revision/path, whole-skill and `SKILL.md` digests, license, attribution, audit status/findings,
+requirements, and approved agent set into the external project manifest. `rizz brief --agent` returns
+only skills enabled for that agent; the MCP `get_task_brief` tool accepts the same agent selector and
+returns the same structured evidence. Existing no-agent brief calls retain their prior all-enabled
+behavior.
 
-Selection reuses the verified discovery checkout and existing audit/cache machinery. It rejects
-non-normalized or traversing paths, symlinked/tampered source state, dirty or untracked content,
-revision drift, origin mismatch, missing exact paths, stale evidence, and conflicting names. Pinning
-requires explicit approval, registry writes retain their existing lock and byte verification, and
-concurrent real-source pins preserved all four records. The content-addressed cache keeps prior
-objects available for rollback; no repository, manifest, instructions, ignore, or user-agent file is
-written and no bundled content is executed.
+The CLI now preserves an explicitly supplied Rizz home through project enablement and brief
+compilation, so disposable projects cannot accidentally consult the user's default registry. State
+remains in the isolated external project store. No repository manifest, instructions, ignore file,
+agent configuration, or bundled upstream content is written or executed.
 
-Disposable UAT acquired, searched, previewed, and concurrently pinned one representative skill from
-each approved collection below. `rizz skills doctor` then reported `healthy: true` with four complete
-provenance records.
+Disposable live UAT used a fresh external Rizz home and four fresh Git projects. For every case it
+performed approved-source fetch, indexed search, exact selection preview, approved pin, approved
+project enablement, prepare, CLI brief, and equivalent MCP brief. A mismatched agent returned zero
+skills. All repositories remained clean and had no repository-local `.rizz` state.
 
-| Upstream UAT source | Exact selection | Skill digest | `SKILL.md` digest | Audit evidence |
-| --- | --- | --- | --- | --- |
-| OpenAI Skills | `openai-skills@49f948faa9258a0c61caceaf225e179651397431:skills/.curated/aspnet-core` | `975d7ccac5a9f84b858786a8c4e0a10c00dadcfc871e71f85520e54f6d3347a4` | `1f487ef3565e5ac1ee6c93cbeb9ac666292b30285877c82ddb0a77c9777fe92f` | Apache-2.0; Codex/Agent Skills; credentials finding |
-| Anthropic Skills | `anthropic-skills@9d2f1ae187231d8199c64b5b762e1bdf2244733d:skills/algorithmic-art` | `8c15717769d76330df4387b85402a3754d858b97749ae259d3365ea9ea394f89` | `3bc4092c09804853186524c826bc0621b940bb6122c05b84496dff95388e6eef` | Apache-2.0; Claude/Agent Skills; script finding |
-| GitHub Awesome Copilot | `github-awesome-copilot@0aaced533251f5b86c69dfbc5e55db74c4b4d1af:skills/acquire-codebase-knowledge` | `7515f7241bef5b3d44e481e9a59427ecb45bd64fa786d2e798c4fae3c9dbb63b` | `7ca01711e1615171b26ce9e2729bedf041348d7fd0f24bc04e0d400dc93e41b9` | MIT; Copilot/Agent Skills; script/network findings |
-| Superpowers | `superpowers@d884ae04edebef577e82ff7c4e143debd0bbec99:skills/brainstorming` | `a1202a6a5e8d86659745e69030c06bfb033f265d8a276f29b24b8a57c4809399` | `e14914605f640e0841758e45d0ab2a53243b59b921f929e47921c99668f2e61d` | MIT; Codex/Claude/Agent Skills; script/credentials findings |
+| Project agent | Enabled upstream skill | Exact revision | Skill digest | `SKILL.md` digest | Context result |
+| --- | --- | --- | --- | --- | --- |
+| Codex | `openai-skills:skills/.curated/aspnet-core` | `49f948faa9258a0c61caceaf225e179651397431` | `975d7ccac5a9f84b858786a8c4e0a10c00dadcfc871e71f85520e54f6d3347a4` | `1f487ef3565e5ac1ee6c93cbeb9ac666292b30285877c82ddb0a77c9777fe92f` | CLI=MCP; incompatible filtered; repo clean |
+| Claude Code | `anthropic-skills:skills/algorithmic-art` | `9d2f1ae187231d8199c64b5b762e1bdf2244733d` | `8c15717769d76330df4387b85402a3754d858b97749ae259d3365ea9ea394f89` | `3bc4092c09804853186524c826bc0621b940bb6122c05b84496dff95388e6eef` | CLI=MCP; incompatible filtered; repo clean |
+| Copilot | `github-awesome-copilot:skills/acquire-codebase-knowledge` | `0aaced533251f5b86c69dfbc5e55db74c4b4d1af` | `7515f7241bef5b3d44e481e9a59427ecb45bd64fa786d2e798c4fae3c9dbb63b` | `7ca01711e1615171b26ce9e2729bedf041348d7fd0f24bc04e0d400dc93e41b9` | CLI=MCP; incompatible filtered; repo clean |
+| Agent Skills | `superpowers:skills/brainstorming` | `d884ae04edebef577e82ff7c4e143debd0bbec99` | `a1202a6a5e8d86659745e69030c06bfb033f265d8a276f29b24b8a57c4809399` | `e14914605f640e0841758e45d0ab2a53243b59b921f929e47921c99668f2e61d` | CLI=MCP; incompatible filtered; repo clean |
+
+### Next Weakest-Capability Track
+
+The next three-milestone track is **opt-in agent repair handoff**. It targets Coding agent
+implementation (73/100, 27 remaining) first and Coding agent repair (78/100, 22 remaining) second,
+the two weakest stages in the current human-agent loop:
+
+1. Build a bounded, agent-specific repair handoff that selects exact correction-packet evidence and
+   previews every proposed scope/verification constraint without executing an agent.
+2. Add opt-in Codex, Claude Code, and Copilot bridge consumption with explicit approval, isolated
+   worktree identity, structured results, cancellation, and no always-on core dependency.
+3. Prove disposable handoff-to-repair-to-verification UAT across all three bridges, including stale
+   revision refusal, project isolation, interrupted-run recovery, and repository ownership checks.
 
 ## Latest Alembic Real-Repo UAT
 

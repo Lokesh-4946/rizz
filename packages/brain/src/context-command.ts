@@ -332,7 +332,7 @@ async function executeSkillCommand(
       : resultError(result);
   }
   if (action === 'list' && args.length === 2) {
-    const result = await listEnabledProjectSkills({ rootDir });
+    const result = await listEnabledProjectSkills({ rootDir, rizzHome });
     return result.ok
       ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
       : resultError(result);
@@ -349,6 +349,7 @@ async function executeSkillCommand(
     }
     const result = await enablePinnedSkill({
       rootDir,
+      rizzHome,
       name: sourceDir,
       agents: agents.values,
       approved,
@@ -513,9 +514,19 @@ export async function executeContextCommand(options: {
     );
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
-    const task = args.slice(1).join(' ').trim();
+    const agent = flag(args.slice(1), '--agent');
+    if (agent.missing) return failed('BRIEF_AGENT_REQUIRED', 'Brief --agent needs a value.');
+    const unknownOption = agent.rest.find((argument) => argument.startsWith('--'));
+    if (unknownOption !== undefined)
+      return failed('BRIEF_OPTION_UNKNOWN', `Unknown option '${unknownOption}'.`);
+    const task = agent.rest.join(' ').trim();
     if (task === '') return failed('BRIEF_TASK_REQUIRED', 'Brief needs a task.');
-    const result = await compileTaskBrief({ rootDir: options.rootDir, task });
+    const result = await compileTaskBrief({
+      rootDir: options.rootDir,
+      rizzHome: options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
+      task,
+      ...(agent.value === undefined ? {} : { agent: agent.value }),
+    });
     if (!result.ok) return resultError(result);
     return rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2));
   }

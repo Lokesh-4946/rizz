@@ -6,9 +6,11 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { listEnabledProjectSkills } from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
+import type { SkillFinding } from './skill-source-manager.js';
 
 type EvidenceClass = 'verified' | 'direct' | 'derived' | 'ai-hypothesis';
 type LoopStatus = 'started' | 'planning' | 'implementing' | 'verifying' | 'reviewing' | 'completed';
+export const SUPPORTED_SKILL_AGENTS = ['agents', 'claude', 'codex', 'copilot'] as const;
 
 interface RizzFailure {
   readonly code: string;
@@ -34,14 +36,24 @@ export interface TaskBrief {
   readonly repository_revision: string | null;
   readonly brain_generated_at: string;
   readonly task: string;
+  readonly agent: string | null;
   readonly claims: readonly TaskBriefClaim[];
   readonly omissions: readonly string[];
   readonly stale_evidence_warnings: readonly string[];
   readonly evidence_gaps: readonly string[];
   readonly compatible_skills: readonly {
     readonly name: string;
+    readonly source_id?: string;
+    readonly skill_path?: string;
+    readonly source_repository?: string;
     readonly digest: string;
+    readonly file_digest?: string;
+    readonly revision: string;
+    readonly license?: string;
+    readonly attribution?: string;
     readonly agents: readonly string[];
+    readonly audit_status: 'clean' | 'approval-required';
+    readonly audit_findings?: readonly SkillFinding[];
     readonly requirements: {
       readonly shell: boolean;
       readonly network: boolean;
@@ -201,7 +213,17 @@ export async function compileTaskBrief(options: {
   readonly task: string;
   readonly rizzHome?: string;
   readonly maxClaims?: number;
+  readonly agent?: string;
 }): Promise<RizzResult<TaskBrief>> {
+  if (
+    options.agent !== undefined &&
+    !SUPPORTED_SKILL_AGENTS.some((supported) => supported === options.agent)
+  ) {
+    return error(
+      'SKILL_AGENT_UNSUPPORTED',
+      `Brief agent must be one of: ${SUPPORTED_SKILL_AGENTS.join(', ')}.`,
+    );
+  }
   const store = await prepareProjectStore(options);
   if (!store.ok) return store;
   const generatedAt = await readGeneratedAt(store.value.brainDir);
@@ -244,6 +266,7 @@ export async function compileTaskBrief(options: {
       repository_revision: gitRevision(store.value.rootPath),
       brain_generated_at: generatedAt,
       task: redactSensitiveText(options.task),
+      agent: options.agent ?? null,
       claims: selected,
       omissions: omitted > 0 ? [`${omitted} lower-ranked or uncited claim(s) omitted`] : [],
       stale_evidence_warnings: [
@@ -251,12 +274,25 @@ export async function compileTaskBrief(options: {
       ],
       evidence_gaps:
         selected.length === 0 ? ['No evidence-bearing repository claim matched the task.'] : [],
-      compatible_skills: enabledSkills.value.skills.map((skill) => ({
-        name: skill.name,
-        digest: skill.digest,
-        agents: skill.agents,
-        requirements: skill.requirements,
-      })),
+      compatible_skills: enabledSkills.value.skills
+        .filter((skill) => options.agent === undefined || skill.agents.includes(options.agent))
+        .map((skill) => ({
+          name: skill.name,
+          ...(skill.source_id === undefined ? {} : { source_id: skill.source_id }),
+          ...(skill.skill_path === undefined ? {} : { skill_path: skill.skill_path }),
+          ...(skill.source_repository === undefined
+            ? {}
+            : { source_repository: skill.source_repository }),
+          digest: skill.digest,
+          ...(skill.file_digest === undefined ? {} : { file_digest: skill.file_digest }),
+          revision: skill.revision,
+          ...(skill.license === undefined ? {} : { license: skill.license }),
+          ...(skill.attribution === undefined ? {} : { attribution: skill.attribution }),
+          agents: skill.agents,
+          audit_status: skill.audit_status,
+          ...(skill.audit_findings === undefined ? {} : { audit_findings: skill.audit_findings }),
+          requirements: skill.requirements,
+        })),
       size_budget: { max_claims: maxClaims, included_claims: selected.length },
     },
   };
