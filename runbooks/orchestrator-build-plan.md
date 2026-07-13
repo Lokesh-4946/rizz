@@ -52,6 +52,7 @@ Current loop readiness:
 | Skill update/removal lifecycle | Preview changes, retain rollback objects, and remove only owned enablement. | Shipped foundation: file-exact preview, approved apply, ownership guard, isolated history. |
 | Skill registry integrity | Preserve concurrent global pins and diagnose cache state without destructive cleanup. | Shipped foundation: serialized atomic registry updates, schema validation, read-only doctor, approval-gated quarantine repair. |
 | Approved skill source acquisition | Discover approved upstream collections and acquire exact revisions without executing content. | Shipped foundation: six-source catalog, local search, immutable commit preview, approval-gated global checkout, partial-fetch cleanup. |
+| Upstream collection compatibility | Audit every tracked Agent Skill at an acquired exact revision. | Shipped foundation: exact-revision collection scan, per-skill compatibility/audit evidence, quoted YAML scalar support, 463-skill real upstream UAT. |
 
 ## Resource Governance Tracker
 
@@ -110,15 +111,15 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/skill-source-catalog`, skill-manager track milestone 2: approved discovery and acquisition.
+Run: `feature/upstream-skill-uat`, skill-manager track milestone 3: real upstream compatibility.
 
 | Check | Result |
 | --- | ---: |
-| Focused approved-source tests | 5/5 passed |
+| Focused collection/source tests | 7/7 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 456/456 passed |
+| Full unit suite | 458/458 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
@@ -126,15 +127,22 @@ Run: `feature/skill-source-catalog`, skill-manager track milestone 2: approved d
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,832 bytes |
-| Footprint | Passed: 50ms cold start, 200KB counted core |
+| Footprint | Passed: 53ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: `rizz skills search` discovers six explicitly approved upstream collections without
-network access. `rizz skills fetch` previews exact 40-character commit acquisition, requires approval
-before network access, checks out only the requested revision under the global Rizz source cache,
-cleans failed partial acquisitions, and never executes fetched content or writes to the repository.
-Disposable UAT acquired OpenAI Skills at `49f948faa9258a0c61caceaf225e179651397431`
-and byte-located it only under the temporary platform Rizz home.
+Current verdict: `rizz skills scan <source-id> --pin <commit>` audits every tracked `SKILL.md` in a
+previously acquired exact revision and reports per-skill compatibility, audit status, and findings.
+Real upstream UAT found quoted YAML scalars in OpenAI and Copilot frontmatter; the parser now accepts
+safe single- and double-quoted scalar names/descriptions without adding a YAML dependency. Across
+four pinned collections, 463/463 skills are structurally compatible while shell, network, credential,
+and license findings remain approval-gated. No upstream skill content was executed.
+
+| Upstream UAT source | Exact revision | Compatibility | Audit outcome |
+| --- | --- | ---: | --- |
+| OpenAI Skills | `49f948faa9258a0c61caceaf225e179651397431` | 44/44 | 44 approval-required |
+| Anthropic Skills | `9d2f1ae187231d8199c64b5b762e1bdf2244733d` | 18/18 | 18 approval-required |
+| GitHub Awesome Copilot | `0aaced533251f5b86c69dfbc5e55db74c4b4d1af` | 387/387 | 288 clean, 99 approval-required |
+| Superpowers | `d884ae04edebef577e82ff7c4e143debd0bbec99` | 14/14 | 10 clean, 4 approval-required |
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

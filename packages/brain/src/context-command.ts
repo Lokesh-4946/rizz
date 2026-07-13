@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { executeAgentCommand } from './agent-bridges.js';
 import {
   acquireApprovedSkillSource,
@@ -22,6 +23,7 @@ import {
   readResourceStatus,
   releaseResourceLease,
 } from './resource-governance.js';
+import { scanSkillCollection } from './skill-collection-compatibility.js';
 import { applySkillUpdate, previewSkillUpdate, removeProjectSkill } from './skill-lifecycle.js';
 import { doctorSkillRegistry } from './skill-registry-doctor.js';
 import { addPinnedSkill, auditSkillSource, inspectSkillSource } from './skill-source-manager.js';
@@ -241,6 +243,19 @@ async function executeSkillCommand(
       ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
       : resultError(result);
   }
+  if (action === 'scan' && sourceDir !== undefined) {
+    const pin = flag(args.slice(3), '--pin');
+    if (pin.missing || pin.value === undefined || pin.rest.length > 0)
+      return failed('SKILL_SCAN_USAGE', 'Use skills scan <source-id> --pin <commit>.');
+    const preview = previewApprovedSkillSource({ id: sourceDir, revision: pin.value });
+    if (!preview.ok) return resultError(preview);
+    const result = await scanSkillCollection({
+      checkoutDir: join(rizzHome, 'global', 'skills', 'sources', sourceDir, pin.value),
+    });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
   if (action === 'doctor') {
     const repair = args.slice(2).includes('--repair');
     const approved = args.slice(2).includes('--approve');
@@ -363,7 +378,7 @@ async function executeSkillCommand(
   }
   return failed(
     'SKILL_ACTION_UNKNOWN',
-    'Skills supports search, fetch, inspect, audit, add --pin, enable, list, update, remove, and doctor.',
+    'Skills supports search, fetch, scan, inspect, audit, add --pin, enable, list, update, remove, and doctor.',
   );
 }
 

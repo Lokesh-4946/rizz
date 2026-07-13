@@ -54,6 +54,7 @@ export * from './resource-governance.js';
 export * from './skill-source-manager.js';
 export * from './skill-registry-doctor.js';
 export * from './approved-skill-sources.js';
+export * from './skill-collection-compatibility.js';
 export * from './project-skill-enablement.js';
 export * from './skill-lifecycle.js';
 export * from './current-project.js';
