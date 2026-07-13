@@ -51,6 +51,7 @@ Current loop readiness:
 | Project skill enablement | Select compatible pinned skills without repository installation. | Shipped foundation: project-isolated manifest, cache verification, explicit approval, brief projection. |
 | Skill update/removal lifecycle | Preview changes, retain rollback objects, and remove only owned enablement. | Shipped foundation: file-exact preview, approved apply, ownership guard, isolated history. |
 | Skill registry integrity | Preserve concurrent global pins and diagnose cache state without destructive cleanup. | Shipped foundation: serialized atomic registry updates, schema validation, read-only doctor, approval-gated quarantine repair. |
+| Approved skill source acquisition | Discover approved upstream collections and acquire exact revisions without executing content. | Shipped foundation: six-source catalog, local search, immutable commit preview, approval-gated global checkout, partial-fetch cleanup. |
 
 ## Resource Governance Tracker
 
@@ -109,15 +110,15 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/skill-registry-doctor`, skill-manager track milestone 1: registry integrity and doctor.
+Run: `feature/skill-source-catalog`, skill-manager track milestone 2: approved discovery and acquisition.
 
 | Check | Result |
 | --- | ---: |
-| Focused skill registry/source tests | 10/10 passed |
+| Focused approved-source tests | 5/5 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 451/451 passed |
+| Full unit suite | 456/456 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
@@ -125,14 +126,15 @@ Run: `feature/skill-registry-doctor`, skill-manager track milestone 1: registry 
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,832 bytes |
-| Footprint | Passed: 51ms cold start, 200KB counted core |
+| Footprint | Passed: 50ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: concurrent skill pins are serialized around the global registry read-modify-write,
-so independent additions cannot overwrite each other. `rizz skills doctor` validates registry
-schema and cache integrity, reports tampered, missing, and orphaned objects without mutation, and
-requires explicit approval before moving orphaned objects to quarantine. Registered cache objects
-and repository files are never deleted or changed.
+Current verdict: `rizz skills search` discovers six explicitly approved upstream collections without
+network access. `rizz skills fetch` previews exact 40-character commit acquisition, requires approval
+before network access, checks out only the requested revision under the global Rizz source cache,
+cleans failed partial acquisitions, and never executes fetched content or writes to the repository.
+Disposable UAT acquired OpenAI Skills at `49f948faa9258a0c61caceaf225e179651397431`
+and byte-located it only under the temporary platform Rizz home.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The
