@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 interface SkillFile {
   readonly path: string;
@@ -9,7 +9,12 @@ interface SkillFile {
   readonly digest: string;
 }
 
-interface SkillFinding {
+interface SkillContentFile {
+  readonly path: string;
+  readonly content: Buffer;
+}
+
+export interface SkillFinding {
   readonly code: string;
   readonly severity: 'info' | 'warning';
   readonly path: string;
@@ -51,12 +56,32 @@ export interface PinnedSkillRecord {
   readonly source_repository: string;
   readonly revision: string;
   readonly digest: string;
+  readonly source_id?: string;
+  readonly skill_path?: string;
+  readonly file_digest?: string;
+  readonly attribution?: string;
   readonly license: string;
   readonly audit_status: SkillAudit['status'];
+  readonly audit_findings?: readonly SkillFinding[];
   readonly cache_dir: string;
   readonly scripts: readonly string[];
   readonly requirements: SkillAudit['requirements'];
-  readonly supported_agents: SkillInspection['supported_agents'];
+  readonly supported_agents: readonly string[];
+}
+
+export interface PinnedSkillProvenance {
+  readonly source_id: string;
+  readonly skill_path: string;
+  readonly source_repository: string;
+  readonly revision: string;
+  readonly digest: string;
+  readonly file_digest: string;
+  readonly license: string;
+  readonly attribution: string;
+  readonly audit_status: SkillAudit['status'];
+  readonly audit_findings: readonly SkillFinding[];
+  readonly requirements: SkillAudit['requirements'];
+  readonly supported_agents: readonly string[];
 }
 
 interface SkillRegistry {
@@ -70,8 +95,8 @@ function git(sourceDir: string, args: readonly string[]): string | null {
   return value === '' ? null : value;
 }
 
-async function sourceFiles(sourceDir: string): Promise<Array<{ path: string; content: Buffer }>> {
-  const files: Array<{ path: string; content: Buffer }> = [];
+async function sourceFiles(sourceDir: string): Promise<SkillContentFile[]> {
+  const files: SkillContentFile[] = [];
   async function visit(directory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => {
@@ -340,11 +365,125 @@ async function withRegistryLock<T>(base: string, operation: () => Promise<T>): P
   });
 }
 
+function skillFilesMatch(
+  source: readonly SkillContentFile[],
+  cached: readonly SkillContentFile[],
+): boolean {
+  if (cached.length !== source.length) return false;
+  return source.every((file, index) => {
+    const cachedFile = cached[index];
+    return cachedFile?.path === file.path && cachedFile.content.equals(file.content);
+  });
+}
+
+function isPinnedSkillConflict(existing: PinnedSkillRecord, candidate: PinnedSkillRecord): boolean {
+  return (
+    existing.digest !== candidate.digest ||
+    existing.revision !== candidate.revision ||
+    existing.source_repository !== candidate.source_repository ||
+    (existing.source_id !== undefined && existing.source_id !== candidate.source_id) ||
+    (existing.skill_path !== undefined && existing.skill_path !== candidate.skill_path)
+  );
+}
+
+async function cacheSkillSource(
+  sourceDir: string,
+  cacheDir: string,
+  base: string,
+): Promise<SkillResult<true>> {
+  const cacheRoot = dirname(cacheDir);
+  await mkdir(cacheRoot, { recursive: true });
+  const rootMetadata = await lstat(cacheRoot);
+  const canonicalBase = await realpath(base);
+  const canonicalCacheRoot = await realpath(cacheRoot);
+  const nested = relative(canonicalBase, canonicalCacheRoot);
+  if (
+    rootMetadata.isSymbolicLink() ||
+    !rootMetadata.isDirectory() ||
+    nested === '..' ||
+    nested.startsWith(`..${sep}`) ||
+    isAbsolute(nested)
+  )
+    return {
+      ok: false,
+      error: {
+        code: 'SKILL_CACHE_SYMLINK_REJECTED',
+        message: 'Pinned skill cache must remain inside the global skill store.',
+      },
+    };
+  const source = await sourceFiles(sourceDir);
+  try {
+    const cacheMetadata = await lstat(cacheDir);
+    if (cacheMetadata.isSymbolicLink() || !cacheMetadata.isDirectory())
+      return {
+        ok: false,
+        error: {
+          code: 'SKILL_CACHE_SYMLINK_REJECTED',
+          message: 'Pinned skill cache object must be a real directory.',
+        },
+      };
+    let cached: SkillContentFile[];
+    try {
+      cached = await sourceFiles(cacheDir);
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'SKILL_SYMLINK_REJECTED'
+      )
+        return {
+          ok: false,
+          error: {
+            code: 'SKILL_CACHE_SYMLINK_REJECTED',
+            message: 'Pinned skill cache object contains a symlink.',
+          },
+        };
+      throw error;
+    }
+    const matches = skillFilesMatch(source, cached);
+    return matches
+      ? { ok: true, value: true }
+      : {
+          ok: false,
+          error: {
+            code: 'SKILL_CACHE_VERIFY_FAILED',
+            message: 'Existing immutable skill cache object does not match the selected content.',
+          },
+        };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const temporary = join(cacheRoot, `.pin-${process.pid}-${randomUUID()}`);
+  try {
+    await mkdir(temporary, { mode: 0o700 });
+    for (const file of source) {
+      const destination = join(temporary, ...file.path.split('/'));
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, file.content, { mode: 0o600, flag: 'wx' });
+      if (!Buffer.from(await readFile(destination)).equals(file.content))
+        return {
+          ok: false,
+          error: {
+            code: 'SKILL_CACHE_VERIFY_FAILED',
+            message: `Cached skill file mismatch: ${file.path}`,
+          },
+        };
+    }
+    await rename(temporary, cacheDir);
+    return { ok: true, value: true };
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
 export async function addPinnedSkill(
   options: SourceOptions & {
     readonly rizzHome: string;
     readonly revision: string;
     readonly approved: boolean;
+    readonly provenance?: PinnedSkillProvenance;
+    readonly rejectNameConflict?: boolean;
   },
 ): Promise<
   SkillResult<{
@@ -364,47 +503,69 @@ export async function addPinnedSkill(
     };
   const audited = await inspectPinnedSkillCandidate(options);
   if (!audited.ok) return audited;
+  const manifestDigest = audited.value.files.find((file) => file.path === 'SKILL.md')?.digest;
+  if (
+    options.provenance !== undefined &&
+    (options.provenance.revision !== audited.value.revision ||
+      options.provenance.digest !== audited.value.digest ||
+      options.provenance.file_digest !== manifestDigest ||
+      options.provenance.source_repository !== audited.value.source_repository)
+  )
+    return {
+      ok: false,
+      error: {
+        code: 'SKILL_SELECTION_STALE',
+        message: 'Selected skill evidence no longer matches the acquired source.',
+      },
+    };
   const base = join(options.rizzHome, 'global', 'skills');
   const cacheDir = join(base, 'cache', audited.value.digest);
-  await mkdir(cacheDir, { recursive: true });
-  for (const file of await sourceFiles(audited.value.source_dir)) {
-    const destination = join(cacheDir, ...file.path.split('/'));
-    await mkdir(dirname(destination), { recursive: true });
-    try {
-      await writeFile(destination, file.content, { mode: 0o600, flag: 'wx' });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    if (!Buffer.from(await readFile(destination)).equals(file.content)) {
-      return {
-        ok: false,
-        error: {
-          code: 'SKILL_CACHE_VERIFY_FAILED',
-          message: `Cached skill file mismatch: ${file.path}`,
-        },
-      };
-    }
-  }
   const entry: PinnedSkillRecord = {
-    source_repository: audited.value.source_repository,
+    source_repository: options.provenance?.source_repository ?? audited.value.source_repository,
     revision: audited.value.revision,
     digest: audited.value.digest,
-    license: audited.value.license.id,
-    audit_status: audited.value.status,
+    ...(options.provenance === undefined
+      ? {}
+      : {
+          source_id: options.provenance.source_id,
+          skill_path: options.provenance.skill_path,
+          file_digest: options.provenance.file_digest,
+          attribution: options.provenance.attribution,
+          audit_findings: options.provenance.audit_findings,
+        }),
+    license: options.provenance?.license ?? audited.value.license.id,
+    audit_status: options.provenance?.audit_status ?? audited.value.status,
     cache_dir: cacheDir,
     scripts: audited.value.scripts,
-    requirements: audited.value.requirements,
-    supported_agents: audited.value.supported_agents,
+    requirements: options.provenance?.requirements ?? audited.value.requirements,
+    supported_agents: options.provenance?.supported_agents ?? audited.value.supported_agents,
   };
   const registryPath = join(base, 'registry.json');
   await mkdir(dirname(registryPath), { recursive: true });
-  await withRegistryLock(base, async () => {
+  const transaction = await withRegistryLock(base, async (): Promise<SkillResult<true>> => {
     const registry = await readRegistry(registryPath);
+    const existing = registry.skills[audited.value.name];
+    if (
+      options.rejectNameConflict === true &&
+      existing !== undefined &&
+      isPinnedSkillConflict(existing, entry)
+    )
+      return {
+        ok: false,
+        error: {
+          code: 'SKILL_NAME_AMBIGUOUS',
+          message: `A different pinned skill already uses the name: ${audited.value.name}`,
+        },
+      };
+    const cached = await cacheSkillSource(audited.value.source_dir, cacheDir, base);
+    if (!cached.ok) return cached;
     await writeVerified(registryPath, {
       schema_version: 1,
       skills: { ...registry.skills, [audited.value.name]: entry },
     });
+    return { ok: true, value: true };
   });
+  if (!transaction.ok) return transaction;
   return {
     ok: true,
     value: {
