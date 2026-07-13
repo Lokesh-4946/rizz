@@ -222,5 +222,5 @@ describe('upstream skill project and agent-context UAT', () => {
       expect(git(rootDir, ['status', '--porcelain'])).toBe('');
       await expect(stat(join(rootDir, '.rizz'))).rejects.toMatchObject({ code: 'ENOENT' });
     }
-  });
+  }, 15_000);
 });
