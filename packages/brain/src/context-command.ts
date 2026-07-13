@@ -18,6 +18,7 @@ import {
   releaseResourceLease,
 } from './resource-governance.js';
 import { applySkillUpdate, previewSkillUpdate, removeProjectSkill } from './skill-lifecycle.js';
+import { doctorSkillRegistry } from './skill-registry-doctor.js';
 import { addPinnedSkill, auditSkillSource, inspectSkillSource } from './skill-source-manager.js';
 import {
   applyVaultImport,
@@ -195,9 +196,21 @@ async function executeSkillCommand(
   rootDir: string,
   args: readonly string[],
   wantsJson: boolean,
+  rizzHome: string,
 ): Promise<ContextCommandResult> {
   const action = args[1];
   const sourceDir = args[2];
+  if (action === 'doctor') {
+    const repair = args.slice(2).includes('--repair');
+    const approved = args.slice(2).includes('--approve');
+    const rest = args.slice(2).filter((arg) => arg !== '--repair' && arg !== '--approve');
+    if (rest.length > 0)
+      return failed('SKILL_DOCTOR_USAGE', 'Use skills doctor [--repair --approve].');
+    const result = await doctorSkillRegistry({ rizzHome, repair, approved });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
   if (action === 'list' && args.length === 2) {
     const result = await listEnabledProjectSkills({ rootDir });
     return result.ok
@@ -244,7 +257,6 @@ async function executeSkillCommand(
         'Use skills update <source> --pin <revision> --preview or --apply --approve.',
       );
     }
-    const rizzHome = resolveRizzHome({ homeDir: homedir() });
     const result = isApply
       ? await applySkillUpdate({
           rootDir,
@@ -266,7 +278,7 @@ async function executeSkillCommand(
     }
     const result = await removeProjectSkill({
       rootDir,
-      rizzHome: resolveRizzHome({ homeDir: homedir() }),
+      rizzHome,
       name: sourceDir,
       approved,
     });
@@ -296,7 +308,7 @@ async function executeSkillCommand(
     }
     const result = await addPinnedSkill({
       sourceDir,
-      rizzHome: resolveRizzHome({ homeDir: homedir() }),
+      rizzHome,
       revision: pin.value,
       approved,
     });
@@ -310,7 +322,7 @@ async function executeSkillCommand(
   }
   return failed(
     'SKILL_ACTION_UNKNOWN',
-    'Skills supports inspect, audit, add --pin, enable, list, update, and remove.',
+    'Skills supports inspect, audit, add --pin, enable, list, update, remove, and doctor.',
   );
 }
 
@@ -356,6 +368,7 @@ async function executeVaultCommand(
 export async function executeContextCommand(options: {
   readonly rootDir: string;
   readonly args: readonly string[];
+  readonly rizzHome?: string;
 }): Promise<ContextCommandResult> {
   const wantsJson = options.args.includes('--json');
   const args = options.args.filter((arg) => arg !== '--json');
@@ -371,7 +384,13 @@ export async function executeContextCommand(options: {
     };
   }
   if (args[0] === 'resources') return executeResourceCommand(options.rootDir, args, wantsJson);
-  if (args[0] === 'skills') return executeSkillCommand(options.rootDir, args, wantsJson);
+  if (args[0] === 'skills')
+    return executeSkillCommand(
+      options.rootDir,
+      args,
+      wantsJson,
+      options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
+    );
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
   if (args[0] === 'brief') {
     const task = args.slice(1).join(' ').trim();
