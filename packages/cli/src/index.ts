@@ -22,7 +22,7 @@ const USAGE = `rizz - prepare software for AI development
 
 Usage:
   rizz prepare | brain | brief <task> | review | explain <target>
-  rizz loop <action> | vault <action> | agents <action>
+  rizz loop <action> | vault <action> | agents <action> | repair <action>
   rizz resources <action> | skills <action>
   rizz project relink [id]
   rizz mcp | --json | --rpc
@@ -674,6 +674,7 @@ async function main(argv: readonly string[]): Promise<number> {
     c.rest[0] === 'loop' ||
     c.rest[0] === 'vault' ||
     c.rest[0] === 'agents' ||
+    c.rest[0] === 'repair' ||
     c.rest[0] === 'resources' ||
     c.rest[0] === 'skills'
   ) {
