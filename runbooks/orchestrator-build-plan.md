@@ -55,6 +55,7 @@ Current loop readiness:
 | Upstream collection compatibility | Audit every tracked Agent Skill at an acquired exact revision. | Shipped foundation: exact-revision collection scan, per-skill compatibility/audit evidence, quoted YAML scalar support, 463-skill real upstream UAT. |
 | Individual upstream skill discovery | Find audited skills inside previously acquired collections with exact source evidence. | Shipped foundation: bounded offline search, deterministic content-addressed global indexes, exact source/revision filters, and stale/missing/tampered checkout rejection. |
 | Acquired skill selection and pinning | Preview and pin one exact audited skill without manual filesystem paths. | Shipped foundation: exact source/revision/path selection, explicit approval, immutable cache objects, full provenance, name-conflict rejection, and concurrent-safe registry writes. |
+| Agent repair handoff | Give a selected coding agent one bounded, evidence-bound correction contract before execution. | Shipped foundation: Codex, Claude Code, and Copilot previews; exact project/revision/artifact digests; explicit packet, file, verification, and prompt caps; no execution or writes. |
 
 ## Resource Governance Tracker
 
@@ -112,6 +113,43 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 | `rizz ask` | 95/100 | 5 | Narrow broad component evidence and improve confidence calibration for exact file questions. |
 
 ## Latest Baton Result
+
+Run: `feature/agent-repair-handoff`, opt-in agent repair handoff track milestone 1: bounded,
+agent-specific preview contracts.
+
+| Check | Result |
+| --- | ---: |
+| Focused repair/project/context tests | 25/25 passed |
+| Full unit suite | 475/475 passed |
+| PI-Bench | 25/25 passed |
+| PI-Bench average research readiness | 76/100 |
+| CLI process smoke | 20/20 passed |
+| Install-local smoke | 5/5 passed |
+| Diff whitespace check | Passed |
+| Footprint | Passed: 52ms cold start, 200KB counted core |
+| Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
+
+Current verdict: `rizz repair handoff --agent <codex|claude|copilot> --preview` now turns an
+existing isolated `agent_repair_packets` artifact into a deterministic, agent-specific preview. The
+contract binds the selected project ID, current repository revision, source artifact digest, packet
+IDs, permitted files, verification actions, and stop conditions. It caps the request at eight
+packets, sixteen files, twelve verification actions, a 1MiB source artifact, and a 32KiB rendered
+prompt.
+
+Preview is deliberately non-executing: it requires approval for any future consumption and reports
+that it performs no agent execution, repository write, project-state write, provider call, or
+network access. External packet artifacts are treated as hostile input; malformed enums, duplicate
+IDs, inconsistent counts, absolute paths, traversal paths, Windows drive paths, UNC paths, and NUL
+bytes are rejected with structured errors. No dependency or always-on core path changed.
+
+### Next Milestone
+
+Add opt-in bridge consumption for Codex, Claude Code, and Copilot. Consumption must revalidate the
+exact handoff identity and repository revision, require explicit approval, run only in an identified
+isolated worktree, return structured results, support cancellation, and remain outside the default
+core path.
+
+## Previous Agent Skill Context Result
 
 Run: `feature/agent-skill-context-uat`, upstream skill-manager track milestone 3: isolated,
 agent-compatible project context and live upstream UAT.

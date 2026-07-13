@@ -298,6 +298,42 @@ export async function prepareProjectStore(options: {
   }
 }
 
+export async function readProjectStore(options: {
+  readonly rootDir: string;
+  readonly rizzHome?: string;
+  readonly remote?: string | null;
+}): Promise<PrepareProjectStoreResult> {
+  try {
+    const rootPath = await realpath(options.rootDir);
+    const rizzHome = options.rizzHome ?? resolveRizzHome();
+    const rawRemote = options.remote === undefined ? gitRemote(rootPath) : options.remote;
+    const remoteIdentity = rawRemote === null ? null : normalizeGitRemote(rawRemote);
+    const repositoryId = repositoryFingerprint(rootPath);
+    const registry = await readRegistry(join(rizzHome, 'registry.json'));
+    const exact = Object.entries(registry.projects).find(
+      ([, entry]) => entry.root_path === rootPath && entry.remote_identity === remoteIdentity,
+    );
+    if (exact === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: 'PROJECT_PREPARE_REQUIRED',
+          message: 'No isolated project workspace is registered. Run rizz prepare first.',
+        },
+      };
+    }
+    return { ok: true, value: projectStore(exact[0], exact[1], repositoryId) };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: 'PROJECT_STORE_READ_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
 export async function relinkProjectStore(options: {
   readonly rootDir: string;
   readonly rizzHome?: string;

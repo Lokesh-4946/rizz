@@ -11,7 +11,7 @@ type AgentRepairPacketSource =
 
 type AgentRepairPacketConfidence = 'verified' | 'inferred' | 'uncertain';
 
-interface AgentRepairPacket {
+export interface AgentRepairPacket {
   readonly priority: number;
   readonly packet_id: string;
   readonly related_packet_ids: readonly string[];
