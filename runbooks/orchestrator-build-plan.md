@@ -50,6 +50,7 @@ Current loop readiness:
 | Audited upstream skill cache | Pin inspected skill content without execution or project enablement. | Shipped foundation: exact revision, digest, license, requirements, explicit approval. |
 | Project skill enablement | Select compatible pinned skills without repository installation. | Shipped foundation: project-isolated manifest, cache verification, explicit approval, brief projection. |
 | Skill update/removal lifecycle | Preview changes, retain rollback objects, and remove only owned enablement. | Shipped foundation: file-exact preview, approved apply, ownership guard, isolated history. |
+| Skill registry integrity | Preserve concurrent global pins and diagnose cache state without destructive cleanup. | Shipped foundation: serialized atomic registry updates, schema validation, read-only doctor, approval-gated quarantine repair. |
 
 ## Resource Governance Tracker
 
@@ -108,15 +109,15 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/skill-lifecycle`, next track milestone 3: previewed update and owned removal.
+Run: `feature/skill-registry-doctor`, skill-manager track milestone 1: registry integrity and doctor.
 
 | Check | Result |
 | --- | ---: |
-| Focused skill lifecycle tests | 4/4 passed |
+| Focused skill registry/source tests | 10/10 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 446/446 passed |
+| Full unit suite | 451/451 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
@@ -124,13 +125,14 @@ Run: `feature/skill-lifecycle`, next track milestone 3: previewed update and own
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
 | Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,832 bytes |
-| Footprint | Passed: 55ms cold start, 200KB counted core |
+| Footprint | Passed: 51ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: skill updates have a read-only, file-exact preview and an explicit apply boundary.
-Apply retains the prior immutable cache for rollback and preserves current-project agent selection.
-Removal affects only Rizz-owned project enablement, records isolated history, preserves the global
-pin/cache, rejects foreign ownership, and never changes repository or user-agent files.
+Current verdict: concurrent skill pins are serialized around the global registry read-modify-write,
+so independent additions cannot overwrite each other. `rizz skills doctor` validates registry
+schema and cache integrity, reports tampered, missing, and orphaned objects without mutation, and
+requires explicit approval before moving orphaned objects to quarantine. Registered cache objects
+and repository files are never deleted or changed.
 
 Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
 documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The

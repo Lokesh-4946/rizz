@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 
 interface SkillFile {
@@ -308,6 +308,26 @@ async function writeVerified(path: string, value: unknown): Promise<void> {
     throw new Error(`write verification failed: ${path}`);
 }
 
+async function withRegistryLock<T>(base: string, operation: () => Promise<T>): Promise<T> {
+  const lock = join(base, 'registry.lock');
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lock);
+      try {
+        return await operation();
+      } finally {
+        await rm(lock, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw Object.assign(new Error('Timed out waiting for the skill registry lock.'), {
+    code: 'SKILL_REGISTRY_LOCK_TIMEOUT',
+  });
+}
+
 export async function addPinnedSkill(
   options: SourceOptions & {
     readonly rizzHome: string;
@@ -353,9 +373,6 @@ export async function addPinnedSkill(
       };
     }
   }
-  const registryPath = join(base, 'registry.json');
-  await mkdir(dirname(registryPath), { recursive: true });
-  const registry = await readRegistry(registryPath);
   const entry: PinnedSkillRecord = {
     source_repository: audited.value.source_repository,
     revision: audited.value.revision,
@@ -367,9 +384,14 @@ export async function addPinnedSkill(
     requirements: audited.value.requirements,
     supported_agents: audited.value.supported_agents,
   };
-  await writeVerified(registryPath, {
-    schema_version: 1,
-    skills: { ...registry.skills, [audited.value.name]: entry },
+  const registryPath = join(base, 'registry.json');
+  await mkdir(dirname(registryPath), { recursive: true });
+  await withRegistryLock(base, async () => {
+    const registry = await readRegistry(registryPath);
+    await writeVerified(registryPath, {
+      schema_version: 1,
+      skills: { ...registry.skills, [audited.value.name]: entry },
+    });
   });
   return {
     ok: true,
