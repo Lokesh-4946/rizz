@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { prepareProjectStore } from './project-store.js';
-import { readPinnedSkillRecord, verifyPinnedSkillCache } from './skill-source-manager.js';
+import {
+  type SkillFinding,
+  readPinnedSkillRecord,
+  verifyPinnedSkillCache,
+} from './skill-source-manager.js';
 
 interface ProjectOptions {
   readonly rootDir: string;
@@ -11,12 +15,19 @@ interface ProjectOptions {
 
 export interface EnabledProjectSkill {
   readonly name: string;
+  readonly source_id?: string;
+  readonly skill_path?: string;
+  readonly source_repository?: string;
   readonly digest: string;
+  readonly file_digest?: string;
   readonly revision: string;
+  readonly license?: string;
+  readonly attribution?: string;
   readonly agents: readonly string[];
   readonly owner: 'rizz';
   readonly enabled_at: string;
   readonly audit_status: 'clean' | 'approval-required';
+  readonly audit_findings?: readonly SkillFinding[];
   readonly requirements: {
     readonly shell: boolean;
     readonly network: boolean;
@@ -143,12 +154,19 @@ export async function enablePinnedSkill(
   if (!manifest.ok) return manifest;
   const enabled: EnabledProjectSkill = {
     name: options.name,
+    ...(pinned.value.source_id === undefined ? {} : { source_id: pinned.value.source_id }),
+    ...(pinned.value.skill_path === undefined ? {} : { skill_path: pinned.value.skill_path }),
+    source_repository: pinned.value.source_repository,
     digest: pinned.value.digest,
+    ...(pinned.value.file_digest === undefined ? {} : { file_digest: pinned.value.file_digest }),
     revision: pinned.value.revision,
+    license: pinned.value.license,
+    ...(pinned.value.attribution === undefined ? {} : { attribution: pinned.value.attribution }),
     agents,
     owner: 'rizz',
     enabled_at: (options.now ?? new Date()).toISOString(),
     audit_status: pinned.value.audit_status,
+    audit_findings: pinned.value.audit_findings ?? [],
     requirements: pinned.value.requirements,
   };
   await writeVerified(manifestPath, {
