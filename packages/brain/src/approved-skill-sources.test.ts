@@ -36,10 +36,10 @@ describe('approved skill source catalog', () => {
     });
   });
 
-  it('exposes search and network-free fetch preview through CLI JSON', async () => {
+  it('exposes source catalog search and network-free fetch preview through CLI JSON', async () => {
     const searched = await executeContextCommand({
       rootDir: tmpdir(),
-      args: ['skills', 'search', 'OpenAI', '--json'],
+      args: ['skills', 'sources', 'OpenAI', '--json'],
     });
     expect(JSON.parse(searched.stdout).map((source: { id: string }) => source.id)).toEqual([
       'openai-skills',

@@ -53,6 +53,7 @@ Current loop readiness:
 | Skill registry integrity | Preserve concurrent global pins and diagnose cache state without destructive cleanup. | Shipped foundation: serialized atomic registry updates, schema validation, read-only doctor, approval-gated quarantine repair. |
 | Approved skill source acquisition | Discover approved upstream collections and acquire exact revisions without executing content. | Shipped foundation: six-source catalog, local search, immutable commit preview, approval-gated global checkout, partial-fetch cleanup. |
 | Upstream collection compatibility | Audit every tracked Agent Skill at an acquired exact revision. | Shipped foundation: exact-revision collection scan, per-skill compatibility/audit evidence, quoted YAML scalar support, 463-skill real upstream UAT. |
+| Individual upstream skill discovery | Find audited skills inside previously acquired collections with exact source evidence. | Shipped foundation: bounded offline search, deterministic content-addressed global indexes, exact source/revision filters, and stale/missing/tampered checkout rejection. |
 
 ## Resource Governance Tracker
 
@@ -111,44 +112,49 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/upstream-skill-uat`, skill-manager track milestone 3: real upstream compatibility.
+Run: `feature/individual-skill-discovery`, upstream skill-manager track milestone 1: individual skill
+discovery.
 
 | Check | Result |
 | --- | ---: |
-| Focused collection/source tests | 7/7 passed |
+| Focused discovery/source/collection tests | 14/14 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 458/458 passed |
+| Full unit suite | 465/465 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,832 bytes |
-| Footprint | Passed: 53ms cold start, 200KB counted core |
+| Footprint | Passed: 52ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: `rizz skills scan <source-id> --pin <commit>` audits every tracked `SKILL.md` in a
-previously acquired exact revision and reports per-skill compatibility, audit status, and findings.
-Real upstream UAT found quoted YAML scalars in OpenAI and Copilot frontmatter; the parser now accepts
-safe single- and double-quoted scalar names/descriptions without adding a YAML dependency. Across
-four pinned collections, 463/463 skills are structurally compatible while shell, network, credential,
-and license findings remain approval-gated. No upstream skill content was executed.
+Current verdict: `rizz skills search [query] [--source <source-id> --pin <commit>] [--limit
+<1-100>]` searches audited individual skills in previously acquired approved collections without
+network access. Results include name, description, relative path, source ID/repository, exact
+revision, content digest, supported agents, audit status/findings, requirements, exact approved
+license, and attribution. `rizz skills sources [query]` retains deterministic collection-catalog
+discovery.
 
-| Upstream UAT source | Exact revision | Compatibility | Audit outcome |
+The index is deterministic JSON stored only under the global Rizz data directory at
+`global/skills/indexes/<sha256>.json`. Search rejects dirty or untracked content, revision drift,
+missing exact checkouts, origin mismatch, revision/source-cache symlinks, invalid pins, and indexes
+over 64 acquired revisions or 5,000 skills. Result sets are capped at 100 and report indexed,
+matched, returned, and truncated counts. Writes use create-only files and byte verification; no
+repository files or upstream content are executed.
+
+Disposable real-source UAT acquired the four approved exact revisions into a temporary Rizz home,
+then indexed 463 skills. The final combined index digest was
+`89f5c4b2390d7e25050becc38129a54fcb3f23628d4efeefc3cdbf87292b68cd`.
+
+| Upstream UAT source | Exact revision | Indexed | Representative evidence |
 | --- | --- | ---: | --- |
-| OpenAI Skills | `49f948faa9258a0c61caceaf225e179651397431` | 44/44 | 44 approval-required |
-| Anthropic Skills | `9d2f1ae187231d8199c64b5b762e1bdf2244733d` | 18/18 | 18 approval-required |
-| GitHub Awesome Copilot | `0aaced533251f5b86c69dfbc5e55db74c4b4d1af` | 387/387 | 288 clean, 99 approval-required |
-| Superpowers | `d884ae04edebef577e82ff7c4e143debd0bbec99` | 14/14 | 10 clean, 4 approval-required |
-
-Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
-documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The
-preview reported 1,657 duplicate claims, 28 naming conflicts, 408 stale absolute paths, and 4
-redacted secret-like findings; apply was intentionally not attempted because reconciliation is
-required.
+| OpenAI Skills | `49f948faa9258a0c61caceaf225e179651397431` | 44 | `aspnet-core`, digest `975d7ccac5a9f84b858786a8c4e0a10c00dadcfc871e71f85520e54f6d3347a4`, Apache-2.0, Codex/Agent Skills |
+| Anthropic Skills | `9d2f1ae187231d8199c64b5b762e1bdf2244733d` | 18 | `algorithmic-art`, digest `8c15717769d76330df4387b85402a3754d858b97749ae259d3365ea9ea394f89`, Apache-2.0, Claude/Agent Skills |
+| GitHub Awesome Copilot | `0aaced533251f5b86c69dfbc5e55db74c4b4d1af` | 387 | `acquire-codebase-knowledge`, digest `7515f7241bef5b3d44e481e9a59427ecb45bd64fa786d2e798c4fae3c9dbb63b`, MIT, Copilot/Agent Skills |
+| Superpowers | `d884ae04edebef577e82ff7c4e143debd0bbec99` | 14 | `brainstorming`, digest `a1202a6a5e8d86659745e69030c06bfb033f265d8a276f29b24b8a57c4809399`, MIT, Codex/Claude/Agent Skills |
 
 ## Latest Alembic Real-Repo UAT
 
