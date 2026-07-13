@@ -24,6 +24,7 @@ import {
   releaseResourceLease,
 } from './resource-governance.js';
 import { scanSkillCollection } from './skill-collection-compatibility.js';
+import { searchAcquiredSkills } from './skill-discovery-index.js';
 import { applySkillUpdate, previewSkillUpdate, removeProjectSkill } from './skill-lifecycle.js';
 import { doctorSkillRegistry } from './skill-registry-doctor.js';
 import { addPinnedSkill, auditSkillSource, inspectSkillSource } from './skill-source-manager.js';
@@ -207,10 +208,37 @@ async function executeSkillCommand(
 ): Promise<ContextCommandResult> {
   const action = args[1];
   const sourceDir = args[2];
-  if (action === 'search') {
+  if (action === 'sources') {
     const query = args.slice(2).join(' ').trim();
     const result = searchApprovedSkillSources({ query });
     return rendered(result, wantsJson, JSON.stringify(result, null, 2));
+  }
+  if (action === 'search') {
+    const source = flag(args.slice(2), '--source');
+    const pin = flag(source.rest, '--pin');
+    const limit = flag(pin.rest, '--limit');
+    if (
+      source.missing ||
+      pin.missing ||
+      limit.missing ||
+      (source.value === undefined) !== (pin.value === undefined)
+    )
+      return failed(
+        'SKILL_SEARCH_USAGE',
+        'Use skills search [query] [--source <source-id> --pin <commit>] [--limit <1-100>].',
+      );
+    const parsedLimit = limit.value === undefined ? undefined : Number(limit.value);
+    const result = await searchAcquiredSkills({
+      rizzHome,
+      repositoryRoot: rootDir,
+      query: limit.rest.join(' ').trim(),
+      ...(parsedLimit === undefined ? {} : { limit: parsedLimit }),
+      ...(source.value === undefined ? {} : { sourceId: source.value }),
+      ...(pin.value === undefined ? {} : { revision: pin.value }),
+    });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
   }
   if (action === 'fetch' && sourceDir !== undefined) {
     const pin = flag(args.slice(3), '--pin');
