@@ -106,7 +106,19 @@ function frontmatter(contents: string): { name: string; description: string } | 
   const fields = new Map<string, string>();
   for (const line of (match[1] ?? '').split(/\r?\n/)) {
     const field = line.match(/^([a-z_]+):\s*(.+)$/i);
-    if (field !== null) fields.set(field[1]?.toLowerCase() ?? '', field[2]?.trim() ?? '');
+    if (field !== null) {
+      const raw = field[2]?.trim() ?? '';
+      let value = raw;
+      if (raw.startsWith('"') && raw.endsWith('"')) {
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (typeof parsed === 'string') value = parsed;
+        } catch {
+          value = raw;
+        }
+      } else if (raw.startsWith("'") && raw.endsWith("'")) value = raw.slice(1, -1);
+      fields.set(field[1]?.toLowerCase() ?? '', value);
+    }
   }
   const name = fields.get('name');
   const description = fields.get('description');
