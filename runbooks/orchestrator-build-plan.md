@@ -54,6 +54,7 @@ Current loop readiness:
 | Approved skill source acquisition | Discover approved upstream collections and acquire exact revisions without executing content. | Shipped foundation: six-source catalog, local search, immutable commit preview, approval-gated global checkout, partial-fetch cleanup. |
 | Upstream collection compatibility | Audit every tracked Agent Skill at an acquired exact revision. | Shipped foundation: exact-revision collection scan, per-skill compatibility/audit evidence, quoted YAML scalar support, 463-skill real upstream UAT. |
 | Individual upstream skill discovery | Find audited skills inside previously acquired collections with exact source evidence. | Shipped foundation: bounded offline search, deterministic content-addressed global indexes, exact source/revision filters, and stale/missing/tampered checkout rejection. |
+| Acquired skill selection and pinning | Preview and pin one exact audited skill without manual filesystem paths. | Shipped foundation: exact source/revision/path selection, explicit approval, immutable cache objects, full provenance, name-conflict rejection, and concurrent-safe registry writes. |
 
 ## Resource Governance Tracker
 
@@ -112,49 +113,50 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/individual-skill-discovery`, upstream skill-manager track milestone 1: individual skill
-discovery.
+Run: `feature/acquired-skill-pinning`, upstream skill-manager track milestone 2: exact selection and
+pinning from acquired collections.
 
 | Check | Result |
 | --- | ---: |
-| Focused discovery/source/collection tests | 14/14 passed |
+| Focused selection/discovery/cache/registry tests | 23/23 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 465/465 passed |
+| Full unit suite | 471/471 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed, including audited and pinned disposable skill content |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Footprint | Passed: 52ms cold start, 200KB counted core |
+| Footprint | Passed: 50ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: `rizz skills search [query] [--source <source-id> --pin <commit>] [--limit
-<1-100>]` searches audited individual skills in previously acquired approved collections without
-network access. Results include name, description, relative path, source ID/repository, exact
-revision, content digest, supported agents, audit status/findings, requirements, exact approved
-license, and attribution. `rizz skills sources [query]` retains deterministic collection-catalog
-discovery.
+Current verdict: `rizz skills pin <source-id> --pin <commit> --path <skill-path> --preview` resolves
+one exact skill from a previously acquired approved collection. `--apply --approve` copies only the
+audited skill directory into its SHA-256 immutable global cache object and records source ID,
+repository, exact revision/path, whole-skill digest, `SKILL.md` digest, approved license,
+attribution, supported agents, requirements, audit status, and every audit finding. Preview and apply
+report `writes_repository: false` and `executes_content: false`.
 
-The index is deterministic JSON stored only under the global Rizz data directory at
-`global/skills/indexes/<sha256>.json`. Search rejects dirty or untracked content, revision drift,
-missing exact checkouts, origin mismatch, revision/source-cache symlinks, invalid pins, and indexes
-over 64 acquired revisions or 5,000 skills. Result sets are capped at 100 and report indexed,
-matched, returned, and truncated counts. Writes use create-only files and byte verification; no
-repository files or upstream content are executed.
+Selection reuses the verified discovery checkout and existing audit/cache machinery. It rejects
+non-normalized or traversing paths, symlinked/tampered source state, dirty or untracked content,
+revision drift, origin mismatch, missing exact paths, stale evidence, and conflicting names. Pinning
+requires explicit approval, registry writes retain their existing lock and byte verification, and
+concurrent real-source pins preserved all four records. The content-addressed cache keeps prior
+objects available for rollback; no repository, manifest, instructions, ignore, or user-agent file is
+written and no bundled content is executed.
 
-Disposable real-source UAT acquired the four approved exact revisions into a temporary Rizz home,
-then indexed 463 skills. The final combined index digest was
-`89f5c4b2390d7e25050becc38129a54fcb3f23628d4efeefc3cdbf87292b68cd`.
+Disposable UAT acquired, searched, previewed, and concurrently pinned one representative skill from
+each approved collection below. `rizz skills doctor` then reported `healthy: true` with four complete
+provenance records.
 
-| Upstream UAT source | Exact revision | Indexed | Representative evidence |
-| --- | --- | ---: | --- |
-| OpenAI Skills | `49f948faa9258a0c61caceaf225e179651397431` | 44 | `aspnet-core`, digest `975d7ccac5a9f84b858786a8c4e0a10c00dadcfc871e71f85520e54f6d3347a4`, Apache-2.0, Codex/Agent Skills |
-| Anthropic Skills | `9d2f1ae187231d8199c64b5b762e1bdf2244733d` | 18 | `algorithmic-art`, digest `8c15717769d76330df4387b85402a3754d858b97749ae259d3365ea9ea394f89`, Apache-2.0, Claude/Agent Skills |
-| GitHub Awesome Copilot | `0aaced533251f5b86c69dfbc5e55db74c4b4d1af` | 387 | `acquire-codebase-knowledge`, digest `7515f7241bef5b3d44e481e9a59427ecb45bd64fa786d2e798c4fae3c9dbb63b`, MIT, Copilot/Agent Skills |
-| Superpowers | `d884ae04edebef577e82ff7c4e143debd0bbec99` | 14 | `brainstorming`, digest `a1202a6a5e8d86659745e69030c06bfb033f265d8a276f29b24b8a57c4809399`, MIT, Codex/Claude/Agent Skills |
+| Upstream UAT source | Exact selection | Skill digest | `SKILL.md` digest | Audit evidence |
+| --- | --- | --- | --- | --- |
+| OpenAI Skills | `openai-skills@49f948faa9258a0c61caceaf225e179651397431:skills/.curated/aspnet-core` | `975d7ccac5a9f84b858786a8c4e0a10c00dadcfc871e71f85520e54f6d3347a4` | `1f487ef3565e5ac1ee6c93cbeb9ac666292b30285877c82ddb0a77c9777fe92f` | Apache-2.0; Codex/Agent Skills; credentials finding |
+| Anthropic Skills | `anthropic-skills@9d2f1ae187231d8199c64b5b762e1bdf2244733d:skills/algorithmic-art` | `8c15717769d76330df4387b85402a3754d858b97749ae259d3365ea9ea394f89` | `3bc4092c09804853186524c826bc0621b940bb6122c05b84496dff95388e6eef` | Apache-2.0; Claude/Agent Skills; script finding |
+| GitHub Awesome Copilot | `github-awesome-copilot@0aaced533251f5b86c69dfbc5e55db74c4b4d1af:skills/acquire-codebase-knowledge` | `7515f7241bef5b3d44e481e9a59427ecb45bd64fa786d2e798c4fae3c9dbb63b` | `7ca01711e1615171b26ce9e2729bedf041348d7fd0f24bc04e0d400dc93e41b9` | MIT; Copilot/Agent Skills; script/network findings |
+| Superpowers | `superpowers@d884ae04edebef577e82ff7c4e143debd0bbec99:skills/brainstorming` | `a1202a6a5e8d86659745e69030c06bfb033f265d8a276f29b24b8a57c4809399` | `e14914605f640e0841758e45d0ab2a53243b59b921f929e47921c99668f2e61d` | MIT; Codex/Claude/Agent Skills; script/credentials findings |
 
 ## Latest Alembic Real-Repo UAT
 

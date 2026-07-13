@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pinAcquiredSkill, previewAcquiredSkill } from './acquired-skill-selection.js';
 import { executeAgentCommand } from './agent-bridges.js';
 import {
   acquireApprovedSkillSource,
@@ -284,6 +285,41 @@ async function executeSkillCommand(
       ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
       : resultError(result);
   }
+  if (action === 'pin' && sourceDir !== undefined) {
+    const pin = flag(args.slice(3), '--pin');
+    const skillPath = flag(pin.rest, '--path');
+    const isPreview = skillPath.rest.includes('--preview');
+    const isApply = skillPath.rest.includes('--apply');
+    const approved = skillPath.rest.includes('--approve');
+    const rest = skillPath.rest.filter(
+      (arg) => arg !== '--preview' && arg !== '--apply' && arg !== '--approve',
+    );
+    if (
+      pin.missing ||
+      pin.value === undefined ||
+      skillPath.missing ||
+      skillPath.value === undefined ||
+      isPreview === isApply ||
+      rest.length > 0 ||
+      (isApply && !approved)
+    )
+      return failed(
+        'SKILL_PIN_USAGE',
+        'Use skills pin <source-id> --pin <commit> --path <skill-path> --preview or --apply --approve.',
+      );
+    const options = {
+      rizzHome,
+      sourceId: sourceDir,
+      revision: pin.value,
+      skillPath: skillPath.value,
+    };
+    const result = isApply
+      ? await pinAcquiredSkill({ ...options, approved })
+      : await previewAcquiredSkill(options);
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
   if (action === 'doctor') {
     const repair = args.slice(2).includes('--repair');
     const approved = args.slice(2).includes('--approve');
@@ -406,7 +442,7 @@ async function executeSkillCommand(
   }
   return failed(
     'SKILL_ACTION_UNKNOWN',
-    'Skills supports search, fetch, scan, inspect, audit, add --pin, enable, list, update, remove, and doctor.',
+    'Skills supports search, fetch, scan, pin, inspect, audit, add --pin, enable, list, update, remove, and doctor.',
   );
 }
 

@@ -13,7 +13,7 @@ type DiscoveryResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
-interface DiscoveredSkill {
+export interface DiscoveredSkill {
   readonly name: string;
   readonly description: string;
   readonly relative_path: string;
@@ -36,6 +36,11 @@ interface DiscoveredSkill {
   };
   readonly license: string;
   readonly attribution: string;
+}
+
+export interface AcquiredSkillSelection {
+  readonly skill: DiscoveredSkill;
+  readonly source_dir: string;
 }
 
 interface AcquiredSourceEvidence {
@@ -89,6 +94,12 @@ function pathIsWithin(parent: string, candidate: string): boolean {
   return (
     nested === '' || (nested !== '..' && !nested.startsWith(`..${sep}`) && !isAbsolute(nested))
   );
+}
+
+function isValidSkillPath(path: string): boolean {
+  if (path === '' || path.includes('\\') || isAbsolute(path)) return false;
+  const segments = path.split('/');
+  return segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
 async function revisionDirectories(path: string): Promise<readonly string[]> {
@@ -389,6 +400,62 @@ export async function searchAcquiredSkills(options: {
       returned: results.length,
       truncated: matches.length > results.length,
       results,
+    },
+  };
+}
+
+export async function resolveAcquiredSkill(options: {
+  readonly rizzHome: string;
+  readonly sourceId: string;
+  readonly revision: string;
+  readonly skillPath: string;
+}): Promise<DiscoveryResult<AcquiredSkillSelection>> {
+  if (!isValidSkillPath(options.skillPath))
+    return failed(
+      'SKILL_PATH_INVALID',
+      'Acquired skill path must be a normalized repository-relative directory.',
+    );
+  if (!/^[a-f0-9]{40}$/.test(options.revision))
+    return failed(
+      'SKILL_SOURCE_REVISION_INVALID',
+      'Skill source revision must be an exact 40-character lowercase Git commit.',
+    );
+  const indexed = await buildIndex({
+    rizzHome: options.rizzHome,
+    sourceId: options.sourceId,
+    revision: options.revision,
+  });
+  if (!indexed.ok) return indexed;
+  const matches = indexed.value.skills.filter(
+    (skill) =>
+      skill.source_id === options.sourceId &&
+      skill.revision === options.revision &&
+      skill.relative_path === options.skillPath,
+  );
+  const skill = matches[0];
+  if (skill === undefined)
+    return failed(
+      'SKILL_SELECTION_NOT_FOUND',
+      `No acquired skill exists at ${options.sourceId}@${options.revision}:${options.skillPath}.`,
+    );
+  if (matches.length !== 1)
+    return failed(
+      'SKILL_SELECTION_AMBIGUOUS',
+      `Acquired skill selection is ambiguous: ${options.skillPath}.`,
+    );
+  const checkoutDir = join(
+    options.rizzHome,
+    'global',
+    'skills',
+    'sources',
+    options.sourceId,
+    options.revision,
+  );
+  return {
+    ok: true,
+    value: {
+      skill,
+      source_dir: join(checkoutDir, ...options.skillPath.split('/')),
     },
   };
 }
