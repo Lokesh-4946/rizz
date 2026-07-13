@@ -8,6 +8,19 @@ import { searchAcquiredSkills } from './skill-discovery-index.js';
 
 const roots: string[] = [];
 
+function gitFixture(cwd: string, args: readonly string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_TERMINAL_PROMPT: '0',
+    },
+  }).trim();
+}
+
 async function acquiredOpenAiFixture(): Promise<{
   readonly home: string;
   readonly repository: string;
@@ -17,9 +30,9 @@ async function acquiredOpenAiFixture(): Promise<{
   const repository = await mkdtemp(join(tmpdir(), 'rizz-skill-discovery-source-'));
   const home = await mkdtemp(join(tmpdir(), 'rizz-skill-discovery-home-'));
   roots.push(repository, home);
-  execFileSync('git', ['init', '-q'], { cwd: repository });
-  execFileSync('git', ['config', 'user.email', 'rizz@example.test'], { cwd: repository });
-  execFileSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: repository });
+  gitFixture(repository, ['init', '-q']);
+  gitFixture(repository, ['config', 'user.email', 'rizz@example.test']);
+  gitFixture(repository, ['config', 'user.name', 'Rizz Test']);
   await writeFile(join(repository, 'LICENSE'), 'Approved source license fixture.\n');
   await mkdir(join(repository, 'skills', 'review'), { recursive: true });
   await writeFile(
@@ -38,18 +51,13 @@ async function acquiredOpenAiFixture(): Promise<{
     join(repository, 'skills', 'testing', 'SKILL.md'),
     '---\nname: test-first\ndescription: Write focused tests first.\n---\n',
   );
-  execFileSync('git', ['add', '.'], { cwd: repository });
-  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repository });
-  const revision = execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: repository,
-    encoding: 'utf8',
-  }).trim();
+  gitFixture(repository, ['add', '.']);
+  gitFixture(repository, ['commit', '-qm', 'fixture']);
+  const revision = gitFixture(repository, ['rev-parse', 'HEAD']);
   const checkout = join(home, 'global', 'skills', 'sources', 'openai-skills', revision);
   await mkdir(join(checkout, '..'), { recursive: true });
-  execFileSync('git', ['clone', '--quiet', repository, checkout]);
-  execFileSync('git', ['remote', 'set-url', 'origin', 'https://github.com/openai/skills.git'], {
-    cwd: checkout,
-  });
+  gitFixture(repository, ['clone', '--quiet', repository, checkout]);
+  gitFixture(checkout, ['remote', 'set-url', 'origin', 'https://github.com/openai/skills.git']);
   return { home, repository, revision, checkout };
 }
 
@@ -143,7 +151,7 @@ describe('acquired skill discovery index', () => {
       error: { code: 'SKILL_SOURCE_TAMPERED' },
     });
 
-    execFileSync('git', ['reset', '--hard', '--quiet'], { cwd: setup.checkout });
+    gitFixture(setup.checkout, ['reset', '--hard', '--quiet']);
     const drifted = join(
       setup.home,
       'global',
