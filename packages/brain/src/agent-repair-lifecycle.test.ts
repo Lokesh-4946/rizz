@@ -1,5 +1,15 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -113,14 +123,61 @@ process.stdout.write(JSON.stringify({ adapter: agent, arguments_verified: true }
 async function installFakeAgents(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'rizz-repair-fake-agents-'));
   roots.push(directory);
+  if (process.platform === 'win32') {
+    const sourcePath = join(directory, 'fake-agent.cs');
+    const executablePath = join(directory, 'fake-agent.exe');
+    await writeFile(
+      sourcePath,
+      `using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+public static class FakeAgent {
+  public static int Main(string[] args) {
+    string executable = Process.GetCurrentProcess().MainModule.FileName;
+    string agent = Path.GetFileNameWithoutExtension(executable).ToLowerInvariant();
+    bool exact;
+    if (agent == "codex") {
+      exact = args.SequenceEqual(new[] { "exec", "--ephemeral", "--sandbox", "workspace-write", "--color", "never", "-" });
+    } else if (agent == "claude") {
+      exact = args.SequenceEqual(new[] { "--print", "--output-format", "json", "--permission-mode", "acceptEdits" });
+    } else {
+      exact = args.Contains("-p") && args.Contains("-s") && args.Contains("--no-ask-user") && args.Contains("--allow-tool=write") && args.Contains("--deny-tool=shell") && args.Contains("--deny-tool=url") && args.Contains("--excluded-tools=web_fetch,web_search");
+    }
+    if (!exact) {
+      Console.Error.Write("unexpected adapter arguments: " + string.Join(" ", args));
+      return 9;
+    }
+    string target = Path.Combine(Environment.CurrentDirectory, "src", "first.ts");
+    File.WriteAllText(target, "export const repairedBy = \\"" + agent + "\\";\\n", new UTF8Encoding(false));
+    Console.Write("{\\"adapter\\":\\"" + agent + "\\",\\"arguments_verified\\":true}");
+    return 0;
+  }
+}
+`,
+    );
+    const compiler = join(
+      process.env.WINDIR ?? 'C:\\Windows',
+      'Microsoft.NET',
+      'Framework64',
+      'v4.0.30319',
+      'csc.exe',
+    );
+    execFileSync(compiler, ['/nologo', `/out:${executablePath}`, sourcePath]);
+    await Promise.all(
+      (['codex', 'claude', 'copilot'] as const).map((agent) =>
+        copyFile(executablePath, join(directory, `${agent}.exe`)),
+      ),
+    );
+    return directory;
+  }
   for (const agent of ['codex', 'claude', 'copilot'] as const) {
     const program = fakeAgentProgram(agent);
-    const modulePath = join(directory, `${agent}.mjs`);
-    await writeFile(modulePath, program);
     const executablePath = join(directory, agent);
     await writeFile(executablePath, program);
     await chmod(executablePath, 0o755);
-    await writeFile(join(directory, `${agent}.cmd`), `@node "%~dp0${agent}.mjs" %*\r\n`);
   }
   return directory;
 }
@@ -160,7 +217,7 @@ describe('disposable agent repair lifecycle', () => {
   it('runs exact approved Codex, Claude, and Copilot adapters in isolated worktrees and records verification evidence', async () => {
     const fakeAgents = await installFakeAgents();
     process.env.PATH = `${fakeAgents}${delimiter}${originalPath ?? ''}`;
-    process.env.PATHEXT = `.CMD;${originalPathExt ?? ''}`;
+    process.env.PATHEXT = `.EXE;.CMD;${originalPathExt ?? ''}`;
     const setups = await Promise.all(
       (['codex', 'claude', 'copilot'] as const).map((agent) => fixture(agent)),
     );

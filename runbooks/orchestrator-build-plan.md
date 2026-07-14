@@ -128,7 +128,7 @@ disposable handoff-to-repair-to-verification lifecycle UAT and interrupted-run r
 | Code-simplifier focused suite | 11/11 passed |
 | Public package contents | Passed |
 | Diff whitespace check | Passed |
-| Footprint | Passed: 54ms cold start, 200KB counted core |
+| Footprint | Passed: 52ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
 
 Current verdict: disposable Git repositories now prove the exact approved lifecycle for Codex,
