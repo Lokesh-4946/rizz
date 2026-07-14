@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileTaskBrief } from './context-loop.js';
 import { generateProjectBrain } from './index.js';
-import { enablePinnedSkill, listEnabledProjectSkills } from './project-skill-enablement.js';
+import {
+  enablePinnedSkill,
+  listEnabledProjectSkills,
+  listVerifiedProjectSkills,
+} from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { addPinnedSkill } from './skill-source-manager.js';
 
@@ -194,5 +198,31 @@ describe('isolated project skill enablement', () => {
       ok: false,
       error: { code: 'SKILL_ENABLEMENT_INVALID' },
     });
+  });
+
+  it('lists only agent-compatible skills whose immutable pin still verifies', async () => {
+    const setup = await fixture();
+    await enablePinnedSkill({
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      name: 'review-evidence',
+      agents: ['codex'],
+      approved: true,
+    });
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'copilot',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { skills: [] } });
+    await writeFile(join(setup.pinned.value.cache_dir, 'SKILL.md'), 'tampered\n');
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'codex',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_CACHE_TAMPERED' } });
   });
 });

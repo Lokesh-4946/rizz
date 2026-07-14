@@ -83,10 +83,89 @@ describe('Rizz MCP server', () => {
     expect(tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         'get_task_brief',
+        'preview_mission',
         'record_checkpoint',
         'complete_work',
         'create_handoff',
       ]),
+    );
+  });
+
+  it('keeps CLI preview and MCP mission identity exact in the bounded brief', async () => {
+    const setup = await fixture();
+    const cli = await executeContextCommand({
+      rootDir: setup.rootDir,
+      rizzHome: setup.rizzHome,
+      args: [
+        'mission',
+        'preview',
+        '--task',
+        'Update Hero',
+        '--agent',
+        'codex',
+        '--scope',
+        'src/hero.ts',
+        '--json',
+      ],
+    });
+    expect(cli).toMatchObject({ exitCode: 0, stderr: '' });
+    const cliPreview = JSON.parse(cli.stdout) as {
+      readonly mission_id: string;
+      readonly agent: string;
+      readonly repository_revision: string;
+      readonly selected_skills: readonly unknown[];
+    };
+
+    const output = capture();
+    const server = createMcpServer({ ...setup, write: output.write });
+    await server.handle(
+      JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }),
+    );
+    const missionArguments = {
+      task: 'Update Hero',
+      agent: 'codex',
+      scope: ['src/hero.ts'],
+      scope_status: 'accepted',
+    };
+    await server.handle(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'preview_mission', arguments: missionArguments },
+      }),
+    );
+    await server.handle(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'get_task_brief', arguments: missionArguments },
+      }),
+    );
+
+    const mcpPreview = output.messages[1]?.result as {
+      readonly structuredContent: typeof cliPreview;
+    };
+    const mcpBrief = output.messages[2]?.result as {
+      readonly structuredContent: {
+        readonly mission: {
+          readonly mission_id: string;
+          readonly agent: string;
+          readonly repository_revision: string;
+          readonly selected_skills: readonly unknown[];
+        };
+      };
+    };
+    expect(mcpPreview.structuredContent).toEqual(expect.objectContaining(cliPreview));
+    expect(mcpBrief.structuredContent.mission).toEqual({
+      mission_id: cliPreview.mission_id,
+      agent: cliPreview.agent,
+      repository_revision: cliPreview.repository_revision,
+      selected_skills: cliPreview.selected_skills,
+    });
+    expect(Buffer.byteLength(JSON.stringify(mcpBrief.structuredContent))).toBeLessThanOrEqual(
+      32 * 1024,
     );
   });
 

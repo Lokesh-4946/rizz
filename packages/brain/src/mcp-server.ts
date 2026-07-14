@@ -12,6 +12,14 @@ import {
   recordLoopCheckpoint,
 } from './context-loop.js';
 import { explainCurrentProject } from './current-project.js';
+import {
+  type MissionAgent,
+  type MissionBriefIdentity,
+  type MissionCitation,
+  type MissionPreviewOptions,
+  missionBriefIdentity,
+  previewMission,
+} from './mission-contract.js';
 import { prepareProjectStore } from './project-store.js';
 import { readResourceStatus } from './resource-governance.js';
 import { redactSensitiveText } from './sensitivity.js';
@@ -54,8 +62,38 @@ const TOOLS = [
       properties: {
         task: { type: 'string' },
         agent: { type: 'string', enum: SUPPORTED_SKILL_AGENTS },
+        scope: { type: 'array', items: { type: 'string' } },
+        scope_status: { type: 'string', enum: ['open', 'proposed', 'accepted'] },
+        requested_skills: { type: 'array', items: { type: 'string' } },
       },
       required: ['task'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'preview_mission',
+    description:
+      'Preview a versioned mission with verified skill identities and provenance-bearing proposals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string' },
+        agent: { type: 'string', enum: ['codex', 'claude', 'copilot'] },
+        scope: { type: 'array', items: { type: 'string' } },
+        scope_status: { type: 'string', enum: ['open', 'proposed', 'accepted'] },
+        requested_skills: { type: 'array', items: { type: 'string' } },
+        approved_skill_risks: { type: 'array', items: { type: 'string' } },
+        constraints: { type: 'array', items: { type: 'string' } },
+        stop_conditions: { type: 'array', items: { type: 'string' } },
+        required_behavior: { type: 'array', items: { type: 'string' } },
+        non_goals: { type: 'array', items: { type: 'string' } },
+        verification_checks: { type: 'array', items: { type: 'string' } },
+        uncertainty_notes: { type: 'array', items: { type: 'string' } },
+        proposed_constraints: { type: 'array', items: { type: 'object' } },
+        proposed_non_goals: { type: 'array', items: { type: 'object' } },
+        risks: { type: 'array', items: { type: 'object' } },
+      },
+      required: ['task', 'agent'],
       additionalProperties: false,
     },
   },
@@ -140,6 +178,122 @@ function result(value: unknown): ToolResult {
 function toolError(code: string, message: string): ToolResult {
   const value = { code, message: redactSensitiveText(message) };
   return { ...result(value), isError: true };
+}
+
+function stringList(value: unknown): readonly string[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+}
+
+function missionAgent(value: unknown): MissionAgent | null {
+  return value === 'codex' || value === 'claude' || value === 'copilot' ? value : null;
+}
+
+function citation(value: unknown): MissionCitation | null {
+  if (!isRecord(value) || typeof value.value !== 'string') return null;
+  if (value.kind === 'path' || value.kind === 'evidence') {
+    return { kind: value.kind, value: value.value };
+  }
+  if (value.kind === 'symbol' && typeof value.path === 'string') {
+    return { kind: 'symbol', value: value.value, path: value.path };
+  }
+  return null;
+}
+
+function citations(value: unknown): readonly MissionCitation[] | null {
+  if (!Array.isArray(value)) return null;
+  const parsed = value.map(citation);
+  return parsed.every((item): item is MissionCitation => item !== null) ? parsed : null;
+}
+
+function proposedInputs(value: unknown): MissionPreviewOptions['proposedConstraints'] | null {
+  if (!Array.isArray(value)) return null;
+  const result: Array<{ statement: string; citations: readonly MissionCitation[] }> = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.statement !== 'string') return null;
+    const parsedCitations = citations(item.citations);
+    if (parsedCitations === null) return null;
+    result.push({ statement: item.statement, citations: parsedCitations });
+  }
+  return result;
+}
+
+function riskInputs(value: unknown): MissionPreviewOptions['risks'] | null {
+  if (!Array.isArray(value)) return null;
+  const result: Array<NonNullable<MissionPreviewOptions['risks']>[number]> = [];
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      typeof item.statement !== 'string' ||
+      (item.provenance !== 'explicit' &&
+        item.provenance !== 'deterministic_signal' &&
+        item.provenance !== 'ai_inferred')
+    ) {
+      return null;
+    }
+    const parsedCitations = item.citations === undefined ? [] : citations(item.citations);
+    if (parsedCitations === null) return null;
+    result.push({
+      statement: item.statement,
+      provenance: item.provenance,
+      citations: parsedCitations,
+    });
+  }
+  return result;
+}
+
+function missionOptions(
+  options: McpServerOptions,
+  args: Readonly<Record<string, unknown>>,
+): { readonly ok: true; readonly value: MissionPreviewOptions } | { readonly ok: false } {
+  const agent = missionAgent(args.agent);
+  if (typeof args.task !== 'string' || agent === null) return { ok: false };
+  const listFields = [
+    ['scope', 'scope'],
+    ['requested_skills', 'requestedSkills'],
+    ['approved_skill_risks', 'approvedSkillRisks'],
+    ['constraints', 'constraints'],
+    ['stop_conditions', 'stopConditions'],
+    ['required_behavior', 'requiredBehavior'],
+    ['non_goals', 'nonGoals'],
+    ['verification_checks', 'verificationChecks'],
+    ['uncertainty_notes', 'uncertaintyNotes'],
+  ] as const;
+  const parsedLists: Record<string, readonly string[]> = {};
+  for (const [wireName, optionName] of listFields) {
+    if (args[wireName] === undefined) continue;
+    const parsed = stringList(args[wireName]);
+    if (parsed === null) return { ok: false };
+    parsedLists[optionName] = parsed;
+  }
+  if (
+    args.scope_status !== undefined &&
+    args.scope_status !== 'open' &&
+    args.scope_status !== 'proposed' &&
+    args.scope_status !== 'accepted'
+  ) {
+    return { ok: false };
+  }
+  const proposedConstraints =
+    args.proposed_constraints === undefined ? undefined : proposedInputs(args.proposed_constraints);
+  const proposedNonGoals =
+    args.proposed_non_goals === undefined ? undefined : proposedInputs(args.proposed_non_goals);
+  const risks = args.risks === undefined ? undefined : riskInputs(args.risks);
+  if (proposedConstraints === null || proposedNonGoals === null || risks === null) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    value: {
+      ...options,
+      task: args.task,
+      agent,
+      ...parsedLists,
+      ...(args.scope_status === undefined ? {} : { scopeStatus: args.scope_status }),
+      ...(proposedConstraints === undefined ? {} : { proposedConstraints }),
+      ...(proposedNonGoals === undefined ? {} : { proposedNonGoals }),
+      ...(risks === undefined ? {} : { risks }),
+    },
+  };
 }
 
 function rpcError(id: string | number | null, code: number, message: string) {
@@ -231,15 +385,33 @@ async function callTool(
   name: string,
   args: Readonly<Record<string, unknown>>,
 ): Promise<ToolResult> {
+  if (name === 'preview_mission') {
+    const parsed = missionOptions(options, args);
+    if (!parsed.ok) return toolError('MCP_ARGUMENT_INVALID', 'Mission arguments are invalid.');
+    const preview = await previewMission(parsed.value);
+    return preview.ok
+      ? result(preview.value)
+      : toolError(preview.error.code, preview.error.message);
+  }
   if (name === 'get_task_brief') {
     if (typeof args.task !== 'string')
       return toolError('MCP_ARGUMENT_INVALID', 'task is required.');
     if (args.agent !== undefined && typeof args.agent !== 'string')
       return toolError('MCP_ARGUMENT_INVALID', 'agent must be a string.');
+    let mission: MissionBriefIdentity | undefined;
+    const agent = missionAgent(args.agent);
+    if (agent !== null) {
+      const parsed = missionOptions(options, args);
+      if (!parsed.ok) return toolError('MCP_ARGUMENT_INVALID', 'Mission arguments are invalid.');
+      const preview = await previewMission(parsed.value);
+      if (!preview.ok) return toolError(preview.error.code, preview.error.message);
+      mission = missionBriefIdentity(preview.value);
+    }
     const brief = await compileTaskBrief({
       ...options,
       task: args.task,
       ...(typeof args.agent === 'string' ? { agent: args.agent } : {}),
+      ...(mission === undefined ? {} : { mission }),
     });
     return brief.ok ? result(brief.value) : toolError(brief.error.code, brief.error.message);
   }

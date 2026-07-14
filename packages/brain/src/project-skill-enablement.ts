@@ -199,6 +199,60 @@ export async function listEnabledProjectSkills(
   };
 }
 
+function sameRequirements(
+  left: EnabledProjectSkill['requirements'],
+  right: EnabledProjectSkill['requirements'],
+): boolean {
+  return (
+    left.shell === right.shell &&
+    left.network === right.network &&
+    left.credentials === right.credentials
+  );
+}
+
+export async function listVerifiedProjectSkills(
+  options: ProjectOptions & { readonly agent: string },
+): Promise<
+  EnableResult<{ readonly project_id: string; readonly skills: readonly EnabledProjectSkill[] }>
+> {
+  const listed = await listEnabledProjectSkills(options);
+  if (!listed.ok) return listed;
+  const prepared = await project(options);
+  if (!prepared.ok) return prepared;
+  const rizzHome = options.rizzHome ?? join(prepared.value.projectDir, '..', '..');
+  const verifiedSkills: EnabledProjectSkill[] = [];
+  for (const skill of listed.value.skills) {
+    if (!skill.agents.includes(options.agent)) continue;
+    const pinned = await readPinnedSkillRecord({ rizzHome, name: skill.name });
+    if (!pinned.ok) return pinned;
+    const verified = await verifyPinnedSkillCache({ record: pinned.value });
+    if (!verified.ok) return verified;
+    const identityMatches =
+      skill.digest === pinned.value.digest &&
+      skill.revision === pinned.value.revision &&
+      skill.source_repository === pinned.value.source_repository &&
+      skill.source_id === pinned.value.source_id &&
+      skill.skill_path === pinned.value.skill_path &&
+      skill.file_digest === pinned.value.file_digest &&
+      skill.audit_status === pinned.value.audit_status &&
+      sameRequirements(skill.requirements, pinned.value.requirements);
+    if (!identityMatches) {
+      return {
+        ok: false,
+        error: {
+          code: 'SKILL_ENABLEMENT_STALE',
+          message: `Enabled skill identity no longer matches its immutable pin: ${skill.name}`,
+        },
+      };
+    }
+    verifiedSkills.push(skill);
+  }
+  return {
+    ok: true,
+    value: { project_id: listed.value.project_id, skills: verifiedSkills },
+  };
+}
+
 export async function removeEnabledProjectSkill(
   options: ProjectOptions & {
     readonly name: string;

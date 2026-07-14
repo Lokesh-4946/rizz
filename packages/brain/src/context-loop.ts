@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
+import type { MissionBriefIdentity } from './mission-contract.js';
 import { listEnabledProjectSkills } from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
@@ -43,6 +44,7 @@ export interface TaskBrief {
   readonly brain_generated_at: string;
   readonly task: string;
   readonly agent: string | null;
+  readonly mission?: MissionBriefIdentity;
   readonly claims: readonly TaskBriefClaim[];
   readonly omissions: readonly string[];
   readonly stale_evidence_warnings: readonly string[];
@@ -195,6 +197,7 @@ export async function compileTaskBrief(options: {
   readonly maxClaims?: number;
   readonly maxBytes?: number;
   readonly agent?: string;
+  readonly mission?: MissionBriefIdentity;
 }): Promise<RizzResult<TaskBrief>> {
   if (
     options.agent !== undefined &&
@@ -207,6 +210,17 @@ export async function compileTaskBrief(options: {
   }
   const store = await prepareProjectStore(options);
   if (!store.ok) return store;
+  const repositoryRevision = gitRevision(store.value.rootPath);
+  if (
+    options.mission !== undefined &&
+    (options.mission.agent !== options.agent ||
+      options.mission.repository_revision !== repositoryRevision)
+  ) {
+    return error(
+      'MISSION_BRIEF_MISMATCH',
+      'Task Brief mission agent or repository revision does not match the current request.',
+    );
+  }
   const generatedAt = await readGeneratedAt(store.value.brainDir);
   if (generatedAt === null) {
     return error(
@@ -253,10 +267,11 @@ export async function compileTaskBrief(options: {
     envelope: {
       schema_version: 1,
       project_id: store.value.projectId,
-      repository_revision: gitRevision(store.value.rootPath),
+      repository_revision: repositoryRevision,
       brain_generated_at: generatedAt,
       task: redactSensitiveText(options.task),
       agent: options.agent ?? null,
+      ...(options.mission === undefined ? {} : { mission: options.mission }),
       omissions: omitted > 0 ? [`${omitted} lower-ranked or uncited claim(s) omitted`] : [],
       stale_evidence_warnings: [
         'Brain evidence is timestamped but not bound to this exact repository revision.',
