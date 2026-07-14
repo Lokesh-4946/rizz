@@ -6,23 +6,45 @@ context contract.
 
 ECC-inspired features are useful when they strengthen that contract without joining the default path.
 
-## Human-Agent Loop
+## Canonical Host-Agent Loop
 
-rizz is most useful when a human keeps their preferred coding agent and uses rizz as the local
-evidence contract around that agent:
+Rizz is the lightweight evidence and verification control plane that makes existing coding agents
+faster, grounded, repeatable, economical, and safe to release. AI reasons; Rizz supplies facts,
+constrains context, records provenance/state, and verifies outcomes. Host-native permissions remain
+authoritative. Rizz has no default model call, autonomy mode, general agent runner, or competing
+approval system.
 
-1. Human intent.
-2. rizz mission contract, project intelligence, and inspect-first context.
-3. Coding agent implementation.
-4. rizz review.
-5. rizz correction packet.
-6. Coding agent repair.
-7. rizz verification.
-8. Human approval.
+1. The user gives a task to Codex, Claude, Copilot, or another host coding agent.
+2. The host requests a bounded, provenance-bearing Rizz evidence packet.
+3. The host reasons, proposes semantic risks/scope/non-goals, plans, and implements.
+4. Rizz tracks the exact mission and working snapshot and runs deterministic verification.
+5. The host receives the exact diff, deterministic risk signals, results, and cited evidence.
+6. The host performs semantic review using Rizz's pinned skills and deterministic
+   `ReviewEvidencePacket`.
+7. Rizz validates citations/recorded relationships, rejects unsupported references, deduplicates,
+   and persists host findings with origin/status/confidence.
+8. The host repairs current evidence-backed findings; targeted verification and correction repeat
+   until clean or explicitly blocked.
+9. Rizz verifies the final working snapshot and issues a pre-commit snapshot receipt.
+10. The host explicitly commits. Rizz proves the committed tree is byte-equivalent to the verified
+    snapshot and reruns required checks if hooks or protected bytes changed.
+11. Rizz issues `local_green` for the exact commit SHA plus mission/evidence/config/verification/
+    toolchain fingerprints.
+12. The host explicitly pushes and submits/opens the PR or MR.
+13. Rizz or an optional connector revalidates the exact remote head, CI, reviews, branch protection,
+    signoff, and policy, then issues `merge_ready` for that exact head.
+14. The host explicitly invokes merge.
 
-The product should optimize this loop without turning rizz into a heavy default orchestrator. rizz
-must distinguish static understanding from runtime verification, recommend targeted checks, and only
-upgrade confidence when evidence exists.
+The host owns semantic review and product intent. Rizz emits factual risk signals and validates
+cited evidence; citation-valid AI conclusions remain hypotheses until verification, stronger
+evidence, human acceptance, or repair outcome confirms/rejects them. Explicit user/spec/issue/
+AGENTS/policy constraints are hard gates. AI-proposed paths/non-goals are nonblocking and do not
+require a separate Rizz approval. Risky external-skill and destructive/network-operation gates
+remain distinct because they protect distinct side effects.
+
+The complete design and staged acceptance model live in
+`docs/superpowers/specs/2026-07-14-precision-closed-loop-design.md` and
+`docs/superpowers/plans/2026-07-14-precision-closed-loop.md`.
 
 Current loop readiness:
 
@@ -31,7 +53,7 @@ Current loop readiness:
 | Human intent | 76/100 | 24 | Intent can enter through CLI/review/explain flows, and review can now warn when dirty local work may distort the requested task scope; capture UX is still lightweight. |
 | rizz mission contract, project intelligence, and inspect-first context | 99/100 | 1 | Project intelligence, Mission Control, confidence queues, file-level explain, DBMS schema/model entities including SQLAlchemy/Alembic, security/tool inventory, unified repair packets, UAT artifacts, review-time mission-contract comparison, mission-contract normalization, and lexical unrelated-work hints are strong; explicit mission capture UX can still be sharper. |
 | Coding agent implementation | 90/100 | 10 | Exact, approval-gated repair handoffs now execute through bounded Codex, Claude Code, and Copilot adapters in isolated worktrees; general session import/control-pane context and broader task-planning adapters remain future opt-in work. |
-| rizz review | 99/100 | 1 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, normalized duplicate code, mission-contract drift, semantic unrelated-work hints, and dirty-tree/branch-diff mixed-basis reporting. |
+| Host semantic review with Rizz evidence | 99/100 | 1 | Review Intelligence supplies blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and governance checks; the host AI owns semantic conclusions and Rizz validates/persists cited findings. |
 | rizz correction packet | 96/100 | 4 | Unified `agent_repair_packets` are now consumed through an exact project/revision/artifact/packet identity with bounded files, verification actions, and stop conditions; richer automatic scope narrowing remains. |
 | Coding agent repair | 94/100 | 6 | All three agent-specific bridges now have disposable handoff-to-edit-to-verification proof, strict worktree/project ownership, stale refusal, cancellation, and interrupted-run recovery; real vendor/model validation, retry policy, and automatic post-edit scope enforcement remain. |
 | rizz verification | 100/100 | 0 | rizz scores proof and missing evidence, binds approval to a deterministic review fingerprint, and safely reuses exact-match signoff history across repeated repair reviews. |
@@ -56,6 +78,76 @@ Current loop readiness:
 | Individual upstream skill discovery | Find audited skills inside previously acquired collections with exact source evidence. | Shipped foundation: bounded offline search, deterministic content-addressed global indexes, exact source/revision filters, and stale/missing/tampered checkout rejection. |
 | Acquired skill selection and pinning | Preview and pin one exact audited skill without manual filesystem paths. | Shipped foundation: exact source/revision/path selection, explicit approval, immutable cache objects, full provenance, name-conflict rejection, and concurrent-safe registry writes. |
 | Agent repair handoff | Give a selected coding agent one bounded, evidence-bound correction contract and consume it only after approval. | Shipped foundation: Codex, Claude Code, and Copilot previews plus opt-in execution; exact project/revision/artifact digests; explicit packet, file, verification, and prompt caps; linked-worktree proof; cancellation and approved interrupted-run recovery; disposable process-level lifecycle UAT. |
+
+## Precision-First Milestones and Release Boundary
+
+| Milestone | Status | Capability and dependency |
+| --- | --- | --- |
+| A — Context precision | Implemented in current baton | Literal mission relevance, 32 KiB whole-JSON briefs, versioned mission/pinned skills, explicit versus proposed provenance, nonblocking proposed/open paths, citation validation, CLI/MCP parity. |
+| B — Review/repair precision | Planned after A | Deterministic `ReviewEvidencePacket`; host-AI findings with citations/stable IDs; baseline-debt separation; scoped correction admission; deduplication and convergence/no-progress reasons. |
+| C — Snapshot/local release | Planned after B | Dirty working-snapshot identity, incremental verification DAG, pre-commit receipt, post-commit equivalence, exact-SHA `local_green`, explicit commit/push/submit operations, crash-safe idempotent journal. |
+| D — Delta context | Planned after A–C identities | Changed-evidence-only packets, hash-addressed expansions, optimization receipts, exact-original lossless protection, context byte/token/reread accounting. |
+| E — Remote readiness/calibration | Planned after B–D | Exact-remote-head `merge_ready`, remote CI/review/rules/signoff TOCTOU checks, explicit merge, fault/metamorphic/seeded-defect corpus, three-ecosystem calibration, falsifiable metrics. |
+
+Release capability names remain provisional pending contract review. Capabilities are separate and
+explicit: commit, push, provider-neutral submit/open PR-or-MR, and merge. Candidate spellings such as
+`rizz submit --pr` and `rizz merge` do not imply an implemented command in Milestone A. There is no
+one-click release bypass and no Rizz autonomy mode.
+
+Commit precedes final local green. A pre-commit result is only a working-snapshot receipt. Hooks,
+formatters, generated bytes, staged/unstaged differences, protected untracked content, submodule/LFS
+state, config/lockfile/policy/skill changes, or toolchain changes invalidate the appropriate receipt.
+`local_green` covers one exact local commit. `merge_ready` separately covers one exact remote PR/MR
+head plus CI/reviews/branch protection/signoff/policy. Force-pushes, amended commits, stale CI, and
+remote review/policy/signoff changes invalidate merge readiness.
+
+Future release operations require stable operation IDs, phase receipts, partial-success discovery,
+single terminal ownership, and exact next-safe-action recovery. A network timeout after successful
+remote creation must recover the same PR/MR rather than duplicate external actions.
+
+## Precision QA Contract
+
+The QA report must be machine-readable and falsifiable; internal 100/100 scorecards are not release
+proof.
+
+- **Metamorphic:** unrelated docs/vendor/generated trees and thousands of unrelated graph edges do
+  not alter bounded packets/findings; enumeration/object-key reorder is semantically stable;
+  duplicates cannot raise relevance; CLI/MCP/pinned-skill contracts agree; protected originals
+  round-trip exactly.
+- **Invalidation matrix:** independently mutate source bytes, staged state, protected untracked
+  files, lock/config, mission constraints, skill digest, verification command, toolchain/policy,
+  local commit, remote head, CI, review state, and signoff; invalidate no more and no less than the
+  affected working receipt, local green, or merge readiness.
+- **Fault/recovery:** kill during verification/evidence writes and after push; recover timeout after
+  successful PR/MR creation; force-push before merge; exercise partial writes, symlink swaps,
+  redirected state, corrupt exact originals, cancellation, clock skew, and concurrent ownership;
+  never duplicate external actions.
+- **Differential/flake:** cover base-fails/head-fails-same, base-pass/head-fail,
+  base-fail/head-pass, capped intermittent reruns, and infrastructure/provider outages reported but
+  excluded from product metrics. Required flaky checks cannot silently produce green.
+- **Seeded defects/negative controls:** measure clean surgical false positives and seeded missed
+  defects across behavior, API compatibility, security, migration/schema, dependency/lockfile,
+  config/test/generated/type/comment-only changes in FastAPI, Vitest, and a third ecosystem.
+- **Untrusted context:** repository prompt injection remains quoted evidence; cover Unicode/control
+  filenames, ANSI/log injection, traversal, case-only changes, symlinks, submodules, LFS,
+  shallow/detached repos, renames, and bomb-like artifacts. Repository text is never executed.
+- **Release TOCTOU:** hook-mutated commit prevents green; post-green local change prevents submit;
+  force-push/rule/review/signoff change prevents merge; retry recovers one PR/MR; merge receipt binds
+  the merged remote SHA.
+
+Required metrics: evidence-packet precision and required-evidence recall; citation rejection and
+valid-finding acceptance/confirmation; missed seeded defects; false blocking; convergence and
+no-progress stops; repeated reads and duplicate bytes/tokens; targeted/full verification reuse and
+reruns; time, input/output/cache tokens, actual cost, and rereads per accepted verified change;
+infrastructure-excluded runs; exact model/tool versions; warm versus cold preparation.
+
+Incremental verification keys include working-snapshot/committed-tree digest, exact command argv and
+cwd, relevant environment/toolchain fingerprint, config/lockfile digest, and verification-plan
+identity. Every result records why it was reused, rerun, skipped, or invalidated. Targeted checks run
+during repair; the complete required local gate runs once before local green. Delta context sends
+only new evidence, invalidations, and requested hash-addressed expansions after the first packet.
+Stable finding IDs and equivalent-diff/same-finding/no-new-evidence detection prevent unproductive
+loops and report exact convergence reasons alongside cost/time ceilings.
 
 ## Resource Governance Tracker
 
@@ -114,50 +206,72 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
-Run: `feature/agent-repair-lifecycle-uat`, opt-in agent repair handoff track milestone 3:
-disposable handoff-to-repair-to-verification lifecycle UAT and interrupted-run recovery.
+Run: `feature/precision-context-milestone-a`, Precision-First Closed Loop Milestone A: context
+precision.
 
 | Check | Result |
 | --- | ---: |
-| Focused lifecycle/recovery/execution/bridge tests | 11/11 passed |
-| Full unit suite | 486/486 passed |
+| Focused Task 1–3 + adversarial inventory suites | 47/47 passed |
+| 3,097,813-byte Vitest inventory | Valid JSON; 2,995 emitted/accounted bytes; 19,992 source and 19,992 evidence entries truncated |
+| FastAPI/Vitest 20,000-item metamorphic fixtures | 2/2 passed; admitted evidence invariant; translated docs excluded |
+| CLI/MCP mission + Task Brief parity | Passed; same mission ID, agent, revision, and selected skill digests |
+| Explicit/proposed and citation QA | Passed; proposed/open paths nonblocking; unsupported AI inference rejected |
+| Full unit suite | 512/512 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed |
 | Install-local smoke | 5/5 passed |
-| Code-simplifier focused suite | 11/11 passed |
-| Public package contents | Passed |
+| Simplifier/review-loop | Canonical mission hash revalidation added; nested conditionals simplified; no scoped findings remain |
+| Public package contents | Passed: brain 85, providers 65, core 19, TUI 13, CLI 6 files |
+| Targeted formatting/lint + strict typecheck | Passed |
 | Diff whitespace check | Passed |
-| Footprint | Passed: 52ms cold start, 200KB counted core |
-| Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
+| Footprint | Passed: 51ms cold start, 200KB counted core (brain remains opt-in) |
+| Full `pnpm check` | Passed |
 
-Current verdict: disposable Git repositories now prove the exact approved lifecycle for Codex,
-Claude Code, and Copilot through the real process-spawning bridge service and local fake
-executables. Every adapter's fixed argument contract was checked; each process edited only
-`src/first.ts`; `git diff --check` passed; verification evidence was written to its isolated project
-store; all three repositories remained free of `.rizz` state. Separate repositories and Rizz homes
-proved project isolation. A changed revision refused the stale handoff before invocation.
+Fresh focused command:
 
-`rizz repair recover --run <run-id> --handoff <id> --approve` now closes a Rizz-owned orphaned
-`running` record as a byte-verified `cancelled` record with `REPAIR_RUN_INTERRUPTED`. Recovery
-rejects missing approval, malformed identity, foreign ownership, project/handoff/worktree mismatch,
-non-running state, malformed or oversized records, and redirected state-file symlinks. The UAT
-started repair execution in a disposable child process, observed its external running state,
-terminated the process, and recovered that exact run. No real third-party agent, provider call, or
-network access was used. No dependency or always-on core-path change was added.
+```bash
+pnpm vitest run packages/brain/src/task-relevance.test.ts \
+  packages/brain/src/task-brief-budget.test.ts \
+  packages/brain/src/context-loop.test.ts \
+  packages/brain/src/mission-contract.test.ts \
+  packages/brain/src/project-skill-enablement.test.ts \
+  packages/brain/src/mcp-server.test.ts \
+  packages/brain/src/upstream-skill-context-uat.test.ts \
+  packages/brain/src/milestone-a-precision-qa.test.ts
+pnpm typecheck
+pnpm biome check <Task-1-to-3 implementation/test/fixture files>
+git diff --check
+```
 
-The three-milestone agent repair handoff track is functionally complete. Human-agent loop readiness
-is recalibrated from 89.4/100 to 94.3/100 overall: 39 of the previous 85 readiness points were
-closed, leaving 46. The remaining work is concentrated in human intent capture, general session
-adapters/control-pane context, real vendor/model UAT, retry/resume policy, automatic post-edit scope
-enforcement, and richer automatic packet narrowing.
+Current verdict: Rizz now prepares a bounded evidence packet instead of acting as a reasoning
+engine. Exact anchors and direct changed-file/test-neighbor evidence stay stable as irrelevant
+inventory grows. Generic-only overlap remains excluded. Briefs are valid whole JSON under the
+approved 32 KiB serialized ceiling with honest gaps and exact byte/truncation accounting.
+
+Mission preview binds project/revision/agent and verified immutable skill identities. Explicit
+constraints and accepted non-goals remain distinct from cited AI proposals. Risk provenance is
+preserved as explicit, deterministic signal, or AI-inferred hypothesis. Rizz validates path/symbol/
+evidence citations and rejects unsupported references. Open or proposed host paths can be recorded
+without a redundant Rizz approval; risky external skills retain their separate explicit gate.
+Persisted mission content is rehashed during verification, so changed repository revision, skill
+pin/cache, or contract bytes invalidate identity. CLI and MCP carry the same mission pointer inside
+the byte-bounded brief.
+
+No default model call, production dependency, compression, cache, reversible retrieval, image
+encoding, release attestation, or remote release operation was added. The counted default core
+remains at the 200KB ceiling; brain functionality remains opt-in.
+
+The stable named inefficiency regression target is planned for Milestone E. Until then the exact
+focused command above plus `packages/brain/src/milestone-a-precision-qa.test.ts` is the canonical
+Milestone-A rerun.
 
 ### Next Weakest-Capability Track
 
-Improve human intent capture and opt-in session adapters/control-pane snapshots while preserving the
-single-agent default path. Treat real vendor/model lifecycle validation, retry/resume policy, and
-automatic post-edit scope enforcement as a separate opt-in hardening track requiring explicit
-provider authorization.
+Execute Milestone B: deterministic `ReviewEvidencePacket`, host-AI finding/citation contract, stable
+finding IDs, mission-scoped correction admission, baseline-debt separation, and convergence/
+no-progress behavior. Do not begin local-green or release machinery until those review identities
+are stable.
 
 ## Previous Agent Repair Execution Result
 
