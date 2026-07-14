@@ -15,8 +15,10 @@ release proof.
    emitted-byte accounting, bounded claims/files/evidence IDs/summary text, explicit truncation, and
    Result-shaped envelope failure.
 3. Mission preview binds project, Git revision, host agent, proposed/explicit scope status,
-   constraints, non-goals, risk provenance, and verified pinned-skill digests. Explicit constraints
-   and accepted non-goals remain separate from AI proposals. Unsupported AI citations fail.
+   constraints, non-goals, risk provenance, and verified pinned-skill digests. New agent enablement
+   is bound to a separate canonical content-addressed receipt; validated pre-receipt schema-v1
+   manifests remain readable. Explicit constraints and accepted non-goals remain separate from AI
+   proposals. Unsupported AI citations fail.
 4. Open or proposed host scope is persisted without a separate Rizz path-approval gate. A risky
    external skill remains a distinct explicit blocker. For task/scope/status/skill options exposed by
    the CLI, CLI/MCP previews and complete Task Brief payloads are semantically equivalent. Richer MCP

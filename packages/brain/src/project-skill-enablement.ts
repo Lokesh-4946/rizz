@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { prepareProjectStore } from './project-store.js';
 import {
@@ -33,7 +33,7 @@ export interface EnabledProjectSkill {
     readonly network: boolean;
     readonly credentials: boolean;
   };
-  readonly enablement_digest: string;
+  readonly enablement_receipt?: string;
 }
 
 interface EnabledManifest {
@@ -46,10 +46,35 @@ type EnableResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
-type EnabledProjectSkillIdentity = Omit<EnabledProjectSkill, 'enablement_digest'>;
+type EnabledProjectSkillIdentity = Omit<EnabledProjectSkill, 'enablement_receipt'>;
 
-function enablementDigest(skill: EnabledProjectSkillIdentity): string {
-  return createHash('sha256').update(JSON.stringify(skill)).digest('hex');
+interface EnablementReceiptCore {
+  readonly schema_version: 1;
+  readonly project_id: string;
+  readonly skill: EnabledProjectSkillIdentity;
+}
+
+interface EnablementReceipt extends EnablementReceiptCore {
+  readonly digest: string;
+}
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Readonly<Record<string, unknown>>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalValue(item)]),
+    );
+  }
+  return value;
+}
+
+function receiptDigest(receipt: EnablementReceiptCore): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalValue(receipt)))
+    .digest('hex');
 }
 
 async function readManifest(
@@ -102,6 +127,58 @@ async function writeVerified(path: string, value: unknown): Promise<void> {
   if ((await readFile(path, 'utf8')) !== contents) {
     throw new Error(`write verification failed: ${path}`);
   }
+}
+
+async function writeEnablementReceipt(
+  projectDir: string,
+  projectId: string,
+  skill: EnabledProjectSkillIdentity,
+): Promise<string> {
+  const core: EnablementReceiptCore = { schema_version: 1, project_id: projectId, skill };
+  const digest = receiptDigest(core);
+  const directory = join(projectDir, 'skills', 'receipts');
+  const path = join(directory, `${digest}.json`);
+  const contents = `${JSON.stringify({ ...core, digest }, null, 2)}\n`;
+  await mkdir(directory, { recursive: true });
+  try {
+    if ((await readFile(path, 'utf8')) !== contents) {
+      throw new Error(`Immutable enablement receipt conflicts with its digest: ${digest}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await writeVerified(path, { ...core, digest });
+  }
+  return digest;
+}
+
+async function verifyEnablementReceipt(
+  projectDir: string,
+  projectId: string,
+  skill: EnabledProjectSkill,
+): Promise<boolean> {
+  if (skill.enablement_receipt === undefined) return true;
+  if (!/^[a-f0-9]{64}$/.test(skill.enablement_receipt)) return false;
+  const { enablement_receipt: expectedDigest, ...identity } = skill;
+  let receipt: EnablementReceipt;
+  try {
+    receipt = JSON.parse(
+      await readFile(join(projectDir, 'skills', 'receipts', `${expectedDigest}.json`), 'utf8'),
+    ) as EnablementReceipt;
+  } catch {
+    return false;
+  }
+  const core: EnablementReceiptCore = {
+    schema_version: 1,
+    project_id: projectId,
+    skill: identity,
+  };
+  return (
+    receipt.schema_version === 1 &&
+    receipt.project_id === projectId &&
+    receipt.digest === expectedDigest &&
+    receiptDigest(core) === expectedDigest &&
+    JSON.stringify(canonicalValue(receipt.skill)) === JSON.stringify(canonicalValue(identity))
+  );
 }
 
 async function project(options: ProjectOptions) {
@@ -178,7 +255,11 @@ export async function enablePinnedSkill(
   };
   const enabled: EnabledProjectSkill = {
     ...enabledIdentity,
-    enablement_digest: enablementDigest(enabledIdentity),
+    enablement_receipt: await writeEnablementReceipt(
+      prepared.value.projectDir,
+      prepared.value.projectId,
+      enabledIdentity,
+    ),
   };
   await writeVerified(manifestPath, {
     ...manifest.value,
@@ -237,13 +318,12 @@ export async function listVerifiedProjectSkills(
     if (!pinned.ok) return pinned;
     const verified = await verifyPinnedSkillCache({ record: pinned.value });
     if (!verified.ok) return verified;
-    const { enablement_digest: recordedEnablementDigest, ...enabledIdentity } = skill;
     const agentsAreAuthorized =
       skill.agents.length > 0 &&
       [...new Set(skill.agents)].sort().join('\0') === skill.agents.join('\0') &&
       skill.agents.every((agent) => pinned.value.supported_agents.includes(agent));
     const identityMatches =
-      recordedEnablementDigest === enablementDigest(enabledIdentity) &&
+      (await verifyEnablementReceipt(prepared.value.projectDir, prepared.value.projectId, skill)) &&
       agentsAreAuthorized &&
       skill.owner === 'rizz' &&
       skill.digest === pinned.value.digest &&

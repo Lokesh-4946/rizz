@@ -275,7 +275,8 @@ large or decompression-bomb-like artifacts. Protected exact originals round-trip
 ## Staged milestones and dependencies
 
 - **Milestone A — Context precision (implemented now):** mission-scoped literal relevance, 32 KiB
-  whole-JSON Task Brief budget, versioned mission identity, verified pinned-skill preview, explicit
+  whole-JSON Task Brief budget, versioned mission identity, verified pinned-skill preview with
+  content-addressed enablement receipts and legacy schema-v1 reads, explicit
   versus proposed provenance, citation validation, nonblocking proposed/open scope, equivalent
   CLI/MCP Task Briefs for the shared task/scope/status/skill surface, and large-inventory fixtures.
   No release machinery, context compression, cache, retrieval, image

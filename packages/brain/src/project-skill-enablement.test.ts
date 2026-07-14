@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -258,6 +259,9 @@ describe('isolated project skill enablement', () => {
       ...manifest.skills['review-evidence'],
       agents: ['copilot'],
       license: 'forged',
+      enablement_receipt: createHash('sha256')
+        .update(JSON.stringify({ agents: ['copilot'], license: 'forged' }))
+        .digest('hex'),
     };
     await writeFile(enabled.value.manifest_path, `${JSON.stringify(manifest)}\n`);
 
@@ -268,5 +272,38 @@ describe('isolated project skill enablement', () => {
         agent: 'copilot',
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_ENABLEMENT_STALE' } });
+  });
+
+  it('reads a validated pre-receipt schema-v1 enablement without forcing re-enablement', async () => {
+    const setup = await fixture();
+    const enabled = await enablePinnedSkill({
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      name: 'review-evidence',
+      agents: ['codex'],
+      approved: true,
+    });
+    if (!enabled.ok) throw new Error(enabled.error.message);
+    const manifest = JSON.parse(await readFile(enabled.value.manifest_path, 'utf8')) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    const {
+      enablement_receipt: _receipt,
+      enablement_digest: _digest,
+      ...legacy
+    } = manifest.skills['review-evidence'] ?? {};
+    manifest.skills['review-evidence'] = legacy;
+    await writeFile(enabled.value.manifest_path, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'codex',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { skills: [expect.objectContaining({ name: 'review-evidence' })] },
+    });
   });
 });

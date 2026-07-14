@@ -90,7 +90,7 @@ Estimated current loop readiness (planning signal only, never release evidence):
 
 | Milestone | Status | Capability and dependency |
 | --- | --- | --- |
-| A — Context precision | Implemented in current baton | Literal mission relevance, 32 KiB whole-JSON briefs, versioned mission/pinned skills, explicit versus proposed provenance, nonblocking proposed/open paths, citation validation, and equivalent CLI/MCP Task Brief payloads for their shared task/scope/status/skill surface. |
+| A — Context precision | Implemented in current baton | Literal mission relevance, 32 KiB whole-JSON briefs, versioned mission/pinned skills, canonical content-addressed agent-enablement receipts with legacy schema-v1 reads, explicit versus proposed provenance, nonblocking proposed/open paths, citation validation, and equivalent CLI/MCP Task Brief payloads for their shared task/scope/status/skill surface. |
 | B — Review/repair precision | Planned after A | `ReviewEvidencePacket`; host-AI findings with revision-independent `finding_key` and revision-bound observation ID; evidence freshness; baseline-debt separation; correction admission; deduplication/convergence. |
 | C — Snapshot/local release | Planned after B | Dirty snapshot/base identity; verification-node dependency closures and cost tiers; immutable artifact envelope/manifest; truthful commit-before-`local_green`; attach/resume; explicit commit/push/submit; provider/commit contracts; idempotent journal. |
 | D1 — Early context efficiency | May proceed after A | Stable provider-prefix zones, changed-evidence delta packets, hash-addressed expansion, cold/warm overhead telemetry, adaptive bypass. |
@@ -261,21 +261,21 @@ precision.
 
 | Check | Result |
 | --- | ---: |
-| Focused Task 1–3 + adversarial inventory suites | 53/53 passed |
+| Focused Task 1–3 + adversarial inventory suites | 54/54 passed |
 | 3,097,813-byte Vitest inventory | Valid JSON; 3,016 emitted/accounted bytes; 19,992 source and 19,992 evidence entries truncated |
 | FastAPI/Vitest 20,000-item metamorphic fixtures | 2/2 passed; admitted evidence invariant; translated docs excluded |
 | Shared CLI/MCP mission + Task Brief parity | Passed for task/scope/status/skill inputs; same complete brief, mission ID, agent, revision, and selected skill digests |
 | Explicit/proposed and citation QA | Passed; proposed/open paths nonblocking; unsupported AI inference rejected |
-| Full unit suite | 518/518 passed |
+| Full unit suite | 519/519 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
 | CLI process smoke | 20/20 passed |
 | Install-local smoke | 5/5 passed |
-| Simplifier/review-loop | Context-precision findings repaired: mission-anchored changed/test neighbors, skill enablement verification, shared-surface CLI/MCP parity, canonical mission binding, claim-first budgeting, and current runbook evidence; local follow-up fixed aggregate/stopword false positives. |
+| Simplifier/review-loop | Context-precision findings repaired: mission-anchored changed/test neighbors, content-addressed skill enablement receipts with legacy reads, shared-surface CLI/MCP parity, canonical mission binding, claim-first budgeting, and current runbook evidence; local follow-up fixed aggregate/stopword false positives. |
 | Public package contents | Passed: brain 85, providers 65, core 19, TUI 13, CLI 6 files |
 | Targeted formatting/lint + strict typecheck | Passed |
 | Diff whitespace check | Passed |
-| Footprint | Passed: 49ms cold start, 200KB counted core (brain remains opt-in) |
+| Footprint | Passed: 51ms cold start, 200KB counted core (brain remains opt-in) |
 | Full `pnpm check` | Passed |
 
 Stable named local/CI precision command:
