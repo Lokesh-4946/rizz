@@ -50,10 +50,19 @@ cited hypotheses; citation validity alone does not make the semantic conclusion 
 13. Rizz issues `local_green` bound to the exact commit SHA plus mission, evidence, config,
     verification, and toolchain fingerprints.
 14. The host explicitly pushes and submits/opens the PR or MR.
-15. Rizz or an optional provider connector revalidates the exact remote head, CI, review state,
-    branch protection, required signoff, and repository policy, then issues `merge_ready` for that
-    exact remote head.
-16. The host explicitly invokes merge.
+15. Rizz or an optional provider connector ingests remote CI failures, review comments/threads,
+    base drift, and policy changes as provenance-bearing, untrusted evidence. Rizz validates and
+    deduplicates it into bounded correction inputs; external reviewer prose is never automatically
+    an instruction.
+16. The host repairs, targeted and then required full local verification rerun, a new commit receives
+    a new `local_green`, and the updated head is pushed. Remote checks and reviews repeat. Review
+    resolution on an older head does not satisfy a new head unless the provider policy explicitly
+    says it does.
+17. Rizz revalidates the exact remote head, current base/merge-base, CI, review state, branch
+    protection, required signoff, and repository policy, then issues `merge_ready` for that exact
+    eligible head.
+18. The host explicitly invokes merge; provider capability negotiation determines whether this is a
+    direct merge, merge queue, update-branch, or another repository-approved operation.
 
 The correction loop is not an always-on multi-agent runtime. The lightweight default remains one
 host agent calling local deterministic services. External skill enablement and destructive/network
@@ -78,9 +87,16 @@ nonblocking. Explicit constraints and project policy remain hard gates.
 
 Milestone B introduces a deterministic `ReviewEvidencePacket` containing exact diff/hunks, explicit
 constraints, direct tests/consumers, factual risk signals, verification state, and bounded causal
-evidence. The host AI produces `ReviewFinding` objects with stable IDs, origin, status, confidence,
-and citations. Rizz validates citation existence and recorded relationships, not the semantic truth
-of a conclusion.
+evidence. The host AI produces `ReviewFinding` objects with origin, status, confidence, and
+citations. `finding_key` is revision-independent: normalized semantic claim plus canonical
+citations and rule/reviewer identity/version. `finding_observation_id` adds the exact mission,
+revision, and review fingerprint. Lifecycle and deduplication follow `finding_key`; each observation
+and status transition remains bound to its exact revision.
+
+Citation validation binds source evidence to a revision/content digest and freshness state. Rizz
+validates existence and recorded relationship provenance; stale or unknown relationships are
+labelled and cannot be upgraded to direct proof. Citation-valid host conclusions remain hypotheses
+until verification, stronger evidence, human acceptance, or repair outcome confirms or rejects them.
 
 Correction admission is limited to current citation-valid AI findings, failed required checks,
 explicit scope violations, or newly introduced deterministic changed-code security failures.
@@ -100,10 +116,18 @@ Pre-existing unrelated debt remains background context.
 The receipt binds required verification to that complete identity. It is pre-commit proof, not final
 green.
 
+All immutable/content-addressed artifacts share an identity envelope containing project, work,
+mission, revision or snapshot, producer/version, content digest, and creation time. One small,
+versioned project manifest atomically links authoritative artifacts; reports and views are derived.
+Services keep separate contracts—there is no god service or mandatory database. Schema migration,
+read compatibility, orphan detection, atomic index replacement, corruption, and missing-object
+behavior are explicit and fail closed.
+
 ### Local green and merge readiness
 
-`local_green` means one exact local commit passed required local review and verification and may be
-pushed/submitted. It is issued only after commit and committed-tree equivalence proof. A changed
+`local_green` means only that the declared required local checks passed for one exact commit; it is
+not proof that software is correct. It may be pushed/submitted only under repository policy and is
+issued after commit and committed-tree equivalence proof. A changed
 commit, tree, mission, evidence, config, verification plan, required signoff, policy, skill digest,
 or toolchain invalidates it as defined by the invalidation matrix.
 
@@ -111,6 +135,11 @@ or toolchain invalidates it as defined by the invalidation matrix.
 signoff, and repository policy. A force-push, amended commit, remote-head change, stale/changed CI,
 review-state change, policy change, or required-signoff change invalidates it. Local green and merge
 readiness are separate evidence states, never autonomy modes.
+
+Every human view and machine receipt lists required checks passed, proposed but non-required checks,
+skipped/unavailable checks and reasons, unresolved hypotheses or coverage gaps, policy/signoff basis,
+and invalidation/expiry conditions. Unknown required remote CI, review, or policy state cannot
+produce `merge_ready`; neither receipt claims bug-freedom.
 
 ### Release operation journal
 
@@ -122,6 +151,13 @@ Each operation has a stable operation ID, phase receipts, exact local/remote SHA
 success recording, and recovery. Retrying after a timeout must discover prior remote success and
 must not duplicate commits, branches, PRs/MRs, comments, or merge attempts. The journal records the
 exact next safe action.
+
+Commit support must obey or defer to Git identity, commit templates, hooks, signed-commit policy,
+GPG/SSH signing, protected branches, shallow/detached repositories, LFS, submodules, and repository
+commit rules. Rizz never bypasses hooks or fabricates signatures. Tree equivalence may preserve
+content verification only when protected bytes are unchanged; parent/base/metadata/policy checks
+remain separate. Draft PR/MR and remote-only CI workflows are supported without being mislabeled
+merge-ready, and repository policy independently defines push, submit, and merge requirements.
 
 ## Efficient deterministic verification
 
@@ -135,21 +171,39 @@ Reusable verification evidence is keyed by:
 - config and lockfile digest;
 - verification-plan identity.
 
-Every check records why it was reused, rerun, skipped, or invalidated. Targeted checks run during
-repair; the complete required local gate runs once before local green. Rizz may ingest structured
-agent evidence but independently reruns the policy-required minimum. It does not blindly rerun every
-expensive check after an unrelated change.
+Every verification node declares an input closure: exact command/argv/cwd; relevant source, test,
+config, lockfile, and tool files or deterministic globs; upstream verification dependencies;
+environment/toolchain/policy identities; and closure confidence/completeness. Reuse requires every
+declared input and dependency to be unchanged and the closure to be sufficiently complete. Unknown
+or incomplete closure fails toward rerun. Each reuse includes a human/agent-readable proof and each
+check records why it was reused, rerun, skipped, or invalidated. Minimal invalidation preserves an
+unrelated backend result when only docs change but invalidates it for a shared config or toolchain
+change. Git object IDs and Merkle-like identities are reused; only changed/protected non-Git inputs
+are hashed once rather than rescanning the entire repository.
 
-### Delta context
+Verification is cost ordered: (A) cheap snapshot/scope/secret/static/diff checks; (B) host semantic
+review; (C) repairs with affected targeted checks; (D) one complete policy-required local gate after
+the diff stabilizes; and (E) remote CI after submit. Rizz may ingest structured agent evidence but
+independently reruns the policy-required minimum. Base comparison is lazy—run it when head fails,
+failure provenance is ambiguous, or policy requires differential proof—not unconditionally.
+
+### Delta context and cache zoning
 
 After the initial bounded packet, Rizz sends only newly changed evidence, invalidations, and requested
 hash-addressed expansions. It does not resend whole brains, transcripts, or Task Briefs each cycle.
 Receipts track bytes/tokens delivered, cache hits, expansions, rereads, and duplicate evidence.
 
+Provider-facing context has four zones: a canonical stable prefix for project policy, stable tool
+schemas, compatible pinned-skill instructions, and stable project facts; a bounded task-evidence
+zone; a live zone for the current diff/findings/recent results; and, where integrations permit, a
+control/telemetry envelope outside prompt text. Each zone has its own digest and cache receipt.
+Timestamps, random receipt IDs, counters, volatile telemetry, and the current diff never perturb the
+stable prefix. Protected exact strings remain native.
+
 ### Stable findings and convergence
 
-Finding IDs derive from normalized claim, citations, and revision context. Equivalent findings are
-deduplicated. No progress is detected from an equivalent diff, the same unresolved finding, and no
+Equivalent findings are deduplicated by `finding_key` across repair revisions, while observations
+retain revision identity. No progress is detected from an equivalent diff, the same unresolved key, and no
 new evidence. The loop stops/escalates instead of burning agent calls. Repair cost/time ceilings are
 hard but are not substitutes for reporting the exact convergence reason.
 
@@ -160,6 +214,53 @@ infrastructure failure, or suspected flake. Existing unrelated debt cannot silen
 repair. Suspected flakes use capped, fully recorded reruns. A required flaky check never silently
 produces green. Infrastructure/provider outages remain in the report but are excluded from product
 quality metrics.
+
+### Base identity and drift
+
+Local verification binds the required base and merge-base identity when repository policy requires
+it. Target-branch advancement, conflicts, update/rebase requirements, changed generated output, and
+invalidated test assumptions trigger the minimum affected rerun. `merge_ready` fails closed when the
+head is no longer eligible against the current required base. Merge queues and queue-generated merge
+SHAs are represented through provider capability negotiation, never assumed to be direct merge APIs.
+
+## Thin UX, adapters, and lifecycle
+
+The default human experience is one bounded status summary: current state, why, and next safe
+action, with machine-readable details and hash-addressed expansion for host agents. Normal use never
+requires copying mission, digest, finding, or receipt IDs. Attach/resume reconstructs state from an
+existing branch, worktree, commit, or PR/MR that Rizz did not create, honestly marks stale artifacts,
+and continues without a forced restart.
+
+An opt-in connect/setup preview and doctor capability validates host MCP connectivity, CLI/tool
+availability, adapter/schema supported ranges, pinned-skill digest compatibility, Git/provider CLI
+capability, and repository state. It may propose but never silently rewrite host configuration.
+Context and review remain read-only-capable when release connectors are absent.
+
+Provider adapters negotiate small capabilities and structured results while retaining native
+GitHub, GitLab, and other evidence for rules, threads, checks, queues, draft state, signatures, and
+policy. Optional dependencies remain lazy and isolated. Unsupported or permission-hidden required
+policy is `unknown` and fails closed for `merge_ready`; it is never translated into false green.
+
+Per-project and global storage budgets govern retention, expiry, garbage collection, orphan cleanup,
+inspect, purge, and export. Exact originals and cached content remain local by default,
+project-isolated, secret-redacted before persistence when allowed, and never silently uploaded.
+Project namespaces prevent cross-project cache-existence leakage unless an explicit safe-sharing
+policy applies. Permissions, symlink defense, backup/export behavior, and optional encryption at
+rest are explicit. Missing, tampered, or purged objects invalidate dependent receipts.
+
+## Efficiency SLOs and truthful metrics
+
+QA records cold time to first useful evidence packet; warm/delta latency; indexing time and bytes
+read; Rizz CPU, memory, and disk; Rizz-added bytes, tokens, and provider cost; end-to-end overhead as
+a percentage of accepted verified-change time; and repeated scans, hashes, and rereads. Cold
+preparation and warm task execution are separate. Adaptive bypass disables or reduces optimization
+or deep indexing when measured preparation cost exceeds expected savings or quality value.
+
+Product reports also include p50/p95 task-to-first-packet, local-green and merge-ready false-positive
+and false-block rates, evidence staleness, per-check reuse precision (zero unsafe reuse in the known
+corpus), attach/resume success, storage growth and reclaimed bytes, stable-prefix cache hits,
+post-submit convergence, base-drift/merge-queue success, and default-loop manual ID copying (target
+zero). Savings are measured as cost/time per accepted verified change, never compression ratio alone.
 
 ## Trust and security
 
@@ -177,20 +278,27 @@ large or decompression-bomb-like artifacts. Protected exact originals round-trip
   and large-inventory fixtures. No release machinery, context compression, cache, retrieval, image
   encoding, model dependency, or extra default model call.
 - **Milestone B — Review and repair precision:** `ReviewEvidencePacket`, host-AI finding/citation
-  contract, stable finding IDs, mission-scoped correction admission, baseline-debt separation, and
-  convergence/no-progress behavior.
+  contract, `finding_key`/`finding_observation_id`, evidence freshness, mission-scoped correction
+  admission, baseline-debt separation, and convergence/no-progress behavior.
 - **Milestone C — Local verification and release journal:** working-snapshot receipts, incremental
-  verification DAG, commit-before-local-green, `local_green`, explicit commit/push/submit
-  capabilities, and idempotent crash-safe release journal.
-- **Milestone D — Delta context and protected optimization:** delta packets, cache/optimization
-  receipts, exact-original protection, and native lossless handling for protected evidence.
+  verification DAG with dependency closures and cost tiers, base identity, canonical artifact
+  envelope, truthful commit-before-`local_green`, attach/resume foundation, provider/commit
+  capabilities, explicit commit/push/submit, and an idempotent crash-safe release journal.
+- **Milestone D1 — Early context efficiency (may follow A):** stable prefix zoning, bounded delta
+  packets, hash-addressed expansion, overhead telemetry, and adaptive-bypass prototypes using A's
+  mission/brief identities.
+- **Milestone D2 — Protected optimization (after B/C):** optimization receipts tied to findings,
+  snapshots, and verification; exact-original lifecycle, storage/privacy/GC, and release-grade
+  invalidation while keeping protected evidence native and lossless.
 - **Milestone E — Remote readiness and calibration:** `merge_ready`, remote TOCTOU/release
-  calibration, metamorphic/fault-injection/seeded-defect corpus, three-repository provider
-  calibration, and falsifiable product metrics.
+  feedback/repair, base drift and merge queues, provider capability calibration,
+  metamorphic/fault-injection/seeded-defect corpus, three-repository calibration, and falsifiable
+  product metrics.
 
-Dependencies run A → B → C, while D depends on A–C identities and E depends on B–D plus optional
-provider connectors. Every milestone preserves the single-agent lightweight default and adds no new
-always-on production dependency.
+Dependencies run A → B → C and A → D1 in parallel; B + C + D1 → D2; B + C + D2 → E. Thin UX,
+doctor/version compatibility, schema migration, and storage-budget tasks are cross-cutting,
+independently tested contracts. Every milestone preserves the single-agent lightweight default and
+adds no new always-on production dependency.
 
 ## Non-goals
 
@@ -202,3 +310,9 @@ always-on production dependency.
 - No pre-commit final green.
 - No magic one-step release umbrella.
 - No provider availability requirement in deterministic unit gates.
+- No resident daemon, mandatory cloud control plane, heavyweight always-on database, full formal
+  workflow engine, or ceremony-heavy human artifact workflow.
+- No unbounded artifact/receipt growth; release journaling is limited to side-effecting,
+  idempotency-critical operations and internal artifacts remain garbage-collectable.
+- No mandatory Rizz release path: native Git and host-agent tools remain usable, while Rizz simply
+  withholds attestations when its evidence contract was not satisfied.
