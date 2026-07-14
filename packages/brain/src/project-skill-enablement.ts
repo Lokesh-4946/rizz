@@ -211,7 +211,7 @@ function sameRequirements(
 }
 
 export async function listVerifiedProjectSkills(
-  options: ProjectOptions & { readonly agent: string },
+  options: ProjectOptions & { readonly agent?: string },
 ): Promise<
   EnableResult<{ readonly project_id: string; readonly skills: readonly EnabledProjectSkill[] }>
 > {
@@ -222,7 +222,7 @@ export async function listVerifiedProjectSkills(
   const rizzHome = options.rizzHome ?? join(prepared.value.projectDir, '..', '..');
   const verifiedSkills: EnabledProjectSkill[] = [];
   for (const skill of listed.value.skills) {
-    if (!skill.agents.includes(options.agent)) continue;
+    if (options.agent !== undefined && !skill.agents.includes(options.agent)) continue;
     const pinned = await readPinnedSkillRecord({ rizzHome, name: skill.name });
     if (!pinned.ok) return pinned;
     const verified = await verifyPinnedSkillCache({ record: pinned.value });

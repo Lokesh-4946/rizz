@@ -40,6 +40,7 @@ export interface CausalNeighborParams {
 
 const COMMON_TASK_TERMS = new Set([
   'add',
+  'and',
   'change',
   'code',
   'command',
@@ -51,10 +52,13 @@ const COMMON_TASK_TERMS = new Set([
   'documentation',
   'file',
   'fix',
+  'for',
+  'from',
   'folder',
   'function',
   'handling',
   'implement',
+  'into',
   'issue',
   'method',
   'module',
@@ -72,7 +76,11 @@ const COMMON_TASK_TERMS = new Set([
   'state',
   'test',
   'tests',
+  'that',
+  'the',
+  'this',
   'update',
+  'with',
 ]);
 
 function normalize(value: string): string {
@@ -154,27 +162,25 @@ export function decideTaskRelevance(params: RelevanceParams): RelevanceDecision 
   else if (params.candidate.matchKind === 'test-neighbor') directScore = 900;
   const directReasons =
     params.candidate.matchKind === undefined ? [] : [`direct:${params.candidate.matchKind}`];
-  const isAggregateFolder = params.candidate.type === 'folder';
-  const isExplicitFolder = isAggregateFolder && exactMatches.length > 0;
+  const isAggregate =
+    params.candidate.type === 'folder' || params.candidate.sourceFiles.length > 32;
+  const isExplicitAggregate = isAggregate && exactMatches.length > 0;
   const admitted =
     directReasons.length > 0 ||
     exactMatches.length > 0 ||
-    (!isAggregateFolder && termMatches.length >= 2);
+    (!isAggregate && termMatches.length >= 2);
   const reasons = [
     ...directReasons,
     ...exactMatches.map((value) => `exact:${value}`),
     ...termMatches.map((value) => `term:${value}`),
   ];
   if (!admitted && reasons.length === 0) reasons.push('no-strong-anchor');
-  if (isAggregateFolder && !isExplicitFolder && termMatches.length > 0)
-    reasons.push('aggregate-folder-not-explicitly-anchored');
+  if (isAggregate && !isExplicitAggregate && termMatches.length > 0)
+    reasons.push('aggregate-not-explicitly-anchored');
   return {
     admitted,
     score:
-      directScore +
-      exactMatches.length * 100 +
-      termMatches.length * 10 -
-      (isAggregateFolder ? 25 : 0),
+      directScore + exactMatches.length * 100 + termMatches.length * 10 - (isAggregate ? 25 : 0),
     reasons,
     confidence: normalizedConfidence(params.candidate.confidence),
     causal_path: [],

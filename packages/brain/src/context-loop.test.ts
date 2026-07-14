@@ -25,6 +25,7 @@ async function fixture(): Promise<{ rootDir: string; rizzHome: string }> {
   execFileSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: rootDir });
   await mkdir(join(rootDir, 'src'), { recursive: true });
   await writeFile(join(rootDir, 'src', 'hero.ts'), 'export const hero = true;\n');
+  await writeFile(join(rootDir, 'src', 'hero.test.ts'), 'export const heroTest = true;\n');
   execFileSync('git', ['add', '.'], { cwd: rootDir });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: rootDir });
   return { rootDir, rizzHome };
@@ -44,6 +45,15 @@ async function seedBrain(rootDir: string, rizzHome: string): Promise<void> {
     join(entitiesDir, 'files.json'),
     `${JSON.stringify({
       entities: [
+        {
+          id: 'test:src/hero.test.ts',
+          type: 'test',
+          name: 'Hero tests',
+          description: 'Direct regression coverage for the homepage component',
+          confidence: 'verified',
+          evidence_ids: ['evidence:src/hero.test.ts'],
+          source_files: ['src/hero.test.ts'],
+        },
         {
           id: 'file:src/hero.ts',
           type: 'file',
@@ -138,10 +148,58 @@ describe('context compiler', () => {
         evidence_ids: ['evidence:src/hero.ts'],
       }),
     ]);
-    expect(result.value.omissions).toContain('1 lower-ranked or uncited claim(s) omitted');
+    expect(result.value.omissions).toContain('2 lower-ranked or uncited claim(s) omitted');
     expect(result.value.stale_evidence_warnings).toContain(
       'Brain evidence is timestamped but not bound to this exact repository revision.',
     );
+  });
+
+  it('admits real changed files and literal test neighbors without semantic inference', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+    await writeFile(join(setup.rootDir, 'src', 'hero.ts'), 'export const hero = false;\n');
+
+    const result = await compileTaskBrief({ ...setup, task: 'Refine landing behavior' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.claims).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entity_id: 'file:src/hero.ts',
+          relevance_reasons: expect.arrayContaining(['direct:changed-file']),
+        }),
+        expect.objectContaining({
+          entity_id: 'test:src/hero.test.ts',
+          relevance_reasons: expect.arrayContaining(['direct:test-neighbor']),
+        }),
+      ]),
+    );
+  });
+
+  it('rejects a brief mission pointer from another project or task', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+    const repositoryRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: setup.rootDir,
+      encoding: 'utf8',
+    }).trim();
+
+    const result = await compileTaskBrief({
+      ...setup,
+      task: 'Update Hero',
+      agent: 'codex',
+      mission: {
+        mission_id: 'a'.repeat(64),
+        project_id: 'wrong-project',
+        task: 'Different task',
+        agent: 'codex',
+        repository_revision: repositoryRevision,
+        selected_skills: [],
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'MISSION_BRIEF_MISMATCH' } });
   });
 
   it('provides matching JSON CLI contracts for briefs and loop state', async () => {

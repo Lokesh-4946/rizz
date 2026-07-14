@@ -105,16 +105,37 @@ describe('Rizz MCP server', () => {
         'codex',
         '--scope',
         'src/hero.ts',
+        '--scope-status',
+        'proposed',
         '--json',
       ],
     });
     expect(cli).toMatchObject({ exitCode: 0, stderr: '' });
     const cliPreview = JSON.parse(cli.stdout) as {
       readonly mission_id: string;
+      readonly project_id: string;
+      readonly task: string;
       readonly agent: string;
       readonly repository_revision: string;
       readonly selected_skills: readonly unknown[];
     };
+    const cliBriefResult = await executeContextCommand({
+      rootDir: setup.rootDir,
+      rizzHome: setup.rizzHome,
+      args: [
+        'brief',
+        'Update Hero',
+        '--agent',
+        'codex',
+        '--scope',
+        'src/hero.ts',
+        '--scope-status',
+        'proposed',
+        '--json',
+      ],
+    });
+    expect(cliBriefResult).toMatchObject({ exitCode: 0, stderr: '' });
+    const cliBrief = JSON.parse(cliBriefResult.stdout) as Readonly<Record<string, unknown>>;
 
     const output = capture();
     const server = createMcpServer({ ...setup, write: output.write });
@@ -151,6 +172,8 @@ describe('Rizz MCP server', () => {
       readonly structuredContent: {
         readonly mission: {
           readonly mission_id: string;
+          readonly project_id: string;
+          readonly task: string;
           readonly agent: string;
           readonly repository_revision: string;
           readonly selected_skills: readonly unknown[];
@@ -160,10 +183,13 @@ describe('Rizz MCP server', () => {
     expect(mcpPreview.structuredContent).toEqual(expect.objectContaining(cliPreview));
     expect(mcpBrief.structuredContent.mission).toEqual({
       mission_id: cliPreview.mission_id,
+      project_id: cliPreview.project_id,
+      task: cliPreview.task,
       agent: cliPreview.agent,
       repository_revision: cliPreview.repository_revision,
       selected_skills: cliPreview.selected_skills,
     });
+    expect(mcpBrief.structuredContent).toEqual(cliBrief);
     expect(Buffer.byteLength(JSON.stringify(mcpBrief.structuredContent))).toBeLessThanOrEqual(
       32 * 1024,
     );

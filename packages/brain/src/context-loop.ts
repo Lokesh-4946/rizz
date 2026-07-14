@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import type { MissionBriefIdentity } from './mission-contract.js';
-import { listEnabledProjectSkills } from './project-skill-enablement.js';
+import { listVerifiedProjectSkills } from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
 import type { SkillFinding } from './skill-source-manager.js';
@@ -190,6 +190,45 @@ async function readGeneratedAt(brainDir: string): Promise<string | null> {
   }
 }
 
+function nulSeparatedGitPaths(rootDir: string, args: readonly string[]): readonly string[] {
+  const result = spawnSync('git', args, { cwd: rootDir, encoding: 'utf8' });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\0')
+    .map((path) => path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
+    .filter((path) => path !== '');
+}
+
+function changedFiles(rootDir: string): ReadonlySet<string> {
+  return new Set([
+    ...nulSeparatedGitPaths(rootDir, ['diff', '--name-only', '-z', 'HEAD', '--']),
+    ...nulSeparatedGitPaths(rootDir, ['ls-files', '--others', '--exclude-standard', '-z']),
+  ]);
+}
+
+function sourceStem(path: string): string {
+  const filename = posix.basename(path.toLowerCase());
+  const extension = posix.extname(filename);
+  const stem = extension === '' ? filename : filename.slice(0, -extension.length);
+  return stem
+    .replace(/\.(?:test|spec)$/u, '')
+    .replace(/^test[_-]/u, '')
+    .replace(/[_-]test$/u, '');
+}
+
+function matchKind(
+  entity: EntityRecord,
+  changed: ReadonlySet<string>,
+): 'changed-file' | 'test-neighbor' | undefined {
+  const sourceFiles = entity.source_files ?? [];
+  if (sourceFiles.some((path) => changed.has(path))) return 'changed-file';
+  if (entity.type !== 'test') return undefined;
+  const changedStems = new Set([...changed].map(sourceStem).filter((stem) => stem !== ''));
+  return sourceFiles.some((path) => changedStems.has(sourceStem(path)))
+    ? 'test-neighbor'
+    : undefined;
+}
+
 export async function compileTaskBrief(options: {
   readonly rootDir: string;
   readonly task: string;
@@ -213,7 +252,9 @@ export async function compileTaskBrief(options: {
   const repositoryRevision = gitRevision(store.value.rootPath);
   if (
     options.mission !== undefined &&
-    (options.mission.agent !== options.agent ||
+    (options.mission.project_id !== store.value.projectId ||
+      options.mission.task !== redactSensitiveText(options.task) ||
+      options.mission.agent !== options.agent ||
       options.mission.repository_revision !== repositoryRevision)
   ) {
     return error(
@@ -230,7 +271,9 @@ export async function compileTaskBrief(options: {
   }
   const allEntities = await readEntities(store.value.brainDir);
   const anchors = extractTaskAnchors(options.task);
+  const changed = changedFiles(store.value.rootPath);
   const candidates = allEntities.map((entity) => {
+    const directMatch = matchKind(entity, changed);
     const relevance = decideTaskRelevance({
       anchors,
       candidate: {
@@ -241,6 +284,7 @@ export async function compileTaskBrief(options: {
         ...(entity.confidence === undefined ? {} : { confidence: entity.confidence }),
         sourceFiles: entity.source_files ?? [],
         evidenceIds: entity.evidence_ids ?? [],
+        ...(directMatch === undefined ? {} : { matchKind: directMatch }),
       },
     });
     return {
@@ -261,8 +305,29 @@ export async function compileTaskBrief(options: {
   });
   const admittedCount = candidates.filter((candidate) => candidate.relevance.admitted).length;
   const omitted = Math.max(0, allEntities.length - admittedCount);
-  const enabledSkills = await listEnabledProjectSkills(options);
+  const enabledSkills = await listVerifiedProjectSkills({
+    ...options,
+    ...(options.agent === undefined ? {} : { agent: options.agent }),
+  });
   if (!enabledSkills.ok) return enabledSkills;
+  if (options.mission !== undefined) {
+    const skills = new Map(enabledSkills.value.skills.map((skill) => [skill.name, skill]));
+    const changedSkill = options.mission.selected_skills.find((selected) => {
+      const skill = skills.get(selected.name);
+      return (
+        skill === undefined ||
+        skill.digest !== selected.digest ||
+        skill.revision !== selected.revision ||
+        skill.file_digest !== selected.file_digest
+      );
+    });
+    if (changedSkill !== undefined) {
+      return error(
+        'MISSION_BRIEF_MISMATCH',
+        `Task Brief selected skill identity is stale or unavailable: ${changedSkill.name}`,
+      );
+    }
+  }
   return assembleTaskBrief({
     envelope: {
       schema_version: 1,

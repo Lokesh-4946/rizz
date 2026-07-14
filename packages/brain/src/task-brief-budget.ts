@@ -58,6 +58,7 @@ export interface TaskBriefSizeBudget {
   readonly truncated_claims: number;
   readonly truncated_source_files: number;
   readonly truncated_evidence_ids: number;
+  readonly truncated_skills: number;
 }
 
 export interface BudgetedTaskBrief extends TaskBriefEnvelope {
@@ -150,6 +151,7 @@ function buildBrief(params: {
   readonly maxBytes: number;
   readonly maxClaims: number;
   readonly inputClaims: readonly TaskBriefClaimCandidate[];
+  readonly inputSkills: number;
 }): BudgetedTaskBrief {
   const inputSourceFiles = params.inputClaims.reduce(
     (total, candidate) => total + candidate.claim.source_files.length,
@@ -179,6 +181,7 @@ function buildBrief(params: {
       truncated_claims: Math.max(0, params.inputClaims.length - params.claims.length),
       truncated_source_files: inputSourceFiles - includedSourceFiles,
       truncated_evidence_ids: inputEvidenceIds - includedEvidenceIds,
+      truncated_skills: Math.max(0, params.inputSkills - params.skills.length),
     },
   });
 }
@@ -205,6 +208,7 @@ export function assembleTaskBrief(params: AssembleTaskBriefParams): AssembleTask
     maxBytes,
     maxClaims,
     inputClaims: admittedClaims,
+    inputSkills: params.compatibleSkills.length,
   });
   if (!fits(empty, maxBytes)) {
     return {
@@ -216,23 +220,6 @@ export function assembleTaskBrief(params: AssembleTaskBriefParams): AssembleTask
     };
   }
 
-  const skills: TaskBriefSkillPointer[] = [];
-  for (const skill of [...params.compatibleSkills].sort((left, right) =>
-    left.name.localeCompare(right.name),
-  )) {
-    const pointer = skillPointer(skill);
-    const candidateSkills = [...skills, pointer];
-    const candidateBrief = buildBrief({
-      envelope: params.envelope,
-      claims: [],
-      skills: candidateSkills,
-      maxBytes,
-      maxClaims,
-      inputClaims: admittedClaims,
-    });
-    if (fits(candidateBrief, maxBytes)) skills.push(pointer);
-  }
-
   const claims: BudgetedTaskBriefClaim[] = [];
   for (const candidate of candidates) {
     const bounded = boundedClaim(candidate);
@@ -240,10 +227,11 @@ export function assembleTaskBrief(params: AssembleTaskBriefParams): AssembleTask
     const candidateBrief = buildBrief({
       envelope: params.envelope,
       claims: candidateClaims,
-      skills,
+      skills: [],
       maxBytes,
       maxClaims,
       inputClaims: admittedClaims,
+      inputSkills: params.compatibleSkills.length,
     });
     if (fits(candidateBrief, maxBytes)) claims.push(bounded);
   }
@@ -260,22 +248,12 @@ export function assembleTaskBrief(params: AssembleTaskBriefParams): AssembleTask
   let brief = buildBrief({
     envelope,
     claims,
-    skills,
+    skills: [],
     maxBytes,
     maxClaims,
     inputClaims: admittedClaims,
+    inputSkills: params.compatibleSkills.length,
   });
-  while (!fits(brief, maxBytes) && skills.length > 0) {
-    skills.pop();
-    brief = buildBrief({
-      envelope,
-      claims,
-      skills,
-      maxBytes,
-      maxClaims,
-      inputClaims: admittedClaims,
-    });
-  }
   if (!fits(brief, maxBytes)) {
     return {
       ok: false,
@@ -285,6 +263,32 @@ export function assembleTaskBrief(params: AssembleTaskBriefParams): AssembleTask
       },
     };
   }
+  const skills: TaskBriefSkillPointer[] = [];
+  for (const skill of [...params.compatibleSkills].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    const pointer = skillPointer(skill);
+    const candidateSkills = [...skills, pointer];
+    const candidateBrief = buildBrief({
+      envelope,
+      claims,
+      skills: candidateSkills,
+      maxBytes,
+      maxClaims,
+      inputClaims: admittedClaims,
+      inputSkills: params.compatibleSkills.length,
+    });
+    if (fits(candidateBrief, maxBytes)) skills.push(pointer);
+  }
+  brief = buildBrief({
+    envelope,
+    claims,
+    skills,
+    maxBytes,
+    maxClaims,
+    inputClaims: admittedClaims,
+    inputSkills: params.compatibleSkills.length,
+  });
   return {
     ok: true,
     value: brief,

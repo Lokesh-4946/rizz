@@ -209,6 +209,13 @@ describe('isolated project skill enablement', () => {
       agents: ['codex'],
       approved: true,
     });
+    const store = await prepareProjectStore({ rootDir: setup.project, rizzHome: setup.rizzHome });
+    if (!store.ok) throw new Error(store.error.message);
+    const brain = await generateProjectBrain({
+      rootDir: setup.project,
+      outputDir: store.value.projectDir,
+    });
+    if (!brain.ok) throw new Error(brain.error.message);
     await expect(
       listVerifiedProjectSkills({
         rootDir: setup.project,
@@ -217,6 +224,14 @@ describe('isolated project skill enablement', () => {
       }),
     ).resolves.toMatchObject({ ok: true, value: { skills: [] } });
     await writeFile(join(setup.pinned.value.cache_dir, 'SKILL.md'), 'tampered\n');
+    await expect(
+      compileTaskBrief({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        task: 'Review repository changes',
+        agent: 'codex',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_CACHE_TAMPERED' } });
     await expect(
       listVerifiedProjectSkills({
         rootDir: setup.project,

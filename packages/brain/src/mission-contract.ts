@@ -93,12 +93,14 @@ export interface MissionContract extends MissionIdentity {
 
 export type MissionBriefIdentity = Pick<
   MissionPreview,
-  'mission_id' | 'agent' | 'repository_revision' | 'selected_skills'
+  'mission_id' | 'project_id' | 'task' | 'agent' | 'repository_revision' | 'selected_skills'
 >;
 
 export function missionBriefIdentity(mission: MissionPreview): MissionBriefIdentity {
   return {
     mission_id: mission.mission_id,
+    project_id: mission.project_id,
+    task: mission.task,
     agent: mission.agent,
     repository_revision: mission.repository_revision,
     selected_skills: mission.selected_skills,

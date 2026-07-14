@@ -77,7 +77,7 @@ describe('mission-scoped relevance', () => {
     });
 
     expect(exact.admitted).toBe(true);
-    expect(inflated.score).toBe(exact.score);
+    expect(inflated.score).toBeLessThanOrEqual(exact.score);
     expect(inflated.reasons).toEqual(exact.reasons);
     expect(folder.admitted).toBe(false);
     expect(exact.score).toBeGreaterThan(folder.score);
@@ -108,6 +108,24 @@ describe('mission-scoped relevance', () => {
     expect(generic).toMatchObject({ admitted: false, reasons: ['no-strong-anchor'] });
     expect(explicitFolder.admitted).toBe(true);
     expect(explicitFolder.reasons).toContain('exact:docs/translations');
+  });
+
+  it('rejects a large aggregate unless it has an exact or direct anchor', () => {
+    const aggregate = decideTaskRelevance({
+      anchors: extractTaskAnchors('Fix prefixless matching behavior'),
+      candidate: candidate({
+        id: 'component:inventory',
+        type: 'component',
+        name: 'Inventory component',
+        description: 'Prefixless matching across generated inventory',
+        sourceFiles: Array.from({ length: 100 }, (_, index) => `generated/${index}.ts`),
+      }),
+    });
+
+    expect(aggregate).toMatchObject({
+      admitted: false,
+      reasons: expect.arrayContaining(['aggregate-not-explicitly-anchored']),
+    });
   });
 
   it('admits direct changed files and test neighbors ahead of lexical candidates', () => {

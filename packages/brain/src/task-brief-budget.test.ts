@@ -214,4 +214,22 @@ describe('serialized Task Brief budgeting', () => {
     );
     expect(brief.size_budget.truncated_claims).toBe(1);
   });
+
+  it('prioritizes exact task evidence and reports omitted skill pointers', () => {
+    const compatibleSkills = Array.from({ length: 100 }, (_, index) => ({
+      name: `review-skill-${String(index).padStart(3, '0')}-${'x'.repeat(40)}`,
+      digest: `${String(index).padStart(4, '0')}${'b'.repeat(60)}`,
+      revision: 'd'.repeat(40),
+      agents: ['codex'],
+      audit_status: 'clean' as const,
+      audit_findings: [],
+      requirements: { shell: false, network: false, credentials: false },
+    }));
+
+    const brief = value(assembleTaskBrief(params({ compatibleSkills, maxBytes: 2_500 })));
+
+    expect(brief.claims).toHaveLength(1);
+    expect(brief.claims[0]?.entity_id).toBe('file:packages/expect/src/jest-expect.ts');
+    expect(brief.size_budget.truncated_skills).toBeGreaterThan(0);
+  });
 });

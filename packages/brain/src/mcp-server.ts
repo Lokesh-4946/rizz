@@ -53,6 +53,22 @@ const RESOURCES = [
   ['rizz://resources/status', 'Current resource policy and active leases', 'application/json'],
 ] as const;
 
+const MISSION_OPTION_PROPERTIES = {
+  scope: { type: 'array', items: { type: 'string' } },
+  scope_status: { type: 'string', enum: ['open', 'proposed', 'accepted'] },
+  requested_skills: { type: 'array', items: { type: 'string' } },
+  approved_skill_risks: { type: 'array', items: { type: 'string' } },
+  constraints: { type: 'array', items: { type: 'string' } },
+  stop_conditions: { type: 'array', items: { type: 'string' } },
+  required_behavior: { type: 'array', items: { type: 'string' } },
+  non_goals: { type: 'array', items: { type: 'string' } },
+  verification_checks: { type: 'array', items: { type: 'string' } },
+  uncertainty_notes: { type: 'array', items: { type: 'string' } },
+  proposed_constraints: { type: 'array', items: { type: 'object' } },
+  proposed_non_goals: { type: 'array', items: { type: 'object' } },
+  risks: { type: 'array', items: { type: 'object' } },
+} as const;
+
 const TOOLS = [
   {
     name: 'get_task_brief',
@@ -62,9 +78,7 @@ const TOOLS = [
       properties: {
         task: { type: 'string' },
         agent: { type: 'string', enum: SUPPORTED_SKILL_AGENTS },
-        scope: { type: 'array', items: { type: 'string' } },
-        scope_status: { type: 'string', enum: ['open', 'proposed', 'accepted'] },
-        requested_skills: { type: 'array', items: { type: 'string' } },
+        ...MISSION_OPTION_PROPERTIES,
       },
       required: ['task'],
       additionalProperties: false,
@@ -79,19 +93,7 @@ const TOOLS = [
       properties: {
         task: { type: 'string' },
         agent: { type: 'string', enum: ['codex', 'claude', 'copilot'] },
-        scope: { type: 'array', items: { type: 'string' } },
-        scope_status: { type: 'string', enum: ['open', 'proposed', 'accepted'] },
-        requested_skills: { type: 'array', items: { type: 'string' } },
-        approved_skill_risks: { type: 'array', items: { type: 'string' } },
-        constraints: { type: 'array', items: { type: 'string' } },
-        stop_conditions: { type: 'array', items: { type: 'string' } },
-        required_behavior: { type: 'array', items: { type: 'string' } },
-        non_goals: { type: 'array', items: { type: 'string' } },
-        verification_checks: { type: 'array', items: { type: 'string' } },
-        uncertainty_notes: { type: 'array', items: { type: 'string' } },
-        proposed_constraints: { type: 'array', items: { type: 'object' } },
-        proposed_non_goals: { type: 'array', items: { type: 'object' } },
-        risks: { type: 'array', items: { type: 'object' } },
+        ...MISSION_OPTION_PROPERTIES,
       },
       required: ['task', 'agent'],
       additionalProperties: false,

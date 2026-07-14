@@ -21,6 +21,7 @@ import {
 import {
   type MissionAgent,
   type MissionBriefIdentity,
+  type MissionScopeStatus,
   missionBriefIdentity,
   previewMission,
 } from './mission-contract.js';
@@ -619,6 +620,11 @@ function missionAgent(value: string): MissionAgent | null {
   return value === 'codex' || value === 'claude' || value === 'copilot' ? value : null;
 }
 
+function missionScopeStatus(value: string | undefined): MissionScopeStatus | null | undefined {
+  if (value === undefined) return undefined;
+  return value === 'open' || value === 'proposed' || value === 'accepted' ? value : null;
+}
+
 async function executeMissionCommand(
   rootDir: string,
   rizzHome: string,
@@ -631,8 +637,9 @@ async function executeMissionCommand(
   const task = flag(args.slice(2), '--task');
   const agent = flag(task.rest, '--agent');
   const scope = repeatedFlag(agent.rest, '--scope');
-  const skills = repeatedFlag(scope.rest, '--skill');
-  if (task.missing || agent.missing || scope.missing || skills.missing) {
+  const scopeStatus = flag(scope.rest, '--scope-status');
+  const skills = repeatedFlag(scopeStatus.rest, '--skill');
+  if (task.missing || agent.missing || scope.missing || scopeStatus.missing || skills.missing) {
     return failed('MISSION_FLAG_VALUE_REQUIRED', 'Mission preview flags need values.');
   }
   if (task.value === undefined || agent.value === undefined) {
@@ -645,12 +652,17 @@ async function executeMissionCommand(
   if (supportedAgent === null) {
     return failed('MISSION_AGENT_UNSUPPORTED', `Unsupported mission agent: ${agent.value}`);
   }
+  const parsedScopeStatus = missionScopeStatus(scopeStatus.value);
+  if (parsedScopeStatus === null) {
+    return failed('MISSION_SCOPE_STATUS_INVALID', 'Mission scope status is invalid.');
+  }
   const result = await previewMission({
     rootDir,
     rizzHome,
     task: task.value,
     agent: supportedAgent,
     scope: scope.values,
+    ...(parsedScopeStatus === undefined ? {} : { scopeStatus: parsedScopeStatus }),
     ...(skills.values.length === 0 ? {} : { requestedSkills: skills.values }),
   });
   if (!result.ok) return resultError(result);
@@ -706,20 +718,32 @@ export async function executeContextCommand(options: {
   }
   if (args[0] === 'brief') {
     const agent = flag(args.slice(1), '--agent');
-    if (agent.missing) return failed('BRIEF_AGENT_REQUIRED', 'Brief --agent needs a value.');
-    const unknownOption = agent.rest.find((argument) => argument.startsWith('--'));
+    const scope = repeatedFlag(agent.rest, '--scope');
+    const scopeStatus = flag(scope.rest, '--scope-status');
+    const skills = repeatedFlag(scopeStatus.rest, '--skill');
+    if (agent.missing || scope.missing || scopeStatus.missing || skills.missing) {
+      return failed('BRIEF_FLAG_VALUE_REQUIRED', 'Brief flags need values.');
+    }
+    const unknownOption = skills.rest.find((argument) => argument.startsWith('--'));
     if (unknownOption !== undefined)
       return failed('BRIEF_OPTION_UNKNOWN', `Unknown option '${unknownOption}'.`);
-    const task = agent.rest.join(' ').trim();
+    const task = skills.rest.join(' ').trim();
     if (task === '') return failed('BRIEF_TASK_REQUIRED', 'Brief needs a task.');
     let mission: MissionBriefIdentity | undefined;
     const supportedAgent = agent.value === undefined ? null : missionAgent(agent.value);
     if (supportedAgent !== null) {
+      const parsedScopeStatus = missionScopeStatus(scopeStatus.value);
+      if (parsedScopeStatus === null) {
+        return failed('MISSION_SCOPE_STATUS_INVALID', 'Mission scope status is invalid.');
+      }
       const preview = await previewMission({
         rootDir: options.rootDir,
         rizzHome: options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
         task,
         agent: supportedAgent,
+        scope: scope.values,
+        ...(parsedScopeStatus === undefined ? {} : { scopeStatus: parsedScopeStatus }),
+        ...(skills.values.length === 0 ? {} : { requestedSkills: skills.values }),
       });
       if (!preview.ok) return resultError(preview);
       mission = missionBriefIdentity(preview.value);

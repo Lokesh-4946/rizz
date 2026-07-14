@@ -78,6 +78,10 @@ jobs:
       - name: Test (vitest)
         run: pnpm test
 
+      - name: Precision regression
+        if: runner.os == 'Linux'
+        run: pnpm test:precision
+
       - name: Eval suite
         run: pnpm eval
 
