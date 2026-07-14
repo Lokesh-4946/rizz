@@ -523,7 +523,7 @@ export async function previewMission(
       skill: skill.name,
       reason: 'Skill requirements or audit status require explicit mission-level approval.',
     }));
-  const scopeStatus = options.scopeStatus ?? (scope.value.length === 0 ? 'open' : 'accepted');
+  const scopeStatus = options.scopeStatus ?? (scope.value.length === 0 ? 'open' : 'proposed');
   const identity: MissionIdentity = {
     schema_version: 1,
     project_id: store.value.projectId,
@@ -585,12 +585,6 @@ export async function acceptMission(
     return failure(
       'MISSION_PREVIEW_STALE',
       'Mission scope, revision, agent, constraints, or selected skill identity changed.',
-    );
-  }
-  if (preview.value.scope_status !== 'accepted') {
-    return failure(
-      'MISSION_SCOPE_UNRESOLVED',
-      'Mission implementation approval requires an explicitly accepted scope.',
     );
   }
   const blocker = preview.value.blockers[0];

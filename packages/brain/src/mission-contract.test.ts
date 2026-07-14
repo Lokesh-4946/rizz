@@ -182,7 +182,7 @@ describe('versioned mission contract', () => {
     ).resolves.toMatchObject({ ok: false, error: { code: 'MISSION_PREVIEW_STALE' } });
   });
 
-  it('refuses open scope and requires explicit approval for risky skills', async () => {
+  it('records open scope without a redundant path approval and blocks risky skills', async () => {
     const openSetup = await fixture();
     const openOptions = previewOptions(openSetup, {
       scope: [],
@@ -197,7 +197,10 @@ describe('versioned mission contract', () => {
         missionId: open.value.mission_id,
         approved: true,
       }),
-    ).resolves.toMatchObject({ ok: false, error: { code: 'MISSION_SCOPE_UNRESOLVED' } });
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { scope: [], scope_status: 'open', approved: true },
+    });
 
     const riskySetup = await fixture({ risky: true });
     const riskyOptions = previewOptions(riskySetup);
@@ -224,6 +227,27 @@ describe('versioned mission contract', () => {
       ok: false,
       error: { code: 'MISSION_SKILL_APPROVAL_REQUIRED' },
     });
+  });
+
+  it('defaults host-suggested paths to proposed and keeps them nonblocking', async () => {
+    const setup = await fixture();
+    const options: MissionPreviewOptions = {
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      task: 'Review `src/a.ts` with exact evidence',
+      agent: 'codex',
+      scope: ['src/a.ts'],
+      requestedSkills: [setup.skillName],
+    };
+    const preview = await previewMission(options);
+    expect(preview).toMatchObject({
+      ok: true,
+      value: { scope: ['src/a.ts'], scope_status: 'proposed', blockers: [] },
+    });
+    if (!preview.ok) return;
+    await expect(
+      acceptMission({ ...options, missionId: preview.value.mission_id, approved: true }),
+    ).resolves.toMatchObject({ ok: true, value: { scope_status: 'proposed' } });
   });
 
   it('rejects tampered pinned content and stale accepted repository revisions', async () => {

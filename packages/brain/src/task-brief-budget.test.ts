@@ -60,6 +60,14 @@ function baseCandidate() {
 describe('serialized Task Brief budgeting', () => {
   it('fits huge inventories into valid JSON under 32 KiB', () => {
     const base = baseCandidate();
+    const sourceFiles = Array.from(
+      { length: 20_000 },
+      (_, index) => `packages/${'模块-'.repeat(16)}${index}/source.ts`,
+    );
+    const evidenceIds = Array.from({ length: 20_000 }, (_, index) => `evidence:${index}`);
+    expect(Buffer.byteLength(JSON.stringify({ sourceFiles, evidenceIds }))).toBeGreaterThan(
+      Math.floor(2.81 * 1024 * 1024),
+    );
     const result = assembleTaskBrief(
       params({
         claims: [
@@ -68,11 +76,8 @@ describe('serialized Task Brief budgeting', () => {
             claim: {
               ...base.claim,
               summary: '🔥'.repeat(2_000),
-              source_files: Array.from(
-                { length: 20_000 },
-                (_, index) => `packages/模块-${index}/source.ts`,
-              ),
-              evidence_ids: Array.from({ length: 20_000 }, (_, index) => `evidence:${index}`),
+              source_files: sourceFiles,
+              evidence_ids: evidenceIds,
             },
           },
         ],

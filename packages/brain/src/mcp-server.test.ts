@@ -125,7 +125,7 @@ describe('Rizz MCP server', () => {
       task: 'Update Hero',
       agent: 'codex',
       scope: ['src/hero.ts'],
-      scope_status: 'accepted',
+      scope_status: 'proposed',
     };
     await server.handle(
       JSON.stringify({

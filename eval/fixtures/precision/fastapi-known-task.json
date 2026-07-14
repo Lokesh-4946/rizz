@@ -1,10 +1,7 @@
 {
   "name": "fastapi-known-task",
   "task": "Fix prefixless router matching in `fastapi/routing.py` and `tests/test_router_prefix.py`.",
-  "expected_admitted_ids": [
-    "file:fastapi/routing.py",
-    "test:tests/test_router_prefix.py"
-  ],
+  "expected_admitted_ids": ["file:fastapi/routing.py", "test:tests/test_router_prefix.py"],
   "large_inventory_count": 20000,
   "candidates": [
     {
