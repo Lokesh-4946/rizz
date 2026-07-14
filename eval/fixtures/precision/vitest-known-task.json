@@ -1,0 +1,38 @@
+{
+  "name": "vitest-known-task",
+  "task": "Implement `toHaveProperty` in `packages/expect/src/jest-expect.ts` and `packages/expect/test/jest-expect.test.ts`.",
+  "expected_admitted_ids": [
+    "file:packages/expect/src/jest-expect.ts",
+    "test:packages/expect/test/jest-expect.test.ts"
+  ],
+  "large_inventory_count": 20000,
+  "candidates": [
+    {
+      "id": "file:packages/expect/src/jest-expect.ts",
+      "type": "file",
+      "name": "packages/expect/src/jest-expect.ts",
+      "description": "Matcher implementation containing the cited toHaveProperty symbol.",
+      "sourceFiles": ["packages/expect/src/jest-expect.ts"],
+      "evidenceIds": ["evidence:vitest-expect-implementation"],
+      "confidence": "verified"
+    },
+    {
+      "id": "test:packages/expect/test/jest-expect.test.ts",
+      "type": "test",
+      "name": "packages/expect/test/jest-expect.test.ts",
+      "description": "Direct matcher regression tests for the cited implementation.",
+      "sourceFiles": ["packages/expect/test/jest-expect.test.ts"],
+      "evidenceIds": ["evidence:vitest-expect-test"],
+      "confidence": "verified"
+    },
+    {
+      "id": "folder:workspace-packages",
+      "type": "folder",
+      "name": "Workspace package inventory",
+      "description": "Aggregate unrelated workspace package inventory.",
+      "sourceFiles": ["packages/runner/src/index.ts"],
+      "evidenceIds": ["evidence:workspace-inventory"],
+      "confidence": "direct"
+    }
+  ]
+}

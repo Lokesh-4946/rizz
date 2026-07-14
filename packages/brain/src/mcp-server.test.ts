@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { executeContextCommand } from './context-command.js';
 import { startLoopWork } from './context-loop.js';
 import { generateProjectBrain } from './index.js';
 import { createMcpServer } from './mcp-server.js';
@@ -82,10 +83,115 @@ describe('Rizz MCP server', () => {
     expect(tools.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         'get_task_brief',
+        'preview_mission',
         'record_checkpoint',
         'complete_work',
         'create_handoff',
       ]),
+    );
+  });
+
+  it('keeps CLI preview and MCP mission identity exact in the bounded brief', async () => {
+    const setup = await fixture();
+    const cli = await executeContextCommand({
+      rootDir: setup.rootDir,
+      rizzHome: setup.rizzHome,
+      args: [
+        'mission',
+        'preview',
+        '--task',
+        'Update Hero',
+        '--agent',
+        'codex',
+        '--scope',
+        'src/hero.ts',
+        '--scope-status',
+        'proposed',
+        '--json',
+      ],
+    });
+    expect(cli).toMatchObject({ exitCode: 0, stderr: '' });
+    const cliPreview = JSON.parse(cli.stdout) as {
+      readonly mission_id: string;
+      readonly project_id: string;
+      readonly task: string;
+      readonly agent: string;
+      readonly repository_revision: string;
+      readonly selected_skills: readonly unknown[];
+    };
+    const cliBriefResult = await executeContextCommand({
+      rootDir: setup.rootDir,
+      rizzHome: setup.rizzHome,
+      args: [
+        'brief',
+        'Update Hero',
+        '--agent',
+        'codex',
+        '--scope',
+        'src/hero.ts',
+        '--scope-status',
+        'proposed',
+        '--json',
+      ],
+    });
+    expect(cliBriefResult).toMatchObject({ exitCode: 0, stderr: '' });
+    const cliBrief = JSON.parse(cliBriefResult.stdout) as Readonly<Record<string, unknown>>;
+
+    const output = capture();
+    const server = createMcpServer({ ...setup, write: output.write });
+    await server.handle(
+      JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} }),
+    );
+    const missionArguments = {
+      task: 'Update Hero',
+      agent: 'codex',
+      scope: ['src/hero.ts'],
+      scope_status: 'proposed',
+    };
+    await server.handle(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'preview_mission', arguments: missionArguments },
+      }),
+    );
+    await server.handle(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'get_task_brief', arguments: missionArguments },
+      }),
+    );
+
+    const mcpPreview = output.messages[1]?.result as {
+      readonly structuredContent: typeof cliPreview;
+    };
+    const mcpBrief = output.messages[2]?.result as {
+      readonly structuredContent: {
+        readonly mission: {
+          readonly mission_id: string;
+          readonly project_id: string;
+          readonly task: string;
+          readonly agent: string;
+          readonly repository_revision: string;
+          readonly selected_skills: readonly unknown[];
+        };
+      };
+    };
+    expect(mcpPreview.structuredContent).toEqual(expect.objectContaining(cliPreview));
+    expect(mcpBrief.structuredContent.mission).toEqual({
+      mission_id: cliPreview.mission_id,
+      project_id: cliPreview.project_id,
+      task: cliPreview.task,
+      agent: cliPreview.agent,
+      repository_revision: cliPreview.repository_revision,
+      selected_skills: cliPreview.selected_skills,
+    });
+    expect(mcpBrief.structuredContent).toEqual(cliBrief);
+    expect(Buffer.byteLength(JSON.stringify(mcpBrief.structuredContent))).toBeLessThanOrEqual(
+      32 * 1024,
     );
   });
 
@@ -124,8 +230,17 @@ describe('Rizz MCP server', () => {
     const result = output.messages[2]?.result as {
       structuredContent: { project_id: string; claims: unknown[] };
     };
+    const cli = await executeContextCommand({
+      rootDir: setup.rootDir,
+      rizzHome: setup.rizzHome,
+      args: ['brief', 'Update Hero', '--json'],
+    });
     expect(result.structuredContent.project_id).toBe(setup.projectId);
     expect(result.structuredContent.claims.length).toBeGreaterThan(0);
+    expect(result.structuredContent).toEqual(JSON.parse(cli.stdout));
+    expect(Buffer.byteLength(JSON.stringify(result.structuredContent))).toBeLessThanOrEqual(
+      32 * 1024,
+    );
     expect(output.messages[3]?.result).toEqual(
       expect.objectContaining({
         structuredContent: expect.objectContaining({

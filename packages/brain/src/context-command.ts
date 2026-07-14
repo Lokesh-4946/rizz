@@ -18,6 +18,12 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import {
+  type MissionAgent,
+  type MissionPreview,
+  type MissionScopeStatus,
+  previewMission,
+} from './mission-contract.js';
 import { enablePinnedSkill, listEnabledProjectSkills } from './project-skill-enablement.js';
 import { resolveRizzHome } from './project-store.js';
 import {
@@ -609,6 +615,59 @@ async function executeVaultCommand(
   return failed('VAULT_ACTION_UNKNOWN', 'Vault supports inspect, import, and reconcile.');
 }
 
+function missionAgent(value: string): MissionAgent | null {
+  return value === 'codex' || value === 'claude' || value === 'copilot' ? value : null;
+}
+
+function missionScopeStatus(value: string | undefined): MissionScopeStatus | null | undefined {
+  if (value === undefined) return undefined;
+  return value === 'open' || value === 'proposed' || value === 'accepted' ? value : null;
+}
+
+async function executeMissionCommand(
+  rootDir: string,
+  rizzHome: string,
+  args: readonly string[],
+  wantsJson: boolean,
+): Promise<ContextCommandResult> {
+  if (args[1] !== 'preview') {
+    return failed('MISSION_ACTION_UNKNOWN', 'Mission supports preview.');
+  }
+  const task = flag(args.slice(2), '--task');
+  const agent = flag(task.rest, '--agent');
+  const scope = repeatedFlag(agent.rest, '--scope');
+  const scopeStatus = flag(scope.rest, '--scope-status');
+  const skills = repeatedFlag(scopeStatus.rest, '--skill');
+  if (task.missing || agent.missing || scope.missing || scopeStatus.missing || skills.missing) {
+    return failed('MISSION_FLAG_VALUE_REQUIRED', 'Mission preview flags need values.');
+  }
+  if (task.value === undefined || agent.value === undefined) {
+    return failed('MISSION_PREVIEW_REQUIRED', 'Mission preview needs --task and --agent.');
+  }
+  if (skills.rest.length > 0) {
+    return failed('MISSION_OPTION_UNKNOWN', `Unknown option '${skills.rest[0]}'.`);
+  }
+  const supportedAgent = missionAgent(agent.value);
+  if (supportedAgent === null) {
+    return failed('MISSION_AGENT_UNSUPPORTED', `Unsupported mission agent: ${agent.value}`);
+  }
+  const parsedScopeStatus = missionScopeStatus(scopeStatus.value);
+  if (parsedScopeStatus === null) {
+    return failed('MISSION_SCOPE_STATUS_INVALID', 'Mission scope status is invalid.');
+  }
+  const result = await previewMission({
+    rootDir,
+    rizzHome,
+    task: task.value,
+    agent: supportedAgent,
+    scope: scope.values,
+    ...(parsedScopeStatus === undefined ? {} : { scopeStatus: parsedScopeStatus }),
+    ...(skills.values.length === 0 ? {} : { requestedSkills: skills.values }),
+  });
+  if (!result.ok) return resultError(result);
+  return rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2));
+}
+
 export async function executeContextCommand(options: {
   readonly rootDir: string;
   readonly args: readonly string[];
@@ -648,24 +707,59 @@ export async function executeContextCommand(options: {
       options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
     );
   if (args[0] === 'vault') return executeVaultCommand(options.rootDir, args, wantsJson);
+  if (args[0] === 'mission') {
+    return executeMissionCommand(
+      options.rootDir,
+      options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
+      args,
+      wantsJson,
+    );
+  }
   if (args[0] === 'brief') {
     const agent = flag(args.slice(1), '--agent');
-    if (agent.missing) return failed('BRIEF_AGENT_REQUIRED', 'Brief --agent needs a value.');
-    const unknownOption = agent.rest.find((argument) => argument.startsWith('--'));
+    const scope = repeatedFlag(agent.rest, '--scope');
+    const scopeStatus = flag(scope.rest, '--scope-status');
+    const skills = repeatedFlag(scopeStatus.rest, '--skill');
+    if (agent.missing || scope.missing || scopeStatus.missing || skills.missing) {
+      return failed('BRIEF_FLAG_VALUE_REQUIRED', 'Brief flags need values.');
+    }
+    const unknownOption = skills.rest.find((argument) => argument.startsWith('--'));
     if (unknownOption !== undefined)
       return failed('BRIEF_OPTION_UNKNOWN', `Unknown option '${unknownOption}'.`);
-    const task = agent.rest.join(' ').trim();
+    const task = skills.rest.join(' ').trim();
     if (task === '') return failed('BRIEF_TASK_REQUIRED', 'Brief needs a task.');
+    let mission: MissionPreview | undefined;
+    const supportedAgent = agent.value === undefined ? null : missionAgent(agent.value);
+    if (supportedAgent !== null) {
+      const parsedScopeStatus = missionScopeStatus(scopeStatus.value);
+      if (parsedScopeStatus === null) {
+        return failed('MISSION_SCOPE_STATUS_INVALID', 'Mission scope status is invalid.');
+      }
+      const preview = await previewMission({
+        rootDir: options.rootDir,
+        rizzHome: options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
+        task,
+        agent: supportedAgent,
+        scope: scope.values,
+        ...(parsedScopeStatus === undefined ? {} : { scopeStatus: parsedScopeStatus }),
+        ...(skills.values.length === 0 ? {} : { requestedSkills: skills.values }),
+      });
+      if (!preview.ok) return resultError(preview);
+      mission = preview.value;
+    }
     const result = await compileTaskBrief({
       rootDir: options.rootDir,
       rizzHome: options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
       task,
       ...(agent.value === undefined ? {} : { agent: agent.value }),
+      ...(mission === undefined ? {} : { mission }),
     });
     if (!result.ok) return resultError(result);
     return rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2));
   }
-  if (args[0] !== 'loop') return failed('CONTEXT_COMMAND_UNKNOWN', 'Expected brief or loop.');
+  if (args[0] !== 'loop') {
+    return failed('CONTEXT_COMMAND_UNKNOWN', 'Expected brief, mission, or loop.');
+  }
   const action = args[1];
   const actionArgs = args.slice(2);
   if (action === 'status' || action === 'next') {

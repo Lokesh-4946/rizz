@@ -1,11 +1,16 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileTaskBrief } from './context-loop.js';
 import { generateProjectBrain } from './index.js';
-import { enablePinnedSkill, listEnabledProjectSkills } from './project-skill-enablement.js';
+import {
+  enablePinnedSkill,
+  listEnabledProjectSkills,
+  listVerifiedProjectSkills,
+} from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { addPinnedSkill } from './skill-source-manager.js';
 
@@ -193,6 +198,112 @@ describe('isolated project skill enablement', () => {
     ).resolves.toMatchObject({
       ok: false,
       error: { code: 'SKILL_ENABLEMENT_INVALID' },
+    });
+  });
+
+  it('lists only agent-compatible skills whose immutable pin still verifies', async () => {
+    const setup = await fixture();
+    await enablePinnedSkill({
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      name: 'review-evidence',
+      agents: ['codex'],
+      approved: true,
+    });
+    const store = await prepareProjectStore({ rootDir: setup.project, rizzHome: setup.rizzHome });
+    if (!store.ok) throw new Error(store.error.message);
+    const brain = await generateProjectBrain({
+      rootDir: setup.project,
+      outputDir: store.value.projectDir,
+    });
+    if (!brain.ok) throw new Error(brain.error.message);
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'copilot',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { skills: [] } });
+    await writeFile(join(setup.pinned.value.cache_dir, 'SKILL.md'), 'tampered\n');
+    await expect(
+      compileTaskBrief({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        task: 'Review repository changes',
+        agent: 'codex',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_CACHE_TAMPERED' } });
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'codex',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_CACHE_TAMPERED' } });
+  });
+
+  it('rejects manifest edits that change approved agents or emitted provenance', async () => {
+    const setup = await fixture();
+    const enabled = await enablePinnedSkill({
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      name: 'review-evidence',
+      agents: ['codex'],
+      approved: true,
+    });
+    if (!enabled.ok) throw new Error(enabled.error.message);
+    const manifest = JSON.parse(await readFile(enabled.value.manifest_path, 'utf8')) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    manifest.skills['review-evidence'] = {
+      ...manifest.skills['review-evidence'],
+      agents: ['copilot'],
+      license: 'forged',
+      enablement_receipt: createHash('sha256')
+        .update(JSON.stringify({ agents: ['copilot'], license: 'forged' }))
+        .digest('hex'),
+    };
+    await writeFile(enabled.value.manifest_path, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'copilot',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_ENABLEMENT_STALE' } });
+  });
+
+  it('reads a validated pre-receipt schema-v1 enablement without forcing re-enablement', async () => {
+    const setup = await fixture();
+    const enabled = await enablePinnedSkill({
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      name: 'review-evidence',
+      agents: ['codex'],
+      approved: true,
+    });
+    if (!enabled.ok) throw new Error(enabled.error.message);
+    const manifest = JSON.parse(await readFile(enabled.value.manifest_path, 'utf8')) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    const {
+      enablement_receipt: _receipt,
+      enablement_digest: _digest,
+      ...legacy
+    } = manifest.skills['review-evidence'] ?? {};
+    manifest.skills['review-evidence'] = legacy;
+    await writeFile(enabled.value.manifest_path, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'codex',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { skills: [expect.objectContaining({ name: 'review-evidence' })] },
     });
   });
 });

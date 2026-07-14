@@ -1,0 +1,35 @@
+{
+  "name": "fastapi-known-task",
+  "task": "Fix prefixless router matching in `fastapi/routing.py` and `tests/test_router_prefix.py`.",
+  "expected_admitted_ids": ["file:fastapi/routing.py", "test:tests/test_router_prefix.py"],
+  "large_inventory_count": 20000,
+  "candidates": [
+    {
+      "id": "file:fastapi/routing.py",
+      "type": "file",
+      "name": "fastapi/routing.py",
+      "description": "Router matching implementation with literal prefix handling evidence.",
+      "sourceFiles": ["fastapi/routing.py"],
+      "evidenceIds": ["evidence:fastapi-routing"],
+      "confidence": "verified"
+    },
+    {
+      "id": "test:tests/test_router_prefix.py",
+      "type": "test",
+      "name": "tests/test_router_prefix.py",
+      "description": "Direct regression tests for prefixless router matching.",
+      "sourceFiles": ["tests/test_router_prefix.py"],
+      "evidenceIds": ["evidence:fastapi-router-test"],
+      "confidence": "verified"
+    },
+    {
+      "id": "folder:docs-translations",
+      "type": "folder",
+      "name": "Documentation translations",
+      "description": "Aggregate translated documentation inventory.",
+      "sourceFiles": ["docs/translations/index.md"],
+      "evidenceIds": ["evidence:docs-translations"],
+      "confidence": "direct"
+    }
+  ]
+}

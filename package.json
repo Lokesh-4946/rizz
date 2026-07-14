@@ -14,6 +14,7 @@
     "lint": "biome ci .",
     "format": "biome format --write .",
     "test": "vitest run --exclude \"**/.rizz/**\"",
+    "test:precision": "vitest run packages/brain/src/task-relevance.test.ts packages/brain/src/task-brief-budget.test.ts packages/brain/src/context-loop.test.ts packages/brain/src/mission-contract.test.ts packages/brain/src/project-skill-enablement.test.ts packages/brain/src/mcp-server.test.ts packages/brain/src/upstream-skill-context-uat.test.ts packages/brain/src/milestone-a-precision-qa.test.ts && pnpm footprint",
     "eval": "node eval/run.mjs",
     "footprint": "node scripts/footprint-check.mjs",
     "uat:large-repos": "pnpm build && node scripts/uat-large-repos.mjs",

@@ -1,12 +1,20 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
-import { listEnabledProjectSkills } from './project-skill-enablement.js';
+import {
+  type MissionBriefIdentity,
+  type MissionPreview,
+  missionBriefIdentity,
+  verifyMissionPreviewIdentity,
+} from './mission-contract.js';
+import { listVerifiedProjectSkills } from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
 import type { SkillFinding } from './skill-source-manager.js';
+import { type TaskBriefSizeBudget, assembleTaskBrief } from './task-brief-budget.js';
+import { decideTaskRelevance, extractTaskAnchors } from './task-relevance.js';
 
 type EvidenceClass = 'verified' | 'direct' | 'derived' | 'ai-hypothesis';
 type LoopStatus = 'started' | 'planning' | 'implementing' | 'verifying' | 'reviewing' | 'completed';
@@ -28,6 +36,10 @@ export interface TaskBriefClaim {
   readonly evidence_class: EvidenceClass;
   readonly source_files: readonly string[];
   readonly evidence_ids: readonly string[];
+  readonly relevance_score: number;
+  readonly relevance_reasons: readonly string[];
+  readonly relevance_confidence: 'verified' | 'direct' | 'inferred' | 'uncertain';
+  readonly causal_path: readonly string[];
 }
 
 export interface TaskBrief {
@@ -37,6 +49,7 @@ export interface TaskBrief {
   readonly brain_generated_at: string;
   readonly task: string;
   readonly agent: string | null;
+  readonly mission?: MissionBriefIdentity;
   readonly claims: readonly TaskBriefClaim[];
   readonly omissions: readonly string[];
   readonly stale_evidence_warnings: readonly string[];
@@ -60,7 +73,7 @@ export interface TaskBrief {
       readonly credentials: boolean;
     };
   }[];
-  readonly size_budget: { readonly max_claims: number; readonly included_claims: number };
+  readonly size_budget: TaskBriefSizeBudget;
 }
 
 interface LoopCheckpoint {
@@ -166,32 +179,6 @@ async function readEntities(brainDir: string): Promise<EntityRecord[]> {
   return entities;
 }
 
-function tokens(value: string): Set<string> {
-  return new Set(
-    value
-      .toLowerCase()
-      .split(/[^a-z0-9_]+/)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3),
-  );
-}
-
-function rankEntity(
-  entity: EntityRecord,
-  taskTokens: ReadonlySet<string>,
-): { readonly score: number; readonly matches: number } {
-  const searchable = tokens(
-    `${entity.id} ${entity.type} ${entity.name} ${entity.description} ${(entity.source_files ?? []).join(' ')}`,
-  );
-  let matches = 0;
-  for (const token of taskTokens) if (searchable.has(token)) matches += 1;
-  return {
-    matches,
-    score:
-      matches * 100 + (entity.evidence_ids?.length ?? 0) * 2 + (entity.source_files?.length ?? 0),
-  };
-}
-
 function evidenceClass(entity: EntityRecord): EvidenceClass {
   if (entity.confidence === 'verified' && (entity.evidence_ids?.length ?? 0) > 0) return 'verified';
   if ((entity.evidence_ids?.length ?? 0) > 0 || (entity.source_files?.length ?? 0) > 0)
@@ -208,12 +195,83 @@ async function readGeneratedAt(brainDir: string): Promise<string | null> {
   }
 }
 
+function nulSeparatedGitPaths(rootDir: string, args: readonly string[]): readonly string[] {
+  const result = spawnSync('git', args, { cwd: rootDir, encoding: 'utf8' });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\0')
+    .map((path) => path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
+    .filter((path) => path !== '');
+}
+
+function changedFiles(rootDir: string): ReadonlySet<string> {
+  return new Set([
+    ...nulSeparatedGitPaths(rootDir, ['diff', '--name-only', '-z', 'HEAD', '--']),
+    ...nulSeparatedGitPaths(rootDir, ['ls-files', '--others', '--exclude-standard', '-z']),
+  ]);
+}
+
+function sourceStem(path: string): string {
+  const filename = posix.basename(path.toLowerCase());
+  const extension = posix.extname(filename);
+  const stem = extension === '' ? filename : filename.slice(0, -extension.length);
+  return stem
+    .replace(/\.(?:test|spec)$/u, '')
+    .replace(/^test[_-]/u, '')
+    .replace(/[_-]test$/u, '');
+}
+
+function anchoredChangedFiles(
+  changed: ReadonlySet<string>,
+  exactAnchors: readonly string[],
+  scope: readonly string[],
+): ReadonlySet<string> {
+  const normalizedScope = scope.map((value) => value.toLowerCase().replaceAll('\\', '/'));
+  const pathAnchors = exactAnchors
+    .map((value) => value.toLowerCase().replaceAll('\\', '/'))
+    .filter((value) => value.includes('/'));
+  const basenameAnchors = new Set(
+    exactAnchors.map((value) => value.toLowerCase()).filter((value) => !value.includes('/')),
+  );
+  return new Set(
+    [...changed].filter((path) => {
+      const normalized = path.toLowerCase();
+      const scoped = normalizedScope.some(
+        (value) => normalized === value || normalized.startsWith(`${value}/`),
+      );
+      if (scoped) return true;
+      if (pathAnchors.length > 0) return pathAnchors.includes(normalized);
+      return basenameAnchors.has(posix.basename(normalized));
+    }),
+  );
+}
+
+function matchKind(
+  entity: EntityRecord,
+  anchoredChanged: ReadonlySet<string>,
+): 'changed-file' | 'test-neighbor' | undefined {
+  const sourceFiles = entity.source_files ?? [];
+  if (sourceFiles.some((path) => anchoredChanged.has(path))) return 'changed-file';
+  if (entity.type !== 'test') return undefined;
+  return sourceFiles.some((testPath) =>
+    [...anchoredChanged].some(
+      (changedPath) =>
+        posix.dirname(testPath) === posix.dirname(changedPath) &&
+        sourceStem(testPath) === sourceStem(changedPath),
+    ),
+  )
+    ? 'test-neighbor'
+    : undefined;
+}
+
 export async function compileTaskBrief(options: {
   readonly rootDir: string;
   readonly task: string;
   readonly rizzHome?: string;
   readonly maxClaims?: number;
+  readonly maxBytes?: number;
   readonly agent?: string;
+  readonly mission?: MissionPreview;
 }): Promise<RizzResult<TaskBrief>> {
   if (
     options.agent !== undefined &&
@@ -226,6 +284,22 @@ export async function compileTaskBrief(options: {
   }
   const store = await prepareProjectStore(options);
   if (!store.ok) return store;
+  const repositoryRevision = gitRevision(store.value.rootPath);
+  const verifiedMission =
+    options.mission === undefined ? undefined : verifyMissionPreviewIdentity(options.mission);
+  if (
+    options.mission !== undefined &&
+    (verifiedMission?.ok !== true ||
+      options.mission.project_id !== store.value.projectId ||
+      options.mission.task !== redactSensitiveText(options.task) ||
+      options.mission.agent !== options.agent ||
+      options.mission.repository_revision !== repositoryRevision)
+  ) {
+    return error(
+      'MISSION_BRIEF_MISMATCH',
+      'Task Brief mission agent or repository revision does not match the current request.',
+    );
+  }
   const generatedAt = await readGeneratedAt(store.value.brainDir);
   if (generatedAt === null) {
     return error(
@@ -233,69 +307,92 @@ export async function compileTaskBrief(options: {
       'No prepared project intelligence exists. Run rizz prepare.',
     );
   }
-  const maxClaims = Math.max(1, Math.min(options.maxClaims ?? 24, 100));
   const allEntities = await readEntities(store.value.brainDir);
-  const ranked = allEntities
-    .map((entity) => ({ entity, ...rankEntity(entity, tokens(options.task)) }))
-    .sort(
-      (left, right) => right.score - left.score || left.entity.id.localeCompare(right.entity.id),
-    );
-  const selected = ranked
-    .filter(
-      ({ entity, matches }) =>
-        matches > 0 &&
-        ((entity.evidence_ids?.length ?? 0) > 0 || (entity.source_files?.length ?? 0) > 0),
-    )
-    .slice(0, maxClaims)
-    .map(({ entity }) => ({
-      entity_id: entity.id,
-      entity_type: entity.type,
-      summary: entity.description,
-      evidence_class: evidenceClass(entity),
-      source_files: entity.source_files ?? [],
-      evidence_ids: entity.evidence_ids ?? [],
-    }));
-  const omitted = Math.max(0, allEntities.length - selected.length);
-  const enabledSkills = await listEnabledProjectSkills(options);
+  const anchors = extractTaskAnchors(options.task);
+  const anchoredChanged = anchoredChangedFiles(
+    changedFiles(store.value.rootPath),
+    [...anchors.exact],
+    options.mission?.scope ?? [],
+  );
+  const candidates = allEntities.map((entity) => {
+    const directMatch = matchKind(entity, anchoredChanged);
+    const relevance = decideTaskRelevance({
+      anchors,
+      candidate: {
+        id: entity.id,
+        type: entity.type,
+        name: entity.name,
+        description: entity.description,
+        ...(entity.confidence === undefined ? {} : { confidence: entity.confidence }),
+        sourceFiles: entity.source_files ?? [],
+        evidenceIds: entity.evidence_ids ?? [],
+        ...(directMatch === undefined ? {} : { matchKind: directMatch }),
+      },
+    });
+    return {
+      claim: {
+        entity_id: entity.id,
+        entity_type: entity.type,
+        summary: entity.description,
+        evidence_class: evidenceClass(entity),
+        source_files: entity.source_files ?? [],
+        evidence_ids: entity.evidence_ids ?? [],
+        relevance_score: relevance.score,
+        relevance_reasons: relevance.reasons,
+        relevance_confidence: relevance.confidence,
+        causal_path: relevance.causal_path,
+      },
+      relevance,
+    };
+  });
+  const admittedCount = candidates.filter((candidate) => candidate.relevance.admitted).length;
+  const omitted = Math.max(0, allEntities.length - admittedCount);
+  const enabledSkills = await listVerifiedProjectSkills({
+    ...options,
+    ...(options.agent === undefined ? {} : { agent: options.agent }),
+  });
   if (!enabledSkills.ok) return enabledSkills;
-  return {
-    ok: true,
-    value: {
+  if (options.mission !== undefined) {
+    const skills = new Map(enabledSkills.value.skills.map((skill) => [skill.name, skill]));
+    const changedSkill = options.mission.selected_skills.find((selected) => {
+      const skill = skills.get(selected.name);
+      return (
+        skill === undefined ||
+        skill.digest !== selected.digest ||
+        skill.revision !== selected.revision ||
+        skill.file_digest !== selected.file_digest
+      );
+    });
+    if (changedSkill !== undefined) {
+      return error(
+        'MISSION_BRIEF_MISMATCH',
+        `Task Brief selected skill identity is stale or unavailable: ${changedSkill.name}`,
+      );
+    }
+  }
+  return assembleTaskBrief({
+    envelope: {
       schema_version: 1,
       project_id: store.value.projectId,
-      repository_revision: gitRevision(store.value.rootPath),
+      repository_revision: repositoryRevision,
       brain_generated_at: generatedAt,
       task: redactSensitiveText(options.task),
       agent: options.agent ?? null,
-      claims: selected,
+      ...(options.mission === undefined ? {} : { mission: missionBriefIdentity(options.mission) }),
       omissions: omitted > 0 ? [`${omitted} lower-ranked or uncited claim(s) omitted`] : [],
       stale_evidence_warnings: [
         'Brain evidence is timestamped but not bound to this exact repository revision.',
       ],
       evidence_gaps:
-        selected.length === 0 ? ['No evidence-bearing repository claim matched the task.'] : [],
-      compatible_skills: enabledSkills.value.skills
-        .filter((skill) => options.agent === undefined || skill.agents.includes(options.agent))
-        .map((skill) => ({
-          name: skill.name,
-          ...(skill.source_id === undefined ? {} : { source_id: skill.source_id }),
-          ...(skill.skill_path === undefined ? {} : { skill_path: skill.skill_path }),
-          ...(skill.source_repository === undefined
-            ? {}
-            : { source_repository: skill.source_repository }),
-          digest: skill.digest,
-          ...(skill.file_digest === undefined ? {} : { file_digest: skill.file_digest }),
-          revision: skill.revision,
-          ...(skill.license === undefined ? {} : { license: skill.license }),
-          ...(skill.attribution === undefined ? {} : { attribution: skill.attribution }),
-          agents: skill.agents,
-          audit_status: skill.audit_status,
-          ...(skill.audit_findings === undefined ? {} : { audit_findings: skill.audit_findings }),
-          requirements: skill.requirements,
-        })),
-      size_budget: { max_claims: maxClaims, included_claims: selected.length },
+        admittedCount === 0 ? ['No strong repository evidence matched the task anchors.'] : [],
     },
-  };
+    claims: candidates,
+    compatibleSkills: enabledSkills.value.skills.filter(
+      (skill) => options.agent === undefined || skill.agents.includes(options.agent),
+    ),
+    ...(options.maxClaims === undefined ? {} : { maxClaims: options.maxClaims }),
+    ...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }),
+  });
 }
 
 async function writeVerifiedContents(path: string, contents: string): Promise<void> {

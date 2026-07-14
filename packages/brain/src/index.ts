@@ -46,6 +46,8 @@ export {
 } from './project-store.js';
 export { prepareRepository } from './prepare.js';
 export * from './context-loop.js';
+export * from './task-relevance.js';
+export * from './mission-contract.js';
 export { executeContextCommand, type ContextCommandResult } from './context-command.js';
 export * from './vault-import.js';
 export { createMcpServer, serveMcpStdio } from './mcp-server.js';

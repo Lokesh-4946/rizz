@@ -12,6 +12,8 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import { previewMission } from './mission-contract.js';
+import { TASK_BRIEF_MAX_BYTES, TASK_BRIEF_MAX_CLAIMS } from './task-brief-budget.js';
 
 const roots: string[] = [];
 
@@ -24,6 +26,7 @@ async function fixture(): Promise<{ rootDir: string; rizzHome: string }> {
   execFileSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: rootDir });
   await mkdir(join(rootDir, 'src'), { recursive: true });
   await writeFile(join(rootDir, 'src', 'hero.ts'), 'export const hero = true;\n');
+  await writeFile(join(rootDir, 'src', 'hero.test.ts'), 'export const heroTest = true;\n');
   execFileSync('git', ['add', '.'], { cwd: rootDir });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: rootDir });
   return { rootDir, rizzHome };
@@ -44,6 +47,15 @@ async function seedBrain(rootDir: string, rizzHome: string): Promise<void> {
     `${JSON.stringify({
       entities: [
         {
+          id: 'test:src/hero.test.ts',
+          type: 'test',
+          name: 'Hero tests',
+          description: 'Direct regression coverage for the homepage component',
+          confidence: 'verified',
+          evidence_ids: ['evidence:src/hero.test.ts'],
+          source_files: ['src/hero.test.ts'],
+        },
+        {
           id: 'file:src/hero.ts',
           type: 'file',
           name: 'Hero',
@@ -60,6 +72,49 @@ async function seedBrain(rootDir: string, rizzHome: string): Promise<void> {
           confidence: 'uncertain',
           evidence_ids: [],
           source_files: ['src/unrelated.ts'],
+        },
+      ],
+    })}\n`,
+  );
+}
+
+async function seedLargeInventoryBrain(rootDir: string, rizzHome: string): Promise<void> {
+  const { prepareProjectStore } = await import('./project-store.js');
+  const store = await prepareProjectStore({ rootDir, rizzHome, remote: null });
+  if (!store.ok) throw new Error(store.error.message);
+  const entitiesDir = join(store.value.brainDir, 'entities');
+  await mkdir(entitiesDir, { recursive: true });
+  await writeFile(
+    join(store.value.brainDir, 'latest.json'),
+    `${JSON.stringify({ generated_at: '2026-07-14T00:00:00.000Z' })}\n`,
+  );
+  await writeFile(
+    join(entitiesDir, 'files.json'),
+    `${JSON.stringify({
+      entities: [
+        {
+          id: 'file:packages/expect/src/jest-expect.ts',
+          type: 'file',
+          name: 'jest-expect.ts',
+          description: 'toHaveProperty matcher implementation',
+          confidence: 'verified',
+          evidence_ids: Array.from({ length: 20_000 }, (_, index) => `evidence:${index}`),
+          source_files: [
+            'packages/expect/src/jest-expect.ts',
+            ...Array.from({ length: 20_000 }, (_, index) => `packages/模块-${index}/source.ts`),
+          ],
+        },
+        {
+          id: 'folder:docs-translations',
+          type: 'folder',
+          name: 'Translated docs',
+          description: 'Router path test review documentation',
+          confidence: 'verified',
+          evidence_ids: Array.from({ length: 20_000 }, (_, index) => `docs-evidence:${index}`),
+          source_files: Array.from(
+            { length: 20_000 },
+            (_, index) => `docs/translations/${index}.md`,
+          ),
         },
       ],
     })}\n`,
@@ -94,10 +149,86 @@ describe('context compiler', () => {
         evidence_ids: ['evidence:src/hero.ts'],
       }),
     ]);
-    expect(result.value.omissions).toContain('1 lower-ranked or uncited claim(s) omitted');
+    expect(result.value.omissions).toContain('2 lower-ranked or uncited claim(s) omitted');
     expect(result.value.stale_evidence_warnings).toContain(
       'Brain evidence is timestamped but not bound to this exact repository revision.',
     );
+  });
+
+  it('admits anchored changed files and path-local test neighbors without admitting dirty drift', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+    await writeFile(join(setup.rootDir, 'src', 'hero.ts'), 'export const hero = false;\n');
+    await writeFile(join(setup.rootDir, 'src', 'unrelated.ts'), 'unrelated dirty source\n');
+    await mkdir(join(setup.rootDir, 'vendor'), { recursive: true });
+    await writeFile(join(setup.rootDir, 'vendor', 'hero.ts'), 'unrelated same-name source\n');
+
+    const result = await compileTaskBrief({ ...setup, task: 'Refine `src/hero.ts` behavior' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.claims).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entity_id: 'file:src/hero.ts',
+          relevance_reasons: expect.arrayContaining(['direct:changed-file']),
+        }),
+        expect.objectContaining({
+          entity_id: 'test:src/hero.test.ts',
+          relevance_reasons: expect.arrayContaining(['direct:test-neighbor']),
+        }),
+      ]),
+    );
+    expect(result.value.claims.flatMap((claim) => claim.source_files)).not.toContain(
+      'src/unrelated.ts',
+    );
+
+    execFileSync('git', ['checkout', '--', 'src/hero.ts'], { cwd: setup.rootDir });
+    const collision = await compileTaskBrief({
+      ...setup,
+      task: 'Refine `vendor/hero.ts` behavior',
+    });
+    expect(collision.ok).toBe(true);
+    if (!collision.ok) return;
+    expect(collision.value.claims.flatMap((claim) => claim.source_files)).not.toContain(
+      'src/hero.test.ts',
+    );
+  });
+
+  it('rejects a brief mission pointer from another project or task', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+    const preview = await previewMission({ ...setup, task: 'Update Hero', agent: 'codex' });
+    if (!preview.ok) throw new Error(preview.error.message);
+
+    const result = await compileTaskBrief({
+      ...setup,
+      task: 'Update Hero',
+      agent: 'codex',
+      mission: {
+        ...preview.value,
+        project_id: 'wrong-project',
+        task: 'Different task',
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'MISSION_BRIEF_MISMATCH' } });
+  });
+
+  it('rejects a mission preview whose canonical identity does not match its mission ID', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+    const preview = await previewMission({ ...setup, task: 'Update Hero', agent: 'codex' });
+    if (!preview.ok) throw new Error(preview.error.message);
+
+    const result = await compileTaskBrief({
+      ...setup,
+      task: 'Update Hero',
+      agent: 'codex',
+      mission: { ...preview.value, mission_id: 'a'.repeat(64) },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'MISSION_BRIEF_MISMATCH' } });
   });
 
   it('provides matching JSON CLI contracts for briefs and loop state', async () => {
@@ -138,6 +269,54 @@ describe('context compiler', () => {
     expect(result).toEqual({
       ok: false,
       error: expect.objectContaining({ code: 'BRAIN_PREPARE_REQUIRED' }),
+    });
+  });
+
+  it('enforces exact-anchor relevance and the serialized-byte ceiling on large inventories', async () => {
+    const setup = await fixture();
+    await seedLargeInventoryBrain(setup.rootDir, setup.rizzHome);
+
+    const result = await compileTaskBrief({
+      ...setup,
+      task: 'Fix `toHaveProperty` in packages/expect/src/jest-expect.ts',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const json = JSON.stringify(result.value);
+    expect(Buffer.byteLength(json)).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
+    expect(result.value.size_budget).toMatchObject({
+      max_claims: TASK_BRIEF_MAX_CLAIMS,
+      included_claims: 1,
+      max_bytes: TASK_BRIEF_MAX_BYTES,
+      emitted_bytes: Buffer.byteLength(json),
+      truncated_source_files: 19_993,
+      truncated_evidence_ids: 19_992,
+    });
+    expect(result.value.claims).toEqual([
+      expect.objectContaining({
+        entity_id: 'file:packages/expect/src/jest-expect.ts',
+        source_files: expect.arrayContaining(['packages/expect/src/jest-expect.ts']),
+        relevance_reasons: expect.arrayContaining([
+          'exact:jest-expect.ts',
+          'exact:packages/expect/src/jest-expect.ts',
+        ]),
+      }),
+    ]);
+    expect(result.value.claims.map((claim) => claim.entity_id)).not.toContain(
+      'folder:docs-translations',
+    );
+  });
+
+  it('returns a structured error rather than partial JSON when the envelope cannot fit', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+
+    const result = await compileTaskBrief({ ...setup, task: 'Update Hero', maxBytes: 32 });
+
+    expect(result).toEqual({
+      ok: false,
+      error: expect.objectContaining({ code: 'BRIEF_BYTE_BUDGET_EXCEEDED' }),
     });
   });
 });
