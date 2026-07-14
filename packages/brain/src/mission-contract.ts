@@ -196,6 +196,14 @@ function missionId(identity: MissionIdentity): string {
     .digest('hex');
 }
 
+function persistedMissionIdentity(contract: MissionContract): MissionIdentity {
+  return Object.fromEntries(
+    Object.entries(contract).filter(
+      ([key]) => key !== 'mission_id' && key !== 'approved' && key !== 'blockers',
+    ),
+  ) as unknown as MissionIdentity;
+}
+
 function skillTerms(skill: EnabledProjectSkill): ReadonlySet<string> {
   return new Set(
     `${skill.name} ${skill.skill_path ?? ''}`
@@ -615,6 +623,8 @@ function isMissionContract(value: unknown): value is MissionContract {
     typeof record.repository_revision === 'string' &&
     typeof record.agent === 'string' &&
     record.approved === true &&
+    Array.isArray(record.blockers) &&
+    record.blockers.length === 0 &&
     Array.isArray(record.selected_skills)
   );
 }
@@ -644,7 +654,11 @@ export async function verifyMissionIdentity(options: {
     }
     return failure('MISSION_STORE_FAILED', error instanceof Error ? error.message : String(error));
   }
-  if (!isMissionContract(parsed) || parsed.mission_id !== options.missionId) {
+  if (
+    !isMissionContract(parsed) ||
+    parsed.mission_id !== options.missionId ||
+    missionId(persistedMissionIdentity(parsed)) !== parsed.mission_id
+  ) {
     return failure('MISSION_IDENTITY_INVALID', 'Persisted mission contract is malformed.');
   }
   if (gitRevision(store.value.rootPath) !== parsed.repository_revision) {

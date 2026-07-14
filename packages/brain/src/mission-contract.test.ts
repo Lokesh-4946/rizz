@@ -256,6 +256,33 @@ describe('versioned mission contract', () => {
     ).resolves.toMatchObject({ ok: false, error: { code: 'MISSION_PREVIEW_STALE' } });
   });
 
+  it('rejects a persisted contract whose contents no longer match its mission ID', async () => {
+    const setup = await fixture();
+    const options = previewOptions(setup);
+    const preview = await previewMission(options);
+    if (!preview.ok) throw new Error(preview.error.message);
+    const accepted = await acceptMission({
+      ...options,
+      missionId: preview.value.mission_id,
+      approved: true,
+    });
+    if (!accepted.ok) throw new Error(accepted.error.message);
+    const store = await prepareProjectStore({ rootDir: setup.project, rizzHome: setup.rizzHome });
+    if (!store.ok) throw new Error(store.error.message);
+    await writeFile(
+      join(store.value.projectDir, 'work', 'missions', `${accepted.value.mission_id}.json`),
+      `${JSON.stringify({ ...accepted.value, constraints: ['tampered'] }, null, 2)}\n`,
+    );
+
+    await expect(
+      verifyMissionIdentity({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        missionId: accepted.value.mission_id,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'MISSION_IDENTITY_INVALID' } });
+  });
+
   it('keeps AI-suggested constraints and non-goals proposed with literal citations', async () => {
     const setup = await fixture();
     const preview = await previewMission(
