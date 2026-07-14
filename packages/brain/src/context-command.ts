@@ -4,6 +4,7 @@ import { pinAcquiredSkill, previewAcquiredSkill } from './acquired-skill-selecti
 import { executeAgentCommand } from './agent-bridges.js';
 import { type AgentRepairExecutor, executeAgentRepair } from './agent-repair-execution.js';
 import { previewAgentRepairHandoff } from './agent-repair-handoff.js';
+import { recoverAgentRepairRun } from './agent-repair-recovery.js';
 import {
   acquireApprovedSkillSource,
   previewApprovedSkillSource,
@@ -211,6 +212,34 @@ async function executeRepairCommand(
   executor?: AgentRepairExecutor,
   signal?: AbortSignal,
 ): Promise<ContextCommandResult> {
+  if (args[1] === 'recover') {
+    const run = flag(args.slice(2), '--run');
+    const handoff = flag(run.rest, '--handoff');
+    const approved = handoff.rest.includes('--approve');
+    const rest = handoff.rest.filter((argument) => argument !== '--approve');
+    if (
+      run.missing ||
+      handoff.missing ||
+      run.value === undefined ||
+      handoff.value === undefined ||
+      rest.length > 0
+    ) {
+      return failed(
+        'REPAIR_RECOVER_USAGE',
+        'Use repair recover --run <run-id> --handoff <id> --approve.',
+      );
+    }
+    const result = await recoverAgentRepairRun({
+      rootDir,
+      rizzHome,
+      runId: run.value,
+      handoffId: handoff.value,
+      approved,
+    });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
   const agent = flag(args.slice(2), '--agent');
   const packets = repeatedFlag(agent.rest, '--packet');
   const limit = flag(packets.rest, '--limit');
@@ -245,7 +274,7 @@ async function executeRepairCommand(
   if (args[1] !== 'execute') {
     return failed(
       'REPAIR_ACTION_UNKNOWN',
-      'Repair supports handoff --preview and execute --approve.',
+      'Repair supports handoff --preview, execute --approve, and recover --approve.',
     );
   }
   const handoff = flag(limit.rest, '--handoff');
