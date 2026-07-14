@@ -51,6 +51,8 @@ export * from './vault-import.js';
 export { createMcpServer, serveMcpStdio } from './mcp-server.js';
 export { executeAgentCommand } from './agent-bridges.js';
 export * from './agent-repair-handoff.js';
+export * from './agent-repair-execution.js';
+export * from './agent-repair-bridge-service.js';
 export * from './resource-governance.js';
 export * from './skill-source-manager.js';
 export * from './skill-registry-doctor.js';

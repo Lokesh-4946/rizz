@@ -130,7 +130,7 @@ describe('agent repair handoff preview', () => {
       constraints: {
         max_packets: 8,
         max_artifact_bytes: 1048576,
-        max_prompt_bytes: 32768,
+        max_prompt_bytes: 16384,
         approval_required: true,
         executes_agent: false,
         writes_repository: false,

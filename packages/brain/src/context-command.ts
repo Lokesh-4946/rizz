@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pinAcquiredSkill, previewAcquiredSkill } from './acquired-skill-selection.js';
 import { executeAgentCommand } from './agent-bridges.js';
+import { type AgentRepairExecutor, executeAgentRepair } from './agent-repair-execution.js';
 import { previewAgentRepairHandoff } from './agent-repair-handoff.js';
 import {
   acquireApprovedSkillSource,
@@ -207,39 +208,91 @@ async function executeRepairCommand(
   rizzHome: string,
   args: readonly string[],
   wantsJson: boolean,
+  executor?: AgentRepairExecutor,
+  signal?: AbortSignal,
 ): Promise<ContextCommandResult> {
-  if (args[1] !== 'handoff') {
-    return failed('REPAIR_ACTION_UNKNOWN', 'Repair supports handoff preview.');
-  }
   const agent = flag(args.slice(2), '--agent');
   const packets = repeatedFlag(agent.rest, '--packet');
   const limit = flag(packets.rest, '--limit');
-  const isPreview = limit.rest.includes('--preview');
-  const rest = limit.rest.filter((argument) => argument !== '--preview');
+  const parsedLimit = limit.value === undefined ? undefined : Number(limit.value);
+  if (args[1] === 'handoff') {
+    const isPreview = limit.rest.includes('--preview');
+    const rest = limit.rest.filter((argument) => argument !== '--preview');
+    if (
+      agent.missing ||
+      packets.missing ||
+      limit.missing ||
+      agent.value === undefined ||
+      !isPreview ||
+      rest.length > 0
+    ) {
+      return failed(
+        'REPAIR_USAGE',
+        'Use repair handoff --agent <codex|claude|copilot> [--packet <id>] [--limit <1-8>] --preview.',
+      );
+    }
+    const result = await previewAgentRepairHandoff({
+      rootDir,
+      rizzHome,
+      agent: agent.value,
+      packetIds: packets.values,
+      ...(parsedLimit === undefined ? {} : { limit: parsedLimit }),
+    });
+    return result.ok
+      ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
+      : resultError(result);
+  }
+  if (args[1] !== 'execute') {
+    return failed(
+      'REPAIR_ACTION_UNKNOWN',
+      'Repair supports handoff --preview and execute --approve.',
+    );
+  }
+  const handoff = flag(limit.rest, '--handoff');
+  const approved = handoff.rest.includes('--approve');
+  const rest = handoff.rest.filter((argument) => argument !== '--approve');
   if (
     agent.missing ||
     packets.missing ||
     limit.missing ||
+    handoff.missing ||
     agent.value === undefined ||
-    !isPreview ||
+    handoff.value === undefined ||
     rest.length > 0
   ) {
     return failed(
-      'REPAIR_USAGE',
-      'Use repair handoff --agent <codex|claude|copilot> [--packet <id>] [--limit <1-8>] --preview.',
+      'REPAIR_EXECUTE_USAGE',
+      'Use repair execute --agent <codex|claude|copilot> --handoff <id> [--packet <id>] [--limit <1-8>] --approve.',
     );
   }
-  const parsedLimit = limit.value === undefined ? undefined : Number(limit.value);
-  const result = await previewAgentRepairHandoff({
-    rootDir,
-    rizzHome,
-    agent: agent.value,
-    packetIds: packets.values,
-    ...(parsedLimit === undefined ? {} : { limit: parsedLimit }),
-  });
-  return result.ok
-    ? rendered(result.value, wantsJson, JSON.stringify(result.value, null, 2))
-    : resultError(result);
+  const controller = signal === undefined ? new AbortController() : null;
+  const executionSignal = signal ?? controller?.signal;
+  const interrupt = (): void => controller?.abort();
+  if (controller !== null) process.once('SIGINT', interrupt);
+  let result: Awaited<ReturnType<typeof executeAgentRepair>>;
+  try {
+    result = await executeAgentRepair({
+      rootDir,
+      rizzHome,
+      agent: agent.value,
+      handoffId: handoff.value,
+      approved,
+      packetIds: packets.values,
+      ...(parsedLimit === undefined ? {} : { limit: parsedLimit }),
+      ...(executor === undefined ? {} : { executor }),
+      ...(executionSignal === undefined ? {} : { signal: executionSignal }),
+    });
+  } finally {
+    if (controller !== null) process.off('SIGINT', interrupt);
+  }
+  if (!result.ok) return resultError(result);
+  return {
+    exitCode: result.value.status === 'completed' ? 0 : 1,
+    stdout: wantsJson
+      ? `${JSON.stringify(result.value)}\n`
+      : `${JSON.stringify(result.value, null, 2)}\n`,
+    stderr: '',
+  };
 }
 
 async function executeSkillCommand(
@@ -531,6 +584,8 @@ export async function executeContextCommand(options: {
   readonly rootDir: string;
   readonly args: readonly string[];
   readonly rizzHome?: string;
+  readonly repairExecutor?: AgentRepairExecutor;
+  readonly signal?: AbortSignal;
 }): Promise<ContextCommandResult> {
   const wantsJson = options.args.includes('--json');
   const args = options.args.filter((arg) => arg !== '--json');
@@ -552,6 +607,8 @@ export async function executeContextCommand(options: {
       options.rizzHome ?? resolveRizzHome({ homeDir: homedir() }),
       args,
       wantsJson,
+      options.repairExecutor,
+      options.signal,
     );
   }
   if (args[0] === 'skills')
