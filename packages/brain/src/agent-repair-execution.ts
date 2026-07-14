@@ -1,7 +1,5 @@
-import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, relative } from 'node:path';
+import { join } from 'node:path';
 import {
   type AgentRepairBridgeProcess,
   type AgentRepairExecutor,
@@ -9,6 +7,15 @@ import {
   runAgentRepairBridge,
 } from './agent-repair-bridge-service.js';
 import { type RepairHandoffAgent, previewAgentRepairHandoff } from './agent-repair-handoff.js';
+import {
+  secureRepairRunsDirectory,
+  writeVerifiedRepairRunState,
+} from './agent-repair-run-state.js';
+import {
+  type AgentRepairWorktreeIdentity,
+  inspectAgentRepairWorktree,
+  readAgentRepairRevision,
+} from './agent-repair-worktree.js';
 import { readProjectStore } from './project-store.js';
 
 interface RepairFailure {
@@ -19,13 +26,6 @@ interface RepairFailure {
 type RepairResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: RepairFailure };
-
-interface WorktreeIdentity {
-  readonly root: string;
-  readonly git_dir: string;
-  readonly common_dir: string;
-  readonly isolated: true;
-}
 
 type RepairRunStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -40,7 +40,7 @@ export interface AgentRepairExecution {
   readonly approved: true;
   readonly started_at: string;
   readonly finished_at: string;
-  readonly worktree: WorktreeIdentity;
+  readonly worktree: AgentRepairWorktreeIdentity;
   readonly result: AgentRepairBridgeProcess | null;
   readonly error: RepairFailure | null;
   readonly state_path: string;
@@ -57,92 +57,6 @@ export type { AgentRepairExecutor } from './agent-repair-bridge-service.js';
 
 function failure(code: string, message: string): RepairResult<never> {
   return { ok: false, error: { code, message } };
-}
-
-function gitValue(rootDir: string, args: readonly string[]): string | null {
-  const result = spawnSync('git', args, { cwd: rootDir, encoding: 'utf8' });
-  const value = result.status === 0 ? result.stdout.trim() : '';
-  return value === '' ? null : value;
-}
-
-async function worktreeIdentity(rootDir: string): Promise<RepairResult<WorktreeIdentity>> {
-  const root = await realpath(rootDir);
-  const top = gitValue(root, ['rev-parse', '--show-toplevel']);
-  const gitDir = gitValue(root, ['rev-parse', '--path-format=absolute', '--git-dir']);
-  const commonDir = gitValue(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-  if (top === null || gitDir === null || commonDir === null) {
-    return failure('REPAIR_WORKTREE_INVALID', 'Agent repair requires a valid Git worktree.');
-  }
-  const resolvedTop = await realpath(top);
-  const resolvedGitDir = await realpath(gitDir);
-  const resolvedCommonDir = await realpath(commonDir);
-  if (resolvedTop !== root) {
-    return failure('REPAIR_WORKTREE_INVALID', 'Run agent repair from the prepared worktree root.');
-  }
-  if (resolvedGitDir === resolvedCommonDir) {
-    return failure(
-      'REPAIR_ISOLATED_WORKTREE_REQUIRED',
-      'Agent repair must run in a linked, isolated Git worktree.',
-    );
-  }
-  return {
-    ok: true,
-    value: {
-      root,
-      git_dir: resolvedGitDir,
-      common_dir: resolvedCommonDir,
-      isolated: true,
-    },
-  };
-}
-
-async function secureRunsDirectory(projectDir: string): Promise<RepairResult<string>> {
-  const workDir = join(projectDir, 'work');
-  const runsDir = join(workDir, 'repair-runs');
-  try {
-    const work = await lstat(workDir);
-    if (work.isSymbolicLink() || !work.isDirectory()) {
-      return failure('REPAIR_STATE_PATH_UNSAFE', 'Repair work state must be a real directory.');
-    }
-    const existing = await lstat(runsDir).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    });
-    if (existing?.isSymbolicLink() === true) {
-      return failure('REPAIR_STATE_PATH_UNSAFE', 'Repair run state directory cannot be a symlink.');
-    }
-    await mkdir(runsDir, { recursive: true });
-    const projectReal = await realpath(projectDir);
-    const runsReal = await realpath(runsDir);
-    const local = relative(projectReal, runsReal);
-    if (local.startsWith('..') || isAbsolute(local)) {
-      return failure('REPAIR_STATE_PATH_UNSAFE', 'Repair run state escaped the project store.');
-    }
-    return { ok: true, value: runsReal };
-  } catch (error: unknown) {
-    return failure(
-      'REPAIR_STATE_WRITE_FAILED',
-      error instanceof Error ? error.message : String(error),
-    );
-  }
-}
-
-async function writeVerifiedJson(path: string, value: unknown): Promise<RepairResult<true>> {
-  const contents = `${JSON.stringify(value, null, 2)}\n`;
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    await rename(temporaryPath, path);
-    if ((await readFile(path, 'utf8')) !== contents) {
-      return failure('REPAIR_STATE_VERIFY_FAILED', 'Repair run state verification failed.');
-    }
-    return { ok: true, value: true };
-  } catch (error: unknown) {
-    return failure(
-      'REPAIR_STATE_WRITE_FAILED',
-      error instanceof Error ? error.message : String(error),
-    );
-  }
 }
 
 function outputEvidence(result: AgentRepairBridgeProcess | null): {
@@ -227,10 +141,11 @@ export async function executeAgentRepair(options: {
       'Repair handoff no longer matches the project, revision, packet artifact, or selection.',
     );
   }
-  const worktree = await worktreeIdentity(options.rootDir);
+  const worktree = await inspectAgentRepairWorktree(options.rootDir);
   if (!worktree.ok) return worktree;
-  const startRevision = gitValue(worktree.value.root, ['rev-parse', 'HEAD']);
-  if (startRevision !== preview.value.repository_revision) {
+  const startRevision = readAgentRepairRevision(worktree.value.root);
+  if (!startRevision.ok) return startRevision;
+  if (startRevision.value !== preview.value.repository_revision) {
     return failure(
       'REPAIR_HANDOFF_STALE',
       'Repository revision changed before the repair bridge could start.',
@@ -241,7 +156,7 @@ export async function executeAgentRepair(options: {
     ...(options.rizzHome === undefined ? {} : { rizzHome: options.rizzHome }),
   });
   if (!store.ok) return store;
-  const runsDir = await secureRunsDirectory(store.value.projectDir);
+  const runsDir = await secureRepairRunsDirectory(store.value.projectDir);
   if (!runsDir.ok) return runsDir;
   const runId = `repair-run-${randomUUID()}`;
   const statePath = join(runsDir.value, `${runId}.json`);
@@ -262,7 +177,7 @@ export async function executeAgentRepair(options: {
     output: outputEvidence(null),
     error: null,
   } as const;
-  const runningWrite = await writeVerifiedJson(statePath, baseState);
+  const runningWrite = await writeVerifiedRepairRunState(statePath, baseState);
   if (!runningWrite.ok) return runningWrite;
   let executed: AgentRepairExecutorResult;
   try {
@@ -290,7 +205,7 @@ export async function executeAgentRepair(options: {
     output: outputEvidence(outcome.result),
     error: outcome.error,
   };
-  const terminalWrite = await writeVerifiedJson(statePath, terminalState);
+  const terminalWrite = await writeVerifiedRepairRunState(statePath, terminalState);
   if (!terminalWrite.ok) return terminalWrite;
   return {
     ok: true,

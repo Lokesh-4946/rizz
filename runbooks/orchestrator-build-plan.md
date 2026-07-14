@@ -30,10 +30,10 @@ Current loop readiness:
 | --- | ---: | ---: | --- |
 | Human intent | 76/100 | 24 | Intent can enter through CLI/review/explain flows, and review can now warn when dirty local work may distort the requested task scope; capture UX is still lightweight. |
 | rizz mission contract, project intelligence, and inspect-first context | 99/100 | 1 | Project intelligence, Mission Control, confidence queues, file-level explain, DBMS schema/model entities including SQLAlchemy/Alembic, security/tool inventory, unified repair packets, UAT artifacts, review-time mission-contract comparison, mission-contract normalization, and lexical unrelated-work hints are strong; explicit mission capture UX can still be sharper. |
-| Coding agent implementation | 73/100 | 27 | rizz can now hand agents one deterministic repair packet, but session adapters and apply/repair loops remain opt-in/future work. |
+| Coding agent implementation | 90/100 | 10 | Exact, approval-gated repair handoffs now execute through bounded Codex, Claude Code, and Copilot adapters in isolated worktrees; general session import/control-pane context and broader task-planning adapters remain future opt-in work. |
 | rizz review | 99/100 | 1 | Review Intelligence has blast-radius evidence, affected flows/tests/configs, deterministic review artifacts, and review-governance checks for Git hygiene, branch freshness, generated noise, normalized duplicate code, mission-contract drift, semantic unrelated-work hints, and dirty-tree/branch-diff mixed-basis reporting. |
-| rizz correction packet | 90/100 | 10 | Unified `agent_repair_packets` now combine architecture correction, evidence quality, review blast radius, agent verification-plan actions, and component-local duplicate assumption provenance. |
-| Coding agent repair | 78/100 | 22 | Repair instructions are packetized and less duplicative for agents, and backend-scoped verification suggestions reduce agent churn, but agent-specific apply/repair loops are not yet first-class. |
+| rizz correction packet | 96/100 | 4 | Unified `agent_repair_packets` are now consumed through an exact project/revision/artifact/packet identity with bounded files, verification actions, and stop conditions; richer automatic scope narrowing remains. |
+| Coding agent repair | 94/100 | 6 | All three agent-specific bridges now have disposable handoff-to-edit-to-verification proof, strict worktree/project ownership, stale refusal, cancellation, and interrupted-run recovery; real vendor/model validation, retry policy, and automatic post-edit scope enforcement remain. |
 | rizz verification | 100/100 | 0 | rizz scores proof and missing evidence, binds approval to a deterministic review fingerprint, and safely reuses exact-match signoff history across repeated repair reviews. |
 | Human approval | 100/100 | 0 | Fingerprint-bound signoff now supports explicit ISO expiry and auditable revocation while preserving agent/human separation. |
 
@@ -43,7 +43,7 @@ Current loop readiness:
 | --- | --- | --- |
 | Session adapters / control-pane snapshot | Import work history and agent state as inspectable evidence. | Opt-in export/import, not always-on orchestration. |
 | MCP/tool inventory | Record available tools and risk posture for repo intelligence and review. | Opt-in scan artifact. |
-| Worktree lifecycle service | Run isolated experiments and PR loops from a clean branch. | Opt-in workspace mode. |
+| Worktree lifecycle service | Run isolated experiments and PR loops from a clean branch. | Shipped repair-specific foundation: linked-worktree proof, exact revision binding, external run state, cancellation, and interrupted-run recovery. General workspace lifecycle remains opt-in/future work. |
 | Manifest install/state ownership | Install and repair rizz packs without guessing what is owned. | Opt-in pack command. |
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
 | Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
@@ -55,7 +55,7 @@ Current loop readiness:
 | Upstream collection compatibility | Audit every tracked Agent Skill at an acquired exact revision. | Shipped foundation: exact-revision collection scan, per-skill compatibility/audit evidence, quoted YAML scalar support, 463-skill real upstream UAT. |
 | Individual upstream skill discovery | Find audited skills inside previously acquired collections with exact source evidence. | Shipped foundation: bounded offline search, deterministic content-addressed global indexes, exact source/revision filters, and stale/missing/tampered checkout rejection. |
 | Acquired skill selection and pinning | Preview and pin one exact audited skill without manual filesystem paths. | Shipped foundation: exact source/revision/path selection, explicit approval, immutable cache objects, full provenance, name-conflict rejection, and concurrent-safe registry writes. |
-| Agent repair handoff | Give a selected coding agent one bounded, evidence-bound correction contract and consume it only after approval. | Shipped foundation: Codex, Claude Code, and Copilot previews plus opt-in execution; exact project/revision/artifact digests; explicit packet, file, verification, and prompt caps; linked-worktree proof; cancellation; external run state. |
+| Agent repair handoff | Give a selected coding agent one bounded, evidence-bound correction contract and consume it only after approval. | Shipped foundation: Codex, Claude Code, and Copilot previews plus opt-in execution; exact project/revision/artifact digests; explicit packet, file, verification, and prompt caps; linked-worktree proof; cancellation and approved interrupted-run recovery; disposable process-level lifecycle UAT. |
 
 ## Resource Governance Tracker
 
@@ -73,7 +73,7 @@ security evidence, failing assertions, and verification proof are never lossy-co
 | Resource-aware scheduling | Planned | Dispatch chooses serial/parallel work from dependency independence, available slots, provider limits, and expected verification cost. |
 | Local observability | Shipped foundation | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, and verification time. |
 | Quality fallback | Shipped foundation | An evidence gap serves the exact sanitized original or fails clearly when the object is missing. |
-| Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; approved repair execution also uses bounded agent-specific adapters, linked-worktree identity, and byte-verified external run state without repository-local adapters. |
+| Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; approved repair execution uses bounded agent-specific adapters, linked-worktree identity, byte-verified external run state, and process-level disposable lifecycle UAT without repository-local adapters. |
 
 The product target is not maximum compression. It is minimum wasted cognition per accepted,
 verified change. A cheaper loop that produces slop, rereads the repository, or weakens evidence is a
@@ -114,6 +114,53 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
+Run: `feature/agent-repair-lifecycle-uat`, opt-in agent repair handoff track milestone 3:
+disposable handoff-to-repair-to-verification lifecycle UAT and interrupted-run recovery.
+
+| Check | Result |
+| --- | ---: |
+| Focused lifecycle/recovery/execution/bridge tests | 11/11 passed |
+| Full unit suite | 486/486 passed |
+| PI-Bench | 25/25 passed |
+| PI-Bench average research readiness | 76/100 |
+| CLI process smoke | 20/20 passed |
+| Install-local smoke | 5/5 passed |
+| Code-simplifier focused suite | 11/11 passed |
+| Public package contents | Passed |
+| Diff whitespace check | Passed |
+| Footprint | Passed: 52ms cold start, 200KB counted core |
+| Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
+
+Current verdict: disposable Git repositories now prove the exact approved lifecycle for Codex,
+Claude Code, and Copilot through the real process-spawning bridge service and local fake
+executables. Every adapter's fixed argument contract was checked; each process edited only
+`src/first.ts`; `git diff --check` passed; verification evidence was written to its isolated project
+store; all three repositories remained free of `.rizz` state. Separate repositories and Rizz homes
+proved project isolation. A changed revision refused the stale handoff before invocation.
+
+`rizz repair recover --run <run-id> --handoff <id> --approve` now closes a Rizz-owned orphaned
+`running` record as a byte-verified `cancelled` record with `REPAIR_RUN_INTERRUPTED`. Recovery
+rejects missing approval, malformed identity, foreign ownership, project/handoff/worktree mismatch,
+non-running state, malformed or oversized records, and redirected state-file symlinks. The UAT
+started repair execution in a disposable child process, observed its external running state,
+terminated the process, and recovered that exact run. No real third-party agent, provider call, or
+network access was used. No dependency or always-on core-path change was added.
+
+The three-milestone agent repair handoff track is functionally complete. Human-agent loop readiness
+is recalibrated from 89.4/100 to 94.3/100 overall: 39 of the previous 85 readiness points were
+closed, leaving 46. The remaining work is concentrated in human intent capture, general session
+adapters/control-pane context, real vendor/model UAT, retry/resume policy, automatic post-edit scope
+enforcement, and richer automatic packet narrowing.
+
+### Next Weakest-Capability Track
+
+Improve human intent capture and opt-in session adapters/control-pane snapshots while preserving the
+single-agent default path. Treat real vendor/model lifecycle validation, retry/resume policy, and
+automatic post-edit scope enforcement as a separate opt-in hardening track requiring explicit
+provider authorization.
+
+## Previous Agent Repair Execution Result
+
 Run: `feature/agent-repair-execution`, opt-in agent repair handoff track milestone 2:
 approval-gated bridge consumption in an isolated worktree.
 
@@ -131,7 +178,7 @@ approval-gated bridge consumption in an isolated worktree.
 | Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
 
 Current verdict: `rizz repair execute --agent <codex|claude|copilot> --handoff <id>
---approve` now regenerates and compares the exact handoff identity before execution. It refuses a
+--approve` regenerates and compares the exact handoff identity before execution. It refuses a
 missing approval, malformed handoff, changed project/revision/artifact/packet selection, the primary
 checkout, and any unprepared or non-linked worktree. The prompt cap is 16KiB so Copilot's required
 programmatic prompt argument remains inside Windows process limits.
@@ -147,13 +194,6 @@ byte counts rather than prompts or transcripts. Symlinked state directories are 
 repository receives no `.rizz` state, and the execution contract disallows repository push. No real
 third-party agent was invoked in tests; deterministic injected runners proved all three adapters.
 No dependency or always-on core-path change was added.
-
-### Next Milestone
-
-Prove disposable handoff-to-repair-to-verification lifecycle UAT across Codex, Claude Code, and
-Copilot adapters using local fake executables. Cover stale revision refusal, project isolation,
-interrupted-run recovery, changed-file ownership, verification evidence, and final loop-readiness
-recalibration without invoking a real third-party agent or releasing a package.
 
 ## Previous Agent Repair Handoff Result
 

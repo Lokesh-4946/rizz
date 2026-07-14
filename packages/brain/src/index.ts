@@ -53,6 +53,7 @@ export { executeAgentCommand } from './agent-bridges.js';
 export * from './agent-repair-handoff.js';
 export * from './agent-repair-execution.js';
 export * from './agent-repair-bridge-service.js';
+export * from './agent-repair-recovery.js';
 export * from './resource-governance.js';
 export * from './skill-source-manager.js';
 export * from './skill-registry-doctor.js';
