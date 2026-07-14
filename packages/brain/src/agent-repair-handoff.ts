@@ -9,7 +9,7 @@ export const REPAIR_HANDOFF_AGENTS = ['claude', 'codex', 'copilot'] as const;
 export type RepairHandoffAgent = (typeof REPAIR_HANDOFF_AGENTS)[number];
 const MAX_PACKETS = 8;
 const MAX_ARTIFACT_BYTES = 1_048_576;
-const MAX_PROMPT_BYTES = 32_768;
+const MAX_PROMPT_BYTES = 16_384;
 
 interface RepairFailure {
   readonly code: string;
@@ -57,7 +57,7 @@ export interface AgentRepairHandoff {
   readonly constraints: {
     readonly max_packets: 8;
     readonly max_artifact_bytes: 1048576;
-    readonly max_prompt_bytes: 32768;
+    readonly max_prompt_bytes: 16384;
     readonly approval_required: true;
     readonly executes_agent: false;
     readonly writes_repository: false;

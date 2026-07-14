@@ -55,7 +55,7 @@ Current loop readiness:
 | Upstream collection compatibility | Audit every tracked Agent Skill at an acquired exact revision. | Shipped foundation: exact-revision collection scan, per-skill compatibility/audit evidence, quoted YAML scalar support, 463-skill real upstream UAT. |
 | Individual upstream skill discovery | Find audited skills inside previously acquired collections with exact source evidence. | Shipped foundation: bounded offline search, deterministic content-addressed global indexes, exact source/revision filters, and stale/missing/tampered checkout rejection. |
 | Acquired skill selection and pinning | Preview and pin one exact audited skill without manual filesystem paths. | Shipped foundation: exact source/revision/path selection, explicit approval, immutable cache objects, full provenance, name-conflict rejection, and concurrent-safe registry writes. |
-| Agent repair handoff | Give a selected coding agent one bounded, evidence-bound correction contract before execution. | Shipped foundation: Codex, Claude Code, and Copilot previews; exact project/revision/artifact digests; explicit packet, file, verification, and prompt caps; no execution or writes. |
+| Agent repair handoff | Give a selected coding agent one bounded, evidence-bound correction contract and consume it only after approval. | Shipped foundation: Codex, Claude Code, and Copilot previews plus opt-in execution; exact project/revision/artifact digests; explicit packet, file, verification, and prompt caps; linked-worktree proof; cancellation; external run state. |
 
 ## Resource Governance Tracker
 
@@ -73,7 +73,7 @@ security evidence, failing assertions, and verification proof are never lossy-co
 | Resource-aware scheduling | Planned | Dispatch chooses serial/parallel work from dependency independence, available slots, provider limits, and expected verification cost. |
 | Local observability | Shipped foundation | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, and verification time. |
 | Quality fallback | Shipped foundation | An evidence gap serves the exact sanitized original or fails clearly when the object is missing. |
-| Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; 20 target files are conflict-safe and byte-verified without repository-local adapters. |
+| Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; approved repair execution also uses bounded agent-specific adapters, linked-worktree identity, and byte-verified external run state without repository-local adapters. |
 
 The product target is not maximum compression. It is minimum wasted cognition per accepted,
 verified change. A cheaper loop that produces slop, rereads the repository, or weakens evidence is a
@@ -114,6 +114,49 @@ repo-derived scores from `<project-workspace>/research/understanding_score.json`
 
 ## Latest Baton Result
 
+Run: `feature/agent-repair-execution`, opt-in agent repair handoff track milestone 2:
+approval-gated bridge consumption in an isolated worktree.
+
+| Check | Result |
+| --- | ---: |
+| Focused repair/project/bridge tests | 31/31 passed |
+| Full unit suite | 481/481 passed |
+| PI-Bench | 25/25 passed |
+| PI-Bench average research readiness | 76/100 |
+| CLI process smoke | 20/20 passed |
+| Install-local smoke | 5/5 passed |
+| Code-simplifier focused suite | 63/63 passed |
+| Diff whitespace check | Passed |
+| Footprint | Passed: 52ms cold start, 200KB counted core |
+| Full `pnpm check` | Passed with deterministic temp state rooted at `/tmp` |
+
+Current verdict: `rizz repair execute --agent <codex|claude|copilot> --handoff <id>
+--approve` now regenerates and compares the exact handoff identity before execution. It refuses a
+missing approval, malformed handoff, changed project/revision/artifact/packet selection, the primary
+checkout, and any unprepared or non-linked worktree. The prompt cap is 16KiB so Copilot's required
+programmatic prompt argument remains inside Windows process limits.
+
+The opt-in bridge service uses fixed argument vectors without a shell: Codex runs ephemeral in a
+workspace-write sandbox; Claude Code runs non-interactively in `acceptEdits`; Copilot receives only
+write-tool permission with shell and URL tools explicitly denied. Output is secret-redacted and
+capped before it is returned. SIGINT is converted to a structured cancellation.
+
+Every started run writes a byte-verified `running` record and a byte-verified terminal
+`completed`/`failed`/`cancelled` record under the isolated project store. Records contain digests and
+byte counts rather than prompts or transcripts. Symlinked state directories are rejected, the
+repository receives no `.rizz` state, and the execution contract disallows repository push. No real
+third-party agent was invoked in tests; deterministic injected runners proved all three adapters.
+No dependency or always-on core-path change was added.
+
+### Next Milestone
+
+Prove disposable handoff-to-repair-to-verification lifecycle UAT across Codex, Claude Code, and
+Copilot adapters using local fake executables. Cover stale revision refusal, project isolation,
+interrupted-run recovery, changed-file ownership, verification evidence, and final loop-readiness
+recalibration without invoking a real third-party agent or releasing a package.
+
+## Previous Agent Repair Handoff Result
+
 Run: `feature/agent-repair-handoff`, opt-in agent repair handoff track milestone 1: bounded,
 agent-specific preview contracts.
 
@@ -133,7 +176,7 @@ Current verdict: `rizz repair handoff --agent <codex|claude|copilot> --preview` 
 existing isolated `agent_repair_packets` artifact into a deterministic, agent-specific preview. The
 contract binds the selected project ID, current repository revision, source artifact digest, packet
 IDs, permitted files, verification actions, and stop conditions. It caps the request at eight
-packets, sixteen files, twelve verification actions, a 1MiB source artifact, and a 32KiB rendered
+packets, sixteen files, twelve verification actions, a 1MiB source artifact, and a 16KiB rendered
 prompt.
 
 Preview is deliberately non-executing: it requires approval for any future consumption and reports
