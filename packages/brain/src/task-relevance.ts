@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, extname } from 'node:path';
 
 export type RelevanceConfidence = 'verified' | 'direct' | 'inferred' | 'uncertain';
 
@@ -42,17 +42,33 @@ const COMMON_TASK_TERMS = new Set([
   'add',
   'change',
   'code',
+  'command',
+  'component',
+  'config',
   'create',
   'data',
+  'docs',
+  'documentation',
   'file',
   'fix',
+  'folder',
+  'function',
   'handling',
   'implement',
   'issue',
+  'method',
+  'module',
+  'package',
   'path',
+  'project',
   'release',
+  'repository',
   'review',
+  'route',
   'router',
+  'script',
+  'service',
+  'software',
   'state',
   'test',
   'tests',
@@ -82,9 +98,10 @@ function exactTaskValues(task: string): string[] {
     values.add(normalize(basename(path)));
   }
   for (const match of task.matchAll(
-    /\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Za-z0-9]+_[A-Za-z0-9_]+)\b/g,
+    /\b(?:[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][A-Za-z0-9]*|[A-Za-z0-9]+_[A-Za-z0-9_]+)\b/g,
   )) {
-    values.add(normalize(match[0]));
+    const value = normalize(match[0]);
+    if (!COMMON_TASK_TERMS.has(value)) values.add(value);
   }
   return [...values].filter((value) => value !== '').sort();
 }
@@ -97,15 +114,19 @@ export function extractTaskAnchors(task: string): TaskAnchors {
 
 function candidateExactValues(candidate: RelevanceCandidate): ReadonlySet<string> {
   const values = new Set<string>();
-  const id = normalize(candidate.id);
-  values.add(id);
-  values.add(id.includes(':') ? (id.split(':').slice(1).join(':') ?? id) : id);
-  values.add(normalize(candidate.name));
-  for (const sourceFile of candidate.sourceFiles) {
-    const normalized = normalize(sourceFile);
+  const addPathIdentity = (value: string): void => {
+    const normalized = normalize(value);
     values.add(normalized);
-    values.add(normalize(basename(normalized)));
-  }
+    const filename = normalize(basename(normalized));
+    values.add(filename);
+    const extension = extname(filename);
+    if (extension !== '') values.add(filename.slice(0, -extension.length));
+  };
+  const id = normalize(candidate.id);
+  addPathIdentity(id);
+  addPathIdentity(id.includes(':') ? (id.split(':').slice(1).join(':') ?? id) : id);
+  addPathIdentity(candidate.name);
+  for (const sourceFile of candidate.sourceFiles) addPathIdentity(sourceFile);
   return values;
 }
 

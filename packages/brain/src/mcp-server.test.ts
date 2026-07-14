@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { executeContextCommand } from './context-command.js';
 import { startLoopWork } from './context-loop.js';
 import { generateProjectBrain } from './index.js';
 import { createMcpServer } from './mcp-server.js';
@@ -124,8 +125,17 @@ describe('Rizz MCP server', () => {
     const result = output.messages[2]?.result as {
       structuredContent: { project_id: string; claims: unknown[] };
     };
+    const cli = await executeContextCommand({
+      rootDir: setup.rootDir,
+      rizzHome: setup.rizzHome,
+      args: ['brief', 'Update Hero', '--json'],
+    });
     expect(result.structuredContent.project_id).toBe(setup.projectId);
     expect(result.structuredContent.claims.length).toBeGreaterThan(0);
+    expect(result.structuredContent).toEqual(JSON.parse(cli.stdout));
+    expect(Buffer.byteLength(JSON.stringify(result.structuredContent))).toBeLessThanOrEqual(
+      32 * 1024,
+    );
     expect(output.messages[3]?.result).toEqual(
       expect.objectContaining({
         structuredContent: expect.objectContaining({

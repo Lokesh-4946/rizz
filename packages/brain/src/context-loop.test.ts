@@ -12,6 +12,7 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import { TASK_BRIEF_MAX_BYTES, TASK_BRIEF_MAX_CLAIMS } from './task-brief-budget.js';
 
 const roots: string[] = [];
 
@@ -60,6 +61,49 @@ async function seedBrain(rootDir: string, rizzHome: string): Promise<void> {
           confidence: 'uncertain',
           evidence_ids: [],
           source_files: ['src/unrelated.ts'],
+        },
+      ],
+    })}\n`,
+  );
+}
+
+async function seedLargeInventoryBrain(rootDir: string, rizzHome: string): Promise<void> {
+  const { prepareProjectStore } = await import('./project-store.js');
+  const store = await prepareProjectStore({ rootDir, rizzHome, remote: null });
+  if (!store.ok) throw new Error(store.error.message);
+  const entitiesDir = join(store.value.brainDir, 'entities');
+  await mkdir(entitiesDir, { recursive: true });
+  await writeFile(
+    join(store.value.brainDir, 'latest.json'),
+    `${JSON.stringify({ generated_at: '2026-07-14T00:00:00.000Z' })}\n`,
+  );
+  await writeFile(
+    join(entitiesDir, 'files.json'),
+    `${JSON.stringify({
+      entities: [
+        {
+          id: 'file:packages/expect/src/jest-expect.ts',
+          type: 'file',
+          name: 'jest-expect.ts',
+          description: 'toHaveProperty matcher implementation',
+          confidence: 'verified',
+          evidence_ids: Array.from({ length: 20_000 }, (_, index) => `evidence:${index}`),
+          source_files: [
+            'packages/expect/src/jest-expect.ts',
+            ...Array.from({ length: 20_000 }, (_, index) => `packages/模块-${index}/source.ts`),
+          ],
+        },
+        {
+          id: 'folder:docs-translations',
+          type: 'folder',
+          name: 'Translated docs',
+          description: 'Router path test review documentation',
+          confidence: 'verified',
+          evidence_ids: Array.from({ length: 20_000 }, (_, index) => `docs-evidence:${index}`),
+          source_files: Array.from(
+            { length: 20_000 },
+            (_, index) => `docs/translations/${index}.md`,
+          ),
         },
       ],
     })}\n`,
@@ -138,6 +182,54 @@ describe('context compiler', () => {
     expect(result).toEqual({
       ok: false,
       error: expect.objectContaining({ code: 'BRAIN_PREPARE_REQUIRED' }),
+    });
+  });
+
+  it('enforces exact-anchor relevance and the serialized-byte ceiling on large inventories', async () => {
+    const setup = await fixture();
+    await seedLargeInventoryBrain(setup.rootDir, setup.rizzHome);
+
+    const result = await compileTaskBrief({
+      ...setup,
+      task: 'Fix `toHaveProperty` in packages/expect/src/jest-expect.ts',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const json = JSON.stringify(result.value);
+    expect(Buffer.byteLength(json)).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
+    expect(result.value.size_budget).toMatchObject({
+      max_claims: TASK_BRIEF_MAX_CLAIMS,
+      included_claims: 1,
+      max_bytes: TASK_BRIEF_MAX_BYTES,
+      emitted_bytes: Buffer.byteLength(json),
+      truncated_source_files: 19_993,
+      truncated_evidence_ids: 19_992,
+    });
+    expect(result.value.claims).toEqual([
+      expect.objectContaining({
+        entity_id: 'file:packages/expect/src/jest-expect.ts',
+        source_files: expect.arrayContaining(['packages/expect/src/jest-expect.ts']),
+        relevance_reasons: expect.arrayContaining([
+          'exact:jest-expect.ts',
+          'exact:packages/expect/src/jest-expect.ts',
+        ]),
+      }),
+    ]);
+    expect(result.value.claims.map((claim) => claim.entity_id)).not.toContain(
+      'folder:docs-translations',
+    );
+  });
+
+  it('returns a structured error rather than partial JSON when the envelope cannot fit', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+
+    const result = await compileTaskBrief({ ...setup, task: 'Update Hero', maxBytes: 32 });
+
+    expect(result).toEqual({
+      ok: false,
+      error: expect.objectContaining({ code: 'BRIEF_BYTE_BUDGET_EXCEEDED' }),
     });
   });
 });

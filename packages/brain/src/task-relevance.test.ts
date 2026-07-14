@@ -33,6 +33,22 @@ describe('mission-scoped relevance', () => {
     expect(anchors.terms).not.toContain('handling');
   });
 
+  it('treats a standalone PascalCase symbol as an exact anchor', () => {
+    const anchors = extractTaskAnchors('Update Hero');
+    const decision = decideTaskRelevance({
+      anchors,
+      candidate: candidate({
+        id: 'file:src/hero.ts',
+        name: 'src/hero.ts',
+        description: 'Homepage component',
+        sourceFiles: ['src/hero.ts'],
+      }),
+    });
+
+    expect(anchors.exact).toContain('hero');
+    expect(decision).toMatchObject({ admitted: true, reasons: ['exact:hero'] });
+  });
+
   it('does not reward unrelated evidence or source inventory volume', () => {
     const anchors = extractTaskAnchors(
       'Fix `toHaveProperty` null handling in packages/expect/src/jest-expect.ts',
