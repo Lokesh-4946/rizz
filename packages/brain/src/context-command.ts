@@ -20,9 +20,8 @@ import {
 } from './context-loop.js';
 import {
   type MissionAgent,
-  type MissionBriefIdentity,
+  type MissionPreview,
   type MissionScopeStatus,
-  missionBriefIdentity,
   previewMission,
 } from './mission-contract.js';
 import { enablePinnedSkill, listEnabledProjectSkills } from './project-skill-enablement.js';
@@ -729,7 +728,7 @@ export async function executeContextCommand(options: {
       return failed('BRIEF_OPTION_UNKNOWN', `Unknown option '${unknownOption}'.`);
     const task = skills.rest.join(' ').trim();
     if (task === '') return failed('BRIEF_TASK_REQUIRED', 'Brief needs a task.');
-    let mission: MissionBriefIdentity | undefined;
+    let mission: MissionPreview | undefined;
     const supportedAgent = agent.value === undefined ? null : missionAgent(agent.value);
     if (supportedAgent !== null) {
       const parsedScopeStatus = missionScopeStatus(scopeStatus.value);
@@ -746,7 +745,7 @@ export async function executeContextCommand(options: {
         ...(skills.values.length === 0 ? {} : { requestedSkills: skills.values }),
       });
       if (!preview.ok) return resultError(preview);
-      mission = missionBriefIdentity(preview.value);
+      mission = preview.value;
     }
     const result = await compileTaskBrief({
       rootDir: options.rootDir,

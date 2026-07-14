@@ -198,12 +198,23 @@ function missionId(identity: MissionIdentity): string {
     .digest('hex');
 }
 
-function persistedMissionIdentity(contract: MissionContract): MissionIdentity {
+function missionArtifactIdentity(contract: MissionPreview | MissionContract): MissionIdentity {
   return Object.fromEntries(
     Object.entries(contract).filter(
       ([key]) => key !== 'mission_id' && key !== 'approved' && key !== 'blockers',
     ),
   ) as unknown as MissionIdentity;
+}
+
+export function verifyMissionPreviewIdentity(preview: MissionPreview): MissionResult<true> {
+  if (
+    preview.approved !== false ||
+    !/^[a-f0-9]{64}$/.test(preview.mission_id) ||
+    missionId(missionArtifactIdentity(preview)) !== preview.mission_id
+  ) {
+    return failure('MISSION_IDENTITY_INVALID', 'Mission preview identity is malformed or stale.');
+  }
+  return { ok: true, value: true };
 }
 
 function skillTerms(skill: EnabledProjectSkill): ReadonlySet<string> {
@@ -653,7 +664,7 @@ export async function verifyMissionIdentity(options: {
   if (
     !isMissionContract(parsed) ||
     parsed.mission_id !== options.missionId ||
-    missionId(persistedMissionIdentity(parsed)) !== parsed.mission_id
+    missionId(missionArtifactIdentity(parsed)) !== parsed.mission_id
   ) {
     return failure('MISSION_IDENTITY_INVALID', 'Persisted mission contract is malformed.');
   }

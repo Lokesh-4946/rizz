@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { prepareProjectStore } from './project-store.js';
@@ -33,6 +33,7 @@ export interface EnabledProjectSkill {
     readonly network: boolean;
     readonly credentials: boolean;
   };
+  readonly enablement_digest: string;
 }
 
 interface EnabledManifest {
@@ -44,6 +45,12 @@ interface EnabledManifest {
 type EnableResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
+type EnabledProjectSkillIdentity = Omit<EnabledProjectSkill, 'enablement_digest'>;
+
+function enablementDigest(skill: EnabledProjectSkillIdentity): string {
+  return createHash('sha256').update(JSON.stringify(skill)).digest('hex');
+}
 
 async function readManifest(
   path: string,
@@ -152,7 +159,7 @@ export async function enablePinnedSkill(
   const manifestPath = join(prepared.value.projectDir, 'skills', 'enabled.json');
   const manifest = await readManifest(manifestPath, prepared.value.projectId);
   if (!manifest.ok) return manifest;
-  const enabled: EnabledProjectSkill = {
+  const enabledIdentity: EnabledProjectSkillIdentity = {
     name: options.name,
     ...(pinned.value.source_id === undefined ? {} : { source_id: pinned.value.source_id }),
     ...(pinned.value.skill_path === undefined ? {} : { skill_path: pinned.value.skill_path }),
@@ -168,6 +175,10 @@ export async function enablePinnedSkill(
     audit_status: pinned.value.audit_status,
     audit_findings: pinned.value.audit_findings ?? [],
     requirements: pinned.value.requirements,
+  };
+  const enabled: EnabledProjectSkill = {
+    ...enabledIdentity,
+    enablement_digest: enablementDigest(enabledIdentity),
   };
   await writeVerified(manifestPath, {
     ...manifest.value,
@@ -222,19 +233,30 @@ export async function listVerifiedProjectSkills(
   const rizzHome = options.rizzHome ?? join(prepared.value.projectDir, '..', '..');
   const verifiedSkills: EnabledProjectSkill[] = [];
   for (const skill of listed.value.skills) {
-    if (options.agent !== undefined && !skill.agents.includes(options.agent)) continue;
     const pinned = await readPinnedSkillRecord({ rizzHome, name: skill.name });
     if (!pinned.ok) return pinned;
     const verified = await verifyPinnedSkillCache({ record: pinned.value });
     if (!verified.ok) return verified;
+    const { enablement_digest: recordedEnablementDigest, ...enabledIdentity } = skill;
+    const agentsAreAuthorized =
+      skill.agents.length > 0 &&
+      [...new Set(skill.agents)].sort().join('\0') === skill.agents.join('\0') &&
+      skill.agents.every((agent) => pinned.value.supported_agents.includes(agent));
     const identityMatches =
+      recordedEnablementDigest === enablementDigest(enabledIdentity) &&
+      agentsAreAuthorized &&
+      skill.owner === 'rizz' &&
       skill.digest === pinned.value.digest &&
       skill.revision === pinned.value.revision &&
       skill.source_repository === pinned.value.source_repository &&
       skill.source_id === pinned.value.source_id &&
       skill.skill_path === pinned.value.skill_path &&
       skill.file_digest === pinned.value.file_digest &&
+      skill.license === pinned.value.license &&
+      skill.attribution === pinned.value.attribution &&
       skill.audit_status === pinned.value.audit_status &&
+      JSON.stringify(skill.audit_findings ?? []) ===
+        JSON.stringify(pinned.value.audit_findings ?? []) &&
       sameRequirements(skill.requirements, pinned.value.requirements);
     if (!identityMatches) {
       return {
@@ -245,6 +267,7 @@ export async function listVerifiedProjectSkills(
         },
       };
     }
+    if (options.agent !== undefined && !skill.agents.includes(options.agent)) continue;
     verifiedSkills.push(skill);
   }
   return {

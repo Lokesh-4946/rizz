@@ -18,8 +18,9 @@ release proof.
    constraints, non-goals, risk provenance, and verified pinned-skill digests. Explicit constraints
    and accepted non-goals remain separate from AI proposals. Unsupported AI citations fail.
 4. Open or proposed host scope is persisted without a separate Rizz path-approval gate. A risky
-   external skill remains a distinct explicit blocker. CLI/MCP previews and Task Brief identity are
-   semantically equivalent.
+   external skill remains a distinct explicit blocker. For task/scope/status/skill options exposed by
+   the CLI, CLI/MCP previews and complete Task Brief payloads are semantically equivalent. Richer MCP
+   mission-only fields are not claimed as CLI flags in Milestone A.
 5. The default path stays single-agent, local-first, deterministic, and model-free with no new
    production dependency.
 
@@ -35,7 +36,8 @@ release proof.
 - Focused Task 1–3 suites, strict typecheck, targeted formatting/lint, whitespace, full check,
   packaging, and footprint pass from fresh output.
 - `pnpm test:precision` is the stable local/CI regression for the multi-megabyte Vitest inventory,
-  FastAPI exclusion, rank invariance, CLI/MCP parity, mission provenance/citation validation, and
+  FastAPI exclusion, rank invariance, shared-surface CLI/MCP Task Brief parity, mission
+  provenance/citation validation, and
   footprint-preserving context behavior. Milestone E expands this corpus; it does not create it.
 
 ## Milestone B — Review and repair precision
@@ -45,10 +47,11 @@ release proof.
 - Deterministic `ReviewEvidencePacket`: exact diff/hunks, explicit constraints, direct
   tests/consumers, factual risk signals, verification state, and bounded causal evidence.
 - Host-AI `ReviewFinding` contract with origin, status, confidence, and citations.
-- Revision-independent `finding_key` from normalized semantic claim, canonical citations, and
-  rule/reviewer identity/version; revision-bound `finding_observation_id` from the key plus exact
-  mission/revision/review fingerprint. Lifecycle continuity follows the key, while every observation
-  and status transition retains its revision.
+- Revision-independent `finding_key` from normalized semantic claim, stable canonical citation
+  locators (excluding revision/digest/freshness), and rule/reviewer identity/version;
+  `finding_observation_id` from the key plus exact mission/revision/review fingerprint and
+  revision-bound citation digest/freshness. Lifecycle continuity follows the key, while every
+  observation and status transition retains its revision.
 - Citation and recorded-relationship validation bound to source revision/content digest and
   freshness. Stale/unknown relationships are labelled and never promoted to direct proof.
 - Deduplication, current-finding correction admission, baseline-debt separation, and exact

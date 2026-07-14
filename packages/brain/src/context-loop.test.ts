@@ -12,6 +12,7 @@ import {
   recordLoopCheckpoint,
   startLoopWork,
 } from './context-loop.js';
+import { previewMission } from './mission-contract.js';
 import { TASK_BRIEF_MAX_BYTES, TASK_BRIEF_MAX_CLAIMS } from './task-brief-budget.js';
 
 const roots: string[] = [];
@@ -154,12 +155,15 @@ describe('context compiler', () => {
     );
   });
 
-  it('admits real changed files and literal test neighbors without semantic inference', async () => {
+  it('admits anchored changed files and path-local test neighbors without admitting dirty drift', async () => {
     const setup = await fixture();
     await seedBrain(setup.rootDir, setup.rizzHome);
     await writeFile(join(setup.rootDir, 'src', 'hero.ts'), 'export const hero = false;\n');
+    await writeFile(join(setup.rootDir, 'src', 'unrelated.ts'), 'unrelated dirty source\n');
+    await mkdir(join(setup.rootDir, 'vendor'), { recursive: true });
+    await writeFile(join(setup.rootDir, 'vendor', 'hero.ts'), 'unrelated same-name source\n');
 
-    const result = await compileTaskBrief({ ...setup, task: 'Refine landing behavior' });
+    const result = await compileTaskBrief({ ...setup, task: 'Refine `src/hero.ts` behavior' });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -175,28 +179,53 @@ describe('context compiler', () => {
         }),
       ]),
     );
+    expect(result.value.claims.flatMap((claim) => claim.source_files)).not.toContain(
+      'src/unrelated.ts',
+    );
+
+    execFileSync('git', ['checkout', '--', 'src/hero.ts'], { cwd: setup.rootDir });
+    const collision = await compileTaskBrief({
+      ...setup,
+      task: 'Refine `vendor/hero.ts` behavior',
+    });
+    expect(collision.ok).toBe(true);
+    if (!collision.ok) return;
+    expect(collision.value.claims.flatMap((claim) => claim.source_files)).not.toContain(
+      'src/hero.test.ts',
+    );
   });
 
   it('rejects a brief mission pointer from another project or task', async () => {
     const setup = await fixture();
     await seedBrain(setup.rootDir, setup.rizzHome);
-    const repositoryRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: setup.rootDir,
-      encoding: 'utf8',
-    }).trim();
+    const preview = await previewMission({ ...setup, task: 'Update Hero', agent: 'codex' });
+    if (!preview.ok) throw new Error(preview.error.message);
 
     const result = await compileTaskBrief({
       ...setup,
       task: 'Update Hero',
       agent: 'codex',
       mission: {
-        mission_id: 'a'.repeat(64),
+        ...preview.value,
         project_id: 'wrong-project',
         task: 'Different task',
-        agent: 'codex',
-        repository_revision: repositoryRevision,
-        selected_skills: [],
       },
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'MISSION_BRIEF_MISMATCH' } });
+  });
+
+  it('rejects a mission preview whose canonical identity does not match its mission ID', async () => {
+    const setup = await fixture();
+    await seedBrain(setup.rootDir, setup.rizzHome);
+    const preview = await previewMission({ ...setup, task: 'Update Hero', agent: 'codex' });
+    if (!preview.ok) throw new Error(preview.error.message);
+
+    const result = await compileTaskBrief({
+      ...setup,
+      task: 'Update Hero',
+      agent: 'codex',
+      mission: { ...preview.value, mission_id: 'a'.repeat(64) },
     });
 
     expect(result).toMatchObject({ ok: false, error: { code: 'MISSION_BRIEF_MISMATCH' } });

@@ -14,10 +14,9 @@ import {
 import { explainCurrentProject } from './current-project.js';
 import {
   type MissionAgent,
-  type MissionBriefIdentity,
   type MissionCitation,
+  type MissionPreview,
   type MissionPreviewOptions,
-  missionBriefIdentity,
   previewMission,
 } from './mission-contract.js';
 import { prepareProjectStore } from './project-store.js';
@@ -400,14 +399,14 @@ async function callTool(
       return toolError('MCP_ARGUMENT_INVALID', 'task is required.');
     if (args.agent !== undefined && typeof args.agent !== 'string')
       return toolError('MCP_ARGUMENT_INVALID', 'agent must be a string.');
-    let mission: MissionBriefIdentity | undefined;
+    let mission: MissionPreview | undefined;
     const agent = missionAgent(args.agent);
     if (agent !== null) {
       const parsed = missionOptions(options, args);
       if (!parsed.ok) return toolError('MCP_ARGUMENT_INVALID', 'Mission arguments are invalid.');
       const preview = await previewMission(parsed.value);
       if (!preview.ok) return toolError(preview.error.code, preview.error.message);
-      mission = missionBriefIdentity(preview.value);
+      mission = preview.value;
     }
     const brief = await compileTaskBrief({
       ...options,

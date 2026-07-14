@@ -240,4 +240,33 @@ describe('isolated project skill enablement', () => {
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_CACHE_TAMPERED' } });
   });
+
+  it('rejects manifest edits that change approved agents or emitted provenance', async () => {
+    const setup = await fixture();
+    const enabled = await enablePinnedSkill({
+      rootDir: setup.project,
+      rizzHome: setup.rizzHome,
+      name: 'review-evidence',
+      agents: ['codex'],
+      approved: true,
+    });
+    if (!enabled.ok) throw new Error(enabled.error.message);
+    const manifest = JSON.parse(await readFile(enabled.value.manifest_path, 'utf8')) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    manifest.skills['review-evidence'] = {
+      ...manifest.skills['review-evidence'],
+      agents: ['copilot'],
+      license: 'forged',
+    };
+    await writeFile(enabled.value.manifest_path, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      listVerifiedProjectSkills({
+        rootDir: setup.project,
+        rizzHome: setup.rizzHome,
+        agent: 'copilot',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'SKILL_ENABLEMENT_STALE' } });
+  });
 });

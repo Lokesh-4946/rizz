@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
-import type { MissionBriefIdentity } from './mission-contract.js';
+import {
+  type MissionBriefIdentity,
+  type MissionPreview,
+  missionBriefIdentity,
+  verifyMissionPreviewIdentity,
+} from './mission-contract.js';
 import { listVerifiedProjectSkills } from './project-skill-enablement.js';
 import { prepareProjectStore } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
@@ -216,15 +221,45 @@ function sourceStem(path: string): string {
     .replace(/[_-]test$/u, '');
 }
 
+function anchoredChangedFiles(
+  changed: ReadonlySet<string>,
+  exactAnchors: readonly string[],
+  scope: readonly string[],
+): ReadonlySet<string> {
+  const normalizedScope = scope.map((value) => value.toLowerCase().replaceAll('\\', '/'));
+  const pathAnchors = exactAnchors
+    .map((value) => value.toLowerCase().replaceAll('\\', '/'))
+    .filter((value) => value.includes('/'));
+  const basenameAnchors = new Set(
+    exactAnchors.map((value) => value.toLowerCase()).filter((value) => !value.includes('/')),
+  );
+  return new Set(
+    [...changed].filter((path) => {
+      const normalized = path.toLowerCase();
+      const scoped = normalizedScope.some(
+        (value) => normalized === value || normalized.startsWith(`${value}/`),
+      );
+      if (scoped) return true;
+      if (pathAnchors.length > 0) return pathAnchors.includes(normalized);
+      return basenameAnchors.has(posix.basename(normalized));
+    }),
+  );
+}
+
 function matchKind(
   entity: EntityRecord,
-  changed: ReadonlySet<string>,
+  anchoredChanged: ReadonlySet<string>,
 ): 'changed-file' | 'test-neighbor' | undefined {
   const sourceFiles = entity.source_files ?? [];
-  if (sourceFiles.some((path) => changed.has(path))) return 'changed-file';
+  if (sourceFiles.some((path) => anchoredChanged.has(path))) return 'changed-file';
   if (entity.type !== 'test') return undefined;
-  const changedStems = new Set([...changed].map(sourceStem).filter((stem) => stem !== ''));
-  return sourceFiles.some((path) => changedStems.has(sourceStem(path)))
+  return sourceFiles.some((testPath) =>
+    [...anchoredChanged].some(
+      (changedPath) =>
+        posix.dirname(testPath) === posix.dirname(changedPath) &&
+        sourceStem(testPath) === sourceStem(changedPath),
+    ),
+  )
     ? 'test-neighbor'
     : undefined;
 }
@@ -236,7 +271,7 @@ export async function compileTaskBrief(options: {
   readonly maxClaims?: number;
   readonly maxBytes?: number;
   readonly agent?: string;
-  readonly mission?: MissionBriefIdentity;
+  readonly mission?: MissionPreview;
 }): Promise<RizzResult<TaskBrief>> {
   if (
     options.agent !== undefined &&
@@ -250,9 +285,12 @@ export async function compileTaskBrief(options: {
   const store = await prepareProjectStore(options);
   if (!store.ok) return store;
   const repositoryRevision = gitRevision(store.value.rootPath);
+  const verifiedMission =
+    options.mission === undefined ? undefined : verifyMissionPreviewIdentity(options.mission);
   if (
     options.mission !== undefined &&
-    (options.mission.project_id !== store.value.projectId ||
+    (verifiedMission?.ok !== true ||
+      options.mission.project_id !== store.value.projectId ||
       options.mission.task !== redactSensitiveText(options.task) ||
       options.mission.agent !== options.agent ||
       options.mission.repository_revision !== repositoryRevision)
@@ -271,9 +309,13 @@ export async function compileTaskBrief(options: {
   }
   const allEntities = await readEntities(store.value.brainDir);
   const anchors = extractTaskAnchors(options.task);
-  const changed = changedFiles(store.value.rootPath);
+  const anchoredChanged = anchoredChangedFiles(
+    changedFiles(store.value.rootPath),
+    [...anchors.exact],
+    options.mission?.scope ?? [],
+  );
   const candidates = allEntities.map((entity) => {
-    const directMatch = matchKind(entity, changed);
+    const directMatch = matchKind(entity, anchoredChanged);
     const relevance = decideTaskRelevance({
       anchors,
       candidate: {
@@ -336,7 +378,7 @@ export async function compileTaskBrief(options: {
       brain_generated_at: generatedAt,
       task: redactSensitiveText(options.task),
       agent: options.agent ?? null,
-      ...(options.mission === undefined ? {} : { mission: options.mission }),
+      ...(options.mission === undefined ? {} : { mission: missionBriefIdentity(options.mission) }),
       omissions: omitted > 0 ? [`${omitted} lower-ranked or uncited claim(s) omitted`] : [],
       stale_evidence_warnings: [
         'Brain evidence is timestamped but not bound to this exact repository revision.',

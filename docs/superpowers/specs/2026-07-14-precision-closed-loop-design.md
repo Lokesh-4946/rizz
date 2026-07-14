@@ -88,10 +88,12 @@ nonblocking. Explicit constraints and project policy remain hard gates.
 Milestone B introduces a deterministic `ReviewEvidencePacket` containing exact diff/hunks, explicit
 constraints, direct tests/consumers, factual risk signals, verification state, and bounded causal
 evidence. The host AI produces `ReviewFinding` objects with origin, status, confidence, and
-citations. `finding_key` is revision-independent: normalized semantic claim plus canonical
-citations and rule/reviewer identity/version. `finding_observation_id` adds the exact mission,
-revision, and review fingerprint. Lifecycle and deduplication follow `finding_key`; each observation
-and status transition remains bound to its exact revision.
+citations. `finding_key` is revision-independent: normalized semantic claim plus stable canonical
+citation locators (path/symbol/relationship identity without revision, content digest, or freshness)
+and rule/reviewer identity/version. `finding_observation_id` adds the exact mission, revision, review
+fingerprint, and revision-bound citation observations including content digest/freshness. Lifecycle
+and deduplication follow `finding_key`; each observation and status transition remains bound to its
+exact revision.
 
 Citation validation binds source evidence to a revision/content digest and freshness state. Rizz
 validates existence and recorded relationship provenance; stale or unknown relationships are
@@ -274,8 +276,9 @@ large or decompression-bomb-like artifacts. Protected exact originals round-trip
 
 - **Milestone A — Context precision (implemented now):** mission-scoped literal relevance, 32 KiB
   whole-JSON Task Brief budget, versioned mission identity, verified pinned-skill preview, explicit
-  versus proposed provenance, citation validation, nonblocking proposed/open scope, CLI/MCP parity,
-  and large-inventory fixtures. No release machinery, context compression, cache, retrieval, image
+  versus proposed provenance, citation validation, nonblocking proposed/open scope, equivalent
+  CLI/MCP Task Briefs for the shared task/scope/status/skill surface, and large-inventory fixtures.
+  No release machinery, context compression, cache, retrieval, image
   encoding, model dependency, or extra default model call.
 - **Milestone B — Review and repair precision:** `ReviewEvidencePacket`, host-AI finding/citation
   contract, `finding_key`/`finding_observation_id`, evidence freshness, mission-scoped correction
