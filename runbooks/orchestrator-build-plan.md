@@ -234,14 +234,17 @@ resource regression.
 
 ## Current Loop
 
-1. Calibrate Architecture Reasoning so capped large-repo UAT scores service-to-flow causality,
-   impact maps, cross-component relationship evidence, what-breaks claims, and confidence debt
-   separately.
-2. Scorecard reporting after each UAT run: planned score, actual repo capability score, and
-   remaining distance to 100.
-3. Use bounded UAT on complex repos such as `github/docs` and `vercel/next.js` to choose the next
-   weakest capability instead of guessing.
-4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
+1. Preserve Milestone A with `pnpm test:precision`, including byte-safe Task Briefs, relevance
+   invariance, mission identity, citation rejection, and CLI/MCP parity.
+2. Execute Milestone B0 only: deterministic finding/citation identities and fixtures, with no host
+   model call, repair execution, or semantic review-loop expansion.
+3. After B0, execute C0 then C1 for working-snapshot identity, dependency-declared verification,
+   commit equivalence, and exact `local_green`.
+4. D1 may proceed from A only when it measures actual provider cost/time per accepted verified
+   change and preserves seeded-defect recall.
+5. Keep Brain breadth, semantic review/repair, repair-agent expansion, dashboards, broad skill
+   catalogs, and lossy/image context work frozen until their survival entry gates pass.
+6. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
 The current slice exposes the isolated project OS through a zero-dependency stdio MCP server. Every
 supported read has a stable `rizz://` resource or structured tool result; mutations require exact
@@ -399,9 +402,10 @@ network access. External packet artifacts are treated as hostile input; malforme
 IDs, inconsistent counts, absolute paths, traversal paths, Windows drive paths, UNC paths, and NUL
 bytes are rejected with structured errors. No dependency or always-on core path changed.
 
-### Next Milestone
+### Historical next milestone at the time (completed)
 
-Add opt-in bridge consumption for Codex, Claude Code, and Copilot. Consumption must revalidate the
+This historical plan produced the shipped repair bridge described above; it is not the current
+roadmap baton. The planned consumption had to revalidate the
 exact handoff identity and repository revision, require explicit approval, run only in an identified
 isolated worktree, return structured results, support cancellation, and remain outside the default
 core path.
@@ -451,9 +455,9 @@ skills. All repositories remained clean and had no repository-local `.rizz` stat
 | Copilot | `github-awesome-copilot:skills/acquire-codebase-knowledge` | `0aaced533251f5b86c69dfbc5e55db74c4b4d1af` | `7515f7241bef5b3d44e481e9a59427ecb45bd64fa786d2e798c4fae3c9dbb63b` | `7ca01711e1615171b26ce9e2729bedf041348d7fd0f24bc04e0d400dc93e41b9` | CLI=MCP; incompatible filtered; repo clean |
 | Agent Skills | `superpowers:skills/brainstorming` | `d884ae04edebef577e82ff7c4e143debd0bbec99` | `a1202a6a5e8d86659745e69030c06bfb033f265d8a276f29b24b8a57c4809399` | `e14914605f640e0841758e45d0ab2a53243b59b921f929e47921c99668f2e61d` | CLI=MCP; incompatible filtered; repo clean |
 
-### Next Weakest-Capability Track
+### Historical next track at the time (completed)
 
-The next three-milestone track is **opt-in agent repair handoff**. It targets Coding agent
+This historical three-milestone track was **opt-in agent repair handoff**. It targeted Coding agent
 implementation (73/100, 27 remaining) first and Coding agent repair (78/100, 22 remaining) second,
 the two weakest stages in the current human-agent loop:
 
