@@ -1,8 +1,9 @@
 # Precision-First Closed Loop Design
 
-Status: approved product contract. Milestone A is implemented by the context-precision baton;
-Milestones B–E are specified future work. Release-operation names are provisional until contract
-review.
+Status: approved product contract. Milestone A is implemented by the context-precision baton. The
+2026-07-15 Product Survival Gate splits deterministic finding identity (B0) from the later semantic
+review loop (B1), and requires snapshot proof, verification economics, context telemetry, and
+portability before loop expansion. Release-operation names are provisional until contract review.
 
 ## Positioning and boundary
 
@@ -85,7 +86,7 @@ nonblocking. Explicit constraints and project policy remain hard gates.
 
 ### Review evidence and findings
 
-Milestone B introduces a deterministic `ReviewEvidencePacket` containing exact diff/hunks, explicit
+Milestone B0 introduces a deterministic `ReviewEvidencePacket` containing exact diff/hunks, explicit
 constraints, direct tests/consumers, factual risk signals, verification state, and bounded causal
 evidence. The host AI produces `ReviewFinding` objects with origin, status, confidence, and
 citations. `finding_key` is revision-independent: normalized semantic claim plus stable canonical
@@ -102,7 +103,9 @@ until verification, stronger evidence, human acceptance, or repair outcome confi
 
 Correction admission is limited to current citation-valid AI findings, failed required checks,
 explicit scope violations, or newly introduced deterministic changed-code security failures.
-Pre-existing unrelated debt remains background context.
+Pre-existing unrelated debt remains background context. B0 defines and tests these identities with
+structured fixtures but performs no host model call or repair loop. B1 connects the host semantic
+reviewer only after snapshot, verification, context-economics, and portability gates pass.
 
 ### Working-snapshot receipt
 
@@ -281,28 +284,40 @@ large or decompression-bomb-like artifacts. Protected exact originals round-trip
   CLI/MCP Task Briefs for the shared task/scope/status/skill surface, and large-inventory fixtures.
   No release machinery, context compression, cache, retrieval, image
   encoding, model dependency, or extra default model call.
-- **Milestone B — Review and repair precision:** `ReviewEvidencePacket`, host-AI finding/citation
-  contract, `finding_key`/`finding_observation_id`, evidence freshness, mission-scoped correction
-  admission, baseline-debt separation, and convergence/no-progress behavior.
-- **Milestone C — Local verification and release journal:** working-snapshot receipts, incremental
-  verification DAG with dependency closures and cost tiers, base identity, canonical artifact
-  envelope, truthful commit-before-`local_green`, attach/resume foundation, provider/commit
-  capabilities, explicit commit/push/submit, and an idempotent crash-safe release journal.
+- **Milestone B0 — Finding and citation protocol (next):** deterministic `ReviewEvidencePacket`,
+  `finding_key`/`finding_observation_id`, evidence freshness, baseline-debt classification inputs,
+  and equivalent/no-progress identities. It validates structured fixtures but adds no model call,
+  semantic review execution, or repair loop.
+- **Milestone C0 — Snapshot and artifact identity:** dirty working-snapshot receipts, base identity,
+  protected inputs, canonical artifact envelope/manifest, attach/resume identity, and fail-closed
+  corruption/migration behavior.
+- **Milestone C1 — Local verification and release proof:** incremental verification DAG with
+  dependency closures and cost tiers, truthful commit-before-`local_green`, commit-tree equivalence,
+  provider/commit capability contracts, explicit commit/push/submit, and an idempotent crash-safe
+  release journal.
 - **Milestone D1 — Early context efficiency (may follow A):** stable prefix zoning, bounded delta
   packets, hash-addressed expansion, overhead telemetry, and adaptive-bypass prototypes using A's
   mission/brief identities.
-- **Milestone D2 — Protected optimization (after B/C):** optimization receipts tied to findings,
+- **Milestone P1 — Agent contract parity:** prove semantically identical evidence, finding, and
+  readiness contracts across Codex, Claude, and Copilot without transcript copying or a Rizz model.
+- **Milestone P2 — SCM capability parity:** negotiate GitHub and GitLab review, check, policy,
+  queue/update, and exact-head evidence without flattening provider-native state.
+- **Milestone B1 — Host review and repair convergence:** connect host semantic review and repair to
+  the proven B0/C1/D1/P2 identities, correction admission, and no-progress behavior.
+- **Milestone D2 — Protected optimization (after B0/C1/D1):** optimization receipts tied to findings,
   snapshots, and verification; exact-original lifecycle, storage/privacy/GC, and release-grade
   invalidation while keeping protected evidence native and lossless.
-- **Milestone E — Remote readiness and calibration:** `merge_ready`, remote TOCTOU/release
+- **Milestone E — Remote readiness and calibration (after B1/D2/P2):** `merge_ready`, remote TOCTOU/release
   feedback/repair, base drift and merge queues, provider capability calibration,
   metamorphic/fault-injection/seeded-defect corpus, three-repository calibration, and falsifiable
   product metrics.
 
-Dependencies run A → B → C and A → D1 in parallel; B + C + D1 → D2; B + C + D2 → E. Thin UX,
-doctor/version compatibility, schema migration, and storage-budget tasks are cross-cutting,
-independently tested contracts. Every milestone preserves the single-agent lightweight default and
-adds no new always-on production dependency.
+Dependencies run A → B0 → C0 → C1 and A → D1; C1 → P1 → P2; B0 + C1 + D1 + P2 → B1;
+B0 + C1 + D1 → D2; B1 + D2 + P2 → E. Thin UX, doctor/version compatibility, schema migration,
+and storage-budget tasks are cross-cutting, independently tested contracts. Until C1 and D1 pass,
+new brain breadth, semantic review-loop behavior, repair-agent orchestration, dashboards, broad SCM
+support, and lossy/image context encoding are frozen. Every milestone preserves the single-agent
+lightweight default and adds no new always-on production dependency.
 
 ## Non-goals
 
