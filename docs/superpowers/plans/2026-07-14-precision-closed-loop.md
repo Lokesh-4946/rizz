@@ -42,13 +42,14 @@ release proof.
   provenance/citation validation, and
   footprint-preserving context behavior. Milestone E expands this corpus; it does not create it.
 
-## Milestone B — Review and repair precision
+## Milestone B0 — Finding and citation identity protocol
 
 ### Deliverables
 
 - Deterministic `ReviewEvidencePacket`: exact diff/hunks, explicit constraints, direct
   tests/consumers, factual risk signals, verification state, and bounded causal evidence.
-- Host-AI `ReviewFinding` contract with origin, status, confidence, and citations.
+- Structured `ReviewFinding` contract with origin, status, confidence, and citations. B0 exercises
+  this contract with deterministic fixtures and performs no host model call or repair execution.
 - Revision-independent `finding_key` from normalized semantic claim, stable canonical citation
   locators (excluding revision/digest/freshness), and rule/reviewer identity/version;
   `finding_observation_id` from the key plus exact mission/revision/review fingerprint and
@@ -56,10 +57,11 @@ release proof.
   observation and status transition retains its revision.
 - Citation and recorded-relationship validation bound to source revision/content digest and
   freshness. Stale/unknown relationships are labelled and never promoted to direct proof.
-- Deduplication, current-finding correction admission, baseline-debt separation, and exact
-  no-progress/convergence reasons.
-- Correction packets only from citation-valid current AI findings, failed required checks, explicit
-  scope violations, or new deterministic changed-code security failures.
+- Deduplication identities, correction-admission classification, baseline-debt separation, and exact
+  equivalent-input/no-progress identities.
+- Correction eligibility only for citation-valid current AI findings, failed required checks,
+  explicit scope violations, or new deterministic changed-code security failures. Packet delivery
+  and repair remain B1 work.
 
 ### Acceptance
 
@@ -73,15 +75,15 @@ release proof.
   baseline debt, infrastructure failure, and capped suspected flake.
 - Equivalent diff + unresolved finding + no new evidence stops with an explicit no-progress reason.
 
-## Milestone C — Working snapshots and local release
+## Milestones C0/C1 — Working snapshots, verification proof, and local release
 
 ### Deliverables
 
-- Working-snapshot identity covering HEAD/base, staged/unstaged diffs, protected untracked files,
+- **C0:** Working-snapshot identity covering HEAD/base, staged/unstaged diffs, protected untracked files,
   submodule/LFS state, and protected config/lockfile/policy/mission/skill digests.
-- Environment receipt with bounded OS/arch, runtime/package-manager/tool versions, relevant
+- **C0:** Environment receipt with bounded OS/arch, runtime/package-manager/tool versions, relevant
   secret-redacted environment identity, and configuration digests.
-- Revision-addressed incremental verification DAG keyed by snapshot/tree, exact argv/cwd,
+- **C1:** Revision-addressed incremental verification DAG keyed by snapshot/tree, exact argv/cwd,
   environment/toolchain, config/lockfile, and verification-plan identity.
 - Every node declares exact source/test/config/lockfile/tool inputs or deterministic globs, upstream
   dependencies, environment/toolchain/policy identity, and closure confidence/completeness. Reuse
@@ -91,7 +93,7 @@ release proof.
   Base comparison is lazy unless head failure is ambiguous or policy explicitly requires it.
 - Base and merge-base identity, target drift/conflicts/update policy, and generated/test assumptions.
   Reuse Git object identities and hash changed/protected non-Git inputs, not the entire repository.
-- Pre-commit working-snapshot receipt, explicit commit capability, byte-equivalence proof after
+- **C1:** Pre-commit working-snapshot receipt, explicit commit capability, byte-equivalence proof after
   commit, and `local_green` bound to exact commit plus mission/evidence/config/verification/toolchain
   fingerprints.
 - Truthful green views list required passes, proposed non-required checks, skipped/unavailable checks,
@@ -145,7 +147,57 @@ release proof.
 - Report p50/p95 first-useful-packet and warm-delta latency, scans/hashes/rereads, Rizz-added
   bytes/tokens/provider cost, and overhead percentage per accepted verified change.
 
-## Milestone D2 — Protected optimization and lifecycle (after B/C)
+## Milestones P1/P2 — Agent and SCM portability
+
+### Deliverables
+
+- **P1:** One versioned evidence/finding/readiness contract with semantically equivalent fixtures for
+  Codex, Claude, and Copilot. Host-specific adapters may translate transport, but may not alter
+  mission, citation, verification, or readiness meaning.
+- **P1:** Agent handoffs contain bounded packets and hash-addressed expansion pointers rather than
+  copied brains or transcripts. No adapter introduces a Rizz-owned model call.
+- **P2:** GitHub and GitLab capability negotiation for repository identity, remote head, checks,
+  review threads/state, branch policy, draft/update/queue behavior, and hidden/unsupported state.
+- **P2:** Provider-native evidence remains available in structured form; required hidden or
+  unsupported state becomes `unknown` and blocks readiness rather than becoming false green.
+
+### Acceptance
+
+- Equivalent fixtures produce the same mission, finding, snapshot, verification, and readiness
+  semantics for Codex, Claude, and Copilot.
+- GitHub and GitLab fixtures map equivalent provider states to the same neutral state while retaining
+  distinct native evidence and capability limits.
+- No default-path package or cold-start growth exceeds the existing footprint gate; optional
+  provider dependencies remain lazy and outside core.
+
+## Milestone B1 — Host review and repair convergence
+
+### Entry gate
+
+B0, C1, D1, and P2 must pass their acceptance suites. B1 may not redefine their identities or add a
+shortcut around exact snapshot, verification, cost, or provider evidence.
+
+### Deliverables
+
+- Host semantic review consumes the deterministic `ReviewEvidencePacket` and emits B0-valid
+  findings with citations, origin, status, and confidence.
+- Rizz validates and persists observations, admits only current eligible corrections, and gives the
+  host bounded correction deltas plus affected verification requirements.
+- Equivalent finding/diff/no-new-evidence states stop with an exact no-progress reason; repair count,
+  time, and cost ceilings are explicit and observable.
+- The loop remains one host agent calling deterministic local services; no Rizz autonomy mode or
+  competing permission system is introduced.
+
+### Acceptance
+
+- Seeded current defects converge without activating unrelated baseline debt.
+- Stale, unsupported, unrelated, or already-resolved findings cannot re-enter correction.
+- Equivalent unresolved findings with no changed evidence stop instead of consuming another host
+  call.
+- Every repair cycle reports changed evidence, context bytes/tokens/cost, verification reuse/rerun,
+  and final accepted or blocked outcome.
+
+## Milestone D2 — Protected optimization and lifecycle (after B0/C1/D1)
 
 ### Deliverables
 
@@ -166,7 +218,7 @@ release proof.
 - Missing/tampered/purged objects invalidate dependent receipts; storage growth and reclaimed bytes
   are measured, and garbage collection cannot leave reusable-looking dangling receipts.
 
-## Milestone E — Remote merge readiness and product calibration
+## Milestone E — Remote merge readiness and product calibration (after B1/D2/P2)
 
 ### Deliverables
 
@@ -277,15 +329,20 @@ proof; cost/time per accepted verified change is the product measure.
 
 ```text
 Milestone A: bounded evidence + mission identity
-  -> Milestone B: review evidence + cited host findings + convergence
-    -> Milestone C: snapshot receipts + verification DAG + local_green + release journal
-Milestone A -> Milestone D1: stable prefix + delta packets + early telemetry
-Milestones B + C + D1 -> Milestone D2: protected optimization + lifecycle
-Milestones B + C + D2 -> Milestone E: post-submit loop + merge_ready + calibration
+  -> Milestone B0: finding/citation identities without a host loop
+    -> Milestone C0: snapshot/artifact identity
+      -> Milestone C1: verification DAG + exact local_green + release journal
+Milestone A -> Milestone D1: stable prefix + delta packets + measured economics
+Milestone C1 -> P1: agent contract parity -> P2: GitHub/GitLab capability parity
+Milestones B0 + C1 + D1 + P2 -> Milestone B1: host review/repair convergence
+Milestones B0 + C1 + D1 -> Milestone D2: protected optimization + lifecycle
+Milestones B1 + D2 + P2 -> Milestone E: post-submit loop + merge_ready + calibration
 ```
 
 Thin UX, doctor/version compatibility, schema migration, and storage-budget work have explicit tests
-across their owning milestones. Every stage preserves the single-agent lightweight default and adds
-no resident daemon, mandatory cloud control plane, heavyweight always-on database, default model
-call, or ceremony-heavy workflow. Release journaling is limited to side-effecting/idempotency-critical
+across their owning milestones. Until C1 and D1 pass, new brain feature breadth, semantic loop
+automation, repair-agent behavior, dashboards, broad SCM integrations, and lossy/image encoding are
+frozen. Every stage preserves the single-agent lightweight default and adds no resident daemon,
+mandatory cloud control plane, heavyweight always-on database, default model call, or
+ceremony-heavy workflow. Release journaling is limited to side-effecting/idempotency-critical
 operations, and internal immutable artifacts remain bounded and garbage-collectable.

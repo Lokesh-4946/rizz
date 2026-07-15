@@ -52,6 +52,8 @@ remain distinct because they protect distinct side effects.
 The complete design and staged acceptance model live in
 `docs/superpowers/specs/2026-07-14-precision-closed-loop-design.md` and
 `docs/superpowers/plans/2026-07-14-precision-closed-loop.md`.
+The continue/pivot/kill thresholds and foundation-first ordering are binding in
+`docs/superpowers/specs/2026-07-15-rizz-product-survival-gate-design.md`.
 
 Estimated current loop readiness (planning signal only, never release evidence):
 
@@ -91,11 +93,15 @@ Estimated current loop readiness (planning signal only, never release evidence):
 | Milestone | Status | Capability and dependency |
 | --- | --- | --- |
 | A — Context precision | Implemented in current baton | Literal mission relevance, 32 KiB whole-JSON briefs, versioned mission/pinned skills, canonical content-addressed agent-enablement receipts with legacy schema-v1 reads, explicit versus proposed provenance, nonblocking proposed/open paths, citation validation, and equivalent CLI/MCP Task Brief payloads for their shared task/scope/status/skill surface. |
-| B — Review/repair precision | Planned after A | `ReviewEvidencePacket`; host-AI findings with revision-independent `finding_key` and revision-bound observation ID; evidence freshness; baseline-debt separation; correction admission; deduplication/convergence. |
-| C — Snapshot/local release | Planned after B | Dirty snapshot/base identity; verification-node dependency closures and cost tiers; immutable artifact envelope/manifest; truthful commit-before-`local_green`; attach/resume; explicit commit/push/submit; provider/commit contracts; idempotent journal. |
+| B0 — Finding/citation identity | Next; no host loop | Deterministic `ReviewEvidencePacket`; revision-independent `finding_key`; revision-bound observation ID; citation freshness; baseline-debt and correction-eligibility identities; equivalent/no-progress identity fixtures. |
+| C0 — Snapshot/artifact identity | Planned after B0 | Dirty snapshot/base identity; protected inputs; immutable artifact envelope/manifest; attach/resume identity; corruption and schema-read behavior. |
+| C1 — Verification/local release proof | Planned after C0 | Verification-node dependency closures and cost tiers; commit-tree equivalence; truthful commit-before-`local_green`; explicit commit/push/submit; provider/commit contracts; idempotent journal. |
 | D1 — Early context efficiency | May proceed after A | Stable provider-prefix zones, changed-evidence delta packets, hash-addressed expansion, cold/warm overhead telemetry, adaptive bypass. |
-| D2 — Protected optimization | Planned after B/C/D1 | Finding/snapshot/verification-bound optimization receipts, exact-original lifecycle, storage/privacy/GC, release-grade invalidation. |
-| E — Remote readiness/calibration | Planned after B/C/D2 | Post-submit repair loop; exact-head/base `merge_ready`; provider capabilities/queues; remote TOCTOU; fault/metamorphic/seeded-defect corpus; three-ecosystem calibration and product metrics. |
+| P1 — Agent contract parity | Planned after C1 | Semantically identical evidence/finding/readiness contracts for Codex, Claude, and Copilot without transcript copying or a Rizz model. |
+| P2 — SCM capability parity | Planned after P1 | GitHub/GitLab exact-head, check, review, policy, update/queue, and unknown-state negotiation without flattening native evidence. |
+| B1 — Host review/repair loop | Gated by B0/C1/D1/P2 | Host semantic review, validated observation persistence, bounded correction deltas, and convergence/no-progress behavior using proven identities. |
+| D2 — Protected optimization | Planned after B0/C1/D1 | Finding/snapshot/verification-bound optimization receipts, exact-original lifecycle, storage/privacy/GC, release-grade invalidation. |
+| E — Remote readiness/calibration | Planned after B1/D2/P2 | Post-submit repair loop; exact-head/base `merge_ready`; remote TOCTOU; fault/metamorphic/seeded-defect corpus; three-ecosystem calibration and product metrics. |
 
 Release capability names remain provisional pending contract review. Capabilities are separate and
 explicit: commit, push, provider-neutral submit/open PR-or-MR, and merge. Candidate spellings such as
@@ -217,6 +223,11 @@ engine, or human-facing ceremony explosion is planned. Release journals cover on
 idempotency-critical operations; immutable artifacts stay bounded and garbage-collectable. Users may
 always use native Git/agent tools, with Rizz simply withholding unattained attestations.
 
+Product survival is conditional. Until C1 and D1 pass the binding survival gates, freeze new brain
+feature breadth, semantic review-loop automation, repair-agent behavior, dashboards, broad SCM
+integrations, and lossy/image context encoding. General-purpose personal/project skills may be
+evaluated separately, but do not count as Rizz product differentiation or release evidence.
+
 The product target is not maximum compression. It is minimum wasted cognition per accepted,
 verified change. A cheaper loop that produces slop, rereads the repository, or weakens evidence is a
 resource regression.
@@ -311,11 +322,16 @@ the multi-repository corpus and product calibration; it is not the first owner o
 
 ### Next Weakest-Capability Track
 
-Execute Milestone B: deterministic `ReviewEvidencePacket`, host-AI finding/citation contract,
-revision-independent `finding_key`, revision-bound observations, freshness-aware evidence,
-mission-scoped correction admission, baseline-debt separation, and convergence/no-progress behavior.
-Milestone D1 context-efficiency prototypes may proceed independently from A identities. Do not begin
-local-green or release machinery until the B review identities are stable.
+Execute Milestone B0 only: deterministic byte-bounded `ReviewEvidencePacket`, structured finding
+contract fixtures, revision-independent `finding_key`, revision-bound observations,
+freshness-aware citations/relationships, baseline-debt and correction-eligibility identities, and
+equivalent/no-progress identity tests. Do not invoke a host model, execute repairs, or expand the
+semantic review loop in B0.
+
+After B0, execute C0 then C1 for working-snapshot identity, dependency-declared verification,
+commit-tree equivalence, and truthful exact-commit `local_green`. D1 may proceed from A identities,
+but it must measure provider cost/time per accepted verified change and quality non-inferiority.
+Agent/SCM parity and semantic review/repair resume only in P1/P2/B1 after these proof gates pass.
 
 ## Previous Agent Repair Execution Result
 
