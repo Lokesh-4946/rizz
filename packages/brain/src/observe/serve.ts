@@ -4,12 +4,17 @@ import { type IncomingMessage, type ServerResponse, createServer } from 'node:ht
 import { join } from 'node:path';
 import { prepareProjectStore } from '../project-store.js';
 import { readBrainText } from './brain-index.js';
-import { foldSpool, refreshObserveIndex } from './fold.js';
+import { countUnrecorded, foldSpool, refreshObserveIndex } from './fold.js';
 import { loadJournal } from './journal.js';
 import { readTokenRows, summarizeTokens } from './ledger.js';
 import { renderTokenReport } from './ledger.js';
-import { listInbox } from './notes.js';
-import { appendDecisionRecord } from './notes.js';
+import {
+  appendDecisionRecord,
+  inboxDecisionId,
+  isInboxAnswered,
+  listInbox,
+  readDecisionRecords,
+} from './notes.js';
 import { observePaths } from './paths.js';
 import { renderSummary } from './summary.js';
 
@@ -134,7 +139,7 @@ export async function startObserveServer(options: {
     }
     if (url.pathname === '/api/query') {
       const q = url.searchParams.get('q') ?? '';
-      const summary = await answer(paths, q);
+      const summary = await answer(paths, q, options.rizzHome, options.projectRoot);
       send(response, 200, JSON.stringify({ summary }), 'application/json');
       return;
     }
@@ -151,7 +156,7 @@ export async function startObserveServer(options: {
         return;
       }
       const recorded = await appendDecisionRecord(paths.decisions, {
-        id: `dec_${posted.id}`,
+        id: inboxDecisionId(posted.id),
         text: posted.answer,
         source: 'owner',
         createdAt: new Date().toISOString(),
@@ -227,13 +232,23 @@ function readDecisionPost(
   }
 }
 
-async function answer(paths: ReturnType<typeof observePaths>, query: string): Promise<string> {
+async function answer(
+  paths: ReturnType<typeof observePaths>,
+  query: string,
+  rizzHome: string,
+  projectRoot: string,
+): Promise<string> {
   const inbox = await listInbox(paths.inboxDir);
+  const decisions = await readDecisionRecords(paths.decisions);
+  const openInbox = (inbox.ok ? inbox.value : []).filter(
+    (item) => !decisions.ok || !isInboxAnswered(item.id, decisions.value),
+  );
   const journal = await loadJournal(paths.journalDir);
   const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId));
   const normalized = query.trim().toLowerCase();
   if (normalized === '' || normalized === 'summary') {
-    return renderSummary({ threads: threads.size, inbox: inbox.ok ? inbox.value : [] });
+    const dropped = await countUnrecorded(rizzHome, projectRoot);
+    return renderSummary({ threads: threads.size, inbox: openInbox, dropped });
   }
   if (normalized === 'tokens') {
     const rows = await readTokenRows(paths.ledger);

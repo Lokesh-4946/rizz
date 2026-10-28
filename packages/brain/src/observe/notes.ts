@@ -188,6 +188,17 @@ export function inboxId(threadId: string, text: string): string {
   return createHash('sha256').update(`${threadId}\0${text}`).digest('hex').slice(0, 16);
 }
 
+export function inboxDecisionId(inboxItemId: string): string {
+  return `dec_${inboxItemId}`;
+}
+
+export function isInboxAnswered(
+  inboxItemId: string,
+  decisions: readonly { readonly id: string }[],
+): boolean {
+  return decisions.some((record) => record.id === inboxDecisionId(inboxItemId));
+}
+
 export async function writeInboxItem(
   inboxDir: string,
   item: InboxItem,

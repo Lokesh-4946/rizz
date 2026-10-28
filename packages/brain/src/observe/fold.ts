@@ -1,6 +1,8 @@
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, readdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { prepareProjectStore } from '../project-store.js';
-import { snapshotFromEvents, visionQuote, writeBrain } from './brain-index.js';
+import { type InboxItem, snapshotFromEvents, visionQuote, writeBrain } from './brain-index.js';
 import { appendSynced, readText, withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, loadJournal } from './journal.js';
 import { appendTokenRow, rowFromEvent } from './ledger.js';
@@ -10,12 +12,20 @@ import {
   driftNotesFor,
   ensureObserveVault,
   inboxId,
+  isInboxAnswered,
   listInbox,
   readDecisionRecords,
   writeHandoff,
   writeInboxItem,
 } from './notes.js';
-import { observePaths, spoolFile, spoolLock, spoolOffsetFile } from './paths.js';
+import {
+  observePaths,
+  spoolDropDir,
+  spoolFile,
+  spoolLock,
+  spoolOffsetFile,
+  spoolPendingDir,
+} from './paths.js';
 import { type StaffResult, staffErr, staffOk } from './result.js';
 
 export interface FoldResult {
@@ -71,14 +81,16 @@ async function applyEvent(
       if (!ledger.ok) return ledger;
     }
   }
+  const decisions = await readDecisionRecords(paths.decisions);
+  if (!decisions.ok) return decisions;
   const owners = ownerDecisionLines(event.text);
   for (const text of owners) {
-    const item = await writeInboxItem(paths.inboxDir, {
+    const queued = await queueInboxItem(paths.inboxDir, decisions.value, {
       id: inboxId(event.threadId, text),
       text,
       threadId: event.threadId,
     });
-    if (!item.ok) return item;
+    if (!queued.ok) return queued;
   }
   if (event.kind === 'stop') {
     const drift = await driftNotesFor(
@@ -87,12 +99,12 @@ async function applyEvent(
     );
     if (!drift.ok) return drift;
     for (const note of drift.value) {
-      const item = await writeInboxItem(paths.inboxDir, {
+      const queued = await queueInboxItem(paths.inboxDir, decisions.value, {
         id: inboxId(event.threadId, note),
         text: note,
         threadId: event.threadId,
       });
-      if (!item.ok) return item;
+      if (!queued.ok) return queued;
     }
     const handoff = await writeHandoff(paths.handoffsDir, event, events.value, drift.value);
     if (!handoff.ok) return handoff;
@@ -101,10 +113,23 @@ async function applyEvent(
     projectDir: prepared.value.projectDir,
     projectRoot: event.projectRoot,
     at: event.at,
+    rizzHome,
   });
   if (!brain.ok) return brain;
   if (journal.value === 'duplicate') return staffOk('duplicate');
   return staffOk('applied');
+}
+
+async function queueInboxItem(
+  inboxDir: string,
+  decisions: readonly { readonly id: string }[],
+  item: { readonly id: string; readonly text: string; readonly threadId: string },
+): Promise<StaffResult<void>> {
+  if (isInboxAnswered(item.id, decisions)) {
+    await rm(join(inboxDir, `${item.id}.md`), { force: true });
+    return staffOk(undefined);
+  }
+  return writeInboxItem(inboxDir, item);
 }
 
 /** Rewrite BRAIN.md from the journal, inbox, and decision log. Safe to repeat. */
@@ -112,6 +137,7 @@ export async function refreshObserveIndex(options: {
   readonly projectDir: string;
   readonly projectRoot: string;
   readonly at: string;
+  readonly rizzHome?: string;
 }): Promise<StaffResult<void>> {
   const paths = observePaths(options.projectDir);
   const events = await loadJournal(paths.journalDir);
@@ -120,14 +146,27 @@ export async function refreshObserveIndex(options: {
   if (!decisions.ok) return decisions;
   const inbox = await listInbox(paths.inboxDir);
   if (!inbox.ok) return inbox;
+  const openInbox: InboxItem[] = [];
+  for (const item of inbox.value) {
+    if (isInboxAnswered(item.id, decisions.value)) {
+      await rm(join(paths.inboxDir, `${item.id}.md`), { force: true });
+      continue;
+    }
+    openInbox.push(item);
+  }
   const vision = await readText(paths.vision);
   if (!vision.ok) return vision;
+  const unrecorded =
+    options.rizzHome === undefined
+      ? 0
+      : await countUnrecorded(options.rizzHome, options.projectRoot);
   const snapshot = snapshotFromEvents(events.value, {
     updated: options.at,
     projectRoot: options.projectRoot,
     decisions: decisions.value,
-    inbox: inbox.value,
+    inbox: openInbox,
     visionQuote: visionQuote(vision.value ?? ''),
+    unrecorded,
   });
   const brain = await writeBrain(paths.brain, snapshot);
   if (!brain.ok) return brain;
@@ -144,9 +183,10 @@ export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResul
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
       if (code === 'ENOENT') {
-        return staffOk({ applied: 0, duplicates: 0, projects: [] });
+        raw = '';
+      } else {
+        return staffErr('IO_FAILED', 'cannot read the observe spool');
       }
-      return staffErr('IO_FAILED', 'cannot read the observe spool');
     }
     const offset = Math.min(offsetResult.value, raw.length);
     const pending = raw.slice(offset);
@@ -178,23 +218,100 @@ export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResul
       `${JSON.stringify({ offset: offset + consumed })}\n`,
     );
     if (!marked.ok) return marked;
+    const queued = await applyPendingEvents(rizzHome);
+    if (!queued.ok) return queued;
+    for (const project of queued.value.projects) projects.add(project);
     return staffOk({
-      applied,
-      duplicates,
+      applied: applied + queued.value.applied,
+      duplicates: duplicates + queued.value.duplicates,
       projects: [...projects],
     });
   });
 }
 
+function eventFileName(eventId: string): string {
+  return `${createHash('sha256').update(eventId).digest('hex').slice(0, 24)}.json`;
+}
+
+export async function countUnrecorded(rizzHome: string, projectRoot: string): Promise<number> {
+  let names: string[] = [];
+  try {
+    names = (await readdir(spoolDropDir(rizzHome))).filter((name) => name.endsWith('.json'));
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    if (code === 'ENOENT') return 0;
+    return 0;
+  }
+  let count = 0;
+  for (const name of names) {
+    const text = await readText(join(spoolDropDir(rizzHome), name));
+    if (!text.ok || text.value === undefined) continue;
+    try {
+      const parsed: unknown = JSON.parse(text.value);
+      if (isRecord(parsed) && parsed.projectRoot === projectRoot) count += 1;
+    } catch {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function applyPendingEvents(rizzHome: string): Promise<StaffResult<FoldResult>> {
+  const dir = spoolPendingDir(rizzHome);
+  let names: string[] = [];
+  try {
+    names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort();
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    if (code === 'ENOENT') return staffOk({ applied: 0, duplicates: 0, projects: [] });
+    return staffErr('IO_FAILED', 'cannot list queued hook events');
+  }
+  let applied = 0;
+  let duplicates = 0;
+  const projects = new Set<string>();
+  for (const name of names) {
+    const path = join(dir, name);
+    const text = await readText(path);
+    if (!text.ok) return text;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text.value ?? '');
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || typeof parsed.id !== 'string') continue;
+    const result = await applyEvent(rizzHome, parsed as unknown as ObserveEvent);
+    if (!result.ok) return result;
+    await rm(path, { force: true });
+    if (result.value === 'duplicate') duplicates += 1;
+    else applied += 1;
+    if (typeof parsed.projectRoot === 'string') projects.add(parsed.projectRoot);
+  }
+  return staffOk({ applied, duplicates, projects: [...projects] });
+}
+
 export async function appendSpoolEvent(
   rizzHome: string,
   event: ObserveEvent,
-): Promise<StaffResult<void>> {
+): Promise<StaffResult<'recorded' | 'dropped'>> {
   const line = `${JSON.stringify(event)}\n`;
   const locked = await withLock(spoolLock(rizzHome), async () =>
     appendSynced(spoolFile(rizzHome), line),
   );
-  if (locked.ok) return locked;
-  // A stuck lock must not swallow the hook. The line is still appended.
-  return appendSynced(spoolFile(rizzHome), line);
+  if (locked.ok) return staffOk('recorded');
+  const queued = await writeAtomic(join(spoolPendingDir(rizzHome), eventFileName(event.id)), line);
+  if (queued.ok) return staffOk('recorded');
+  const dropped = await writeAtomic(
+    join(spoolDropDir(rizzHome), eventFileName(event.id)),
+    `${JSON.stringify({
+      id: event.id,
+      at: event.at,
+      tool: event.tool,
+      threadId: event.threadId,
+      projectRoot: event.projectRoot,
+      reason: queued.error.message,
+    })}\n`,
+  );
+  if (dropped.ok) return staffOk('dropped');
+  return queued;
 }

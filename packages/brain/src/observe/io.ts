@@ -38,7 +38,7 @@ export async function writeAtomic(path: string, contents: string): Promise<Staff
     }
     return staffOk(undefined);
   } catch (error) {
-    await rm(tmp, { force: true });
+    await rm(tmp, { force: true }).catch(() => undefined);
     return staffErr('IO_FAILED', `cannot write ${path}: ${errorMessage(error)}`);
   }
 }

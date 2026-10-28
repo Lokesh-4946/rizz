@@ -107,7 +107,9 @@ export async function receiveHook(options: {
     at: options.at ?? new Date().toISOString(),
   });
   const spooled = await appendSpoolEvent(rizzHome, event);
-  const stderr = spooled.ok ? '' : `rizz: ${spooled.error.message}\n`;
+  let stderr = '';
+  if (!spooled.ok) stderr = `rizz: ${spooled.error.message}\n`;
+  else if (spooled.value === 'dropped') stderr = 'rizz: hook event could not be recorded\n';
   const brain =
     hook === 'sessionStart' || hook === 'SessionStart'
       ? await existingBrain(rizzHome, projectRoot)

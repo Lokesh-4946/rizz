@@ -5,11 +5,11 @@ import { relative } from 'node:path';
 import { resolveRizzHome } from '../project-store.js';
 import { prepareProjectStore } from '../project-store.js';
 import { readCodexRollout } from './codex-session.js';
-import { appendSpoolEvent, foldSpool } from './fold.js';
+import { appendSpoolEvent, countUnrecorded, foldSpool } from './fold.js';
 import { loadJournal } from './journal.js';
 import { readTokenRows, summarizeTokens } from './ledger.js';
 import { type HostId, isHostId } from './model.js';
-import { listInbox } from './notes.js';
+import { isInboxAnswered, listInbox, readDecisionRecords } from './notes.js';
 import { observePaths } from './paths.js';
 import { initObserver, receiveHook } from './receive.js';
 import { startObserveServer } from './serve.js';
@@ -154,7 +154,13 @@ export async function runObserveCli(
   },
 ): Promise<number> {
   const command = argv[0];
-  if (command === undefined || command === '--help' || command === '-h') {
+  if (
+    command === undefined ||
+    command === '--help' ||
+    command === '-h' ||
+    flag(argv, '--help') ||
+    flag(argv, '-h')
+  ) {
     process.stdout.write(USAGE);
     return 0;
   }
@@ -206,9 +212,14 @@ export async function runObserveCli(
       return rows.ok ? 0 : 1;
     }
     const inbox = await listInbox(paths.inboxDir);
+    const decisions = await readDecisionRecords(paths.decisions);
+    const openInbox = (inbox.ok ? inbox.value : []).filter(
+      (item) => !decisions.ok || !isInboxAnswered(item.id, decisions.value),
+    );
     const journal = await loadJournal(paths.journalDir);
     const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId)).size;
-    const text = renderSummary({ threads, inbox: inbox.ok ? inbox.value : [] });
+    const dropped = await countUnrecorded(rizzHome, projectRoot);
+    const text = renderSummary({ threads, inbox: openInbox, dropped });
     process.stdout.write(`${text}\n`);
     return 0;
   }
