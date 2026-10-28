@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,13 +8,16 @@ import { BRAIN_LINE_CAP, renderBrain, snapshotFromEvents } from './brain-index.j
 import { detectHosts } from './cli.js';
 import { readCodexRollout } from './codex-session.js';
 import { checkDrift } from './drift.js';
-import { foldSpool } from './fold.js';
+import { appendSpoolEvent, foldSpool } from './fold.js';
 import { parseHandoffBlock } from './handoff.js';
-import { installCursorHooks } from './install.js';
+import { installClaudeHooks, installCodexHooks, installCursorHooks } from './install.js';
+import { withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, eventsIn } from './journal.js';
-import { normalizeHook } from './model.js';
-import { observePaths } from './paths.js';
+import { type ObserveEvent, normalizeHook } from './model.js';
+import { ensureObserveVault } from './notes.js';
+import { observePaths, spoolFile, spoolLock } from './paths.js';
 import { receiveHook } from './receive.js';
+import { staffOk } from './result.js';
 import { startObserveServer } from './serve.js';
 
 const roots: string[] = [];
@@ -128,6 +132,54 @@ describe('host hooks', () => {
     };
     expect(parsed.hooks.stop.map((entry) => entry.command)).toContain('echo keep');
     expect(parsed.hooks.stop.map((entry) => entry.command)).toContain('rizz hook cursor stop');
+  });
+
+  it('merges Codex hooks without dropping an existing command', async () => {
+    const home = await tempDir('rizz-codex-hooks-');
+    const path = join(home, '.codex', 'hooks.json');
+    await mkdir(join(home, '.codex'), { recursive: true });
+    await writeFile(
+      path,
+      `${JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo keep' }] }] } }, null, 2)}\n`,
+    );
+    expect((await installCodexHooks(home)).ok).toBe(true);
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as {
+      hooks: {
+        Stop: { hooks: { command: string }[] }[];
+        SessionStart: { hooks: { command: string }[] }[];
+      };
+    };
+    const stopCommands = parsed.hooks.Stop.flatMap((entry) =>
+      entry.hooks.map((hook) => hook.command),
+    );
+    expect(stopCommands).toContain('echo keep');
+    expect(stopCommands).toContain('rizz hook codex Stop');
+    expect(parsed.hooks.SessionStart[0]?.hooks[0]?.command).toBe('rizz hook codex SessionStart');
+  });
+
+  it('merges Claude Code hooks without dropping existing settings', async () => {
+    const home = await tempDir('rizz-claude-hooks-');
+    const path = join(home, '.claude', 'settings.json');
+    await mkdir(join(home, '.claude'), { recursive: true });
+    await writeFile(
+      path,
+      `${JSON.stringify({ model: 'keep-me', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo keep' }] }] } }, null, 2)}\n`,
+    );
+    expect((await installClaudeHooks(home)).ok).toBe(true);
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as {
+      model: string;
+      hooks: {
+        Stop: { hooks: { command: string }[] }[];
+        SessionStart: { hooks: { command: string }[] }[];
+      };
+    };
+    expect(parsed.model).toBe('keep-me');
+    const stopCommands = parsed.hooks.Stop.flatMap((entry) =>
+      entry.hooks.map((hook) => hook.command),
+    );
+    expect(stopCommands).toContain('echo keep');
+    expect(stopCommands).toContain('rizz hook claude Stop');
+    expect(parsed.hooks.SessionStart[0]?.hooks[0]?.command).toBe('rizz hook claude SessionStart');
   });
 
   it('fails open when the payload is not JSON', async () => {
@@ -298,3 +350,346 @@ describe('fake Cursor session', () => {
     expect(compressed.error.code).toBe('CODEX_ROLLUP_COMPRESSED');
   });
 });
+
+function holdProcess(
+  script: string,
+  env: Record<string, string>,
+): Promise<ReturnType<typeof spawn>> {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, ...env },
+    stdio: 'ignore',
+  });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('holder did not start')), 2000);
+    child.once('spawn', () => {
+      clearTimeout(timer);
+      resolve(child);
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function sigkill(child: ReturnType<typeof spawn>): Promise<void> {
+  child.kill('SIGKILL');
+  await new Promise((resolve) => child.once('close', resolve));
+}
+
+const TORN_APPEND = `
+import { openSync, writeSync, fsyncSync } from 'node:fs';
+const fd = openSync(process.env.KILL_PATH, process.env.KILL_FLAGS || 'a');
+writeSync(fd, process.env.KILL_BYTES);
+fsyncSync(fd);
+setInterval(() => {}, 1000);
+`;
+
+const HOLD_LOCK = `
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+mkdirSync(process.env.KILL_PATH, { recursive: true });
+writeFileSync(join(process.env.KILL_PATH, 'pid'), String(process.pid) + String.fromCharCode(10));
+setInterval(() => {}, 1000);
+`;
+
+describe('crash-safe brain writes', () => {
+  it('drops a torn journal tail after the writer is killed and keeps committed events', async () => {
+    const dir = await tempDir('rizz-kill-journal-');
+    const first = event('gen-a', '2026-10-28T08:00:00.000Z', 'first committed');
+    const second = event('gen-b', '2026-10-28T08:01:00.000Z', 'second committed');
+    const third = event('gen-c', '2026-10-28T08:02:00.000Z', 'third after kill');
+    expect((await appendJournalEvent(dir, first)).ok).toBe(true);
+    expect((await appendJournalEvent(dir, second)).ok).toBe(true);
+    const path = join(dir, '2026-10.md');
+    const committed = await readFile(path, 'utf8');
+    const child = await holdProcess(TORN_APPEND, {
+      KILL_PATH: path,
+      KILL_BYTES: '%%rizz:event%%{"id":"torn","text":"partial',
+    });
+    const grew = await waitFor(async () => {
+      const text = await readFile(path, 'utf8');
+      return text.includes('"id":"torn"') ? text : undefined;
+    });
+    expect(grew?.startsWith(committed)).toBe(true);
+    await sigkill(child);
+    expect((await appendJournalEvent(dir, third)).ok).toBe(true);
+    const recovered = await readFile(path, 'utf8');
+    expect(recovered.startsWith(committed)).toBe(true);
+    expect(recovered).not.toContain('"id":"torn"');
+    expect(eventsIn(recovered).map((item) => item.id)).toEqual([first.id, second.id, third.id]);
+  });
+
+  it('keeps the previous index when a replacement write is killed before rename', async () => {
+    const dir = await tempDir('rizz-kill-index-');
+    const path = join(dir, 'BRAIN.md');
+    expect((await writeAtomic(path, 'complete-v1\n')).ok).toBe(true);
+    const tmp = join(dir, 'BRAIN.md.killed.tmp');
+    const child = await holdProcess(TORN_APPEND, {
+      KILL_PATH: tmp,
+      KILL_BYTES: 'PARTIAL-INDEX',
+      KILL_FLAGS: 'w',
+    });
+    await waitFor(async () => {
+      const text = await readFile(tmp, 'utf8').catch(() => '');
+      return text.includes('PARTIAL') ? text : undefined;
+    });
+    await sigkill(child);
+    expect(await readFile(path, 'utf8')).toBe('complete-v1\n');
+    expect((await writeAtomic(path, 'complete-v2\n')).ok).toBe(true);
+    expect(await readFile(path, 'utf8')).toBe('complete-v2\n');
+  });
+
+  it('takes a lock after its holder is killed', async () => {
+    const dir = await tempDir('rizz-lock-kill-');
+    const lock = join(dir, 'lock');
+    const child = await holdProcess(HOLD_LOCK, { KILL_PATH: lock });
+    await waitFor(async () => {
+      const text = await readFile(join(lock, 'pid'), 'utf8').catch(() => '');
+      return text.trim() === '' ? undefined : text;
+    });
+    await sigkill(child);
+    const result = await withLock(lock, async () => staffOk('in'));
+    expect(result).toEqual({ ok: true, value: 'in' });
+  });
+
+  it('clears a lock directory that has no live holder', async () => {
+    const dir = await tempDir('rizz-lock-stale-');
+    const lock = join(dir, 'lock');
+    await mkdir(lock, { recursive: true });
+    const old = new Date(Date.now() - 11_000);
+    await utimes(lock, old, old);
+    const result = await withLock(lock, async () => staffOk('in'));
+    expect(result).toEqual({ ok: true, value: 'in' });
+  });
+
+  it('replays the spool when the offset file was torn', async () => {
+    const home = await tempDir('rizz-offset-');
+    const project = await tempDir('rizz-offset-project-');
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-offset',
+        generation_id: 'gen-offset',
+        prompt: 'Owner decision: Keep the offset?',
+        hook_event_name: 'beforeSubmitPrompt',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T08:00:00.000Z',
+    });
+    await writeFile(join(home, 'spool', 'offset.json'), '{');
+    const folded = await foldSpool(home);
+    expect(folded.ok).toBe(true);
+    if (!folded.ok) return;
+    expect(folded.value.applied).toBe(1);
+    await writeFile(join(home, 'spool', 'offset.json'), '{');
+    const again = await foldSpool(home);
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.value.applied).toBe(0);
+    expect(again.value.duplicates).toBe(1);
+  });
+
+  it('keeps concurrent spool lines as whole JSON records', async () => {
+    const home = await tempDir('rizz-spool-race-');
+    const events = Array.from({ length: 12 }, (_, index) =>
+      event(`gen-p-${index}`, '2026-10-28T08:00:00.000Z', `prompt ${index}`),
+    );
+    const results = await Promise.all(events.map((item) => appendSpoolEvent(home, item)));
+    expect(results.every((result) => result.ok)).toBe(true);
+    const lines = (await readFile(spoolFile(home), 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(12);
+    const texts = lines.map((line) => JSON.parse(line).text).sort();
+    expect(texts).toEqual(events.map((item) => item.text).sort());
+  });
+
+  it('records a hook after a fold dies holding the spool lock', async () => {
+    const home = await tempDir('rizz-dead-lock-');
+    const project = await tempDir('rizz-dead-lock-project-');
+    const lock = spoolLock(home);
+    await mkdir(lock, { recursive: true });
+    const old = new Date(Date.now() - 5_000);
+    await utimes(lock, old, old);
+    const started = Date.now();
+    const response = await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-lock',
+        generation_id: 'gen-lock',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Owner decision: Keep recording after a crash?',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T08:10:00.000Z',
+    });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(response.exitCode).toBe(0);
+    expect(response.stderr).toBe('');
+    expect(await readFile(spoolFile(home), 'utf8')).toContain('Keep recording after a crash?');
+  });
+
+  it('still records a hook when a live fold holds the lock', async () => {
+    const home = await tempDir('rizz-live-lock-');
+    const project = await tempDir('rizz-live-lock-project-');
+    const lock = spoolLock(home);
+    const child = await holdProcess(HOLD_LOCK, { KILL_PATH: lock });
+    await waitFor(async () => {
+      const text = await readFile(join(lock, 'pid'), 'utf8').catch(() => '');
+      return text.trim() === '' ? undefined : text;
+    });
+    try {
+      const started = Date.now();
+      const response = await receiveHook({
+        tool: 'cursor',
+        hook: 'beforeSubmitPrompt',
+        stdin: JSON.stringify({
+          conversation_id: 'conv-live',
+          generation_id: 'gen-live',
+          hook_event_name: 'beforeSubmitPrompt',
+          prompt: 'still recorded while the lock is held',
+          workspace_roots: [project],
+        }),
+        projectRoot: project,
+        rizzHome: home,
+        at: '2026-10-28T08:11:00.000Z',
+      });
+      const elapsed = Date.now() - started;
+      expect(response.exitCode).toBe(0);
+      expect(elapsed).toBeGreaterThan(1500);
+      expect(elapsed).toBeLessThan(5000);
+      expect(await readFile(spoolFile(home), 'utf8')).toContain(
+        'still recorded while the lock is held',
+      );
+    } finally {
+      await sigkill(child);
+    }
+  }, 8_000);
+
+  it('finishes ledger, inbox, handoff, and index when the journal line already exists', async () => {
+    const home = await tempDir('rizz-replay-');
+    const project = await tempDir('rizz-replay-project-');
+    const response = await receiveHook({
+      tool: 'cursor',
+      hook: 'stop',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-replay',
+        generation_id: 'stop-replay',
+        hook_event_name: 'stop',
+        status: 'completed',
+        summary: 'Owner decision: Ship the public route?',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T08:12:00.000Z',
+    });
+    expect(response.exitCode).toBe(0);
+    const event = JSON.parse((await readFile(spoolFile(home), 'utf8')).trim()) as ObserveEvent;
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    expect((await ensureObserveVault(paths)).ok).toBe(true);
+    expect((await appendJournalEvent(paths.journalDir, event)).ok).toBe(true);
+    const folded = await foldSpool(home);
+    expect(folded.ok).toBe(true);
+    if (!folded.ok) return;
+    expect(folded.value.duplicates).toBe(1);
+    expect(folded.value.applied).toBe(0);
+    expect(await readFile(paths.ledger, 'utf8')).toContain(event.id);
+    expect((await readdir(paths.inboxDir)).length).toBeGreaterThan(0);
+    expect((await readdir(paths.handoffsDir)).length).toBe(1);
+    expect(await readFile(paths.brain, 'utf8')).toContain('Ship the public route?');
+    const threadPath = join(paths.threadsDir, `${event.threadId}.md`);
+    const thread = await readFile(threadPath, 'utf8');
+    expect(thread.split(event.id).length - 1).toBe(1);
+    await writeFile(join(home, 'spool', 'offset.json'), '{');
+    const again = await foldSpool(home);
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.value.duplicates).toBe(1);
+    expect(await readFile(threadPath, 'utf8')).toBe(thread);
+  });
+});
+
+describe('owner answers', () => {
+  it('stores the answer and does not treat the question as the decision', async () => {
+    const home = await tempDir('rizz-decide-');
+    const project = await tempDir('rizz-decide-project-');
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-decide',
+        generation_id: 'gen-decide',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Owner decision: Should health require auth?',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T08:20:00.000Z',
+    });
+    const folded = await foldSpool(home);
+    expect(folded.ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const inboxName = (await readdir(paths.inboxDir))[0];
+    expect(inboxName).toBeDefined();
+    const id = (inboxName ?? '').replace(/\.md$/, '');
+    const server = await startObserveServer({
+      projectRoot: project,
+      rizzHome: home,
+      token: 'decide-token',
+    });
+    try {
+      const missing = await fetch(`http://127.0.0.1:${server.port}/api/decide?token=decide-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      expect(missing.status).toBe(400);
+      expect(await readdir(paths.inboxDir)).toEqual([inboxName]);
+      expect(await readFile(paths.decisions, 'utf8')).not.toContain(
+        '"text":"Should health require auth?"',
+      );
+      const answered = await fetch(
+        `http://127.0.0.1:${server.port}/api/decide?token=decide-token`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id, answer: 'Yes, require auth' }),
+        },
+      );
+      expect(answered.status).toBe(200);
+      const decisions = await readFile(paths.decisions, 'utf8');
+      expect(decisions).toContain('Yes, require auth');
+      expect(decisions).not.toContain('"text":"Should health require auth?"');
+      expect(await readdir(paths.inboxDir)).toEqual([]);
+      const brain = await readFile(paths.brain, 'utf8');
+      const awaiting = brain.split('## Current decisions')[0] ?? '';
+      expect(awaiting).not.toContain('Should health require auth?');
+      expect(brain).toContain('Yes, require auth');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
+  const started = Date.now();
+  for (;;) {
+    const value = await read();
+    if (value !== undefined) return value;
+    if (Date.now() - started > 4000) throw new Error('timed out waiting for the killed writer');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
