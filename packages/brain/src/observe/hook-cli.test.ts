@@ -13,6 +13,22 @@ const roots: string[] = [];
 
 const cliPath = join(dirname(fileURLToPath(import.meta.url)), '../../../cli/dist/index.js');
 
+function installedCommands(raw: string): string[] {
+  const parsed = JSON.parse(raw) as {
+    hooks: Record<string, { command?: string; hooks?: { command?: string }[] }[]>;
+  };
+  const commands: string[] = [];
+  for (const entries of Object.values(parsed.hooks)) {
+    for (const entry of entries) {
+      if (typeof entry.command === 'string') commands.push(entry.command);
+      for (const hook of entry.hooks ?? []) {
+        if (typeof hook.command === 'string') commands.push(hook.command);
+      }
+    }
+  }
+  return commands;
+}
+
 async function tempDir(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), prefix));
   roots.push(path);
@@ -322,9 +338,11 @@ describe('installed CLI hook sessions', () => {
     const hooks = await readFile(join(hookHome, '.codex', 'hooks.json'), 'utf8');
     expect(hooks).toContain('SessionStart');
     expect(hooks).toContain('UserPromptSubmit');
-    expect(hooks).toContain(realpathSync(cliPath));
-    expect(hooks).toContain('hook codex Stop');
-    expect(hooks).not.toContain('"rizz" hook');
+    const codexStop = installedCommands(hooks).find((command) =>
+      command.includes('hook codex Stop'),
+    );
+    expect(codexStop).toContain(realpathSync(cliPath));
+    expect(codexStop?.startsWith('rizz ')).toBe(false);
     await expect(readFile(join(hookHome, '.codex', 'config.toml'), 'utf8')).rejects.toThrow();
 
     const common = { session_id: 'thread-9', cwd: project };
@@ -398,8 +416,11 @@ describe('installed CLI hook sessions', () => {
     expect(settings).toContain('SessionStart');
     expect(settings).toContain('UserPromptSubmit');
     expect(settings).toContain('PostToolUse');
-    expect(settings).toContain(realpathSync(cliPath));
-    expect(settings).toContain('hook claude Stop');
+    const claudeStop = installedCommands(settings).find((command) =>
+      command.includes('hook claude Stop'),
+    );
+    expect(claudeStop).toContain(realpathSync(cliPath));
+    expect(claudeStop?.startsWith('rizz ')).toBe(false);
 
     const start = await runCli(['hook', 'claude', 'SessionStart'], {
       ...opts,
