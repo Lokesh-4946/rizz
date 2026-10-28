@@ -4,6 +4,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -2781,30 +2782,137 @@ function runCliSync(args, input) {
   );
 }
 
-function runCliInCwdSync(cwd, args, input) {
-  return withTempHomeSync((home) =>
-    spawnSync(process.execPath, [cliBin, ...args], {
+function runCliWithFixtureBridgeSync(cwd, args, input, includeGit) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const env = {
+      ...(includeGit ? isolatedEnvWithGit(home) : isolatedEnv(home)),
+      RIZZ_HOME: rizzHome,
+    };
+    const prepared = spawnSync(process.execPath, [cliBin, 'prepare'], {
+      cwd,
+      encoding: 'utf8',
+      env,
+      timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+    });
+    const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+    const projectDir = Object.values(registry.projects)[0].project_dir;
+    const stateEntries = [
+      ['brain', 'brain'],
+      ['research', 'research'],
+      ['reports', 'reports'],
+      ['human-signoff.json', join('governance', 'human-signoff.json')],
+    ];
+    if (prepared.status === 0 && existsSync(join(cwd, '.rizz'))) {
+      for (const [localEntry, externalEntry] of stateEntries) {
+        const source = join(cwd, '.rizz', localEntry);
+        const target = join(projectDir, externalEntry);
+        rmSync(target, { recursive: true, force: true });
+        if (existsSync(source)) {
+          cpSync(source, target, { recursive: true });
+        }
+      }
+    }
+    const result = spawnSync(process.execPath, [cliBin, ...args], {
       cwd,
       input,
       encoding: 'utf8',
-      env: isolatedEnv(home),
+      env,
       timeout: CLI_SMOKE_TIMEOUT_MS,
       maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-    }),
-  );
+    });
+    rmSync(join(cwd, '.rizz'), { recursive: true, force: true });
+    mkdirSync(join(cwd, '.rizz'), { recursive: true });
+    for (const [localEntry, externalEntry] of stateEntries) {
+      const source = join(projectDir, externalEntry);
+      if (existsSync(source)) {
+        cpSync(source, join(cwd, '.rizz', localEntry), { recursive: true });
+      }
+    }
+    return result;
+  });
+}
+
+function runCliInCwdSync(cwd, args, input) {
+  return runCliWithFixtureBridgeSync(cwd, args, input, false);
 }
 
 function runCliInCwdWithGitSync(cwd, args, input) {
-  return withTempHomeSync((home) =>
-    spawnSync(process.execPath, [cliBin, ...args], {
+  return runCliWithFixtureBridgeSync(cwd, args, input, true);
+}
+
+function runPrepareCliSync(cwd) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const result = spawnSync(process.execPath, [cliBin, 'prepare'], {
       cwd,
-      input,
       encoding: 'utf8',
-      env: isolatedEnvWithGit(home),
+      env: { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome },
       timeout: CLI_SMOKE_TIMEOUT_MS,
       maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-    }),
-  );
+    });
+    return { result, registryExists: existsSync(join(rizzHome, 'registry.json')) };
+  });
+}
+
+function runExternalBrainCliSync(cwd, args = []) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const result = spawnSync(process.execPath, [cliBin, ...args], {
+      cwd,
+      input: '',
+      encoding: 'utf8',
+      env: { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome },
+      timeout: CLI_SMOKE_TIMEOUT_MS,
+      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+    });
+    const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+    const project = Object.values(registry.projects)[0];
+    const projectDir = project.project_dir;
+    return {
+      result,
+      latestExists: existsSync(join(projectDir, 'brain', 'latest.json')),
+      graphExists: existsSync(join(projectDir, 'brain', 'graph.json')),
+      filesExists: existsSync(join(projectDir, 'brain', 'entities', 'files.json')),
+      research: Object.fromEntries(
+        readdirSync(join(projectDir, 'research')).map((fileName) => [
+          fileName,
+          readFileSync(join(projectDir, 'research', fileName), 'utf8'),
+        ]),
+      ),
+      report: readFileSync(join(projectDir, 'reports', 'index.html'), 'utf8'),
+    };
+  });
+}
+
+function runExternalCliSequenceSync(cwd, commands) {
+  return withTempHomeSync((home) => {
+    const rizzHome = join(home, 'external-rizz');
+    const env = { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome };
+    const results = commands.map((args) =>
+      spawnSync(process.execPath, [cliBin, ...args], {
+        cwd,
+        input: '',
+        encoding: 'utf8',
+        env,
+        timeout: CLI_SMOKE_TIMEOUT_MS,
+        maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+      }),
+    );
+    const registry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+    const projectDir = Object.values(registry.projects)[0].project_dir;
+    return {
+      results,
+      vaultManifestExists: existsSync(join(projectDir, 'history', 'vault-import.json')),
+      reviewExists: existsSync(join(projectDir, 'research', 'review_eval.json')),
+      verificationExists: existsSync(join(projectDir, 'research', 'verification_evidence.json')),
+      explainExists: readdirSync(join(projectDir, 'reports')).some((name) =>
+        name.startsWith('explain-'),
+      ),
+      askExists: existsSync(join(projectDir, 'reports', 'ask.html')),
+    };
+  });
 }
 
 function gitInCwd(cwd, args) {
@@ -3012,6 +3120,57 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'rizz mcp initializes and lists model-independent tools over stdio',
+      run() {
+        const input = [
+          JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+          JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+          '',
+        ].join('\n');
+        const result = runCliSync(['mcp'], input);
+        assert(result.status === 0, `expected MCP exit 0: ${result.stderr}`);
+        const messages = parseJsonLines(result.stdout);
+        assert(messages[0]?.result?.serverInfo?.name === 'rizz', 'missing MCP initialize result');
+        assert(
+          messages[1]?.result?.tools?.some((tool) => tool.name === 'get_task_brief'),
+          'missing MCP task brief tool',
+        );
+      },
+    },
+    {
+      name: 'rizz agents configures and diagnoses user-level bridges without repository writes',
+      run() {
+        withTempHomeSync((home) => {
+          const env = isolatedEnv(home);
+          const before = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          const configured = spawnSync(
+            process.execPath,
+            [cliBin, 'agents', 'configure', '--user', '--json'],
+            { cwd: repoRoot, encoding: 'utf8', env, timeout: CLI_SMOKE_TIMEOUT_MS },
+          );
+          assert(configured.status === 0, configured.stderr);
+          const result = JSON.parse(configured.stdout);
+          assert(result.writes.length === 20, 'expected 20 user-level bridge writes');
+          const doctor = spawnSync(process.execPath, [cliBin, 'agents', 'doctor', '--json'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            env,
+            timeout: CLI_SMOKE_TIMEOUT_MS,
+          });
+          assert(doctor.status === 0, doctor.stderr);
+          assert(JSON.parse(doctor.stdout).healthy === true, 'expected healthy agent bridges');
+          const after = spawnSync('git', ['status', '--porcelain'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+          }).stdout;
+          assert(after === before, 'agent configuration changed repository status');
+        });
+      },
+    },
+    {
       name: 'rizz setup --dry-run exits 0 without leaking provider env or creating ~/.rizz',
       run() {
         const secret = 'sk-ant-eval-setup-smoke-secret';
@@ -3105,7 +3264,175 @@ async function runHeadlessSmoke() {
       },
     },
     {
-      name: 'bare rizz writes local project brain in headless empty-stdin mode',
+      name: 'rizz prepare writes isolated intelligence without changing the repository',
+      run() {
+        withTempDirSync('rizz-external-prepare-smoke-', (dir) => {
+          writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'prepare-smoke' }));
+          gitInCwd(dir, ['init', '-q']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(dir, ['add', 'package.json']);
+          gitInCwd(dir, ['commit', '-qm', 'init']);
+          const filesBefore = readdirSync(dir).sort();
+          const statusBefore = spawnSync('git', ['status', '--porcelain'], {
+            cwd: dir,
+            encoding: 'utf8',
+          }).stdout;
+
+          const { result, registryExists } = runPrepareCliSync(dir);
+
+          assert(result.error === undefined, String(result.error));
+          assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+          assert(result.stdout.includes('rizz prepared 1 file(s)'), 'expected prepare summary');
+          assert(!existsSync(join(dir, '.rizz')), 'prepare created repository-local .rizz state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'prepare changed repository files',
+          );
+          assert(
+            spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' }).stdout ===
+              statusBefore,
+            'prepare changed git status',
+          );
+          assert(registryExists, 'missing external registry');
+        });
+      },
+    },
+    {
+      name: 'rizz project relink explicitly reconnects a moved repository workspace',
+      run() {
+        withTempDirSync('rizz-project-relink-smoke-', (sandbox) => {
+          const before = join(sandbox, 'before');
+          const after = join(sandbox, 'after');
+          mkdirSync(before);
+          writeFileSync(join(before, 'package.json'), '{"name":"relink-smoke"}\n');
+          gitInCwd(before, ['init', '-b', 'develop']);
+          gitInCwd(before, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(before, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(before, ['remote', 'add', 'origin', 'git@github.com:valoir/relink-smoke.git']);
+          gitInCwd(before, ['add', '.']);
+          gitInCwd(before, ['commit', '-m', 'initial']);
+
+          withTempHomeSync((home) => {
+            const rizzHome = join(home, 'external-rizz');
+            const env = { ...isolatedEnvWithGit(home), RIZZ_HOME: rizzHome };
+            const run = (cwd, args) =>
+              spawnSync(process.execPath, [cliBin, ...args], {
+                cwd,
+                encoding: 'utf8',
+                env,
+                timeout: CLI_SMOKE_TIMEOUT_MS,
+                maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+              });
+            const first = run(before, ['prepare']);
+            assert(first.status === 0, `initial prepare failed: ${first.stderr}`);
+            const firstRegistry = JSON.parse(readFileSync(join(rizzHome, 'registry.json'), 'utf8'));
+            const projectId = Object.keys(firstRegistry.projects)[0];
+            renameSync(before, after);
+            const filesBefore = readdirSync(after).sort();
+
+            const blocked = run(after, ['brain']);
+            assert(blocked.status === 1, `moved repository was not blocked: ${blocked.stderr}`);
+            assert(blocked.stderr.includes('PROJECT_RELINK_REQUIRED'), 'missing relink error code');
+            const relinked = run(after, ['project', 'relink']);
+            assert(relinked.status === 0, `relink failed: ${relinked.stderr}`);
+            assert(relinked.stdout.includes(projectId), 'relink changed the project identity');
+            const prepared = run(after, ['brain']);
+            assert(prepared.status === 0, `post-relink brain failed: ${prepared.stderr}`);
+            assert(!existsSync(join(after, '.rizz')), 'relink created repository-local state');
+            assert(
+              JSON.stringify(readdirSync(after).sort()) === JSON.stringify(filesBefore),
+              'relink changed repository files',
+            );
+          });
+        });
+      },
+    },
+    {
+      name: 'rizz brief and loop expose isolated JSON continuity without repository writes',
+      run() {
+        withTempDirSync('rizz-context-loop-smoke-', (dir) => {
+          writeFileSync(join(dir, 'package.json'), '{"name":"context-loop-smoke"}\n');
+          writeFileSync(join(dir, 'hero.ts'), 'export const hero = true;\n');
+          gitInCwd(dir, ['init', '-q']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(dir, ['add', '.']);
+          gitInCwd(dir, ['commit', '-qm', 'init']);
+          const filesBefore = readdirSync(dir).sort();
+          const { results } = runExternalCliSequenceSync(dir, [
+            ['brain'],
+            ['brief', 'Update Hero', '--json'],
+            ['loop', 'start', '--task', 'Update Hero', '--agent', 'codex', '--json'],
+            ['loop', 'checkpoint', '--summary', 'Inspected Hero', '--sequence', '1', '--json'],
+            [
+              'loop',
+              'handoff',
+              '--summary',
+              'Ready',
+              '--next-baton',
+              'Verify Hero',
+              '--sequence',
+              '2',
+              '--json',
+            ],
+            ['loop', 'complete', '--summary', 'Verified', '--sequence', '3', '--json'],
+          ]);
+          for (const result of results) {
+            assert(result.status === 0, `context/loop command failed: ${result.stderr}`);
+          }
+          const brief = JSON.parse(results[1].stdout);
+          const completed = JSON.parse(results[5].stdout);
+          assert(brief.repository_revision.length === 40, 'brief missed repository revision');
+          assert(brief.claims.length > 0, 'brief missed evidence-backed claims');
+          assert(completed.status === 'completed', 'loop did not complete');
+          assert(completed.sequence === 4, 'loop sequence did not advance deterministically');
+          assert(!existsSync(join(dir, '.rizz')), 'context loop created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'context loop changed repository files',
+          );
+        });
+      },
+    },
+    {
+      name: 'rizz vault previews and imports planning state outside the repository',
+      run() {
+        withTempDirSync('rizz-vault-smoke-', (sandbox) => {
+          const target = join(sandbox, 'target');
+          const vault = join(sandbox, 'vault');
+          mkdirSync(target);
+          mkdirSync(vault);
+          writeFileSync(join(target, 'package.json'), '{"name":"vault-target"}\n');
+          writeFileSync(join(vault, 'product.md'), '# Product\n\nSubstantial work only.\n');
+          gitInCwd(target, ['init', '-q']);
+          gitInCwd(target, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(target, ['config', 'user.name', 'Rizz Test']);
+          gitInCwd(target, ['add', '.']);
+          gitInCwd(target, ['commit', '-qm', 'init']);
+          const { results, vaultManifestExists } = runExternalCliSequenceSync(target, [
+            ['vault', 'inspect', vault, '--json'],
+            ['vault', 'import', vault, '--preview', '--json'],
+            ['vault', 'import', vault, '--apply', '--json'],
+            ['vault', 'reconcile', '--json'],
+          ]);
+          for (const result of results) {
+            assert(result.status === 0, `vault command failed: ${result.stderr}`);
+          }
+          const preview = JSON.parse(results[1].stdout);
+          assert(preview.mode === 'copy', 'vault preview did not use copy mode');
+          assert(vaultManifestExists, 'vault apply missed external manifest');
+          assert(!existsSync(join(target, '.rizz')), 'vault import created repository-local state');
+          assert(
+            spawnSync('git', ['status', '--porcelain'], { cwd: target, encoding: 'utf8' })
+              .stdout === '',
+            'vault import changed repository Git status',
+          );
+        });
+      },
+    },
+    {
+      name: 'bare rizz writes isolated project brain without changing the repository',
       run() {
         withTempDirSync('rizz-bare-brain-smoke-', (dir) => {
           writeFileSync(
@@ -3114,19 +3441,24 @@ async function runHeadlessSmoke() {
           );
           writeFileSync(join(dir, 'index.js'), 'export const ok = true;\n');
 
-          const result = runCliInCwdSync(dir, [], '');
+          const filesBefore = readdirSync(dir).sort();
+          const { result, latestExists, report } = runExternalBrainCliSync(dir);
           assert(result.error === undefined, String(result.error));
           assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
           assert(result.stdout.includes('rizz understood 2 file(s)'), 'expected brain summary');
           assert(!result.stdout.includes('Usage:'), 'bare rizz printed help instead of scanning');
-          assert(existsSync(join(dir, '.rizz', 'brain', 'latest.json')), 'missing latest.json');
-          assert(existsSync(join(dir, '.rizz', 'reports', 'index.html')), 'missing report');
-          assert(existsSync(join(dir, '.rizz', 'research')), 'missing research artifacts');
+          assert(latestExists, 'missing external latest.json');
+          assert(report.includes('Mission Control ·'), 'missing external report');
+          assert(!existsSync(join(dir, '.rizz')), 'bare rizz created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'bare rizz changed repository files',
+          );
         });
       },
     },
     {
-      name: 'rizz brain writes local project brain without provider credentials',
+      name: 'rizz brain writes isolated project brain without provider credentials',
       run() {
         withTempDirSync('rizz-brain-smoke-', (dir) => {
           writeFileSync(
@@ -3135,17 +3467,15 @@ async function runHeadlessSmoke() {
           );
           writeFileSync(join(dir, 'index.ts'), 'export const ok = true;\n');
 
-          const result = runCliInCwdSync(dir, ['brain'], '');
+          const filesBefore = readdirSync(dir).sort();
+          const { result, latestExists, graphExists, filesExists, research, report } =
+            runExternalBrainCliSync(dir, ['brain']);
           assert(result.error === undefined, String(result.error));
           assert(result.status === 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
           assert(result.stdout.includes('rizz understood 2 file(s)'), 'expected brain summary');
-          assert(existsSync(join(dir, '.rizz', 'brain', 'latest.json')), 'missing latest.json');
-          assert(existsSync(join(dir, '.rizz', 'brain', 'graph.json')), 'missing graph.json');
-          assert(
-            existsSync(join(dir, '.rizz', 'brain', 'entities', 'files.json')),
-            'missing files entity store',
-          );
-          const researchDir = join(dir, '.rizz', 'research');
+          assert(latestExists, 'missing external latest.json');
+          assert(graphExists, 'missing external graph.json');
+          assert(filesExists, 'missing external files entity store');
           for (const fileName of [
             'metrics.json',
             'coverage.json',
@@ -3155,16 +3485,13 @@ async function runHeadlessSmoke() {
             'incremental_update.json',
             'benchmark_ready.json',
           ]) {
-            const artifactPath = join(researchDir, fileName);
-            assert(existsSync(artifactPath), `missing research artifact ${fileName}`);
-            JSON.parse(readFileSync(artifactPath, 'utf8'));
+            assert(typeof research[fileName] === 'string', `missing research artifact ${fileName}`);
+            JSON.parse(research[fileName]);
           }
-          const metrics = JSON.parse(readFileSync(join(researchDir, 'metrics.json'), 'utf8'));
+          const metrics = JSON.parse(research['metrics.json']);
           assert(metrics.scanned_files === 2, 'research metrics missed scanned files');
           assert(metrics.evidence_records === 2, 'research metrics missed evidence records');
-          const componentIntelligence = JSON.parse(
-            readFileSync(join(researchDir, 'component_intelligence.json'), 'utf8'),
-          );
+          const componentIntelligence = JSON.parse(research['component_intelligence.json']);
           assert(
             typeof componentIntelligence.component_understanding_score === 'number',
             'component intelligence missing understanding score',
@@ -3173,9 +3500,11 @@ async function runHeadlessSmoke() {
             Array.isArray(componentIntelligence.components),
             'component intelligence missing component rows',
           );
-          const reportPath = join(dir, '.rizz', 'reports', 'index.html');
-          assert(existsSync(reportPath), 'missing HTML report');
-          const report = readFileSync(reportPath, 'utf8');
+          assert(!existsSync(join(dir, '.rizz')), 'rizz brain created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'rizz brain changed repository files',
+          );
           assert(report.includes('Mission Control ·'), 'missing Mission Control title');
           assert(report.includes('local project intelligence'), 'missing portal positioning');
           assert(report.includes('Mission Control scorecard'), 'missing Mission Control scorecard');
@@ -3257,6 +3586,54 @@ async function runHeadlessSmoke() {
       },
     },
     {
+      name: 'review and context commands keep all state outside the repository',
+      run() {
+        withTempDirSync('rizz-external-context-smoke-', (dir) => {
+          gitInCwd(dir, ['init', '-b', 'develop']);
+          gitInCwd(dir, ['config', 'user.email', 'rizz@example.com']);
+          gitInCwd(dir, ['config', 'user.name', 'rizz eval']);
+          mkdirSync(join(dir, 'src'));
+          writeFileSync(join(dir, 'package.json'), '{"name":"external-context"}\n');
+          writeFileSync(join(dir, 'src', 'index.ts'), 'export const value = 1;\n');
+          gitInCwd(dir, ['add', '.']);
+          gitInCwd(dir, ['commit', '-m', 'initial']);
+          writeFileSync(join(dir, 'src', 'index.ts'), 'export const value = 2;\n');
+          const filesBefore = readdirSync(dir).sort();
+
+          const outcome = runExternalCliSequenceSync(dir, [
+            ['brain'],
+            ['review', '--json'],
+            [
+              'verify',
+              'add',
+              '--name',
+              'unit tests',
+              '--command',
+              'pnpm test',
+              '--status',
+              'passed',
+              '--json',
+            ],
+            ['explain', 'src/index.ts', '--json'],
+            ['ask', 'what should I read first?', '--json'],
+          ]);
+
+          for (const result of outcome.results) {
+            assert(result.status === 0, `external command failed: ${result.stderr}`);
+          }
+          assert(outcome.reviewExists, 'review artifact was not external');
+          assert(outcome.verificationExists, 'verification artifact was not external');
+          assert(outcome.explainExists, 'explain report was not external');
+          assert(outcome.askExists, 'ask report was not external');
+          assert(!existsSync(join(dir, '.rizz')), 'context command created repository-local state');
+          assert(
+            JSON.stringify(readdirSync(dir).sort()) === JSON.stringify(filesBefore),
+            'context command changed repository files',
+          );
+        });
+      },
+    },
+    {
       name: 'rizz approve records expiry and revokes active human signoff',
       run() {
         withTempDirSync('rizz-approve-lifecycle-', (dir) => {
@@ -3314,7 +3691,7 @@ async function runHeadlessSmoke() {
       },
     },
     {
-      name: 'rizz explain explains a component from the local project brain',
+      name: 'rizz explain explains a component from the isolated project brain',
       run() {
         withTempDirSync('rizz-explain-smoke-', (dir) => {
           mkdirSync(join(dir, 'packages', 'brain', 'src'), { recursive: true });

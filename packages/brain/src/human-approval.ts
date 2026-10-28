@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { outputDirFor } from './workspace-paths.js';
 
 export type HumanApprovalState =
   | 'blocked_by_failed_evidence'
@@ -188,10 +189,19 @@ function renderList(values: readonly string[]): string {
   return `<ul>${values.map((value) => `<li>${htmlEscape(value)}</li>`).join('')}</ul>`;
 }
 
-export async function readHumanSignoffRecord(rootDir: string): Promise<unknown> {
+function humanSignoffPath(rootDir: string, outputDir?: string): string {
+  return outputDir === undefined
+    ? join(rootDir, '.rizz', 'human-signoff.json')
+    : join(outputDir, 'governance', 'human-signoff.json');
+}
+
+export async function readHumanSignoffRecord(
+  rootDir: string,
+  outputDir?: string,
+): Promise<unknown> {
   try {
     const parsed: unknown = JSON.parse(
-      await readFile(join(rootDir, '.rizz', 'human-signoff.json'), 'utf8'),
+      await readFile(humanSignoffPath(rootDir, outputDir), 'utf8'),
     );
     return isRecord(parsed) ? parsed : null;
   } catch {
@@ -201,6 +211,7 @@ export async function readHumanSignoffRecord(rootDir: string): Promise<unknown> 
 
 export async function recordHumanSignoff(options: {
   readonly rootDir: string;
+  readonly outputDir?: string;
   readonly summary: string;
   readonly approver: string;
   readonly now?: Date;
@@ -221,7 +232,8 @@ export async function recordHumanSignoff(options: {
         error: { code: 'SIGNOFF_APPROVER_REQUIRED', message: 'Human signoff needs an approver.' },
       };
     }
-    const humanApprovalPath = join(options.rootDir, '.rizz', 'research', 'human_approval.json');
+    const outputDir = outputDirFor(options.rootDir, options.outputDir);
+    const humanApprovalPath = join(outputDir, 'research', 'human_approval.json');
     let packet: unknown;
     try {
       packet = JSON.parse(await readFile(humanApprovalPath, 'utf8'));
@@ -288,7 +300,7 @@ export async function recordHumanSignoff(options: {
         },
       };
     }
-    const previous = await readHumanSignoffRecord(options.rootDir);
+    const previous = await readHumanSignoffRecord(options.rootDir, options.outputDir);
     const item: HumanSignoffHistoryItem = {
       status: 'signed_off',
       summary,
@@ -314,8 +326,8 @@ export async function recordHumanSignoff(options: {
       history: [...signoffHistory(previous), item],
       ...(expiresAt === null ? {} : { expires_at: expiresAt }),
     };
-    const signoffPath = join(options.rootDir, '.rizz', 'human-signoff.json');
-    await mkdir(join(options.rootDir, '.rizz'), { recursive: true });
+    const signoffPath = humanSignoffPath(options.rootDir, options.outputDir);
+    await mkdir(dirname(signoffPath), { recursive: true });
     const contents = `${JSON.stringify(record, null, 2)}\n`;
     await writeFile(signoffPath, contents, 'utf8');
     const verified = await readFile(signoffPath, 'utf8');
@@ -350,6 +362,7 @@ export async function recordHumanSignoff(options: {
 
 export async function revokeHumanSignoff(options: {
   readonly rootDir: string;
+  readonly outputDir?: string;
   readonly summary: string;
   readonly approver: string;
   readonly now?: Date;
@@ -369,7 +382,8 @@ export async function revokeHumanSignoff(options: {
         error: { code: 'REVOKE_APPROVER_REQUIRED', message: 'Revocation needs an approver.' },
       };
     }
-    const previous = await readHumanSignoffRecord(options.rootDir);
+    const outputDir = outputDirFor(options.rootDir, options.outputDir);
+    const previous = await readHumanSignoffRecord(options.rootDir, options.outputDir);
     const now = (options.now ?? new Date()).toISOString();
     if (
       !isRecord(previous) ||
@@ -420,7 +434,7 @@ export async function revokeHumanSignoff(options: {
       agent_self_approval_allowed: false,
       history: [...signoffHistory(previous), item],
     };
-    const signoffPath = join(options.rootDir, '.rizz', 'human-signoff.json');
+    const signoffPath = humanSignoffPath(options.rootDir, options.outputDir);
     const contents = `${JSON.stringify(record, null, 2)}\n`;
     await writeFile(signoffPath, contents, 'utf8');
     if ((await readFile(signoffPath, 'utf8')) !== contents) {
@@ -437,7 +451,7 @@ export async function revokeHumanSignoff(options: {
       value: {
         rootDir: options.rootDir,
         signoffPath,
-        humanApprovalPath: join(options.rootDir, '.rizz', 'research', 'human_approval.json'),
+        humanApprovalPath: join(outputDir, 'research', 'human_approval.json'),
         record,
         latestState: 'awaiting_human_signoff',
         nextActions: [

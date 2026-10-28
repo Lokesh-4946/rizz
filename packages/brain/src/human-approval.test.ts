@@ -97,10 +97,11 @@ describe('human approval packet', () => {
 
   it('records human signoff with history only after rizz marks review ready', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rizz-human-signoff-'));
+    const outputDir = join(dir, 'external-state');
     try {
-      await mkdir(join(dir, '.rizz', 'research'), { recursive: true });
+      await mkdir(join(outputDir, 'research'), { recursive: true });
       await writeFile(
-        join(dir, '.rizz', 'research', 'human_approval.json'),
+        join(outputDir, 'research', 'human_approval.json'),
         JSON.stringify({
           schema_version: 1,
           review_id: 'review:ready',
@@ -112,6 +113,7 @@ describe('human approval packet', () => {
 
       const first = await recordHumanSignoff({
         rootDir: dir,
+        outputDir,
         summary: 'Approved after reviewing evidence.',
         approver: 'Lokesh',
         now: new Date('2026-06-28T11:00:00.000Z'),
@@ -137,6 +139,7 @@ describe('human approval packet', () => {
 
       const second = await recordHumanSignoff({
         rootDir: dir,
+        outputDir,
         summary: 'Approved after final smoke proof.',
         approver: 'Lokesh',
         now: new Date('2026-06-28T11:05:00.000Z'),
@@ -144,13 +147,14 @@ describe('human approval packet', () => {
 
       expect(second.ok).toBe(true);
       const written = JSON.parse(
-        await readFile(join(dir, '.rizz', 'human-signoff.json'), 'utf8'),
+        await readFile(join(outputDir, 'governance', 'human-signoff.json'), 'utf8'),
       ) as {
         readonly summary: string;
         readonly history: readonly unknown[];
       };
       expect(written.summary).toBe('Approved after final smoke proof.');
       expect(written.history).toHaveLength(2);
+      await expect(readFile(join(dir, '.rizz', 'human-signoff.json'), 'utf8')).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
