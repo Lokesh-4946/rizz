@@ -11,29 +11,91 @@ evidence close to the source files.
 
 The current `0.3.1` product surface is:
 
+- `rizz prepare` isolated project intelligence under the platform user-data directory without
+  changing repository files or Git status
+- `rizz brief <task>` bounded, revision-stamped task context with cited claims, omissions, and
+  evidence gaps
+- `rizz loop ...` isolated work continuity for starts, checkpoints, verification, review,
+  completion, handoffs, and next-action discovery
+- `rizz vault inspect/import/reconcile` previewed migration of existing Markdown product knowledge
+  into the isolated project workspace
+- `rizz mcp` zero-dependency stdio MCP access to the same project, brain, product, sprint, loop,
+  review, brief, explain, checkpoint, completion, and handoff contracts
+- `rizz agents detect/configure/doctor` explicit user-level bridge skills for Codex, Claude Code,
+  GitHub Copilot, and canonical Agent Skills consumers
 - local Project Intelligence Engine CLI and opt-in TUI
 - `rizz` / `rizz understand` project scan
 - `rizz brain` project brain refresh
 - `rizz ask` gated Project Intelligence questions answered from the local brain
 - `rizz explain` evidence-backed component, file, and flow explanations
 - `rizz review` git-diff review using the local project brain
-- `.rizz/brain/latest.json` structured current-state summary
-- `.rizz/brain/entities/*.json` relational entity stores with stable IDs
-- `.rizz/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, state/data dependencies, evidence, tests, configs, and risks
-- `.rizz/brain/graph.json` relationships with evidence and confidence
-- `.rizz/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, security scan, tool inventory, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
+- `<project-workspace>/brain/latest.json` structured current-state summary
+- `<project-workspace>/brain/entities/*.json` relational entity stores with stable IDs
+- `<project-workspace>/brain/flows/*.json` deterministic journey/flow mirrors for entrypoints, normalized steps, state/data dependencies, evidence, tests, configs, and risks
+- `<project-workspace>/brain/graph.json` relationships with evidence and confidence
+- `<project-workspace>/research/*.json` deterministic research artifacts for coverage, confidence, evidence quality, security scan, tool inventory, journey-aware Flow Understanding, Architecture Reasoning, and incremental understanding
 - confidence inspection queues that point agents to weak evidence, architecture confidence debt, security/tool risk surfaces, and stale understanding before broad reuse
-- `.rizz/reports/index.html` Mission Control local architecture intelligence portal
-- `.rizz/reports/review.html` local risk/blast-radius review report with journey, state/data impact, and targeted verification planning
+- `<project-workspace>/reports/index.html` Mission Control local architecture intelligence portal
+- `<project-workspace>/reports/review.html` local risk/blast-radius review report with journey, state/data impact, and targeted verification planning
 - `rizz setup` dependency doctor and provider route picker
 - OpenRouter BYOK as the primary fast route
 - Codex subscription route as a secondary local Codex CLI route
 - OpenAI/Anthropic route placeholders for later setup wiring
 - visible `/status`, `/model`, `/theme`, `/workspace`, and `/help`
-- no workspace agents, cloud sync, browser extension, mobile app, IDE integration, custom skills, or
-  enterprise providers in the default install
+- no workspace agents, cloud sync, browser extension, mobile app, project-local skills, or
+  enterprise providers in the default path
 
 This release is `0.3.1`.
+
+## Observe the host agent
+
+Rizz sits under Cursor, Codex, or Claude Code and records what they do. It does not replace their
+agent loop. The brain for each project lives outside the git tree, keyed by that project's path
+(D-046). `rizz init` installs hooks for the host it detects, creates the brain, and can open a
+local page.
+
+Install the scoped package. The unscoped npm name `rizz` is already taken, so `npx rizz` is a
+different package.
+
+```sh
+npm install -g @valoir/rizz
+cd ~/src/your-repo
+rizz init --host cursor
+```
+
+On a Mac that already has the `rizz` bin on `PATH`:
+
+```sh
+# Cursor hooks are user-level: ~/.cursor/hooks.json
+# Codex hooks are user-level: ~/.codex/hooks.json
+# Claude Code hooks merge into ~/.claude/settings.json
+rizz init
+```
+
+Then use the host normally. Hooks append to a spool and always exit 0. `rizz serve` (started by
+`init` unless `--no-serve`) folds the spool into the brain and opens `http://127.0.0.1:<port>/?token=...`.
+The page only reads that brain. Ask it `summary` or `tokens`.
+
+```sh
+rizz summary   # thread count, then only decisions waiting on you
+rizz tokens    # ledger totals; Cursor context tokens are not per-turn usage
+rizz fold      # fold the spool once without leaving the server up
+```
+
+`sessionStart` injects `BRAIN.md` into the host. Repo files are opt-in:
+
+```sh
+rizz init --bridge
+```
+
+That writes a marked block into `AGENTS.md` and `.cursor/rules/rizz.mdc`. It does not create a
+`CLAUDE.md`. If one already exists and does not mention `@AGENTS.md`, the bridge adds that import.
+
+Cursor is the first adapter (`sessionStart`, `beforeSubmitPrompt`, `postToolUse`, `afterFileEdit`,
+`subagentStop`, `preCompact`, `stop`, and the other agent hooks in `.cursor/hooks.json`). Codex
+uses Claude-style `hooks.json` events. The legacy `notify` line in `config.toml` is not installed.
+Claude Code uses `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`. Cursor can also
+load Claude hooks, so the folder skips an event id it has already journaled.
 
 ## Requirements
 
@@ -51,18 +113,31 @@ npm install -g @valoir/rizz
 Then run:
 
 ```sh
-rizz
+rizz prepare
 ```
 
-`rizz` scans the current repository and writes:
+`rizz prepare` scans the current repository read-only and writes
+the registry, project identity, brain, research, and reports outside the repository. Set
+`RIZZ_HOME` only when automation needs an explicit external data root.
+
+All intelligence commands use the same isolated project store, including review, ask, explain,
+verification, and approval. They do not create `.rizz` or generated state in the repository.
+`<project-workspace>` below means the current project directory registered under the platform Rizz
+home, never a checked-in path.
+
+If a registered repository is moved or recloned after its old path disappears, Rizz stops with
+`PROJECT_RELINK_REQUIRED` instead of creating a second identity. Run `rizz project relink` to
+reconnect the existing workspace. Live clones of the same remote remain separate by default.
+
+The commands write:
 
 ```text
-.rizz/brain/latest.json
-.rizz/brain/entities/
-.rizz/brain/flows/
-.rizz/brain/graph.json
-.rizz/research/
-.rizz/reports/index.html
+<project-workspace>/brain/latest.json
+<project-workspace>/brain/entities/
+<project-workspace>/brain/flows/
+<project-workspace>/brain/graph.json
+<project-workspace>/research/
+<project-workspace>/reports/index.html
 ```
 
 ## Understand A Repo
@@ -80,12 +155,93 @@ rizz brain
 rizz report
 ```
 
-Open `.rizz/reports/index.html` in your browser for Mission Control, the local intelligence portal.
-Agents and tools should read `.rizz/brain/latest.json` first, then relevant entity files, graph
-relationships, and evidence before rereading source files.
+The CLI prints the external workspace path after a scan. Open
+`<project-workspace>/reports/index.html` for Mission Control. Agents and tools should read
+`<project-workspace>/brain/latest.json` first, then relevant entity files, graph relationships, and
+evidence before rereading source files.
 
 The brain is meant to be a local interoperability contract: other agents can read stable entity IDs,
 relationships, evidence, sessions, handoffs, findings, and status without scraping a chat log.
+
+## Brief And Engineering Loop
+
+Compile the same deterministic task packet for any shell-capable agent:
+
+```sh
+rizz brief "Update the homepage Hero"
+rizz brief "Update the homepage Hero" --json
+```
+
+Packets include the isolated project ID, current Git revision, brain timestamp, bounded relevant
+claims, exact source/evidence references, omissions, and stale-evidence warnings. Uncited or
+unsupported claims are not silently promoted to verified facts.
+
+Record durable work continuity outside the repository:
+
+```sh
+rizz loop start --task "Update Hero" --agent codex --scope src/components/Hero.tsx
+rizz loop checkpoint --summary "Inspected direct page importer" --sequence 1
+rizz loop verify --summary "Focused tests passed" --sequence 2
+rizz loop review --summary "No actionable findings" --sequence 3
+rizz loop handoff --summary "Ready" --next-baton "Browser UAT" --sequence 4
+rizz loop complete --summary "Merged" --sequence 5
+rizz loop status --json
+rizz loop next --json
+```
+
+Sequence checks reject stale writers. State and handoffs are atomic, byte-verified files under
+`<project-workspace>/loop/` and `<project-workspace>/handoffs/`; Git status remains unchanged.
+
+## Import An Existing Product Vault
+
+Inspect and preview before copying anything:
+
+```sh
+rizz vault inspect "/path/to/vault" --json
+rizz vault import "/path/to/vault" --preview --json
+rizz vault import "/path/to/vault" --apply --json
+rizz vault reconcile --json
+```
+
+Rizz reads the source vault without modifying it, classifies bounded Markdown documents, and reports
+duplicate claims, conflicting names, stale absolute paths, and redacted secret-like findings. Apply
+copies only into the isolated project workspace and creates product principles plus sprint, backlog,
+and evidence-oriented work-board documents. Secret-bearing previews are blocked from apply.
+
+The governing product principle is explicit in the generated local tracker: Rizz prevents agent
+slop by requiring scoped intent, evidence-backed context, verification, review, and durable handoff
+so developers can ship substantial, inspectable work.
+
+## Connect Any MCP Agent
+
+Run the model-independent local server from the project checkout:
+
+```sh
+rizz mcp
+```
+
+It speaks newline-delimited JSON-RPC over stdio and exposes `rizz://` project resources plus task
+brief, file/flow explanation, review, checkpoint, completion, and handoff tools. Read operations use
+the current isolated project workspace. Mutations require an exact project ID, Git revision, and
+loop sequence; stale or cross-project writes are rejected. The server performs no model call and
+writes no adapter or state into the repository.
+
+## Connect Codex, Claude Code, And Copilot
+
+Install the five minimal Rizz bridge skills at user scope:
+
+```sh
+rizz agents detect --json
+rizz agents configure --user --dry-run --json
+rizz agents configure --user
+rizz agents doctor --json
+```
+
+Configuration writes the same project-independent skills to `~/.agents/skills`,
+`~/.codex/skills`, `~/.claude/skills`, and `~/.copilot/skills`. Existing identical files are left
+unchanged; different user-owned skills cause a conflict error and are never overwritten. Every
+write is reread and verified. The skills discover the current repository at use time and query Rizz
+through CLI JSON or MCP, so no project adapter or private project state is copied into a tool config.
 
 By default, the scanner skips generated output, local agent operating folders, package archives,
 binary media, private env files, key material, and TypeScript build-info. Add a root `.rizzignore`
@@ -106,7 +262,7 @@ rizz explain packages/cli/src/index.ts
 rizz explain flow packages--cli--check
 ```
 
-`rizz explain flow <flow-id>` reads canonical flow entities from `.rizz/brain/entities/flows.json`
+`rizz explain flow <flow-id>` reads canonical flow entities from `<project-workspace>/brain/entities/flows.json`
 and reports entrypoints, ordered steps, mapped components/files, tests, configs, risks, confidence,
 unknowns, and evidence. Flow explanations are deterministic static reconstructions, not runtime
 traces.
@@ -123,10 +279,10 @@ rizz review
 brain does not exist yet, it creates a lightweight brain first. The review writes:
 
 ```text
-.rizz/brain/entities/reviews.json
-.rizz/brain/entities/findings.json
-.rizz/brain/latest.json
-.rizz/reports/review.html
+<project-workspace>/brain/entities/reviews.json
+<project-workspace>/brain/entities/findings.json
+<project-workspace>/brain/latest.json
+<project-workspace>/reports/review.html
 ```
 
 For automation:

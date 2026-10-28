@@ -46,7 +46,29 @@ Current loop readiness:
 | Worktree lifecycle service | Run isolated experiments and PR loops from a clean branch. | Opt-in workspace mode. |
 | Manifest install/state ownership | Install and repair rizz packs without guessing what is owned. | Opt-in pack command. |
 | Security scanner | Add secret/risky-pattern evidence to reviews and confidence gates. | Local deterministic scan, no cloud call. |
-| Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `.rizz/research/`. |
+| Deterministic harness audit | Score whether a repo is ready for agent work. | Local report under `<project-workspace>/research/`. |
+
+## Resource Governance Tracker
+
+Rizz should provide the useful outcomes of Headroom-style context optimization while preserving its
+evidence contract. Resource efficiency is subordinate to correctness: source code, exact diffs,
+security evidence, failing assertions, and verification proof are never lossy-compressed by default.
+
+| Capability | Status | Acceptance evidence |
+| --- | --- | --- |
+| Task-scoped context budgets | Shipped foundation | `rizz brief` reports its claim budget, omissions, revision, and stale evidence. |
+| Content-addressed context cache | Planned | Repeated file/tool payloads reuse a digest-addressed local object; cache hits and avoided bytes are measured. |
+| Evidence-preserving tool-output compaction | Planned | Repeated logs/boilerplate may be compacted, but errors, project frames, head/tail, citations, and retrievable originals remain available. |
+| Agent dispatch resource leases | Planned after MCP bridges | Every opt-in agent receives concurrency, wall-time, context, command, and provider-budget limits; zombie work and expired leases are reclaimed. |
+| Shared multi-agent context | Planned after MCP bridges | Agents exchange bounded packets through the isolated project workspace, never by copying whole transcripts or reading another project. |
+| Resource-aware scheduling | Planned | Dispatch chooses serial/parallel work from dependency independence, available slots, provider limits, and expected verification cost. |
+| Local observability | Planned | Per work item: input/output bytes, estimated tokens, cache hits, rereads, elapsed time, provider cost, verification cost, and quality outcome. |
+| Quality fallback | Planned | If compaction causes an evidence gap, repeated read, failed verification, or lower review confidence, Rizz serves the exact original and records the miss. |
+| Agent wrappers | Shipped | Codex, Claude Code, and Copilot receive the same five user-level bridge skills; 20 target files are conflict-safe and byte-verified without repository-local adapters. |
+
+The product target is not maximum compression. It is minimum wasted cognition per accepted,
+verified change. A cheaper loop that produces slop, rereads the repository, or weakens evidence is a
+resource regression.
 
 ## Current Loop
 
@@ -59,14 +81,15 @@ Current loop readiness:
    weakest capability instead of guessing.
 4. Full local gate: `pnpm check`, `pnpm pack:check`, `git diff --check`.
 
-The current slice completes explicit human-approval lifecycle controls. Signoff can carry an exact
-ISO expiry, expired approvals cannot make a review release-ready, and `rizz approve revoke` records
-a human-authored reason while preserving signed and revoked audit history.
+The current slice exposes the isolated project OS through a zero-dependency stdio MCP server. Every
+supported read has a stable `rizz://` resource or structured tool result; mutations require exact
+project, repository revision, and loop sequence matches. Rizz remains the evidence/orchestration
+layer and performs no model call.
 
 ## Capability Scorecard
 
 These are the orchestrator baseline scores for planned work. UAT reports also include actual
-repo-derived scores from `.rizz/research/understanding_score.json`.
+repo-derived scores from `<project-workspace>/research/understanding_score.json`.
 
 | Planned item | Current | Remaining | Next improvement |
 | --- | ---: | ---: | --- |
@@ -82,30 +105,35 @@ repo-derived scores from `.rizz/research/understanding_score.json`.
 
 ## Latest Baton Result
 
-Run: `feature/approval-revoke-expiry`, focused approval lifecycle tests plus compiled CLI
-signoff/expiry/revoke UAT.
+Run: `feature/user-agent-bridges`, milestone 2: user-level universal agent bridges.
 
 | Check | Result |
 | --- | ---: |
-| Focused human-approval lifecycle tests | 6/6 passed |
+| Focused agent bridge tests | 4/4 passed |
 | Focused formatting check | Passed |
 | Typecheck | Passed |
 | Lint | Passed |
-| Full unit suite | 391/391 passed |
+| Full unit suite | 426/426 passed |
 | PI-Bench | 25/25 passed |
 | PI-Bench average research readiness | 76/100 |
-| CLI process smoke | 11/11 passed |
+| CLI process smoke | 18/18 passed, including user-level bridge configuration and diagnosis |
 | Install-local smoke | 5/5 passed |
 | Pack/public check | Passed |
 | Diff whitespace check | Passed |
-| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,048,050 bytes |
-| Footprint | Passed: 51ms cold start, 199KB counted core against 200KB budget |
+| Brain entry size guard | Passed: `packages/brain/src/index.ts` is 1,045,662 bytes |
+| Footprint | Passed: 51ms cold start, 200KB counted core |
 | Full `pnpm check` | Passed |
 
-Current verdict: a ready fingerprint can receive a human signoff with `--expires-at`; the exact
-expiry instant returns the packet to `awaiting_human_signoff`, and `rizz approve revoke` immediately
-invalidates the active decision. Both transitions preserve audit history, stable error codes, and
-byte-for-byte verified local writes. Agents remain unable to self-approve.
+Current verdict: Codex, Claude Code, GitHub Copilot, and canonical Agent Skills consumers can install
+the same five minimal Rizz bridge skills at user scope. Preview is non-mutating, identical content is
+idempotent, conflicting user content is preserved, successful writes are byte-verified, and the
+repository remains unchanged.
+
+Read-only real-vault UAT on `/Users/lokesh/Documents/Personal/My Agents` inspected 368 Markdown
+documents: 141 product, 120 brain, 48 governance, 37 handoff, 13 work, and 9 planning documents. The
+preview reported 1,657 duplicate claims, 28 naming conflicts, 408 stale absolute paths, and 4
+redacted secret-like findings; apply was intentionally not attempted because reconciliation is
+required.
 
 ## Latest Alembic Real-Repo UAT
 
@@ -149,7 +177,7 @@ Run: fresh DBMS brain scan on `/Users/lokesh/Downloads/projects/DBMS`, branch `d
 | Capability scorecard average | 93/100 |
 | Raw understanding score | 89/100 |
 
-Capability detail from `.rizz/research/understanding_score.json`:
+Capability detail from `<project-workspace>/research/understanding_score.json`:
 
 | Capability | Actual | Remaining | Notes |
 | --- | ---: | ---: | --- |
@@ -169,7 +197,7 @@ architecture causality, component-local proof, and compact agent entry summaries
 ## Latest 120-File UAT Actuals
 
 Run: `scripts/uat-large-repos.mjs --max-files 120 --timeout-ms 90000`
-Report: `.rizz/uat/repair-packet-precision-120-report.json`
+Historical report: `<historical-uat-workspace>/repair-packet-precision-120-report.json`
 
 | Capability | Matrix score | Remaining | Previous matrix score | Movement |
 | --- | ---: | ---: | ---: | ---: |

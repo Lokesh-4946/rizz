@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// @valoir/rizz — the `rizz` entrypoint. Orchestration: parse the command, then hand off to tui/core.
-// No args + a TTY → the interactive TUI; no args + piped stdin → one print-mode turn (scriptable,
-// job #3). Kept dependency-light so cold start stays fast (the footprint gate measures this binary).
 
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -21,40 +18,29 @@ import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-pr
 
 const VERSION = '0.3.1';
 
-const USAGE = `rizz - understand a software system
+const USAGE = `rizz - prepare software for AI development
 
 Usage:
-  rizz               generate .rizz/brain and .rizz/reports
-  rizz brain         refresh project brain
-  rizz ask <q>       answer a gated Project Intelligence question from the local brain
-  rizz explain <x>   explain a component or file from the project brain
-  rizz explain flow <id>
-                     explain a reconstructed flow from the project brain
-  rizz explain service <x>
-                     explain a detected service from the project brain
-  rizz verify add    record verification evidence for review calibration
-  rizz approve signoff
-                     record human signoff after rizz marks review ready
-                     optional: --expires-at <ISO-8601>
-  rizz approve revoke
-                     revoke the active human signoff with an audit reason
-  rizz review        review current git diff with the project brain
-                    optional: --mission <text|json>, --mission-file <path>
-  rizz chat          launch model TUI
-  rizz setup         choose model route
-  rizz doctor        readiness check
-  rizz --json < file one turn, JSON
-  rizz --rpc         JSONL RPC
-  rizz --version     print version
-  rizz --help        show help`;
+  rizz prepare | brain | brief <task> | review | explain <target>
+  rizz init | hook | serve | summary | tokens
+  rizz loop <action> | vault <action> | agents <action>
+  rizz project relink [id]
+  rizz mcp | --json | --rpc
+  rizz chat | setup | doctor | verify add | approve signoff|revoke
+  rizz --version | --help`;
 
-/** Where sessions persist (mirrors the TUI). Local-first; no cloud (D-011). */
 const SESSIONS_DIR = join(homedir(), '.rizz', 'sessions');
 
 function displayLocalPath(path: string): string {
   const local = relative(process.cwd(), path).replace(/\\/g, '/');
   if (local === '') return '.';
   return local.startsWith('..') ? path : local;
+}
+
+function writeResultError(result: {
+  readonly error: { readonly code: string; readonly message: string };
+}): void {
+  process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
 }
 
 function writeStdout(text: string): Promise<void> {
@@ -89,7 +75,6 @@ type StartTuiOptions = ResolvedProvider & {
   readonly resumeId?: string;
 };
 
-/** Model-selection options pulled from the CLI; composes with any mode. */
 interface SelectOpts {
   readonly profile?: string;
   readonly capability?: string;
@@ -116,39 +101,59 @@ async function startTuiLazy(options: StartTuiOptions): Promise<void> {
   await startTui(options);
 }
 
-async function runBrainCommand(): Promise<number> {
-  const { generateProjectBrain } = await import('@valoir/rizz-brain');
+async function runBrainCommand(mode: 'brain' | 'prepare' = 'brain'): Promise<number> {
+  const { prepareRepository } = await import('@valoir/rizz-brain');
   const maxFiles = parseBrainMaxFiles(process.env.RIZZ_BRAIN_MAX_FILES);
   if (maxFiles.ok === false) {
     process.stderr.write(`rizz: ${maxFiles.error}\n`);
     return 2;
   }
-  const result = await generateProjectBrain({
+  const result = await prepareRepository({
     rootDir: process.cwd(),
     ...(maxFiles.value !== undefined ? { maxFiles: maxFiles.value } : {}),
-    onProgress: (progress) => {
-      const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
-      const detail = progress.detail === undefined ? '' : `/${progress.detail}`;
-      process.stderr.write(
-        `[rizz brain] ${progress.phase}${detail}: ${progress.message}${elapsed}\n`,
-      );
-    },
+    ...(mode === 'prepare'
+      ? {}
+      : {
+          onProgress: (progress) => {
+            const elapsed = progress.elapsedMs === undefined ? '' : ` (${progress.elapsedMs}ms)`;
+            const detail = progress.detail === undefined ? '' : `/${progress.detail}`;
+            process.stderr.write(
+              `[rizz brain] ${progress.phase}${detail}: ${progress.message}${elapsed}\n`,
+            );
+          },
+        }),
   });
   if (!result.ok) {
-    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    writeResultError(result);
     return 1;
   }
-  const summary = result.value;
-  process.stdout.write(`rizz understood ${summary.scannedFiles} file(s)\n`);
-  process.stdout.write(`  brain: ${displayLocalPath(summary.latestPath)}\n`);
-  process.stdout.write(`  research: ${displayLocalPath(summary.researchDir)}\n`);
-  process.stdout.write(`  report: ${displayLocalPath(summary.reportPath)}\n`);
+  const summary = result.value.brain;
+  process.stdout.write(
+    `rizz ${mode === 'prepare' ? 'prepared' : 'understood'} ${summary.scannedFiles} file(s)\n`,
+  );
+  process.stdout.write(`  project: ${result.value.project.projectId}\n`);
+  process.stdout.write(`  workspace: ${result.value.project.projectDir}\n`);
+  if (mode === 'prepare') return 0;
   process.stdout.write(`  components: ${summary.components}\n`);
   process.stdout.write(`  flows: ${summary.flows}\n`);
   process.stdout.write(`  commands: ${summary.commands}\n`);
   process.stdout.write(`  tests: ${summary.tests}\n`);
   process.stdout.write(`  changed: ${summary.changedFiles}\n`);
   process.stdout.write(`  stale: ${summary.staleFiles}\n`);
+  return 0;
+}
+
+async function runProjectRelinkCommand(projectId?: string): Promise<number> {
+  const { relinkProjectStore } = await import('@valoir/rizz-brain');
+  const result = await relinkProjectStore({
+    rootDir: process.cwd(),
+    ...(projectId === undefined ? {} : { projectId }),
+  });
+  if (!result.ok) {
+    writeResultError(result);
+    return 1;
+  }
+  process.stdout.write(`rizz relinked project ${result.value.projectId}\n`);
   return 0;
 }
 
@@ -170,8 +175,8 @@ async function runReviewCommand(options: {
   readonly mission?: string;
   readonly missionFile?: string;
 }): Promise<number> {
-  const { reviewProjectChanges } = await import('@valoir/rizz-brain');
-  const result = await reviewProjectChanges({
+  const { reviewCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await reviewCurrentProject({
     rootDir: process.cwd(),
     ...(options.mission !== undefined ? { mission: options.mission } : {}),
     ...(options.missionFile !== undefined ? { missionFile: options.missionFile } : {}),
@@ -180,7 +185,7 @@ async function runReviewCommand(options: {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return 1;
   }
@@ -251,8 +256,8 @@ async function runVerifyAddCommand(options: {
   readonly areas: readonly string[];
   readonly json: boolean;
 }): Promise<number> {
-  const { addVerificationEvidence } = await import('@valoir/rizz-brain');
-  const result = await addVerificationEvidence({
+  const { verifyCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await verifyCurrentProject({
     rootDir: process.cwd(),
     name: options.name,
     command: options.command,
@@ -264,7 +269,7 @@ async function runVerifyAddCommand(options: {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return 1;
   }
@@ -297,8 +302,8 @@ async function runApproveSignoffCommand(options: {
   readonly json: boolean;
   readonly expiresAt?: string;
 }): Promise<number> {
-  const { recordHumanSignoff } = await import('@valoir/rizz-brain');
-  const result = await recordHumanSignoff({
+  const { signoffCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await signoffCurrentProject({
     rootDir: process.cwd(),
     summary: options.summary,
     approver: options.approver,
@@ -312,8 +317,8 @@ async function runApproveRevokeCommand(options: {
   readonly approver: string;
   readonly json: boolean;
 }): Promise<number> {
-  const { revokeHumanSignoff } = await import('@valoir/rizz-brain');
-  const result = await revokeHumanSignoff({
+  const { revokeCurrentProjectSignoff } = await import('@valoir/rizz-brain');
+  const result = await revokeCurrentProjectSignoff({
     rootDir: process.cwd(),
     summary: options.summary,
     approver: options.approver,
@@ -337,7 +342,7 @@ async function finishApproveCommand(
 ): Promise<number> {
   if (!result.ok) {
     if (json) await writeJsonStdout(result);
-    else process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    else writeResultError(result);
     return result.error.code === 'SIGNOFF_NOT_READY' || result.error.code === 'SIGNOFF_NOT_ACTIVE'
       ? 1
       : 2;
@@ -358,13 +363,16 @@ async function runAskCommand(options: {
   readonly question: string;
   readonly json: boolean;
 }): Promise<number> {
-  const { askProjectQuestion } = await import('@valoir/rizz-brain');
-  const result = await askProjectQuestion({ rootDir: process.cwd(), question: options.question });
+  const { askCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await askCurrentProject({
+    rootDir: process.cwd(),
+    question: options.question,
+  });
   if (!result.ok) {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return result.error.code === 'ASK_UNSUPPORTED_QUESTION' ||
       result.error.code === 'ASK_QUESTION_REQUIRED' ||
@@ -400,13 +408,16 @@ async function runExplainCommand(options: {
   readonly target: string;
   readonly json: boolean;
 }): Promise<number> {
-  const { explainProjectTarget } = await import('@valoir/rizz-brain');
-  const result = await explainProjectTarget({ rootDir: process.cwd(), target: options.target });
+  const { explainCurrentProject } = await import('@valoir/rizz-brain');
+  const result = await explainCurrentProject({
+    rootDir: process.cwd(),
+    target: options.target,
+  });
   if (!result.ok) {
     if (options.json) {
       await writeJsonStdout(result);
     } else {
-      process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+      writeResultError(result);
     }
     return result.error.code === 'EXPLAIN_TARGET_REQUIRED' ? 2 : 1;
   }
@@ -524,7 +535,6 @@ async function askHidden(question: string): Promise<string | null> {
   });
 }
 
-/** Pull a `--flag <value>` pair out of argv; reports a missing value so the caller can error. */
 function extractFlag(
   argv: readonly string[],
   flag: string,
@@ -565,7 +575,6 @@ function isVerificationStatus(
   return value === 'passed' || value === 'failed' || value === 'skipped' || value === 'unknown';
 }
 
-/** Non-TTY: prompt input runs one turn; empty input falls back to repo understanding. */
 async function runPrint(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
@@ -586,14 +595,13 @@ async function runPrint(select: SelectOpts): Promise<number> {
     ...(resolved.model ? { model: resolved.model } : {}),
   });
   if (!result.ok) {
-    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    writeResultError(result);
     return 1;
   }
   process.stdout.write(`${result.value.content}\n`);
   return 0;
 }
 
-/** One-shot headless JSON: a turn in on stdin, a structured JSON result on stdout (job #3). */
 async function runJson(select: SelectOpts): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
@@ -605,11 +613,10 @@ async function runJson(select: SelectOpts): Promise<number> {
   const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
   const result = await runJsonTurn({ resolved, input, cwd: process.cwd() });
-  await writeJsonStdout(result); // stdout stays pure JSON; notices go to stderr
+  await writeJsonStdout(result);
   return result.ok ? 0 : 1;
 }
 
-/** RPC mode: drive rizz over a stdin/stdout JSON line protocol (job #3 — the interop hub). */
 async function runRpc(select: SelectOpts): Promise<number> {
   const resolved = await resolveProvider(select);
   if (resolved.notice !== undefined) process.stderr.write(`rizz: ${resolved.notice}\n`);
@@ -649,6 +656,51 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
+  if (
+    c.rest[0] === 'init' ||
+    c.rest[0] === 'hook' ||
+    c.rest[0] === 'serve' ||
+    c.rest[0] === 'fold' ||
+    c.rest[0] === 'summary' ||
+    c.rest[0] === 'tokens' ||
+    c.rest[0] === 'codex-session'
+  ) {
+    const { runObserveCli } = await import('@valoir/rizz-brain/observe');
+    return runObserveCli(c.rest);
+  }
+  if (c.rest[0] === 'mcp') {
+    if (c.rest.length !== 1) {
+      process.stderr.write("rizz: mcp does not accept arguments\nTry 'rizz mcp'.\n");
+      return 2;
+    }
+    const { serveMcpStdio } = await import('@valoir/rizz-brain');
+    await serveMcpStdio({
+      rootDir: process.cwd(),
+      input: process.stdin,
+      write: (line) => process.stdout.write(line),
+    });
+    return 0;
+  }
+  if (
+    c.rest[0] === 'brief' ||
+    c.rest[0] === 'loop' ||
+    c.rest[0] === 'vault' ||
+    c.rest[0] === 'agents'
+  ) {
+    const { executeContextCommand } = await import('@valoir/rizz-brain');
+    const result = await executeContextCommand({ rootDir: process.cwd(), args: c.rest });
+    if (result.stdout !== '') await writeStdout(result.stdout);
+    if (result.stderr !== '') process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+  if (c.rest[0] === 'project') {
+    const projectArgs = c.rest.slice(1);
+    if (projectArgs[0] !== 'relink' || projectArgs.length > 2) {
+      process.stderr.write("rizz: use 'rizz project relink [project-id]'\n");
+      return 2;
+    }
+    return runProjectRelinkCommand(projectArgs[1]);
+  }
   if (c.rest[0] === 'setup') {
     const { SETUP_USAGE, parseSetupArgs, runSetupDryRun, runSetupInteractive } = await import(
       './setup.js'
@@ -961,12 +1013,13 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return runExplainCommand({ target, json: wantsJson });
   }
-  // Headless modes (job #3) consume the remaining args as boolean flags; --rpc wins over --json.
   const rest = c.rest.filter((a) => a !== '--json' && a !== '--rpc');
   if (c.rest.includes('--rpc')) return runRpc(select);
   if (c.rest.includes('--json')) return runJson(select);
   const arg = rest[0];
   switch (arg) {
+    case 'prepare':
+      return runBrainCommand('prepare');
     case 'understand':
     case 'brain':
     case 'report':
