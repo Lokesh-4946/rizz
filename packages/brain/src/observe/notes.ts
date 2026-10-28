@@ -106,9 +106,12 @@ export async function appendThreadEntry(
   const path = join(threadsDir, `${event.threadId}.md`);
   const existing = await readText(path);
   if (!existing.ok) return existing;
-  const entry = `### ${event.at} · ${event.hook}\n\n${event.text === '' ? event.kind : event.text}\n\n`;
-  const head = threadHead(events, event.threadId);
+  const marker = `<!-- rizz:event:${event.id} -->`;
   const prior = existing.value;
+  if (prior?.includes(marker) === true) return staffOk(undefined);
+  const body = event.text === '' ? event.kind : event.text;
+  const entry = `${marker}\n### ${event.at} · ${event.hook}\n\n${body}\n\n`;
+  const head = threadHead(events, event.threadId);
   if (prior === undefined) {
     return writeAtomic(path, `${head}${entry}`);
   }

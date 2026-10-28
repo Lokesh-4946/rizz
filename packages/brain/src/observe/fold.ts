@@ -1,7 +1,7 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { prepareProjectStore } from '../project-store.js';
 import { snapshotFromEvents, visionQuote, writeBrain } from './brain-index.js';
-import { appendSynced, readText, withLock } from './io.js';
+import { appendSynced, readText, withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, loadJournal } from './journal.js';
 import { appendTokenRow, rowFromEvent } from './ledger.js';
 import { type ObserveEvent, isRecord, ownerDecisionLines } from './model.js';
@@ -30,11 +30,19 @@ async function readOffset(path: string): Promise<StaffResult<number>> {
   if (text.value === undefined || text.value.trim() === '') return staffOk(0);
   try {
     const parsed: unknown = JSON.parse(text.value);
-    if (isRecord(parsed) && typeof parsed.offset === 'number') return staffOk(parsed.offset);
+    if (
+      isRecord(parsed) &&
+      typeof parsed.offset === 'number' &&
+      Number.isFinite(parsed.offset) &&
+      parsed.offset >= 0
+    ) {
+      return staffOk(parsed.offset);
+    }
   } catch {
-    return staffErr('INVALID_STATE', 'spool offset is not JSON');
+    // A kill mid-write leaves a partial offset. Replay; journal ids are idempotent.
+    return staffOk(0);
   }
-  return staffErr('INVALID_STATE', 'spool offset is missing');
+  return staffOk(0);
 }
 
 async function applyEvent(
@@ -50,7 +58,6 @@ async function applyEvent(
   if (!vault.ok) return vault;
   const journal = await appendJournalEvent(paths.journalDir, event);
   if (!journal.ok) return journal;
-  if (journal.value === 'duplicate') return staffOk('duplicate');
   const events = await loadJournal(paths.journalDir);
   if (!events.ok) return events;
   const thread = await appendThreadEntry(paths.threadsDir, event, events.value);
@@ -90,6 +97,25 @@ async function applyEvent(
     const handoff = await writeHandoff(paths.handoffsDir, event, events.value, drift.value);
     if (!handoff.ok) return handoff;
   }
+  const brain = await refreshObserveIndex({
+    projectDir: prepared.value.projectDir,
+    projectRoot: event.projectRoot,
+    at: event.at,
+  });
+  if (!brain.ok) return brain;
+  if (journal.value === 'duplicate') return staffOk('duplicate');
+  return staffOk('applied');
+}
+
+/** Rewrite BRAIN.md from the journal, inbox, and decision log. Safe to repeat. */
+export async function refreshObserveIndex(options: {
+  readonly projectDir: string;
+  readonly projectRoot: string;
+  readonly at: string;
+}): Promise<StaffResult<void>> {
+  const paths = observePaths(options.projectDir);
+  const events = await loadJournal(paths.journalDir);
+  if (!events.ok) return events;
   const decisions = await readDecisionRecords(paths.decisions);
   if (!decisions.ok) return decisions;
   const inbox = await listInbox(paths.inboxDir);
@@ -97,15 +123,15 @@ async function applyEvent(
   const vision = await readText(paths.vision);
   if (!vision.ok) return vision;
   const snapshot = snapshotFromEvents(events.value, {
-    updated: event.at,
-    projectRoot: event.projectRoot,
+    updated: options.at,
+    projectRoot: options.projectRoot,
     decisions: decisions.value,
     inbox: inbox.value,
     visionQuote: visionQuote(vision.value ?? ''),
   });
   const brain = await writeBrain(paths.brain, snapshot);
   if (!brain.ok) return brain;
-  return staffOk('applied');
+  return staffOk(undefined);
 }
 
 export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResult>> {
@@ -122,7 +148,8 @@ export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResul
       }
       return staffErr('IO_FAILED', 'cannot read the observe spool');
     }
-    const pending = raw.slice(offsetResult.value);
+    const offset = Math.min(offsetResult.value, raw.length);
+    const pending = raw.slice(offset);
     const lines = pending.split('\n');
     const complete = pending.endsWith('\n') ? lines : lines.slice(0, -1);
     let applied = 0;
@@ -146,10 +173,11 @@ export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResul
       else applied += 1;
       projects.add(event.projectRoot);
     }
-    await writeFile(
+    const marked = await writeAtomic(
       spoolOffsetFile(rizzHome),
-      `${JSON.stringify({ offset: offsetResult.value + consumed })}\n`,
+      `${JSON.stringify({ offset: offset + consumed })}\n`,
     );
+    if (!marked.ok) return marked;
     return staffOk({
       applied,
       duplicates,
@@ -162,7 +190,11 @@ export async function appendSpoolEvent(
   rizzHome: string,
   event: ObserveEvent,
 ): Promise<StaffResult<void>> {
-  return withLock(spoolLock(rizzHome), async () =>
-    appendSynced(spoolFile(rizzHome), `${JSON.stringify(event)}\n`),
+  const line = `${JSON.stringify(event)}\n`;
+  const locked = await withLock(spoolLock(rizzHome), async () =>
+    appendSynced(spoolFile(rizzHome), line),
   );
+  if (locked.ok) return locked;
+  // A stuck lock must not swallow the hook. The line is still appended.
+  return appendSynced(spoolFile(rizzHome), line);
 }

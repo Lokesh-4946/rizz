@@ -4,7 +4,8 @@ import { type StaffResult, staffErr, staffOk } from './result.js';
 
 /**
  * Best-effort reader for Codex rollout JSONL.
- * `.jsonl.zst` is recognized and refused: decoding it would add a dependency.
+ * `.jsonl.zst` is recognized and refused. Node's zlib zstd helpers are still
+ * experimental, and a decoder package would break the lightweight budget.
  * The line schema is not a stable Codex contract.
  */
 export async function readCodexRollout(options: {
