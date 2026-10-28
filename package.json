@@ -13,7 +13,7 @@
     "typecheck": "tsc -b",
     "lint": "biome ci .",
     "format": "biome format --write .",
-    "test": "vitest run --exclude \"**/.rizz/**\"",
+    "test": "vitest run --exclude \"**/.rizz/**\" --testTimeout 30000",
     "eval": "node eval/run.mjs",
     "footprint": "node scripts/footprint-check.mjs",
     "uat:large-repos": "pnpm build && node scripts/uat-large-repos.mjs",

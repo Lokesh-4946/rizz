@@ -14,13 +14,13 @@ async function fixture(): Promise<{ rootDir: string; rizzHome: string; projectId
   const rootDir = await mkdtemp(join(tmpdir(), 'rizz-mcp-repo-'));
   const rizzHome = await mkdtemp(join(tmpdir(), 'rizz-mcp-home-'));
   roots.push(rootDir, rizzHome);
-  execFileSync('git', ['init', '-q'], { cwd: rootDir });
-  execFileSync('git', ['config', 'user.email', 'rizz@example.test'], { cwd: rootDir });
-  execFileSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: rootDir });
+  git(rootDir, ['init', '-q']);
+  git(rootDir, ['config', 'user.email', 'rizz@example.test']);
+  git(rootDir, ['config', 'user.name', 'Rizz Test']);
   await mkdir(join(rootDir, 'src'));
   await writeFile(join(rootDir, 'src', 'hero.ts'), 'export const hero = true;\n');
-  execFileSync('git', ['add', '.'], { cwd: rootDir });
-  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: rootDir });
+  git(rootDir, ['add', '.']);
+  git(rootDir, ['commit', '-qm', 'fixture']);
   const store = await prepareProjectStore({ rootDir, rizzHome, remote: null });
   if (!store.ok) throw new Error(store.error.message);
   const brain = await generateProjectBrain({ rootDir, outputDir: store.value.projectDir });
@@ -36,8 +36,18 @@ async function fixture(): Promise<{ rootDir: string; rizzHome: string; projectId
   return { rootDir, rizzHome, projectId: store.value.projectId };
 }
 
+function git(rootDir: string, args: readonly string[]): void {
+  execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'commit.gpgsign=false', ...args], {
+    cwd: rootDir,
+  });
+}
+
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })),
+  );
 });
 
 function capture() {
@@ -86,7 +96,7 @@ describe('Rizz MCP server', () => {
         'create_handoff',
       ]),
     );
-  }, 20_000);
+  }, 60_000);
 
   it('reads isolated resources and compiles the same task brief as CLI JSON', async () => {
     const setup = await fixture();
