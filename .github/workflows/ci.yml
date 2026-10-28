@@ -107,3 +107,31 @@ jobs:
 
       - name: Check public package contents
         run: pnpm pack:check
+
+  test-release-pack:
+    name: test release tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Pack @valoir/rizz-test
+        run: node scripts/pack-test-release.mjs --build 1
+
+      - name: Upload test tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: valoir-rizz-test
+          path: dist-pack/valoir-rizz-test-*.tgz
+          if-no-files-found: error
