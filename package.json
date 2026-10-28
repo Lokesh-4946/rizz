@@ -2,6 +2,7 @@
   "name": "@valoir/rizz-workspace",
   "version": "0.3.1",
   "private": true,
+  "license": "MIT",
   "description": "rizz — local Project Intelligence Engineering for understanding repositories before changing them.",
   "type": "module",
   "engines": {

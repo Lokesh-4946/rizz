@@ -1,11 +1,12 @@
 {
   "name": "@valoir/rizz-providers",
   "version": "0.3.1",
+  "license": "MIT",
   "description": "Provider, runtime, session, and secret services for Rizz.",
   "type": "module",
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
-  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "package.json"],
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "LICENSE", "package.json"],
   "publishConfig": {
     "access": "public"
   },
