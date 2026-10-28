@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -149,9 +149,12 @@ describe('installed CLI hook sessions', () => {
     const hooks = JSON.parse(await readFile(join(hookHome, '.cursor', 'hooks.json'), 'utf8')) as {
       hooks: Record<string, { command: string }[]>;
     };
-    expect(hooks.hooks.sessionStart?.[0]?.command).toBe('rizz hook cursor sessionStart');
-    expect(hooks.hooks.preCompact?.[0]?.command).toBe('rizz hook cursor preCompact');
-    expect(hooks.hooks.stop?.[0]?.command).toBe('rizz hook cursor stop');
+    const invocation = realpathSync(cliPath);
+    expect(hooks.hooks.sessionStart?.[0]?.command).toContain(invocation);
+    expect(hooks.hooks.sessionStart?.[0]?.command).toContain('hook cursor sessionStart');
+    expect(hooks.hooks.sessionStart?.[0]?.command?.startsWith('rizz ')).toBe(false);
+    expect(hooks.hooks.preCompact?.[0]?.command).toContain('hook cursor preCompact');
+    expect(hooks.hooks.stop?.[0]?.command).toContain('hook cursor stop');
 
     const common = { conversation_id: 'conv-1', workspace_roots: [project] };
     const start = await runCli(['hook', 'cursor', 'sessionStart'], {
@@ -319,7 +322,9 @@ describe('installed CLI hook sessions', () => {
     const hooks = await readFile(join(hookHome, '.codex', 'hooks.json'), 'utf8');
     expect(hooks).toContain('SessionStart');
     expect(hooks).toContain('UserPromptSubmit');
-    expect(hooks).toContain('rizz hook codex Stop');
+    expect(hooks).toContain(realpathSync(cliPath));
+    expect(hooks).toContain('hook codex Stop');
+    expect(hooks).not.toContain('"rizz" hook');
     await expect(readFile(join(hookHome, '.codex', 'config.toml'), 'utf8')).rejects.toThrow();
 
     const common = { session_id: 'thread-9', cwd: project };
@@ -393,7 +398,8 @@ describe('installed CLI hook sessions', () => {
     expect(settings).toContain('SessionStart');
     expect(settings).toContain('UserPromptSubmit');
     expect(settings).toContain('PostToolUse');
-    expect(settings).toContain('rizz hook claude Stop');
+    expect(settings).toContain(realpathSync(cliPath));
+    expect(settings).toContain('hook claude Stop');
 
     const start = await runCli(['hook', 'claude', 'SessionStart'], {
       ...opts,
@@ -484,6 +490,19 @@ describe('installed CLI hook sessions', () => {
     expect(quietCode).toBe(0);
     expect(calls).toBe(0);
   }, 20_000);
+
+  it('prints help for init --help and does not install hooks or start a page', async () => {
+    const home = await tempDir('rizz-help-home-');
+    const hookHome = await tempDir('rizz-help-hooks-');
+    const project = await tempDir('rizz-help-project-');
+    const started = Date.now();
+    const help = await runCli(['init', '--help'], { cwd: project, home, hookHome });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain('rizz init');
+    expect(help.stdout).not.toContain('rizz serve pid');
+    await expect(readFile(join(hookHome, '.cursor', 'hooks.json'), 'utf8')).rejects.toThrow();
+  });
 
   it('returns from init while the local page stays up', async () => {
     const home = await tempDir('rizz-init-home-');

@@ -5,20 +5,26 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { prepareProjectStore } from '../project-store.js';
 import { BRAIN_LINE_CAP, renderBrain, snapshotFromEvents } from './brain-index.js';
-import { detectHosts } from './cli.js';
+import { detectHosts, runObserveCli } from './cli.js';
 import { readCodexRollout } from './codex-session.js';
 import { checkDrift } from './drift.js';
-import { appendSpoolEvent, foldSpool } from './fold.js';
+import { appendSpoolEvent, countUnrecorded, foldSpool } from './fold.js';
 import { parseHandoffBlock } from './handoff.js';
-import { installClaudeHooks, installCodexHooks, installCursorHooks } from './install.js';
+import {
+  hookCommand,
+  installClaudeHooks,
+  installCodexHooks,
+  installCursorHooks,
+} from './install.js';
 import { withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, eventsIn } from './journal.js';
 import { type ObserveEvent, normalizeHook } from './model.js';
 import { ensureObserveVault } from './notes.js';
-import { observePaths, spoolFile, spoolLock } from './paths.js';
+import { observePaths, spoolDropDir, spoolFile, spoolLock, spoolPendingDir } from './paths.js';
 import { receiveHook } from './receive.js';
 import { staffOk } from './result.js';
 import { startObserveServer } from './serve.js';
+import { renderSummary } from './summary.js';
 
 const roots: string[] = [];
 
@@ -131,7 +137,12 @@ describe('host hooks', () => {
       hooks: { stop: { command: string }[] };
     };
     expect(parsed.hooks.stop.map((entry) => entry.command)).toContain('echo keep');
-    expect(parsed.hooks.stop.map((entry) => entry.command)).toContain('rizz hook cursor stop');
+    expect(parsed.hooks.stop.map((entry) => entry.command)).toContain(
+      hookCommand('cursor', 'stop'),
+    );
+    expect(hookCommand('cursor', 'stop').startsWith('rizz ')).toBe(false);
+    expect(hookCommand('cursor', 'stop')).toContain(process.execPath);
+    expect(hookCommand('cursor', 'stop')).toContain('hook cursor stop');
   });
 
   it('merges Codex hooks without dropping an existing command', async () => {
@@ -153,8 +164,10 @@ describe('host hooks', () => {
       entry.hooks.map((hook) => hook.command),
     );
     expect(stopCommands).toContain('echo keep');
-    expect(stopCommands).toContain('rizz hook codex Stop');
-    expect(parsed.hooks.SessionStart[0]?.hooks[0]?.command).toBe('rizz hook codex SessionStart');
+    expect(stopCommands).toContain(hookCommand('codex', 'Stop'));
+    expect(parsed.hooks.SessionStart[0]?.hooks[0]?.command).toBe(
+      hookCommand('codex', 'SessionStart'),
+    );
   });
 
   it('merges Claude Code hooks without dropping existing settings', async () => {
@@ -178,8 +191,10 @@ describe('host hooks', () => {
       entry.hooks.map((hook) => hook.command),
     );
     expect(stopCommands).toContain('echo keep');
-    expect(stopCommands).toContain('rizz hook claude Stop');
-    expect(parsed.hooks.SessionStart[0]?.hooks[0]?.command).toBe('rizz hook claude SessionStart');
+    expect(stopCommands).toContain(hookCommand('claude', 'Stop'));
+    expect(parsed.hooks.SessionStart[0]?.hooks[0]?.command).toBe(
+      hookCommand('claude', 'SessionStart'),
+    );
   });
 
   it('fails open when the payload is not JSON', async () => {
@@ -561,11 +576,15 @@ describe('crash-safe brain writes', () => {
       });
       const elapsed = Date.now() - started;
       expect(response.exitCode).toBe(0);
+      expect(response.stderr).toBe('');
       expect(elapsed).toBeGreaterThan(1500);
       expect(elapsed).toBeLessThan(5000);
-      expect(await readFile(spoolFile(home), 'utf8')).toContain(
-        'still recorded while the lock is held',
-      );
+      const shared = await readFile(spoolFile(home), 'utf8').catch(() => '');
+      expect(shared).not.toContain('still recorded while the lock is held');
+      const queued = await readdir(spoolPendingDir(home));
+      expect(queued.filter((name) => name.endsWith('.json'))).toHaveLength(1);
+      const body = await readFile(join(spoolPendingDir(home), queued[0] ?? ''), 'utf8');
+      expect(JSON.parse(body).text).toContain('still recorded while the lock is held');
     } finally {
       await sigkill(child);
     }
@@ -682,6 +701,172 @@ describe('owner answers', () => {
       await server.close();
     }
   });
+
+  it('does not list an answered decision again after the spool is replayed', async () => {
+    const home = await tempDir('rizz-replay-answer-');
+    const project = await tempDir('rizz-replay-answer-project-');
+    const hookHome = await tempDir('rizz-replay-answer-hooks-');
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-friday',
+        generation_id: 'gen-friday',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Owner decision: Ship on Friday?',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T08:30:00.000Z',
+    });
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const inboxName = (await readdir(paths.inboxDir))[0];
+    const id = (inboxName ?? '').replace(/\.md$/, '');
+    const server = await startObserveServer({
+      projectRoot: project,
+      rizzHome: home,
+      token: 'replay-token',
+    });
+    try {
+      const answered = await fetch(
+        `http://127.0.0.1:${server.port}/api/decide?token=replay-token`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id, answer: 'Ship on Monday instead' }),
+        },
+      );
+      expect(answered.status).toBe(200);
+    } finally {
+      await server.close();
+    }
+    await writeFile(join(home, 'spool', 'offset.json'), '{');
+    expect((await foldSpool(home)).ok).toBe(true);
+    const inboxAfter = await readdir(paths.inboxDir).catch(() => [] as string[]);
+    expect(inboxAfter).toEqual([]);
+    let summary = '';
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      summary += String(chunk);
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const code = await runObserveCli(['summary'], {
+        cwd: project,
+        rizzHome: home,
+        homeDir: hookHome,
+      });
+      expect(code).toBe(0);
+    } finally {
+      process.stdout.write = write;
+    }
+    expect(summary).not.toContain('Ship on Friday?');
+    expect(summary).toContain('No decisions need the owner.');
+    const brain = await readFile(paths.brain, 'utf8');
+    const awaiting = brain.split('## Current decisions')[0] ?? '';
+    expect(awaiting).not.toContain('Ship on Friday?');
+  });
+});
+
+describe('concurrent hooks', () => {
+  it('keeps every large hook when thirty arrive together, three times', async () => {
+    const home = await tempDir('rizz-stress-');
+    const project = await tempDir('rizz-stress-project-');
+    const ids: string[] = [];
+    const bulk = 'payload '.repeat(600);
+    for (let round = 0; round < 3; round += 1) {
+      const batch = Array.from({ length: 30 }, (_, index) => {
+        const id = `gen-${round}-${index}`;
+        ids.push(id);
+        return receiveHook({
+          tool: 'cursor',
+          hook: 'beforeSubmitPrompt',
+          stdin: JSON.stringify({
+            conversation_id: 'conv-stress',
+            generation_id: id,
+            hook_event_name: 'beforeSubmitPrompt',
+            prompt: `${bulk}\nmarker ${id}`,
+            workspace_roots: [project],
+          }),
+          projectRoot: project,
+          rizzHome: home,
+          at: '2026-10-28T09:00:00.000Z',
+        });
+      });
+      const responses = await Promise.all(batch);
+      expect(responses.every((response) => response.exitCode === 0 && response.stderr === '')).toBe(
+        true,
+      );
+    }
+    const raw = await readFile(spoolFile(home), 'utf8');
+    const lines = raw.split('\n').filter((line) => line.trim() !== '');
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) JSON.parse(line);
+    const pendingNames = await readdir(spoolPendingDir(home)).catch(() => [] as string[]);
+    for (const name of pendingNames.filter((item) => item.endsWith('.json'))) {
+      JSON.parse(await readFile(join(spoolPendingDir(home), name), 'utf8'));
+    }
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const journal = await readFile(
+      join(observePaths(prepared.value.projectDir).journalDir, '2026-10.md'),
+      'utf8',
+    );
+    const found = eventsIn(journal).map((item) => item.id);
+    expect(new Set(found).size).toBe(90);
+    for (const id of ids) {
+      expect(found.some((eventId) => eventId.endsWith(`:${id}`))).toBe(true);
+    }
+    const drops = await readdir(spoolDropDir(home)).catch(() => [] as string[]);
+    expect(drops.filter((name) => name.endsWith('.json'))).toEqual([]);
+  }, 60_000);
+
+  it('counts a hook that cannot be written instead of dropping it quietly', async () => {
+    const home = await tempDir('rizz-drop-');
+    const project = await tempDir('rizz-drop-project-');
+    const lock = spoolLock(home);
+    const child = await holdProcess(HOLD_LOCK, { KILL_PATH: lock });
+    await waitFor(async () => {
+      const text = await readFile(join(lock, 'pid'), 'utf8').catch(() => '');
+      return text.trim() === '' ? undefined : text;
+    });
+    await mkdir(join(home, 'spool'), { recursive: true });
+    await writeFile(join(home, 'spool', 'pending'), 'not-a-directory\n');
+    try {
+      const response = await receiveHook({
+        tool: 'cursor',
+        hook: 'beforeSubmitPrompt',
+        stdin: JSON.stringify({
+          conversation_id: 'conv-drop',
+          generation_id: 'gen-drop',
+          hook_event_name: 'beforeSubmitPrompt',
+          prompt: 'Owner decision: Did this get lost?',
+          workspace_roots: [project],
+        }),
+        projectRoot: project,
+        rizzHome: home,
+        at: '2026-10-28T09:30:00.000Z',
+      });
+      expect(response.exitCode).toBe(0);
+      expect(response.stderr).toContain('could not be recorded');
+    } finally {
+      await sigkill(child);
+    }
+    expect(await countUnrecorded(home, project)).toBe(1);
+    const text = renderSummary({
+      threads: 0,
+      inbox: [],
+      dropped: await countUnrecorded(home, project),
+    });
+    expect(text).toContain('1 hook event(s) could not be recorded.');
+  }, 8_000);
 });
 
 async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {

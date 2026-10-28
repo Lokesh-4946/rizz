@@ -290,5 +290,18 @@ foreground. `--no-serve` skips the page. `--no-open` is forwarded to the detache
 
 ---
 
-*Next decision: **D-049**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+#### D-049
+**An answered inbox item stays answered, and a busy spool lock never appends unlocked.** — Committed
+Replaying a spool event must not recreate an inbox file whose id already has a `dec_<id>` row in
+`decisions.md`. Hooks append to the shared log only while holding the spool lock. If that lock
+stays busy, the event is written as its own file under `spool/pending/` and folded later. If that
+file cannot be written either, a drop record is kept and `rizz summary` counts it. Installed hook
+commands name `node` and the absolute script path of the CLI that ran `rizz init`, so a different
+`rizz` on `PATH` is not what the host executes. `rizz init --help` prints help and returns.
+→ `packages/brain/src/observe/fold.ts`, `packages/brain/src/observe/install.ts`,
+`packages/brain/src/observe/cli.ts`.
+
+---
+
+*Next decision: **D-050**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*

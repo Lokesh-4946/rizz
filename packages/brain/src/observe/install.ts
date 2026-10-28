@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readText, writeAtomic } from './io.js';
@@ -34,8 +35,25 @@ export const CLAUDE_HOOK_EVENTS = [
   'Stop',
 ] as const;
 
+function shellQuote(value: string): string {
+  return `"${value.replaceAll('"', '\\"')}"`;
+}
+
+/** Absolute `node <this-script>` so hooks do not call whichever `rizz` is first on PATH. */
+export function hookInvocation(): string {
+  const script = process.argv[1];
+  if (script === undefined || script === '') return 'rizz';
+  let resolved = script;
+  try {
+    resolved = realpathSync(script);
+  } catch {
+    resolved = script;
+  }
+  return `${shellQuote(process.execPath)} ${shellQuote(resolved)}`;
+}
+
 export function hookCommand(tool: HostId, event: string): string {
-  return `rizz hook ${tool} ${event}`;
+  return `${hookInvocation()} hook ${tool} ${event}`;
 }
 
 /** Legacy Codex notify. Not installed by default; hooks.json is the primary path. */
