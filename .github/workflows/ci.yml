@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, dev]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, dev]
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
           head="${{ github.head_ref }}"
 
           case "$base" in
-            develop)
+            develop|dev)
               ;;
             main)
               case "$head" in
