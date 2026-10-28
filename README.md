@@ -9,7 +9,7 @@ evidence close to the source files.
 
 ## Current Product
 
-The current `0.3.1` product surface is:
+The current `0.4.0` product surface is:
 
 - `rizz prepare` isolated project intelligence under the platform user-data directory without
   changing repository files or Git status
@@ -45,7 +45,7 @@ The current `0.3.1` product surface is:
 - no workspace agents, cloud sync, browser extension, mobile app, project-local skills, or
   enterprise providers in the default path
 
-This release is `0.3.1`.
+This release is `0.4.0`.
 
 ## Observe the host agent
 

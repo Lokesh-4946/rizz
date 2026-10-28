@@ -1,8 +1,8 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BRAIN_LINE_CAP } from './brain-index.js';
@@ -56,6 +56,7 @@ function runCli(
     readonly home: string;
     readonly hookHome: string;
     readonly stdin?: string;
+    readonly path?: string;
   },
 ): Promise<CliResult> {
   if (!existsSync(cliPath)) {
@@ -66,6 +67,45 @@ function runCli(
       cwd: options.cwd,
       env: {
         ...process.env,
+        ...(options.path === undefined ? {} : { PATH: options.path }),
+        RIZZ_HOME: options.home,
+        RIZZ_HOOK_HOME: options.hookHome,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(options.stdin ?? '');
+  });
+}
+
+function runShell(
+  command: string,
+  options: {
+    readonly cwd: string;
+    readonly home: string;
+    readonly hookHome: string;
+    readonly stdin?: string;
+    readonly path?: string;
+  },
+): Promise<CliResult> {
+  const shell = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'sh';
+  const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
+  return new Promise((resolve) => {
+    const child = spawn(shell, args, {
+      cwd: options.cwd,
+      env: {
+        ...process.env,
+        ...(options.path === undefined ? {} : { PATH: options.path }),
         RIZZ_HOME: options.home,
         RIZZ_HOOK_HOME: options.hookHome,
       },
@@ -511,6 +551,54 @@ describe('installed CLI hook sessions', () => {
     expect(quietCode).toBe(0);
     expect(calls).toBe(0);
   }, 20_000);
+
+  it('lists init and hook in top-level help', async () => {
+    const home = await tempDir('rizz-top-help-home-');
+    const hookHome = await tempDir('rizz-top-help-hooks-');
+    const project = await tempDir('rizz-top-help-project-');
+    const help = await runCli(['--help'], { cwd: project, home, hookHome });
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain('init');
+    expect(help.stdout).toContain('hook');
+  });
+
+  it('uses the installed CLI when an older rizz is first on PATH', async () => {
+    const home = await tempDir('rizz-shadow-home-');
+    const hookHome = await tempDir('rizz-shadow-hooks-');
+    const project = await tempDir('rizz-shadow-project-');
+    const bin = await tempDir('rizz-shadow-bin-');
+    const fake = join(bin, process.platform === 'win32' ? 'rizz.cmd' : 'rizz');
+    const script =
+      process.platform === 'win32'
+        ? '@echo off\r\necho old rizz 1>&2\r\nexit /b 2\r\n'
+        : '#!/usr/bin/env node\nprocess.stderr.write("old rizz\\n");\nprocess.exit(2);\n';
+    await writeFile(fake, script);
+    await chmod(fake, 0o755);
+    const shadowed = `${bin}${delimiter}${process.env.PATH ?? ''}`;
+    const opts = { cwd: project, home, hookHome, path: shadowed };
+    const init = await runCli(['init', '--host', 'cursor', '--no-serve', '--no-open'], opts);
+    expect(init.code).toBe(0);
+    const hooks = JSON.parse(await readFile(join(hookHome, '.cursor', 'hooks.json'), 'utf8')) as {
+      hooks: { beforeSubmitPrompt: { command: string }[] };
+    };
+    const command = hooks.hooks.beforeSubmitPrompt?.[0]?.command ?? '';
+    expect(command).toContain(realpathSync(cliPath));
+    expect(command).toContain('hook cursor beforeSubmitPrompt');
+    expect(command.trim().startsWith('rizz ')).toBe(false);
+    const fired = await runShell(command, {
+      ...opts,
+      stdin: JSON.stringify({
+        conversation_id: 'shadow-1',
+        generation_id: 'shadow-gen',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Owner decision: Stay on the new CLI?',
+        workspace_roots: [project],
+      }),
+    });
+    expect(fired.code).toBe(0);
+    expect(fired.stderr).not.toContain('old rizz');
+    expect(fired.stdout).toContain('continue');
+  });
 
   it('prints help for init --help and does not install hooks or start a page', async () => {
     const home = await tempDir('rizz-help-home-');

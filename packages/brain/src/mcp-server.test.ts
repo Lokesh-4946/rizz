@@ -75,7 +75,7 @@ describe('Rizz MCP server', () => {
       expect.objectContaining({
         jsonrpc: '2.0',
         id: 1,
-        result: expect.objectContaining({ serverInfo: { name: 'rizz', version: '0.3.1' } }),
+        result: expect.objectContaining({ serverInfo: { name: 'rizz', version: '0.4.0' } }),
       }),
     );
     const resources = (output.messages[1]?.result as { resources: Array<{ uri: string }> })

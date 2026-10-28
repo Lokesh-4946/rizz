@@ -145,6 +145,25 @@ describe('host hooks', () => {
     expect(hookCommand('cursor', 'stop')).toContain('hook cursor stop');
   });
 
+  it('rewrites a bare rizz hook command on the next install', async () => {
+    const home = await tempDir('rizz-hooks-rewrite-');
+    const path = join(home, '.cursor', 'hooks.json');
+    await mkdir(join(home, '.cursor'), { recursive: true });
+    await writeFile(
+      path,
+      `${JSON.stringify({ version: 1, hooks: { stop: [{ command: 'echo keep' }, { command: 'rizz hook cursor stop' }] } }, null, 2)}\n`,
+    );
+    expect((await installCursorHooks(home)).ok).toBe(true);
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as {
+      hooks: { stop: { command: string }[] };
+    };
+    const commands = parsed.hooks.stop.map((entry) => entry.command);
+    expect(commands).toContain('echo keep');
+    expect(commands).toContain(hookCommand('cursor', 'stop'));
+    expect(commands.some((command) => command.trim() === 'rizz hook cursor stop')).toBe(false);
+    expect(commands.filter((command) => command === hookCommand('cursor', 'stop'))).toHaveLength(1);
+  });
+
   it('merges Codex hooks without dropping an existing command', async () => {
     const home = await tempDir('rizz-codex-hooks-');
     const path = join(home, '.codex', 'hooks.json');

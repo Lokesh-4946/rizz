@@ -56,6 +56,15 @@ export function hookCommand(tool: HostId, event: string): string {
   return `${hookInvocation()} hook ${tool} ${event}`;
 }
 
+function isBareRizzHook(command: string, tool: HostId, event: string): boolean {
+  return new RegExp(`^rizz\\s+hook\\s+${tool}\\s+${event}\\s*$`).test(command.trim());
+}
+
+function pinHookCommand(command: string, tool: HostId, event: string): string {
+  if (isBareRizzHook(command, tool, event)) return hookCommand(tool, event);
+  return command;
+}
+
 /** Legacy Codex notify. Not installed by default; hooks.json is the primary path. */
 export function legacyCodexNotifyLine(): string {
   return 'notify = ["rizz", "hook", "codex", "notify"]';
@@ -85,11 +94,22 @@ export async function installCursorHooks(homeDir: string): Promise<StaffResult<s
   }
   const hooks = isRecord(root.hooks) ? { ...root.hooks } : {};
   for (const [event, entries] of Object.entries(cursorHooks())) {
-    const current = Array.isArray(hooks[event]) ? [...hooks[event]] : [];
     const command = entries[0]?.command ?? hookCommand('cursor', event);
-    const already = current.some((entry) => isRecord(entry) && entry.command === command);
-    if (!already) current.push({ command });
-    hooks[event] = current;
+    const current = Array.isArray(hooks[event]) ? [...hooks[event]] : [];
+    const rewritten = current.map((entry) => {
+      if (!isRecord(entry) || typeof entry.command !== 'string') return entry;
+      const pinned = pinHookCommand(entry.command, 'cursor', event);
+      return pinned === entry.command ? entry : { ...entry, command: pinned };
+    });
+    const seen = new Set<string>();
+    const unique = rewritten.filter((entry) => {
+      if (!isRecord(entry) || typeof entry.command !== 'string') return true;
+      if (seen.has(entry.command)) return false;
+      seen.add(entry.command);
+      return true;
+    });
+    if (!seen.has(command)) unique.push({ command });
+    hooks[event] = unique;
   }
   const next = { ...root, version: 1, hooks };
   const written = await writeAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
@@ -115,14 +135,10 @@ export async function installCodexHooks(homeDir: string): Promise<StaffResult<st
   for (const event of CODEX_HOOK_EVENTS) {
     const command = hookCommand('codex', event);
     const current = Array.isArray(hooks[event]) ? [...(hooks[event] as unknown[])] : [];
-    const already = current.some((entry) => {
-      if (!isRecord(entry) || !Array.isArray(entry.hooks)) return false;
-      return entry.hooks.some((hook) => isRecord(hook) && hook.command === command);
-    });
-    if (!already) {
-      current.push({ hooks: [{ type: 'command', command }] });
-    }
-    hooks[event] = current;
+    const rewritten = current.map((entry) => pinNestedHook(entry, 'codex', event));
+    const already = rewritten.some((entry) => nestedHasCommand(entry, command));
+    if (!already) rewritten.push({ hooks: [{ type: 'command', command }] });
+    hooks[event] = rewritten;
   }
   const written = await writeAtomic(path, `${JSON.stringify({ ...root, hooks }, null, 2)}\n`);
   if (!written.ok) return written;
@@ -148,12 +164,10 @@ export async function installClaudeHooks(homeDir: string): Promise<StaffResult<s
   for (const event of CLAUDE_HOOK_EVENTS) {
     const command = hookCommand('claude', event);
     const current = Array.isArray(hooks[event]) ? [...(hooks[event] as unknown[])] : [];
-    const already = current.some((entry) => {
-      if (!isRecord(entry) || !Array.isArray(entry.hooks)) return false;
-      return entry.hooks.some((hook) => isRecord(hook) && hook.command === command);
-    });
-    if (!already) current.push({ hooks: [{ type: 'command', command }] });
-    hooks[event] = current;
+    const rewritten = current.map((entry) => pinNestedHook(entry, 'claude', event));
+    const already = rewritten.some((entry) => nestedHasCommand(entry, command));
+    if (!already) rewritten.push({ hooks: [{ type: 'command', command }] });
+    hooks[event] = rewritten;
   }
   const written = await writeAtomic(path, `${JSON.stringify({ ...root, hooks }, null, 2)}\n`);
   if (!written.ok) return written;
@@ -182,6 +196,28 @@ export async function installHostHooks(
     }
   }
   return staffOk(paths);
+}
+
+function pinNestedHook(entry: unknown, tool: HostId, event: string): unknown {
+  if (!isRecord(entry) || !Array.isArray(entry.hooks)) return entry;
+  const seen = new Set<string>();
+  const hooks = [];
+  for (const hook of entry.hooks) {
+    if (!isRecord(hook) || typeof hook.command !== 'string') {
+      hooks.push(hook);
+      continue;
+    }
+    const command = pinHookCommand(hook.command, tool, event);
+    if (seen.has(command)) continue;
+    seen.add(command);
+    hooks.push(command === hook.command ? hook : { ...hook, command });
+  }
+  return { ...entry, hooks };
+}
+
+function nestedHasCommand(entry: unknown, command: string): boolean {
+  if (!isRecord(entry) || !Array.isArray(entry.hooks)) return false;
+  return entry.hooks.some((hook) => isRecord(hook) && hook.command === command);
 }
 
 const BRIDGE_START = '<!-- rizz:begin -->';
