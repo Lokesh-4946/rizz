@@ -72,9 +72,10 @@ On a Mac that already has the `rizz` bin on `PATH`:
 rizz init
 ```
 
-Then use the host normally. Hooks append to a spool and always exit 0. `rizz serve` (started by
-`init` unless `--no-serve`) folds the spool into the brain and opens `http://127.0.0.1:<port>/?token=...`.
-The page only reads that brain. Ask it `summary` or `tokens`.
+Then use the host normally. Hooks append to a spool and always exit 0. `rizz init` starts the
+local page in the background and returns. `rizz serve` keeps that page in the foreground. Pass
+`--no-serve` to skip it. The page is `http://127.0.0.1:<port>/?token=...` and only reads that
+brain. Ask it `summary` or `tokens`.
 
 ```sh
 rizz summary   # thread count, then only decisions waiting on you
