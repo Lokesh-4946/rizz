@@ -20,7 +20,11 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })),
+  );
 });
 
 interface CliResult {
@@ -502,11 +506,24 @@ describe('installed CLI hook sessions', () => {
       expect(page.status).toBe(200);
       expect(await page.text()).toContain('Rizz brain');
     } finally {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        // The page process already exited.
-      }
+      await stopDetachedPage(pid);
     }
   }, 20_000);
 });
+
+async function stopDetachedPage(pid: number): Promise<void> {
+  try {
+    process.kill(pid);
+  } catch {
+    return;
+  }
+  const started = Date.now();
+  while (Date.now() - started < 5000) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
