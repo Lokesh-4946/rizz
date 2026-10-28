@@ -248,5 +248,23 @@ CI green, complete PR body, and lightweight-footprint evidence for code changes.
 
 ---
 
-*Next decision: **D-046**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+#### D-046
+**The observer brain is project-scoped in the Rizz home.** — Committed
+Rizz records the host coding agent. It does not spawn that agent. Continuity lives under the
+isolated project store from the user-agent bridges (`<rizz-home>/projects/<id>/observe/`): a
+rewritten `BRAIN.md` index (capped at 200 lines), an append-only `journal/YYYY-MM.md`, `vision.md`
+(human-owned), append-only `decisions.md`, thread notes, handoffs, an owner inbox, and
+`ledger/tokens.jsonl`. The store key is the canonical project path, so calling Rizz in a repo
+reopens that project's brain. The git tree stays untouched unless `rizz init --bridge` writes an
+opt-in `AGENTS.md` / `.cursor/rules/rizz.mdc` block. `sessionStart` injects the index by default.
+`rizz hook` always exits 0 and appends one spool line; `rizz serve` folds the spool and serves a
+stateless `127.0.0.1` page. The hook entry is `@valoir/rizz-brain/observe` so it does not load the
+Project Intelligence graph. No new runtime dependency. The counted CLI entry grew past 200KB
+with the bridges commands plus this dispatch, so the core budget is 201KB. The observer
+modules themselves stay in the opt-in brain package. → `packages/brain/src/observe/`,
+`packages/cli/src/index.ts`, `.footprint-budget.json`.
+
+---
+
+*Next decision: **D-047**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*

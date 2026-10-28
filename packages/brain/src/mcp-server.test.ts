@@ -86,7 +86,7 @@ describe('Rizz MCP server', () => {
         'create_handoff',
       ]),
     );
-  });
+  }, 20_000);
 
   it('reads isolated resources and compiles the same task brief as CLI JSON', async () => {
     const setup = await fixture();

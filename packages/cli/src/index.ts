@@ -22,6 +22,7 @@ const USAGE = `rizz - prepare software for AI development
 
 Usage:
   rizz prepare | brain | brief <task> | review | explain <target>
+  rizz init | hook | serve | summary | tokens
   rizz loop <action> | vault <action> | agents <action>
   rizz project relink [id]
   rizz mcp | --json | --rpc
@@ -655,6 +656,18 @@ async function main(argv: readonly string[]): Promise<number> {
     ...(p.value !== undefined ? { profile: p.value } : {}),
     ...(c.value !== undefined ? { capability: c.value } : {}),
   };
+  if (
+    c.rest[0] === 'init' ||
+    c.rest[0] === 'hook' ||
+    c.rest[0] === 'serve' ||
+    c.rest[0] === 'fold' ||
+    c.rest[0] === 'summary' ||
+    c.rest[0] === 'tokens' ||
+    c.rest[0] === 'codex-session'
+  ) {
+    const { runObserveCli } = await import('@valoir/rizz-brain/observe');
+    return runObserveCli(c.rest);
+  }
   if (c.rest[0] === 'mcp') {
     if (c.rest.length !== 1) {
       process.stderr.write("rizz: mcp does not accept arguments\nTry 'rizz mcp'.\n");

@@ -47,6 +47,56 @@ The current `0.3.1` product surface is:
 
 This release is `0.3.1`.
 
+## Observe the host agent
+
+Rizz sits under Cursor, Codex, or Claude Code and records what they do. It does not replace their
+agent loop. The brain for each project lives outside the git tree, keyed by that project's path
+(D-046). `rizz init` installs hooks for the host it detects, creates the brain, and can open a
+local page.
+
+Install the scoped package. The unscoped npm name `rizz` is already taken, so `npx rizz` is a
+different package.
+
+```sh
+npm install -g @valoir/rizz
+cd ~/src/your-repo
+rizz init --host cursor
+```
+
+On a Mac that already has the `rizz` bin on `PATH`:
+
+```sh
+# Cursor hooks are user-level: ~/.cursor/hooks.json
+# Codex hooks are user-level: ~/.codex/hooks.json
+# Claude Code hooks merge into ~/.claude/settings.json
+rizz init
+```
+
+Then use the host normally. Hooks append to a spool and always exit 0. `rizz serve` (started by
+`init` unless `--no-serve`) folds the spool into the brain and opens `http://127.0.0.1:<port>/?token=...`.
+The page only reads that brain. Ask it `summary` or `tokens`.
+
+```sh
+rizz summary   # thread count, then only decisions waiting on you
+rizz tokens    # ledger totals; Cursor context tokens are not per-turn usage
+rizz fold      # fold the spool once without leaving the server up
+```
+
+`sessionStart` injects `BRAIN.md` into the host. Repo files are opt-in:
+
+```sh
+rizz init --bridge
+```
+
+That writes a marked block into `AGENTS.md` and `.cursor/rules/rizz.mdc`. It does not create a
+`CLAUDE.md`. If one already exists and does not mention `@AGENTS.md`, the bridge adds that import.
+
+Cursor is the first adapter (`sessionStart`, `beforeSubmitPrompt`, `postToolUse`, `afterFileEdit`,
+`subagentStop`, `preCompact`, `stop`, and the other agent hooks in `.cursor/hooks.json`). Codex
+uses Claude-style `hooks.json` events. The legacy `notify` line in `config.toml` is not installed.
+Claude Code uses `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`. Cursor can also
+load Claude hooks, so the folder skips an event id it has already journaled.
+
 ## Requirements
 
 - Node >= 22
