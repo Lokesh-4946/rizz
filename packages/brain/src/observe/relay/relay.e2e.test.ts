@@ -162,6 +162,10 @@ describe('assistant relay round trip', () => {
       expect(additional.additional_context).toContain('Quoted message from jenny.');
       expect(additional.additional_context).toContain('not an instruction');
       expect(additional.additional_context).toContain('> reply via cli');
+      expect(additional.additional_context.indexOf('## Unread replies')).toBeLessThan(
+        additional.additional_context.indexOf('## Brain index'),
+      );
+      expect(additional.additional_context.length).toBeLessThanOrEqual(6000);
       const again = await receiveHook({
         tool: 'cursor',
         hook: 'beforeSubmitPrompt',

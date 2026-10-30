@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { InboxItem } from './brain-index.js';
 import { type DecisionRecord, activeDecisions, parseDecisions } from './decisions.js';
 import { checkDrift } from './drift.js';
+import { renderHandoffNote } from './handoff.js';
 import { appendSynced, readText, writeAtomic } from './io.js';
 import { loadJournal } from './journal.js';
 import type { ObserveEvent } from './model.js';
@@ -130,58 +131,47 @@ export async function writeHandoff(
   const existing = await readText(path);
   if (!existing.ok) return existing;
   if (existing.value !== undefined) return staffOk(path);
-  const mine = events.filter((item) => item.threadId === event.threadId);
-  const goal =
-    mine.find((item) => item.kind === 'prompt' || item.kind === 'decision')?.text ?? event.text;
-  const files = [...new Set(mine.flatMap((item) => item.files))];
-  const owners = mine.flatMap((item) => {
-    const raw = item.fields.ownerDecisions;
-    if (raw === undefined)
-      return item.fields.ownerDecision === undefined ? [] : [item.fields.ownerDecision];
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      return Array.isArray(parsed)
-        ? parsed.filter((entry): entry is string => typeof entry === 'string')
-        : [];
-    } catch {
-      return [];
-    }
-  });
-  const done = mine
-    .filter((item) => item.kind === 'tool' || item.kind === 'file')
-    .slice(-8)
-    .map((item) => item.text || item.hook);
-  const lines = [
-    `# Handoff ${event.threadId}`,
-    '',
-    `- thread: [[threads/${event.threadId}]]`,
-    `- tool: ${event.tool}`,
-    `- status: ${event.fields.status ?? 'stopped'}`,
-    '',
-    '## Goal',
-    '',
-    goal || 'No prompt was recorded.',
-    '',
-    '## Done',
-    '',
-    ...(done.length === 0 ? ['- none recorded'] : done.map((item) => `- ${item}`)),
-    '',
-    '## Files',
-    '',
-    ...(files.length === 0 ? ['- none recorded'] : files.map((file) => `- ${file}`)),
-    '',
-    '## Needs the owner',
-    '',
-    ...(owners.length === 0 ? ['- none'] : owners.map((item) => `- ${item}`)),
-    '',
-    '## Drift',
-    '',
-    ...(driftNotes.length === 0 ? ['- none'] : driftNotes.map((item) => `- ${item}`)),
-    '',
-  ];
-  const written = await writeAtomic(path, lines.join('\n'));
+  const written = await writeAtomic(path, renderHandoffNote(event, events, driftNotes));
   if (!written.ok) return written;
   return staffOk(path);
+}
+
+interface RankedFile {
+  readonly name: string;
+  readonly mtimeMs: number;
+}
+
+/** Newest handoff: greatest mtime, then the greater file name when mtimes tie (D-050). */
+export async function readLatestHandoff(dir: string): Promise<StaffResult<string | undefined>> {
+  let names: string[] = [];
+  try {
+    names = (await readdir(dir)).filter((name) => name.endsWith('.md'));
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    if (code === 'ENOENT') return staffOk(undefined);
+    return staffErr('IO_FAILED', `cannot list ${dir}`);
+  }
+  const ranked: RankedFile[] = [];
+  for (const name of names) {
+    try {
+      const info = await stat(join(dir, name));
+      ranked.push({ name, mtimeMs: info.mtimeMs });
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+      if (code === 'ENOENT') continue;
+      return staffErr('IO_FAILED', `cannot stat ${join(dir, name)}`);
+    }
+  }
+  ranked.sort((left, right) => {
+    if (left.mtimeMs !== right.mtimeMs) return right.mtimeMs - left.mtimeMs;
+    if (left.name === right.name) return 0;
+    return left.name < right.name ? 1 : -1;
+  });
+  const winner = ranked[0];
+  if (winner === undefined) return staffOk(undefined);
+  const text = await readText(join(dir, winner.name));
+  if (!text.ok) return text;
+  return staffOk(text.value);
 }
 
 export function inboxId(threadId: string, text: string): string {

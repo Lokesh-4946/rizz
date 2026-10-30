@@ -2,7 +2,7 @@ import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { prepareProjectStore, resolveRizzHome } from '../project-store.js';
 import { readBrainText } from './brain-index.js';
-import { appendSpoolEvent } from './fold.js';
+import { appendSpoolEvent, foldSpool } from './fold.js';
 import { readText } from './io.js';
 import {
   type HostId,
@@ -12,12 +12,13 @@ import {
   isRecord,
   normalizeHook,
 } from './model.js';
-import { ensureObserveVault } from './notes.js';
+import { ensureObserveVault, readLatestHandoff } from './notes.js';
 import { observePaths } from './paths.js';
 import { refreshRelayBrain, takeUnreadRelayContext } from './relay/board.js';
 import { listRelays } from './relay/config.js';
 import { queueRelayPrompt } from './relay/delivery.js';
 import { staffOk } from './result.js';
+import { composeSessionContext } from './session-context.js';
 
 export interface HookResponse {
   readonly exitCode: 0;
@@ -30,12 +31,6 @@ function projectRootFrom(payload: Record<string, unknown>, fallback: string): st
   if (Array.isArray(roots) && typeof roots[0] === 'string' && roots[0] !== '') return roots[0];
   if (typeof payload.cwd === 'string' && payload.cwd !== '') return payload.cwd;
   return fallback;
-}
-
-function withQuote(brainText: string, extra: string): string {
-  const base = brainText.trim() === '' ? 'Rizz brain index is empty.' : brainText.slice(0, 6000);
-  if (extra.trim() === '') return base;
-  return `${base}\n\n${extra.trim()}`;
 }
 
 function promptStdout(tool: HostId, hook: string, extra: string): string {
@@ -51,8 +46,7 @@ function promptStdout(tool: HostId, hook: string, extra: string): string {
   return `${JSON.stringify({ continue: true, additional_context: text })}\n`;
 }
 
-export function hookStdout(tool: HostId, hook: string, brainText: string, extra = ''): string {
-  const context = withQuote(brainText, extra);
+export function hookStdout(tool: HostId, hook: string, context: string, extra = ''): string {
   if (hook === 'sessionStart') {
     return `${JSON.stringify({ additional_context: context })}\n`;
   }
@@ -70,32 +64,40 @@ export function hookStdout(tool: HostId, hook: string, brainText: string, extra 
   return '{}\n';
 }
 
-async function existingBrain(rizzHome: string, projectRoot: string): Promise<string> {
+const MISSING_BRAIN = 'Rizz has no brain for this folder yet. Run rizz init here.';
+
+async function sessionMaterial(
+  rizzHome: string,
+  projectRoot: string,
+): Promise<{ readonly brain: string; readonly handoff: string | undefined }> {
   let root = projectRoot;
   try {
     root = await realpath(projectRoot);
   } catch {
-    return 'Rizz has no brain for this folder yet. Run rizz init here.';
+    return { brain: MISSING_BRAIN, handoff: undefined };
   }
   const registry = await readText(join(rizzHome, 'registry.json'));
   if (!registry.ok || registry.value === undefined) {
-    return 'Rizz has no brain for this folder yet. Run rizz init here.';
+    return { brain: MISSING_BRAIN, handoff: undefined };
   }
   try {
     const parsed: unknown = JSON.parse(registry.value);
     if (!isRecord(parsed) || !isRecord(parsed.projects)) {
-      return 'Rizz has no brain for this folder yet. Run rizz init here.';
+      return { brain: MISSING_BRAIN, handoff: undefined };
     }
     for (const entry of Object.values(parsed.projects)) {
       if (!isRecord(entry) || entry.root_path !== root) continue;
       if (typeof entry.project_dir !== 'string') continue;
-      const brain = await readBrainText(join(entry.project_dir, 'observe', 'BRAIN.md'));
-      if (brain.ok && brain.value.trim() !== '') return brain.value;
+      const paths = observePaths(entry.project_dir);
+      const brain = await readBrainText(paths.brain);
+      const handoff = await readLatestHandoff(paths.handoffsDir);
+      const brainText = brain.ok && brain.value.trim() !== '' ? brain.value : MISSING_BRAIN;
+      return { brain: brainText, handoff: handoff.ok ? handoff.value : undefined };
     }
   } catch {
-    return 'Rizz has no brain for this folder yet. Run rizz init here.';
+    return { brain: MISSING_BRAIN, handoff: undefined };
   }
-  return 'Rizz has no brain for this folder yet. Run rizz init here.';
+  return { brain: MISSING_BRAIN, handoff: undefined };
 }
 
 /** Record one host hook. Always exit 0 so the host is never blocked. */
@@ -128,12 +130,13 @@ export async function receiveHook(options: {
   const hook = options.hook !== '' ? options.hook : String(payload.hook_event_name ?? 'stop');
   const rizzHome = options.rizzHome ?? resolveRizzHome();
   const projectRoot = projectRootFrom(payload, options.projectRoot);
+  const at = options.at ?? new Date().toISOString();
   const event: ObserveEvent = normalizeHook({
     tool,
     hook,
     payload,
     projectRoot,
-    at: options.at ?? new Date().toISOString(),
+    at,
   });
   const spooled = await appendSpoolEvent(rizzHome, event, {
     stampSequence: hasSharedTurnIdentity(payload),
@@ -144,6 +147,14 @@ export async function receiveHook(options: {
   else if (spooled.value.status === 'dropped') stderr = 'rizz: hook event could not be recorded\n';
   const isPrompt = hook === 'beforeSubmitPrompt' || hook === 'UserPromptSubmit';
   const isSession = hook === 'sessionStart' || hook === 'SessionStart';
+  if (isSession) {
+    const folded = await foldSpool(rizzHome, {
+      recoverKilled: true,
+      exceptThreadId: event.threadId,
+      at,
+    });
+    if (!folded.ok) stderr += `rizz: ${folded.error.message}\n`;
+  }
   let note = '';
   if (isPrompt && typeof payload.prompt === 'string') {
     const queued = await queueRelayPrompt({
@@ -164,11 +175,13 @@ export async function receiveHook(options: {
   if (isSession) {
     const relays = await listRelays(rizzHome);
     if (relays.ok && relays.value.length > 0) {
-      await refreshRelayBrain({ rizzHome, projectRoot, now: new Date().toISOString() });
+      await refreshRelayBrain({ rizzHome, projectRoot, now: event.at });
     }
   }
-  const brain = isSession ? await existingBrain(rizzHome, projectRoot) : '';
-  return { exitCode: 0, stdout: hookStdout(tool, hook, brain, extra), stderr };
+  const material = isSession ? await sessionMaterial(rizzHome, projectRoot) : undefined;
+  const context =
+    material === undefined ? '' : composeSessionContext(material.brain, material.handoff, quoted);
+  return { exitCode: 0, stdout: hookStdout(tool, hook, context, extra), stderr };
 }
 
 export async function initObserver(options: {

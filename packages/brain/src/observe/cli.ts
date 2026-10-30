@@ -202,12 +202,15 @@ export async function runObserveCli(
     return response.exitCode;
   }
   if (command === 'fold') {
-    const result = await foldSpool(rizzHome);
+    const result = await foldSpool(rizzHome, { recoverKilled: true });
     if (!result.ok) {
       process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
       return 1;
     }
     process.stdout.write(`rizz folded ${result.value.applied} event(s)\n`);
+    if (result.value.recovered > 0) {
+      process.stdout.write(`rizz recovered ${result.value.recovered} killed session(s)\n`);
+    }
     return 0;
   }
   if (command === 'summary' || command === 'tokens') {

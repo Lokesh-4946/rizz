@@ -39,6 +39,7 @@ function num(value: string | undefined): number {
 }
 
 export function rowFromEvent(event: ObserveEvent): TokenRow | undefined {
+  if (event.fields.recovery === 'yes') return undefined;
   const hasTurn = event.fields.inputTokens !== undefined || event.fields.outputTokens !== undefined;
   const hasContext = event.fields.contextTokens !== undefined;
   const isStop = event.kind === 'stop';
