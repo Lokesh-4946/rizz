@@ -106,9 +106,12 @@ export async function appendThreadEntry(
   const path = join(threadsDir, `${event.threadId}.md`);
   const existing = await readText(path);
   if (!existing.ok) return existing;
-  const entry = `### ${event.at} · ${event.hook}\n\n${event.text === '' ? event.kind : event.text}\n\n`;
-  const head = threadHead(events, event.threadId);
+  const marker = `<!-- rizz:event:${event.id} -->`;
   const prior = existing.value;
+  if (prior?.includes(marker) === true) return staffOk(undefined);
+  const body = event.text === '' ? event.kind : event.text;
+  const entry = `${marker}\n### ${event.at} · ${event.hook}\n\n${body}\n\n`;
+  const head = threadHead(events, event.threadId);
   if (prior === undefined) {
     return writeAtomic(path, `${head}${entry}`);
   }
@@ -183,6 +186,17 @@ export async function writeHandoff(
 
 export function inboxId(threadId: string, text: string): string {
   return createHash('sha256').update(`${threadId}\0${text}`).digest('hex').slice(0, 16);
+}
+
+export function inboxDecisionId(inboxItemId: string): string {
+  return `dec_${inboxItemId}`;
+}
+
+export function isInboxAnswered(
+  inboxItemId: string,
+  decisions: readonly { readonly id: string }[],
+): boolean {
+  return decisions.some((record) => record.id === inboxDecisionId(inboxItemId));
 }
 
 export async function writeInboxItem(

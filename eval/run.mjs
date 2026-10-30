@@ -3823,7 +3823,7 @@ function runInstallShimSmoke() {
             version.status === 0,
             `expected installed shim --version exit 0, got ${version.status}: ${version.stderr}`,
           );
-          assert(version.stdout.trim() === '0.3.1', 'expected shim to forward --version 0.3.1');
+          assert(version.stdout.trim() === '0.4.0', 'expected shim to forward --version 0.4.0');
         });
       },
     },
