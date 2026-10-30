@@ -30,6 +30,12 @@ export function relayConfigPath(rizzHome: string, name: string): string {
   return join(agentsDir(rizzHome), `${name}.json`);
 }
 
+/** Windows does not report Unix permission bits. POSIX must be exactly 0600. */
+export function isPrivateFileMode(mode: number): boolean {
+  if (process.platform === 'win32') return true;
+  return (mode & 0o777) === 0o600;
+}
+
 export function relayNoticePath(rizzHome: string): string {
   return join(rizzHome, 'relay', 'notice.txt');
 }

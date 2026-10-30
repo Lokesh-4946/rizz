@@ -12,7 +12,7 @@ import type { ObserveEvent } from '../model.js';
 import { observePaths } from '../paths.js';
 import { receiveHook } from '../receive.js';
 import { relaySummaryLines } from './board.js';
-import { relayConfigPath } from './config.js';
+import { isPrivateFileMode, relayConfigPath } from './config.js';
 import {
   GROK_HINT,
   outboundLabel,
@@ -187,7 +187,7 @@ describe('relay config and delivery', () => {
     );
     expect(added).toBe(0);
     const info = await stat(relayConfigPath(home, 'jenny'));
-    expect(info.mode & 0o777).toBe(0o600);
+    expect(isPrivateFileMode(info.mode)).toBe(true);
     const stored = await readFile(relayConfigPath(home, 'jenny'), 'utf8');
     expect(stored).toContain(KEY);
     let listed = '';

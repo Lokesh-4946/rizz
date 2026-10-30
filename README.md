@@ -139,8 +139,9 @@ rizz relay add jenny --url https://jenny.example/webhook --poll-url https://jenn
 
 `--reply-wait` accepts `10m`, `30s`, or `500ms`. `RIZZ_RELAY_REPLY_WAIT_MS` overrides the stored
 wait when the index and summary are rendered. The key and webhook URL are stored under the Rizz
-home (`relay/agents/jenny.json`, mode `0600`). They are not written to the git repo, the brain,
-the journal, or logs.
+home (`relay/agents/jenny.json`, mode `0600` on macOS and Linux). Windows does not
+report those permission bits; the file is still written only under the Rizz home. They are not
+written to the git repo, the brain, the journal, or logs.
 
 ```sh
 rizz relay list

@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import {
   addRelay,
+  isPrivateFileMode,
   listRelays,
   readRelay,
   relayConfigPath,
@@ -108,7 +109,7 @@ async function add(argv: readonly string[], context: RelayCommandContext): Promi
   }
   process.stdout.write(`rizz relay ${saved.value.name} saved\n`);
   const info = await stat(relayConfigPath(context.rizzHome, name));
-  if ((info.mode & 0o777) !== 0o600) {
+  if (!isPrivateFileMode(info.mode)) {
     writeError('relay config was not stored with mode 0600');
     return 1;
   }
