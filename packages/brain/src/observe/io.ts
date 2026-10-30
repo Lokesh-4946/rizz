@@ -191,7 +191,9 @@ export async function withLock<T>(
         await writeFile(join(lockPath, 'pid'), `${process.pid}\n`);
         return await body();
       } finally {
-        await rm(lockPath, { recursive: true, force: true });
+        // A failed cleanup must not turn a successful append into an error.
+        // Callers would otherwise write a second copy through the pending path.
+        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
       }
     } catch (error) {
       if (errorCode(error) !== 'EEXIST') {
