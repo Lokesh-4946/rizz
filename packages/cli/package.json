@@ -1,12 +1,13 @@
 {
   "name": "@valoir/rizz",
   "version": "0.4.0",
+  "license": "MIT",
   "description": "Local Project Intelligence Engineering CLI for understanding repositories before changing them.",
   "type": "module",
   "bin": { "rizz": "./dist/index.js" },
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
-  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "package.json"],
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "LICENSE", "package.json"],
   "publishConfig": {
     "access": "public"
   },

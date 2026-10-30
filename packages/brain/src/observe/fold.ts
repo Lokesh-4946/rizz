@@ -196,7 +196,7 @@ export async function refreshObserveIndex(options: {
   return staffOk(undefined);
 }
 
-export async function foldSpool(
+async function foldSpoolLocked(
   rizzHome: string,
   options?: FoldOptions,
 ): Promise<StaffResult<FoldResult>> {
@@ -338,6 +338,31 @@ async function recoverKilledThreads(
     }
   }
   return staffOk(recovered);
+}
+
+export async function foldSpool(
+  rizzHome: string,
+  options?: FoldOptions,
+): Promise<StaffResult<FoldResult>> {
+  const folded = await foldSpoolLocked(rizzHome, options);
+  if (!folded.ok) return folded;
+  try {
+    const relay = await import('./relay/delivery.js');
+    const maintained = await relay.maintainRelay(rizzHome);
+    if (!maintained.ok) await relay.writeRelayNotice(rizzHome, maintained.error.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const relay = await import('./relay/delivery.js');
+    await relay.writeRelayNotice(rizzHome, message);
+  }
+  return folded;
+}
+
+export async function commitObserveEvent(
+  rizzHome: string,
+  event: ObserveEvent,
+): Promise<StaffResult<'applied' | 'duplicate'>> {
+  return withLock(spoolLock(rizzHome), async () => applyEvent(rizzHome, event));
 }
 
 function eventFileName(eventId: string): string {

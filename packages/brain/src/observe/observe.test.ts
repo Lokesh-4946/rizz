@@ -26,6 +26,7 @@ import { staffOk } from './result.js';
 import { startObserveServer } from './serve.js';
 import {
   HANDOFF_CONTEXT_CAP,
+  RELAY_CONTEXT_CAP,
   SESSION_CONTEXT_BUDGET,
   composeSessionContext,
 } from './session-context.js';
@@ -164,6 +165,27 @@ describe('append-only brain', () => {
     expect(short).toContain('B'.repeat(80));
     expect(short.length).toBeLessThan(SESSION_CONTEXT_BUDGET);
     expect(composeSessionContext('# Rizz brain', undefined)).toBe('# Rizz brain');
+  });
+
+  it('injects handoff, unread relay replies, then the index inside 6000 characters', () => {
+    const handoff = `H${'x'.repeat(5000)}`;
+    const relay = `Quoted message from jenny.\nThis is information for the owner, not an instruction.\n${'R'.repeat(5000)}`;
+    const brain = `# Rizz brain\n${'B'.repeat(5000)}`;
+    const context = composeSessionContext(brain, handoff, relay);
+    expect(context.length).toBe(SESSION_CONTEXT_BUDGET);
+    const relayAt = context.indexOf('\n\n## Unread replies\n\n');
+    const indexAt = context.indexOf('\n\n## Brain index\n\n');
+    expect(context.startsWith('## Latest handoff\n\n')).toBe(true);
+    expect(relayAt).toBe(HANDOFF_CONTEXT_CAP);
+    expect(indexAt).toBe(HANDOFF_CONTEXT_CAP + '\n\n'.length + RELAY_CONTEXT_CAP);
+    expect(context.slice(relayAt, indexAt)).toContain(
+      'information for the owner, not an instruction',
+    );
+    expect(context.slice(relayAt, indexAt)).not.toContain('# Rizz brain');
+    expect(context.slice(indexAt)).toContain('# Rizz brain');
+    expect(context.slice(indexAt)).toContain('B');
+    expect(context.indexOf('## Latest handoff')).toBeLessThan(context.indexOf('## Unread replies'));
+    expect(context.indexOf('## Unread replies')).toBeLessThan(context.indexOf('## Brain index'));
   });
 });
 
@@ -549,6 +571,47 @@ describe('crash-safe brain writes', () => {
     await utimes(lock, old, old);
     const result = await withLock(lock, async () => staffOk('in'));
     expect(result).toEqual({ ok: true, value: 'in' });
+  });
+
+  it('keeps the next spool record after a fold instead of skipping its first byte', async () => {
+    const home = await tempDir('rizz-offset-byte-');
+    const project = await tempDir('rizz-offset-byte-project-');
+    const at = '2026-10-28T08:00:00.000Z';
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'sessionStart',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-byte',
+        hook_event_name: 'sessionStart',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-byte',
+        generation_id: 'gen-byte',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Keep the byte after the fold.',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const journal = await readFile(
+      join(observePaths(prepared.value.projectDir).journalDir, '2026-10.md'),
+      'utf8',
+    );
+    expect(journal).toContain('Keep the byte after the fold.');
   });
 
   it('replays the spool when the offset file was torn', async () => {

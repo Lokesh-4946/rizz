@@ -7,6 +7,7 @@ export function renderSummary(options: {
   readonly threads: number;
   readonly inbox: readonly InboxItem[];
   readonly dropped?: number;
+  readonly relayLines?: readonly string[];
 }): string {
   const progress = `${options.threads} thread(s) observed.`;
   const parts = [progress];
@@ -18,6 +19,9 @@ export function renderSummary(options: {
   }
   const dropped = options.dropped ?? 0;
   if (dropped > 0) parts.push(`${dropped} hook event(s) could not be recorded.`);
+  if (options.relayLines !== undefined && options.relayLines.length > 0) {
+    parts.push(`Relay:\n${options.relayLines.join('\n')}`);
+  }
   return parts.join('\n');
 }
 

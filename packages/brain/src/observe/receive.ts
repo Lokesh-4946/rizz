@@ -7,6 +7,9 @@ import { readText } from './io.js';
 import { type HostId, type ObserveEvent, isHostId, isRecord, normalizeHook } from './model.js';
 import { ensureObserveVault, readLatestHandoff } from './notes.js';
 import { observePaths } from './paths.js';
+import { refreshRelayBrain, takeUnreadRelayContext } from './relay/board.js';
+import { listRelays } from './relay/config.js';
+import { queueRelayPrompt } from './relay/delivery.js';
 import { staffOk } from './result.js';
 import { composeSessionContext } from './session-context.js';
 
@@ -23,7 +26,20 @@ function projectRootFrom(payload: Record<string, unknown>, fallback: string): st
   return fallback;
 }
 
-export function hookStdout(tool: HostId, hook: string, context: string): string {
+function promptStdout(tool: HostId, hook: string, extra: string): string {
+  if (extra.trim() === '') return `${JSON.stringify({ continue: true })}\n`;
+  const text = extra.trim();
+  if (tool === 'claude') {
+    return `${JSON.stringify({
+      continue: true,
+      hookSpecificOutput: { hookEventName: hook, additionalContext: text },
+    })}\n`;
+  }
+  if (tool === 'codex') return `${JSON.stringify({ continue: true, additionalContext: text })}\n`;
+  return `${JSON.stringify({ continue: true, additional_context: text })}\n`;
+}
+
+export function hookStdout(tool: HostId, hook: string, context: string, extra = ''): string {
   if (hook === 'sessionStart') {
     return `${JSON.stringify({ additional_context: context })}\n`;
   }
@@ -36,7 +52,7 @@ export function hookStdout(tool: HostId, hook: string, context: string): string 
     })}\n`;
   }
   if (hook === 'beforeSubmitPrompt' || hook === 'UserPromptSubmit') {
-    return `${JSON.stringify({ continue: true })}\n`;
+    return promptStdout(tool, hook, extra);
   }
   return '{}\n';
 }
@@ -119,8 +135,9 @@ export async function receiveHook(options: {
   let stderr = '';
   if (!spooled.ok) stderr = `rizz: ${spooled.error.message}\n`;
   else if (spooled.value === 'dropped') stderr = 'rizz: hook event could not be recorded\n';
-  const session = hook === 'sessionStart' || hook === 'SessionStart';
-  if (session) {
+  const isPrompt = hook === 'beforeSubmitPrompt' || hook === 'UserPromptSubmit';
+  const isSession = hook === 'sessionStart' || hook === 'SessionStart';
+  if (isSession) {
     const folded = await foldSpool(rizzHome, {
       recoverKilled: true,
       exceptThreadId: event.threadId,
@@ -128,10 +145,33 @@ export async function receiveHook(options: {
     });
     if (!folded.ok) stderr += `rizz: ${folded.error.message}\n`;
   }
-  const material = session ? await sessionMaterial(rizzHome, projectRoot) : undefined;
+  let note = '';
+  if (isPrompt && typeof payload.prompt === 'string') {
+    const queued = await queueRelayPrompt({
+      rizzHome,
+      projectRoot,
+      prompt: payload.prompt,
+      sourceEventId: event.id,
+      at: event.at,
+    });
+    note = queued.note;
+    if (note.startsWith('Rizz did not')) stderr += `rizz: ${note}\n`;
+  }
+  const quoted =
+    isPrompt || isSession
+      ? await takeUnreadRelayContext({ rizzHome, projectRoot, now: event.at })
+      : '';
+  const extra = [note, quoted].filter((part) => part !== '').join('\n\n');
+  if (isSession) {
+    const relays = await listRelays(rizzHome);
+    if (relays.ok && relays.value.length > 0) {
+      await refreshRelayBrain({ rizzHome, projectRoot, now: event.at });
+    }
+  }
+  const material = isSession ? await sessionMaterial(rizzHome, projectRoot) : undefined;
   const context =
-    material === undefined ? '' : composeSessionContext(material.brain, material.handoff);
-  return { exitCode: 0, stdout: hookStdout(tool, hook, context), stderr };
+    material === undefined ? '' : composeSessionContext(material.brain, material.handoff, quoted);
+  return { exitCode: 0, stdout: hookStdout(tool, hook, context, extra), stderr };
 }
 
 export async function initObserver(options: {

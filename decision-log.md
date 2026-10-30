@@ -306,9 +306,10 @@ commands name `node` and the absolute script path of the CLI that ran `rizz init
 #### D-050
 **Session start injects the newest handoff and the brain index. A killed session is recovered from the journal.** — Committed
 Owner label D-S1. `sessionStart` / `SessionStart` for Cursor, Codex, and Claude Code injects the
-newest handoff note first, then `BRAIN.md`, inside the existing 6000-character budget. The handoff
-section is capped at 2400 characters including its heading. The index receives every remaining
-character. A shorter handoff does not raise the handoff cap. The newest handoff is the greatest
+newest handoff note first, then unread relay replies, then `BRAIN.md`, inside the existing
+6000-character budget. The handoff section is capped at 2400 characters including its heading.
+Unread replies are capped at 1600 characters and stay labeled as information, not instructions.
+The index receives every remaining character. A shorter section does not raise its own cap. The newest handoff is the greatest
 mtime; equal mtimes use the greater file name. The note includes the latest user prompt, the last
 shell command with its exit status and the first failing-test line, touched files, and an
 `Open / Next` section. `Done` lists files edited and commands run. `BRAIN.md` has a `Touched files`

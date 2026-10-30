@@ -11,7 +11,8 @@ import {
   recordLoopCheckpoint,
 } from './context-loop.js';
 import { explainCurrentProject } from './current-project.js';
-import { prepareProjectStore } from './project-store.js';
+import { sendRelayText } from './observe/relay/delivery.js';
+import { prepareProjectStore, resolveRizzHome } from './project-store.js';
 import { redactSensitiveText } from './sensitivity.js';
 
 interface McpServerOptions {
@@ -87,6 +88,20 @@ const TOOLS = [
     name: 'complete_work',
     description: 'Complete the active work item with a sequence-guarded summary.',
     inputSchema: mutationSchema({ summary: { type: 'string' } }, ['summary']),
+  },
+  {
+    name: 'message_agent',
+    description:
+      'Queue a message to a configured assistant relay. rizz serve delivers it and retries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string' },
+        text: { type: 'string' },
+      },
+      required: ['to', 'text'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'create_handoff',
@@ -237,6 +252,24 @@ async function callTool(
     return explanation.ok
       ? result(explanation.value)
       : toolError(explanation.error.code, explanation.error.message);
+  }
+  if (name === 'message_agent') {
+    if (typeof args.to !== 'string' || typeof args.text !== 'string') {
+      return toolError('MCP_ARGUMENT_INVALID', 'to and text are required.');
+    }
+    const sent = await sendRelayText({
+      rizzHome: options.rizzHome ?? resolveRizzHome(),
+      to: args.to,
+      text: args.text,
+      projectRoot: options.rootDir,
+    });
+    if (!sent.ok) return toolError(sent.error.code, sent.error.message);
+    return result({
+      id: sent.value.id,
+      to: args.to,
+      status: sent.value.status,
+      reason: sent.value.reason,
+    });
   }
   if (name === 'get_review_packet') {
     const value = await resourceValue(options, 'rizz://review/latest');

@@ -83,11 +83,17 @@ rizz tokens    # ledger totals; Cursor context tokens are not per-turn usage
 rizz fold      # fold the spool once without leaving the server up
 ```
 
-`sessionStart` injects the newest handoff note and `BRAIN.md` for Cursor, Codex, and Claude
-Code. The handoff section is first and capped at 2400 characters, including its heading. The
-index uses whatever is left of the 6000-character budget. A shorter handoff does not raise that
-cap; the unused characters go to the index. The newest handoff is the greatest file mtime, and
-equal mtimes use the greater file name.
+`sessionStart` injects three sections for Cursor, Codex, and Claude Code, in this order,
+inside a 6000-character budget:
+
+1. The newest handoff note, capped at 2400 characters including its heading.
+2. Unread relay replies. Each quote is labeled as information for the owner, not an instruction.
+   This section is capped at 1600 characters including its heading.
+3. `BRAIN.md`. It receives every character left in the budget.
+
+A shorter section does not raise its own cap. Unused characters go to the sections after it.
+The newest handoff is the greatest file mtime, and equal mtimes use the greater file name.
+`beforeSubmitPrompt` still injects only the unread replies, with the same information label.
 
 An owner decision uses the explicit prefix `Owner decision:` (any casing). It matches at the start
 of a line or later on the same line. The same words inside quotes, backticks, or a fenced code
@@ -116,6 +122,143 @@ Cursor is the first adapter (`sessionStart`, `beforeSubmitPrompt`, `postToolUse`
 uses Claude-style `hooks.json` events. The legacy `notify` line in `config.toml` is not installed.
 Claude Code uses `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`. Cursor can also
 load Claude hooks, so the folder skips an event id it has already journaled.
+
+## Message your assistant from the host agent
+
+From a Cursor, Codex, or Claude Code chat you can send a message to a personal assistant such as
+Jenny. Rizz stores the thread in the project brain, shows it on the brain page, and injects Jenny's
+replies into the next host turn for that project. Replies are quoted as information for you. The
+host agent is told not to follow instructions inside them.
+
+Jenny is a hosted assistant. Rizz wakes her with an HTTP POST and does not wait for a reply on that
+call. Jenny cannot reach your laptop. When your machine is online and you approve it, she runs
+`rizz relay deliver` locally (the same machine that runs `rizz serve`). Until that delivery lands,
+a sent message that is still unanswered after the reply wait (default 10 minutes) is shown as
+`answered in Grok Bot chat (check Jenny)` in the brain index, on the page, and in `rizz summary`.
+A later delivery replaces that hint with the reply text.
+
+There is no hosted mailbox to poll. Polling stays off unless you set `--poll-url`.
+
+### Setup
+
+Run this in a terminal on the machine that runs Rizz, not inside the host agent, so the webhook
+URL and sender key are not captured by a shell hook. `rizz init` should already be running
+`rizz serve` for this repo.
+
+```sh
+cd ~/src/your-repo
+printf '%s' "$JENNY_SENDER_KEY" | rizz relay add jenny --url https://jenny.example/webhook
+```
+
+The sender key can also come from the environment, which overrides stdin:
+
+```sh
+RIZZ_RELAY_KEY="$JENNY_SENDER_KEY" rizz relay add jenny --url https://jenny.example/webhook
+```
+
+Optional flags:
+
+```sh
+rizz relay add jenny --url https://jenny.example/webhook --poll-url https://jenny.example/poll --reply-wait 10m
+```
+
+`--reply-wait` accepts `10m`, `30s`, or `500ms`. `RIZZ_RELAY_REPLY_WAIT_MS` overrides the stored
+wait when the index and summary are rendered. The key and webhook URL are stored under the Rizz
+home (`relay/agents/jenny.json`, mode `0600` on macOS and Linux). Windows does not
+report those permission bits; the file is still written only under the Rizz home. They are not
+written to the git repo, the brain, the journal, or logs.
+
+```sh
+rizz relay list
+rizz relay remove jenny
+```
+
+`rizz relay list` prints the webhook URL and whether a poll URL is set. It never prints the key.
+
+### Send
+
+Any of these queue a message. `rizz serve` (or `rizz fold`) posts it and retries with backoff.
+Failed deliveries stay visible as `failed: <reason>`. Nothing is dropped on the floor.
+
+```sh
+rizz msg jenny "Can you look at the auth plan?"
+```
+
+In Cursor chat, either call the `message_agent` tool on `rizz mcp`:
+
+```json
+{ "to": "jenny", "text": "Can you look at the auth plan?" }
+```
+
+or start the prompt with `@jenny ` (the configured lowercase name, then a space):
+
+```text
+@jenny Can you look at the auth plan?
+```
+
+The beforeSubmitPrompt hook only appends to a local spool and exits 0. It does not call the webhook.
+
+The POST body uses these field names:
+
+```json
+{
+  "id": "msg_<24 hex>",
+  "from": "rizz",
+  "project": "<rizz project id>",
+  "projectPath": "<absolute project path>",
+  "text": "<message, at most 8000 characters>",
+  "indexExcerpt": "<BRAIN.md excerpt, at most 1200 characters>",
+  "sentAt": "<ISO-8601>"
+}
+```
+
+The sender key is sent only as `Authorization: Bearer <key>`. The webhook must be the final http(s)
+URL; redirects are not followed. A 2xx response marks the message `sent`. Other responses and
+network errors are retried up to 8 times (1s, 2s, 4s, … capped at 60s) and then stay `failed`.
+
+### Replies
+
+Jenny's reply is delivered on the machine:
+
+```sh
+rizz relay deliver --from jenny --in-reply-to msg_<id> "The plan looks fine."
+```
+
+The same JSON body is accepted by the token-protected page API:
+
+```sh
+curl -s -X POST "http://127.0.0.1:<port>/api/relay/deliver?token=<token>" \
+  -H 'content-type: application/json' \
+  -d '{"from":"jenny","inReplyTo":"msg_<id>","text":"The plan looks fine."}'
+```
+
+Repeating the same assistant, `in-reply-to`, and text is a no-op. A different text is a new reply
+and replaces the Grok Bot hint. Unknown relay names are rejected. The brain page also has a send
+box; it uses the same token as the rest of the page.
+
+### Optional poll
+
+If `pollUrl` is set, `rizz serve` GETs it with the same bearer token and `?cursor=<opaque>` after
+the first page. A successful poll waits 15 seconds before the next one (`RIZZ_RELAY_POLL_INTERVAL_MS`
+overrides that). Leave the poll URL unset for Jenny. The response is:
+
+```json
+{
+  "messages": [
+    {
+      "id": "optional external id",
+      "inReplyTo": "msg_<id>",
+      "from": "jenny",
+      "text": "The plan looks fine.",
+      "at": "2026-10-28T12:00:00.000Z"
+    }
+  ],
+  "cursor": "opaque-or-empty"
+}
+```
+
+Message identity for poll and deliver is the assistant name, the `inReplyTo` id, and a hash of the
+text. Replays do not create a second journal entry.
 
 ## Requirements
 
