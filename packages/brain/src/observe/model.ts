@@ -10,7 +10,8 @@ export type ObserveKind =
   | 'file'
   | 'usage'
   | 'stop'
-  | 'decision';
+  | 'decision'
+  | 'message';
 
 /** One normalized host event. The journal stores this JSON verbatim and never rewrites it. */
 export interface ObserveEvent {

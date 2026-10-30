@@ -177,7 +177,7 @@ export async function refreshObserveIndex(options: {
   return staffOk(undefined);
 }
 
-export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResult>> {
+async function foldSpoolLocked(rizzHome: string): Promise<StaffResult<FoldResult>> {
   return withLock(spoolLock(rizzHome), async () => {
     const offsetResult = await readOffset(spoolOffsetFile(rizzHome));
     if (!offsetResult.ok) return offsetResult;
@@ -232,6 +232,28 @@ export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResul
       projects: [...projects],
     });
   });
+}
+
+export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResult>> {
+  const folded = await foldSpoolLocked(rizzHome);
+  if (!folded.ok) return folded;
+  try {
+    const relay = await import('./relay/delivery.js');
+    const maintained = await relay.maintainRelay(rizzHome);
+    if (!maintained.ok) await relay.writeRelayNotice(rizzHome, maintained.error.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const relay = await import('./relay/delivery.js');
+    await relay.writeRelayNotice(rizzHome, message);
+  }
+  return folded;
+}
+
+export async function commitObserveEvent(
+  rizzHome: string,
+  event: ObserveEvent,
+): Promise<StaffResult<'applied' | 'duplicate'>> {
+  return withLock(spoolLock(rizzHome), async () => applyEvent(rizzHome, event));
 }
 
 function eventFileName(eventId: string): string {
@@ -299,7 +321,7 @@ export async function appendSpoolEvent(
   rizzHome: string,
   event: ObserveEvent,
   options?: { readonly stampSequence?: boolean },
-): Promise<StaffResult<'recorded' | 'dropped'>> {
+): Promise<StaffResult<{ readonly status: 'recorded' | 'dropped'; readonly id: string }>> {
   const locked = await withLock(spoolLock(rizzHome), async () => {
     let stamped = event;
     if (options?.stampSequence === true) {
@@ -307,12 +329,14 @@ export async function appendSpoolEvent(
       if (!offset.ok) return offset;
       stamped = { ...event, id: `${event.id}:s${offset.value}` };
     }
-    return appendSynced(spoolFile(rizzHome), `${JSON.stringify(stamped)}\n`);
+    const appended = await appendSynced(spoolFile(rizzHome), `${JSON.stringify(stamped)}\n`);
+    if (!appended.ok) return appended;
+    return staffOk(stamped.id);
   });
   const line = `${JSON.stringify(event)}\n`;
-  if (locked.ok) return staffOk('recorded');
+  if (locked.ok) return staffOk({ status: 'recorded', id: locked.value });
   const queued = await writeAtomic(join(spoolPendingDir(rizzHome), eventFileName(event.id)), line);
-  if (queued.ok) return staffOk('recorded');
+  if (queued.ok) return staffOk({ status: 'recorded', id: event.id });
   const dropped = await writeAtomic(
     join(spoolDropDir(rizzHome), eventFileName(event.id)),
     `${JSON.stringify({
@@ -324,6 +348,6 @@ export async function appendSpoolEvent(
       reason: queued.error.message,
     })}\n`,
   );
-  if (dropped.ok) return staffOk('dropped');
+  if (dropped.ok) return staffOk({ status: 'dropped', id: event.id });
   return queued;
 }
