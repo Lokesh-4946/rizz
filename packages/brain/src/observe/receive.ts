@@ -4,7 +4,14 @@ import { prepareProjectStore, resolveRizzHome } from '../project-store.js';
 import { readBrainText } from './brain-index.js';
 import { appendSpoolEvent, foldSpool } from './fold.js';
 import { readText } from './io.js';
-import { type HostId, type ObserveEvent, isHostId, isRecord, normalizeHook } from './model.js';
+import {
+  type HostId,
+  type ObserveEvent,
+  hasSharedTurnIdentity,
+  isHostId,
+  isRecord,
+  normalizeHook,
+} from './model.js';
 import { ensureObserveVault, readLatestHandoff } from './notes.js';
 import { observePaths } from './paths.js';
 import { refreshRelayBrain, takeUnreadRelayContext } from './relay/board.js';
@@ -131,10 +138,13 @@ export async function receiveHook(options: {
     projectRoot,
     at,
   });
-  const spooled = await appendSpoolEvent(rizzHome, event);
+  const spooled = await appendSpoolEvent(rizzHome, event, {
+    stampSequence: hasSharedTurnIdentity(payload),
+  });
   let stderr = '';
+  const recordedId = spooled.ok ? spooled.value.id : event.id;
   if (!spooled.ok) stderr = `rizz: ${spooled.error.message}\n`;
-  else if (spooled.value === 'dropped') stderr = 'rizz: hook event could not be recorded\n';
+  else if (spooled.value.status === 'dropped') stderr = 'rizz: hook event could not be recorded\n';
   const isPrompt = hook === 'beforeSubmitPrompt' || hook === 'UserPromptSubmit';
   const isSession = hook === 'sessionStart' || hook === 'SessionStart';
   if (isSession) {
@@ -151,7 +161,7 @@ export async function receiveHook(options: {
       rizzHome,
       projectRoot,
       prompt: payload.prompt,
-      sourceEventId: event.id,
+      sourceEventId: recordedId,
       at: event.at,
     });
     note = queued.note;

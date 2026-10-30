@@ -98,6 +98,22 @@ async function verifyTail(path: string, chunk: string): Promise<boolean> {
   }
 }
 
+/** Byte offset where the next append lands, after a torn tail is dropped. */
+export async function nextAppendOffset(path: string): Promise<StaffResult<number>> {
+  try {
+    await dropTornTail(path);
+  } catch (error) {
+    return staffErr('IO_FAILED', `cannot prepare ${path}: ${errorMessage(error)}`);
+  }
+  try {
+    const info = await stat(path);
+    return staffOk(info.size);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return staffOk(0);
+    return staffErr('IO_FAILED', `cannot stat ${path}: ${errorMessage(error)}`);
+  }
+}
+
 /** Append bytes and fsync. Callers pass a chunk that already ends in a newline. */
 export async function appendSynced(path: string, chunk: string): Promise<StaffResult<void>> {
   try {
@@ -175,7 +191,9 @@ export async function withLock<T>(
         await writeFile(join(lockPath, 'pid'), `${process.pid}\n`);
         return await body();
       } finally {
-        await rm(lockPath, { recursive: true, force: true });
+        // A failed cleanup must not turn a successful append into an error.
+        // Callers would otherwise write a second copy through the pending path.
+        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
       }
     } catch (error) {
       if (errorCode(error) !== 'EEXIST') {

@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { prepareProjectStore } from '../project-store.js';
 import { type InboxItem, snapshotFromEvents, visionQuote, writeBrain } from './brain-index.js';
 import { parsedOwnerDecisions } from './handoff.js';
-import { appendSynced, readText, withLock, writeAtomic } from './io.js';
+import { appendSynced, nextAppendOffset, readText, withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, loadJournal } from './journal.js';
 import { appendTokenRow, rowFromEvent } from './ledger.js';
-import { type ObserveEvent, isRecord, ownerDecisionLines } from './model.js';
+import { type ObserveEvent, committedOwnerDecisions, isRecord } from './model.js';
 import {
   appendThreadEntry,
   driftNotesFor,
@@ -80,56 +80,60 @@ async function applyEvent(
   if (!journal.ok) return journal;
   const events = await loadJournal(paths.journalDir);
   if (!events.ok) return events;
-  const thread = await appendThreadEntry(paths.threadsDir, event, events.value);
+  const stored = events.value.find((item) => item.id === event.id);
+  if (stored === undefined) {
+    return staffErr('INVALID_STATE', 'journal is missing an event it just committed');
+  }
+  const thread = await appendThreadEntry(paths.threadsDir, stored, events.value);
   if (!thread.ok) return thread;
-  const row = rowFromEvent(event);
+  const row = rowFromEvent(stored);
   if (row !== undefined) {
     const existingLedger = await readText(paths.ledger);
     if (!existingLedger.ok) return existingLedger;
-    if (!(existingLedger.value ?? '').includes(`"eventId":${JSON.stringify(event.id)}`)) {
+    if (!(existingLedger.value ?? '').includes(`"eventId":${JSON.stringify(stored.id)}`)) {
       const ledger = await appendTokenRow(paths.ledger, row);
       if (!ledger.ok) return ledger;
     }
   }
   const decisions = await readDecisionRecords(paths.decisions);
   if (!decisions.ok) return decisions;
-  const owners = ownerDecisionLines(event.text);
+  const owners = committedOwnerDecisions(stored);
   for (const text of owners) {
     const queued = await queueInboxItem(paths.inboxDir, decisions.value, {
-      id: inboxId(event.threadId, text),
+      id: inboxId(stored.threadId, text),
       text,
-      threadId: event.threadId,
+      threadId: stored.threadId,
     });
     if (!queued.ok) return queued;
   }
-  if (event.kind === 'stop') {
+  if (stored.kind === 'stop') {
     const reply = events.value
-      .filter((item) => item.threadId === event.threadId)
+      .filter((item) => item.threadId === stored.threadId)
       .map((item) => item.text)
       .filter((text) => text !== '')
       .join('\n\n');
     for (const text of parsedOwnerDecisions(reply)) {
       const queued = await queueInboxItem(paths.inboxDir, decisions.value, {
-        id: inboxId(event.threadId, text),
+        id: inboxId(stored.threadId, text),
         text,
-        threadId: event.threadId,
+        threadId: stored.threadId,
       });
       if (!queued.ok) return queued;
     }
     const drift = await driftNotesFor(
       paths.vision,
-      events.value.filter((item) => item.threadId === event.threadId),
+      events.value.filter((item) => item.threadId === stored.threadId),
     );
     if (!drift.ok) return drift;
     for (const note of drift.value) {
       const queued = await queueInboxItem(paths.inboxDir, decisions.value, {
-        id: inboxId(event.threadId, note),
+        id: inboxId(stored.threadId, note),
         text: note,
-        threadId: event.threadId,
+        threadId: stored.threadId,
       });
       if (!queued.ok) return queued;
     }
-    const handoff = await writeHandoff(paths.handoffsDir, event, events.value, drift.value);
+    const handoff = await writeHandoff(paths.handoffsDir, stored, events.value, drift.value);
     if (!handoff.ok) return handoff;
   }
   const brain = await refreshObserveIndex({
@@ -430,14 +434,23 @@ async function applyPendingEvents(rizzHome: string): Promise<StaffResult<FoldRes
 export async function appendSpoolEvent(
   rizzHome: string,
   event: ObserveEvent,
-): Promise<StaffResult<'recorded' | 'dropped'>> {
+  options?: { readonly stampSequence?: boolean },
+): Promise<StaffResult<{ readonly status: 'recorded' | 'dropped'; readonly id: string }>> {
+  const locked = await withLock(spoolLock(rizzHome), async () => {
+    let stamped = event;
+    if (options?.stampSequence === true) {
+      const offset = await nextAppendOffset(spoolFile(rizzHome));
+      if (!offset.ok) return offset;
+      stamped = { ...event, id: `${event.id}:s${offset.value}` };
+    }
+    const appended = await appendSynced(spoolFile(rizzHome), `${JSON.stringify(stamped)}\n`);
+    if (!appended.ok) return appended;
+    return staffOk(stamped.id);
+  });
   const line = `${JSON.stringify(event)}\n`;
-  const locked = await withLock(spoolLock(rizzHome), async () =>
-    appendSynced(spoolFile(rizzHome), line),
-  );
-  if (locked.ok) return staffOk('recorded');
+  if (locked.ok) return staffOk({ status: 'recorded', id: locked.value });
   const queued = await writeAtomic(join(spoolPendingDir(rizzHome), eventFileName(event.id)), line);
-  if (queued.ok) return staffOk('recorded');
+  if (queued.ok) return staffOk({ status: 'recorded', id: event.id });
   const dropped = await writeAtomic(
     join(spoolDropDir(rizzHome), eventFileName(event.id)),
     `${JSON.stringify({
@@ -449,6 +462,6 @@ export async function appendSpoolEvent(
       reason: queued.error.message,
     })}\n`,
   );
-  if (dropped.ok) return staffOk('dropped');
+  if (dropped.ok) return staffOk({ status: 'dropped', id: event.id });
   return queued;
 }

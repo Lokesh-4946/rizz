@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,7 @@ import { createMcpServer } from '../../mcp-server.js';
 import { prepareProjectStore } from '../../project-store.js';
 import { renderBrain, snapshotFromEvents } from '../brain-index.js';
 import { runObserveCli } from '../cli.js';
+import { commitObserveEvent } from '../fold.js';
 import { loadJournal } from '../journal.js';
 import type { ObserveEvent } from '../model.js';
 import { observePaths } from '../paths.js';
@@ -356,6 +357,88 @@ describe('relay config and delivery', () => {
     });
     expect(ignored.exitCode).toBe(0);
     expect(ignored.stdout).toBe(`${JSON.stringify({ continue: true })}\n`);
+  });
+
+  it('keeps distinct relay ids for two mentions that share a generation id', async () => {
+    const home = await tempDir('rizz-hook-relay-turn-');
+    const project = await tempDir('rizz-hook-relay-turn-project-');
+    expect(
+      await runObserveCli(
+        ['relay', 'add', 'jenny', '--url', 'http://127.0.0.1:1/blackhole', '--reply-wait', '10m'],
+        { cwd: project, rizzHome: home, env: { RIZZ_RELAY_KEY: KEY } },
+      ),
+    ).toBe(0);
+    const send = (prompt: string) =>
+      receiveHook({
+        tool: 'cursor',
+        hook: 'beforeSubmitPrompt',
+        stdin: JSON.stringify({
+          conversation_id: 'conv-turn',
+          generation_id: 'gen-shared',
+          hook_event_name: 'beforeSubmitPrompt',
+          prompt,
+          workspace_roots: [project],
+        }),
+        projectRoot: project,
+        rizzHome: home,
+        at: AT,
+      });
+    const first = await send('@jenny same words');
+    const second = await send('@jenny same words');
+    expect(first.stdout).toContain('Rizz queued message');
+    expect(second.stdout).toContain('Rizz queued message');
+    const lines = (await readFile(join(home, 'relay', 'spool.jsonl'), 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(2);
+    const ids = lines.map((line) => (JSON.parse(line) as { id: string }).id);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('does not inbox an owner decision from a relay event the journal did not keep', async () => {
+    const home = await tempDir('rizz-relay-decision-');
+    const project = await tempDir('rizz-relay-decision-project-');
+    const stored: ObserveEvent = {
+      id: 'relay-in:reply_same',
+      at: AT,
+      tool: 'cursor',
+      hook: 'relay',
+      threadId: 'relay-jenny',
+      projectRoot: project,
+      kind: 'message',
+      text: 'noted',
+      files: [],
+      fields: {
+        direction: 'in',
+        relay: 'jenny',
+        messageId: 'reply_same',
+        inReplyTo: 'msg_abc',
+        status: 'received',
+        reason: '',
+        sentAt: '',
+      },
+    };
+    const first = await commitObserveEvent(home, stored);
+    expect(first).toEqual({ ok: true, value: 'applied' });
+    const dropped: ObserveEvent = {
+      ...stored,
+      text: 'Owner decision: ship from the dropped relay?',
+      fields: {
+        ...stored.fields,
+        ownerDecision: 'ship from the dropped relay?',
+        ownerDecisions: JSON.stringify(['ship from the dropped relay?']),
+      },
+    };
+    const again = await commitObserveEvent(home, dropped);
+    expect(again).toEqual({ ok: true, value: 'duplicate' });
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const journal = await loadJournal(paths.journalDir);
+    expect(journal.ok).toBe(true);
+    if (!journal.ok) return;
+    expect(journal.value.map((item) => item.text)).toEqual(['noted']);
+    const names = await readdir(paths.inboxDir).catch(() => [] as string[]);
+    expect(names.filter((name) => name.endsWith('.md'))).toEqual([]);
   });
 
   it('exposes message_agent on the MCP server', async () => {
