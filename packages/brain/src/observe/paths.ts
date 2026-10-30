@@ -39,3 +39,13 @@ export function spoolOffsetFile(rizzHome: string): string {
 export function spoolLock(rizzHome: string): string {
   return join(rizzHome, 'spool', 'lock');
 }
+
+/** One complete event per file. Hooks use this when the shared spool lock is busy. */
+export function spoolPendingDir(rizzHome: string): string {
+  return join(rizzHome, 'spool', 'pending');
+}
+
+/** Events that could not be queued. Summary counts these. */
+export function spoolDropDir(rizzHome: string): string {
+  return join(rizzHome, 'spool', 'drops');
+}

@@ -6,13 +6,19 @@ import { renderTokenReport } from './ledger.js';
 export function renderSummary(options: {
   readonly threads: number;
   readonly inbox: readonly InboxItem[];
+  readonly dropped?: number;
 }): string {
   const progress = `${options.threads} thread(s) observed.`;
+  const parts = [progress];
   if (options.inbox.length === 0) {
-    return `${progress}\nNo decisions need the owner.`;
+    parts.push('No decisions need the owner.');
+  } else {
+    const lines = options.inbox.map((item) => `- ${item.text} (${item.threadId})`);
+    parts.push(`Needs the owner:\n${lines.join('\n')}`);
   }
-  const lines = options.inbox.map((item) => `- ${item.text} (${item.threadId})`);
-  return `${progress}\nNeeds the owner:\n${lines.join('\n')}`;
+  const dropped = options.dropped ?? 0;
+  if (dropped > 0) parts.push(`${dropped} hook event(s) could not be recorded.`);
+  return parts.join('\n');
 }
 
 export function renderTokens(totals: TokenTotals): string {

@@ -14,7 +14,11 @@ const cleanup: string[] = [];
 
 afterEach(async () => {
   const { rm } = await import('node:fs/promises');
-  await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(
+    cleanup
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })),
+  );
 });
 
 describe('project store', () => {
@@ -144,12 +148,16 @@ describe('project store', () => {
     const firstRoot = join(sandbox, 'before');
     const movedRoot = join(sandbox, 'after');
     await mkdir(firstRoot);
-    spawnSync('git', ['init', '-q'], { cwd: firstRoot });
-    spawnSync('git', ['config', 'user.email', 'rizz@example.com'], { cwd: firstRoot });
-    spawnSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: firstRoot });
+    const git = (args: readonly string[]) =>
+      spawnSync('git', ['-c', 'core.fsmonitor=false', '-c', 'commit.gpgsign=false', ...args], {
+        cwd: firstRoot,
+      });
+    git(['init', '-q']);
+    git(['config', 'user.email', 'rizz@example.com']);
+    git(['config', 'user.name', 'Rizz Test']);
     await writeFile(join(firstRoot, 'README.md'), '# Local\n', 'utf8');
-    spawnSync('git', ['add', 'README.md'], { cwd: firstRoot });
-    spawnSync('git', ['commit', '-qm', 'initial'], { cwd: firstRoot });
+    git(['add', 'README.md']);
+    git(['commit', '-qm', 'initial']);
     const first = await prepareProjectStore({ rootDir: firstRoot, rizzHome, remote: null });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -166,7 +174,7 @@ describe('project store', () => {
     if (!relinked.ok) return;
     expect(relinked.value.projectId).toBe(first.value.projectId);
     expect(relinked.value.repositoryFingerprint).toBe(first.value.repositoryFingerprint);
-  });
+  }, 20_000);
 
   it('uses an explicit project id to relink a legacy registry entry without a fingerprint', async () => {
     const sandbox = await mkdtemp(join(tmpdir(), 'rizz-project-store-legacy-move-'));

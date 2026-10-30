@@ -313,7 +313,7 @@ export function createMcpServer(options: McpServerOptions): {
           result: {
             protocolVersion: '2025-06-18',
             capabilities: { resources: {}, tools: {} },
-            serverInfo: { name: 'rizz', version: '0.3.1' },
+            serverInfo: { name: 'rizz', version: '0.4.0' },
           },
         });
         return;

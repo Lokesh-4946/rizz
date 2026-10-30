@@ -9,7 +9,7 @@ evidence close to the source files.
 
 ## Current Product
 
-The current `0.3.1` product surface is:
+The current `0.4.0` product surface is:
 
 - `rizz prepare` isolated project intelligence under the platform user-data directory without
   changing repository files or Git status
@@ -45,7 +45,7 @@ The current `0.3.1` product surface is:
 - no workspace agents, cloud sync, browser extension, mobile app, project-local skills, or
   enterprise providers in the default path
 
-This release is `0.3.1`.
+This release is `0.4.0`.
 
 ## Observe the host agent
 
@@ -72,9 +72,10 @@ On a Mac that already has the `rizz` bin on `PATH`:
 rizz init
 ```
 
-Then use the host normally. Hooks append to a spool and always exit 0. `rizz serve` (started by
-`init` unless `--no-serve`) folds the spool into the brain and opens `http://127.0.0.1:<port>/?token=...`.
-The page only reads that brain. Ask it `summary` or `tokens`.
+Then use the host normally. Hooks append to a spool and always exit 0. `rizz init` starts the
+local page in the background and returns. `rizz serve` keeps that page in the foreground. Pass
+`--no-serve` to skip it. The page is `http://127.0.0.1:<port>/?token=...` and only reads that
+brain. Ask it `summary` or `tokens`.
 
 ```sh
 rizz summary   # thread count, then only decisions waiting on you

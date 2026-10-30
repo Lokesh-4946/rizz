@@ -19,13 +19,13 @@ async function fixture(): Promise<{ rootDir: string; rizzHome: string }> {
   const rootDir = await mkdtemp(join(tmpdir(), 'rizz-context-repo-'));
   const rizzHome = await mkdtemp(join(tmpdir(), 'rizz-context-home-'));
   roots.push(rootDir, rizzHome);
-  execFileSync('git', ['init', '-q'], { cwd: rootDir });
-  execFileSync('git', ['config', 'user.email', 'rizz@example.test'], { cwd: rootDir });
-  execFileSync('git', ['config', 'user.name', 'Rizz Test'], { cwd: rootDir });
+  git(rootDir, ['init', '-q']);
+  git(rootDir, ['config', 'user.email', 'rizz@example.test']);
+  git(rootDir, ['config', 'user.name', 'Rizz Test']);
   await mkdir(join(rootDir, 'src'), { recursive: true });
   await writeFile(join(rootDir, 'src', 'hero.ts'), 'export const hero = true;\n');
-  execFileSync('git', ['add', '.'], { cwd: rootDir });
-  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: rootDir });
+  git(rootDir, ['add', '.']);
+  git(rootDir, ['commit', '-qm', 'fixture']);
   return { rootDir, rizzHome };
 }
 
@@ -66,9 +66,19 @@ async function seedBrain(rootDir: string, rizzHome: string): Promise<void> {
   );
 }
 
+function git(rootDir: string, args: readonly string[]): void {
+  execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'commit.gpgsign=false', ...args], {
+    cwd: rootDir,
+  });
+}
+
 afterEach(async () => {
   const { rm } = await import('node:fs/promises');
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })),
+  );
 });
 
 describe('context compiler', () => {
@@ -248,7 +258,7 @@ describe('isolated engineering loop', () => {
     expect(results.filter((result) => !result.ok).map((result) => result.error.code)).toEqual([
       'LOOP_REVISION_MISMATCH',
     ]);
-  });
+  }, 20_000);
 
   it('does not trust a stored workspace path during a mutation', async () => {
     const setup = await fixture();

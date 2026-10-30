@@ -266,5 +266,42 @@ modules themselves stay in the opt-in brain package. → `packages/brain/src/obs
 
 ---
 
-*Next decision: **D-047**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+#### D-047
+**A killed append must not glue the next journal record to a torn tail, and a dead spool lock must not drop the next hook.** — Committed
+`appendSynced` truncates to the last newline before writing, fsyncs, and reads the new tail back.
+A committed record always ends in a newline, so a kill mid-write drops only the unfinished bytes.
+`writeAtomic` still renames after fsync, so a kill leaves the previous `BRAIN.md` and a torn
+`offset.json` replays from offset 0. Replaying a journal id still fills the ledger, inbox, handoff,
+and index if the crash landed between those writes. The spool lock records its holder pid and is
+cleared when that pid is dead. A lock with no pid file is cleared after one second. If the lock is
+still busy, the hook appends the event anyway and exits 0. Codex `.jsonl.zst` stays refused: Node's
+zlib zstd API is experimental, and a decoder dependency is outside the lightweight budget.
+→ `packages/brain/src/observe/io.ts`, `packages/brain/src/observe/fold.ts`,
+`packages/brain/src/observe/codex-session.ts`.
+
+---
+
+#### D-048
+**`rizz init` returns. The local page keeps running in its own process.** — Committed
+A host agent that runs `rizz init` cannot wait on the UI server. Init installs hooks, starts
+`rizz serve` detached, prints the URL and pid, and exits. `rizz serve` itself stays in the
+foreground. `--no-serve` skips the page. `--no-open` is forwarded to the detached page.
+→ `packages/brain/src/observe/cli.ts`.
+
+---
+
+#### D-049
+**An answered inbox item stays answered, and a busy spool lock never appends unlocked.** — Committed
+Replaying a spool event must not recreate an inbox file whose id already has a `dec_<id>` row in
+`decisions.md`. Hooks append to the shared log only while holding the spool lock. If that lock
+stays busy, the event is written as its own file under `spool/pending/` and folded later. If that
+file cannot be written either, a drop record is kept and `rizz summary` counts it. Installed hook
+commands name `node` and the absolute script path of the CLI that ran `rizz init`, so a different
+`rizz` on `PATH` is not what the host executes. `rizz init --help` prints help and returns.
+→ `packages/brain/src/observe/fold.ts`, `packages/brain/src/observe/install.ts`,
+`packages/brain/src/observe/cli.ts`.
+
+---
+
+*Next decision: **D-050**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*
