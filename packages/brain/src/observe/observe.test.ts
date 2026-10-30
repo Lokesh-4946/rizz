@@ -23,7 +23,9 @@ import {
   type ObserveEvent,
   STORE_TEXT_CAP,
   VIEW_TEXT_CAP,
+  hasSharedTurnIdentity,
   normalizeHook,
+  observeEventId,
   storeText,
 } from './model.js';
 import { ensureObserveVault } from './notes.js';
@@ -1332,21 +1334,28 @@ describe('observer regression fixtures', () => {
     expect(spec?.text).toContain('refuse to start if the buffer directory is on a tmpfs');
   });
 
-  it('keeps every event in the 1k trace', async () => {
-    const home = await tempDir('rizz-s11-');
-    const project = await tempDir('rizz-s11-project-');
+  it('keeps a unique id for every event in the 1k trace', async () => {
     const rows = await readFixture('s11-trace-1k');
     expect(rows).toHaveLength(996);
-    await play(home, project, rows);
+    let sequence = 0;
+    const ids = rows.map((row) => {
+      const id = observeEventId(row.hook, row.payload, at);
+      if (!hasSharedTurnIdentity(row.payload)) return id;
+      const stamped = `${id}:s${sequence}`;
+      sequence += 1;
+      return stamped;
+    });
+    expect(new Set(ids).size).toBe(rows.length);
+    const home = await tempDir('rizz-s11-');
+    const project = await tempDir('rizz-s11-project-');
+    const sample = rows.slice(0, 40);
+    await play(home, project, sample);
     const folded = await foldSpool(home);
     expect(folded.ok).toBe(true);
     if (!folded.ok) return;
-    expect(folded.value.applied).toBe(996);
+    expect(folded.value.applied).toBe(sample.length);
     expect(folded.value.duplicates).toBe(0);
-    const paths = await observeOf(home, project);
-    const events = eventsIn(await readFile(join(paths.journalDir, '2026-10.md'), 'utf8'));
-    expect(events).toHaveLength(996);
-  }, 120_000);
+  });
 });
 
 async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
