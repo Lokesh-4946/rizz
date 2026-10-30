@@ -8,10 +8,11 @@ import {
   visionQuote,
   writeBrain,
 } from '../brain-index.js';
+import { countUnrecorded } from '../fold.js';
 import { readText, writeAtomic } from '../io.js';
 import { loadJournal } from '../journal.js';
 import type { ObserveEvent } from '../model.js';
-import { ensureObserveVault, listInbox, readDecisionRecords } from '../notes.js';
+import { ensureObserveVault, isInboxAnswered, listInbox, readDecisionRecords } from '../notes.js';
 import { observePaths } from '../paths.js';
 import { type StaffResult, staffErr, staffOk } from '../result.js';
 import { listRelays, readRelayNotice } from './config.js';
@@ -149,12 +150,15 @@ export async function refreshRelayBrain(options: {
     Number.isFinite(nowMs) ? nowMs : Date.now(),
     readIds,
   );
+  const unrecorded = await countUnrecorded(options.rizzHome, prepared.value.rootPath);
+  const openInbox = inbox.value.filter((item) => !isInboxAnswered(item.id, decisions.value));
   const base = snapshotFromEvents(events.value, {
     updated: options.now,
     projectRoot: prepared.value.rootPath,
     decisions: decisions.value,
-    inbox: inbox.value,
+    inbox: openInbox,
     visionQuote: visionQuote(vision.value ?? ''),
+    unrecorded,
   });
   const snapshot: BrainSnapshot = { ...base, relay };
   const written = await writeBrain(paths.brain, snapshot);

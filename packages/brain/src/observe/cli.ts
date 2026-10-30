@@ -5,11 +5,11 @@ import { relative } from 'node:path';
 import { resolveRizzHome } from '../project-store.js';
 import { prepareProjectStore } from '../project-store.js';
 import { readCodexRollout } from './codex-session.js';
-import { appendSpoolEvent, foldSpool } from './fold.js';
+import { appendSpoolEvent, countUnrecorded, foldSpool } from './fold.js';
 import { loadJournal } from './journal.js';
 import { readTokenRows, summarizeTokens } from './ledger.js';
 import { type HostId, isHostId } from './model.js';
-import { listInbox } from './notes.js';
+import { isInboxAnswered, listInbox, readDecisionRecords } from './notes.js';
 import { observePaths } from './paths.js';
 import { initObserver, receiveHook } from './receive.js';
 import { refreshRelayBrain, relaySummaryLines } from './relay/board.js';
@@ -81,6 +81,55 @@ function openBrowser(url: string): void {
   child.unref();
 }
 
+async function detachServe(options: {
+  readonly cwd: string;
+  readonly noOpen: boolean;
+}): Promise<{ ok: true; url: string; pid: number } | { ok: false; message: string }> {
+  const entry = process.argv[1];
+  if (entry === undefined || entry === '') {
+    return { ok: false, message: 'cannot find the rizz entrypoint to start the page' };
+  }
+  const args = [entry, 'serve'];
+  if (options.noOpen) args.push('--no-open');
+  const child = spawn(process.execPath, args, {
+    cwd: options.cwd,
+    env: process.env,
+    detached: true,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.unref();
+  let stdout = '';
+  let stderr = '';
+  const url = await new Promise<string | undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), 5000);
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+      const match = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[^\s]+/);
+      if (match?.[0] !== undefined) {
+        clearTimeout(timer);
+        resolve(match[0]);
+      }
+    });
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('close', () => {
+      clearTimeout(timer);
+      resolve(undefined);
+    });
+  });
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  if (url === undefined || child.pid === undefined) {
+    const detail = stderr.trim();
+    return { ok: false, message: detail === '' ? 'detached page did not start' : detail };
+  }
+  return { ok: true, url, pid: child.pid };
+}
+
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
@@ -105,10 +154,18 @@ export async function runObserveCli(
       readonly claude: boolean;
     };
     readonly open?: (url: string) => void;
+    /** Stops `serve` so tests can observe the page without leaving the process up. */
+    readonly signal?: AbortSignal;
   },
 ): Promise<number> {
   const command = argv[0];
-  if (command === undefined || command === '--help' || command === '-h') {
+  if (
+    command === undefined ||
+    command === '--help' ||
+    command === '-h' ||
+    flag(argv, '--help') ||
+    flag(argv, '-h')
+  ) {
     process.stdout.write(USAGE);
     return 0;
   }
@@ -168,6 +225,10 @@ export async function runObserveCli(
       return rows.ok ? 0 : 1;
     }
     const inbox = await listInbox(paths.inboxDir);
+    const decisions = await readDecisionRecords(paths.decisions);
+    const openInbox = (inbox.ok ? inbox.value : []).filter(
+      (item) => !decisions.ok || !isInboxAnswered(item.id, decisions.value),
+    );
     const journal = await loadJournal(paths.journalDir);
     const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId)).size;
     const relays = await listRelays(rizzHome);
@@ -175,11 +236,8 @@ export async function runObserveCli(
       await refreshRelayBrain({ rizzHome, projectRoot, now: new Date().toISOString() });
     }
     const relayLines = await relaySummaryLines(rizzHome, projectRoot);
-    const text = renderSummary({
-      threads,
-      inbox: inbox.ok ? inbox.value : [],
-      relayLines,
-    });
+    const dropped = await countUnrecorded(rizzHome, projectRoot);
+    const text = renderSummary({ threads, inbox: openInbox, dropped, relayLines });
     process.stdout.write(`${text}\n`);
     return 0;
   }
@@ -216,13 +274,42 @@ export async function runObserveCli(
       const assumed = forced === undefined && detected.assumed ? ' (cursor assumed)' : '';
       process.stdout.write(`  hooks: ${hosts.join(', ')}${assumed}\n`);
       if (flag(argv, '--no-serve')) return 0;
+      const detached = await detachServe({ cwd, noOpen: flag(argv, '--no-open') });
+      if (!detached.ok) {
+        process.stderr.write(`rizz: ${detached.message}\n`);
+        return 1;
+      }
+      process.stdout.write(`rizz serve ${detached.url}\n`);
+      process.stdout.write(`rizz serve pid ${detached.pid}\n`);
+      if (json) {
+        process.stdout.write(`${JSON.stringify({ url: detached.url, pid: detached.pid })}\n`);
+      }
+      return 0;
     }
     if (flag(argv, '--no-serve')) return 0;
     const server = await startObserveServer({ projectRoot: cwd, rizzHome });
     process.stdout.write(`rizz serve ${server.url}\n`);
-    if (!flag(argv, '--no-open')) (options?.open ?? openBrowser)(server.url);
     if (json) process.stdout.write(`${JSON.stringify({ url: server.url })}\n`);
-    await new Promise<void>(() => undefined);
+    const signal = options?.signal;
+    const stopped =
+      signal === undefined
+        ? undefined
+        : new Promise<void>((resolve) => {
+            const stop = (): void => {
+              void server.close().finally(resolve);
+            };
+            if (signal.aborted) {
+              stop();
+              return;
+            }
+            signal.addEventListener('abort', stop, { once: true });
+          });
+    if (!flag(argv, '--no-open')) (options?.open ?? openBrowser)(server.url);
+    if (stopped === undefined) {
+      await new Promise<void>(() => undefined);
+      return 0;
+    }
+    await stopped;
     return 0;
   }
   if (command === 'codex-session') {

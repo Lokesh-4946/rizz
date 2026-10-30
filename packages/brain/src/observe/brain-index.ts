@@ -24,6 +24,7 @@ export interface BrainSnapshot {
   readonly outputTokens: number;
   readonly contextTokens: number;
   readonly unreportedRuns: number;
+  readonly unrecorded?: number;
   readonly relay?: RelayView;
 }
 
@@ -107,9 +108,11 @@ export function renderBrain(snapshot: BrainSnapshot): string {
     `Project: ${snapshot.projectRoot}`,
     `Events: ${snapshot.events.length}`,
     `Tokens: ${totals.inputTokens} in / ${totals.outputTokens} out / ${totals.contextTokens} context / ${totals.unreportedRuns} unreported runs`,
-    '',
-    '## North star',
   ];
+  if ((snapshot.unrecorded ?? 0) > 0) {
+    lines.push(`Unrecorded hooks: ${snapshot.unrecorded}`);
+  }
+  lines.push('', '## North star');
   if (snapshot.visionQuote.length === 0) lines.push('- vision.md is empty');
   for (const line of snapshot.visionQuote.slice(0, 3)) lines.push(`- ${line}`);
   lines.push('', '## Decisions awaiting you');
@@ -163,6 +166,7 @@ export function snapshotFromEvents(
     readonly decisions: readonly DecisionRecord[];
     readonly inbox: readonly InboxItem[];
     readonly visionQuote: readonly string[];
+    readonly unrecorded?: number;
     readonly relay?: RelayView;
   },
 ): BrainSnapshot {

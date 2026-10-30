@@ -6,18 +6,23 @@ import { renderTokenReport } from './ledger.js';
 export function renderSummary(options: {
   readonly threads: number;
   readonly inbox: readonly InboxItem[];
+  readonly dropped?: number;
   readonly relayLines?: readonly string[];
 }): string {
   const progress = `${options.threads} thread(s) observed.`;
-  const relay =
-    options.relayLines === undefined || options.relayLines.length === 0
-      ? ''
-      : `\nRelay:\n${options.relayLines.join('\n')}`;
+  const parts = [progress];
   if (options.inbox.length === 0) {
-    return `${progress}\nNo decisions need the owner.${relay}`;
+    parts.push('No decisions need the owner.');
+  } else {
+    const lines = options.inbox.map((item) => `- ${item.text} (${item.threadId})`);
+    parts.push(`Needs the owner:\n${lines.join('\n')}`);
   }
-  const lines = options.inbox.map((item) => `- ${item.text} (${item.threadId})`);
-  return `${progress}\nNeeds the owner:\n${lines.join('\n')}${relay}`;
+  const dropped = options.dropped ?? 0;
+  if (dropped > 0) parts.push(`${dropped} hook event(s) could not be recorded.`);
+  if (options.relayLines !== undefined && options.relayLines.length > 0) {
+    parts.push(`Relay:\n${options.relayLines.join('\n')}`);
+  }
+  return parts.join('\n');
 }
 
 export function renderTokens(totals: TokenTotals): string {

@@ -16,7 +16,7 @@ import {
 } from '@valoir/rizz-core';
 import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-providers';
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 
 const USAGE = `rizz - prepare software for AI development
 

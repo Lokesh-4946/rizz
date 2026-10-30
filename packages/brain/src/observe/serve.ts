@@ -4,12 +4,17 @@ import { type IncomingMessage, type ServerResponse, createServer } from 'node:ht
 import { join } from 'node:path';
 import { prepareProjectStore } from '../project-store.js';
 import { readBrainText } from './brain-index.js';
-import { foldSpool } from './fold.js';
+import { countUnrecorded, foldSpool, refreshObserveIndex } from './fold.js';
 import { loadJournal } from './journal.js';
 import { readTokenRows, summarizeTokens } from './ledger.js';
 import { renderTokenReport } from './ledger.js';
-import { listInbox } from './notes.js';
-import { appendDecisionRecord } from './notes.js';
+import {
+  appendDecisionRecord,
+  inboxDecisionId,
+  isInboxAnswered,
+  listInbox,
+  readDecisionRecords,
+} from './notes.js';
 import { observePaths } from './paths.js';
 import { relaySummaryLines } from './relay/board.js';
 import { handleRelayHttp } from './relay/http.js';
@@ -172,7 +177,7 @@ export async function startObserveServer(options: {
     }
     if (url.pathname === '/api/query') {
       const q = url.searchParams.get('q') ?? '';
-      const summary = await answer(paths, q, options.rizzHome, prepared.value.rootPath);
+      const summary = await answer(paths, q, options.rizzHome, options.projectRoot);
       send(response, 200, JSON.stringify({ summary }), 'application/json');
       return;
     }
@@ -189,34 +194,38 @@ export async function startObserveServer(options: {
       return;
     }
     if (url.pathname === '/api/decide' && request.method === 'POST') {
-      const raw = await readBody(request);
-      let id = '';
-      try {
-        const parsed: unknown = JSON.parse(raw);
-        if (typeof parsed === 'object' && parsed !== null && 'id' in parsed) {
-          const value = (parsed as { id?: unknown }).id;
-          if (typeof value === 'string') id = value;
-        }
-      } catch {
-        id = '';
-      }
-      if (id === '') {
+      const posted = readDecisionPost(await readBody(request));
+      if (posted === undefined) {
         send(response, 400, JSON.stringify({ ok: false }), 'application/json');
         return;
       }
       const inbox = await listInbox(paths.inboxDir);
-      const item = inbox.ok ? inbox.value.find((entry) => entry.id === id) : undefined;
+      const item = inbox.ok ? inbox.value.find((entry) => entry.id === posted.id) : undefined;
       if (item === undefined) {
         send(response, 404, JSON.stringify({ ok: false }), 'application/json');
         return;
       }
-      await appendDecisionRecord(paths.decisions, {
-        id: `dec_${id}`,
-        text: item.text,
+      const recorded = await appendDecisionRecord(paths.decisions, {
+        id: inboxDecisionId(posted.id),
+        text: posted.answer,
         source: 'owner',
         createdAt: new Date().toISOString(),
       });
-      await rm(join(paths.inboxDir, `${id}.md`), { force: true });
+      if (!recorded.ok) {
+        send(
+          response,
+          400,
+          JSON.stringify({ ok: false, code: recorded.error.code }),
+          'application/json',
+        );
+        return;
+      }
+      await rm(join(paths.inboxDir, `${posted.id}.md`), { force: true });
+      await refreshObserveIndex({
+        projectDir: prepared.value.projectDir,
+        projectRoot: options.projectRoot,
+        at: new Date().toISOString(),
+      });
       send(response, 200, JSON.stringify({ ok: true }), 'application/json');
       return;
     }
@@ -229,11 +238,18 @@ export async function startObserveServer(options: {
   });
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
+  let folding = false;
   const timer = setInterval(() => {
-    void foldSpool(options.rizzHome).then((result) => {
-      if (!result.ok || result.value.applied === 0) return;
-      for (const client of clients) client.write(`data: ${JSON.stringify({ type: 'fold' })}\n\n`);
-    });
+    if (folding) return;
+    folding = true;
+    void foldSpool(options.rizzHome)
+      .then((result) => {
+        if (!result.ok || result.value.applied === 0) return;
+        for (const client of clients) client.write(`data: ${JSON.stringify({ type: 'fold' })}\n\n`);
+      })
+      .finally(() => {
+        folding = false;
+      });
   }, 1000);
   timer.unref();
 
@@ -250,6 +266,22 @@ export async function startObserveServer(options: {
   };
 }
 
+function readDecisionPost(
+  raw: string,
+): { readonly id: string; readonly answer: string } | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    const answer = typeof record.answer === 'string' ? record.answer.trim() : '';
+    if (id === '' || answer === '') return undefined;
+    return { id, answer };
+  } catch {
+    return undefined;
+  }
+}
+
 async function answer(
   paths: ReturnType<typeof observePaths>,
   query: string,
@@ -257,12 +289,17 @@ async function answer(
   projectRoot: string,
 ): Promise<string> {
   const inbox = await listInbox(paths.inboxDir);
+  const decisions = await readDecisionRecords(paths.decisions);
+  const openInbox = (inbox.ok ? inbox.value : []).filter(
+    (item) => !decisions.ok || !isInboxAnswered(item.id, decisions.value),
+  );
   const journal = await loadJournal(paths.journalDir);
   const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId));
   const normalized = query.trim().toLowerCase();
   if (normalized === '' || normalized === 'summary') {
     const relayLines = await relaySummaryLines(rizzHome, projectRoot);
-    return renderSummary({ threads: threads.size, inbox: inbox.ok ? inbox.value : [], relayLines });
+    const dropped = await countUnrecorded(rizzHome, projectRoot);
+    return renderSummary({ threads: threads.size, inbox: openInbox, dropped, relayLines });
   }
   if (normalized === 'tokens') {
     const rows = await readTokenRows(paths.ledger);
