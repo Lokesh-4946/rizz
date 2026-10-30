@@ -22,7 +22,7 @@ const USAGE = `rizz - prepare software for AI development
 
 Usage:
   rizz prepare | brain | brief <task> | review | explain <target>
-  rizz init | hook | serve | summary | tokens
+  rizz init | hook | serve | summary | tokens | relay | msg
   rizz loop <action> | vault <action> | agents <action>
   rizz project relink [id]
   rizz mcp | --json | --rpc
@@ -663,6 +663,8 @@ async function main(argv: readonly string[]): Promise<number> {
     c.rest[0] === 'fold' ||
     c.rest[0] === 'summary' ||
     c.rest[0] === 'tokens' ||
+    c.rest[0] === 'relay' ||
+    c.rest[0] === 'msg' ||
     c.rest[0] === 'codex-session'
   ) {
     const { runObserveCli } = await import('@valoir/rizz-brain/observe');

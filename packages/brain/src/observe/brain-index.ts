@@ -2,6 +2,7 @@ import type { DecisionRecord } from './decisions.js';
 import { activeDecisions } from './decisions.js';
 import { readText, writeAtomic } from './io.js';
 import type { ObserveEvent } from './model.js';
+import { DEFAULT_REPLY_WAIT_MS, type RelayView, renderMessageLines } from './relay/contract.js';
 import { type StaffResult, staffOk } from './result.js';
 
 export const BRAIN_LINE_CAP = 200;
@@ -24,6 +25,7 @@ export interface BrainSnapshot {
   readonly contextTokens: number;
   readonly unreportedRuns: number;
   readonly unrecorded?: number;
+  readonly relay?: RelayView;
 }
 
 interface ThreadRollup {
@@ -131,6 +133,15 @@ export function renderBrain(snapshot: BrainSnapshot): string {
   const active = activeDecisions(snapshot.decisions);
   if (active.length === 0) lines.push('- none');
   for (const decision of active.slice(0, 8)) lines.push(`- ${decision.id}: ${decision.text}`);
+  lines.push('', '## Messages');
+  const parsedNow = Date.parse(snapshot.updated);
+  const relayView = snapshot.relay ?? {
+    nowMs: Number.isFinite(parsedNow) ? parsedNow : 0,
+    waitMs: DEFAULT_REPLY_WAIT_MS,
+    waitByRelay: {},
+    readIds: [],
+  };
+  for (const line of renderMessageLines(snapshot.events, relayView)) lines.push(line);
   lines.push('', '## Recent journal');
   const recent = [...snapshot.events].slice(-12);
   if (recent.length === 0) lines.push('- none yet');
@@ -156,6 +167,7 @@ export function snapshotFromEvents(
     readonly inbox: readonly InboxItem[];
     readonly visionQuote: readonly string[];
     readonly unrecorded?: number;
+    readonly relay?: RelayView;
   },
 ): BrainSnapshot {
   const totals = tokenTotals(events);

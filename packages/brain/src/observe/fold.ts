@@ -173,7 +173,7 @@ export async function refreshObserveIndex(options: {
   return staffOk(undefined);
 }
 
-export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResult>> {
+async function foldSpoolLocked(rizzHome: string): Promise<StaffResult<FoldResult>> {
   return withLock(spoolLock(rizzHome), async () => {
     const offsetResult = await readOffset(spoolOffsetFile(rizzHome));
     if (!offsetResult.ok) return offsetResult;
@@ -227,6 +227,28 @@ export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResul
       projects: [...projects],
     });
   });
+}
+
+export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResult>> {
+  const folded = await foldSpoolLocked(rizzHome);
+  if (!folded.ok) return folded;
+  try {
+    const relay = await import('./relay/delivery.js');
+    const maintained = await relay.maintainRelay(rizzHome);
+    if (!maintained.ok) await relay.writeRelayNotice(rizzHome, maintained.error.message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const relay = await import('./relay/delivery.js');
+    await relay.writeRelayNotice(rizzHome, message);
+  }
+  return folded;
+}
+
+export async function commitObserveEvent(
+  rizzHome: string,
+  event: ObserveEvent,
+): Promise<StaffResult<'applied' | 'duplicate'>> {
+  return withLock(spoolLock(rizzHome), async () => applyEvent(rizzHome, event));
 }
 
 function eventFileName(eventId: string): string {

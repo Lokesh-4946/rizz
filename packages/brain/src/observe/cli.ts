@@ -12,6 +12,9 @@ import { type HostId, isHostId } from './model.js';
 import { isInboxAnswered, listInbox, readDecisionRecords } from './notes.js';
 import { observePaths } from './paths.js';
 import { initObserver, receiveHook } from './receive.js';
+import { refreshRelayBrain, relaySummaryLines } from './relay/board.js';
+import { runRelayCommand } from './relay/commands.js';
+import { listRelays } from './relay/config.js';
 import { startObserveServer } from './serve.js';
 import { renderSummary, renderTokens } from './summary.js';
 
@@ -23,6 +26,8 @@ const USAGE = `rizz observe — record the host coding agent
   rizz fold
   rizz summary
   rizz tokens
+  rizz relay add|list|remove|deliver
+  rizz msg <name> <text>
 
 The brain is stored per project under the Rizz home, keyed by the project path.
 Hooks fail open and append to a spool. rizz serve folds that spool and opens a local page.
@@ -172,6 +177,14 @@ export async function runObserveCli(
   }
   if (options?.homeDir !== undefined) homeDir = options.homeDir;
   const json = flag(argv, '--json');
+  if (command === 'relay' || command === 'msg') {
+    const env = options?.env ?? process.env;
+    let stdin = options?.stdin ?? '';
+    const key = env.RIZZ_RELAY_KEY ?? '';
+    const readKey = command === 'relay' && argv[1] === 'add' && key.trim() === '';
+    if (readKey && options?.stdin === undefined) stdin = await readStdin();
+    return runRelayCommand(argv, { cwd, rizzHome, stdin, env });
+  }
   if (command === 'hook') {
     const tool = argv[1] ?? '';
     const event = argv[2] ?? '';
@@ -218,8 +231,13 @@ export async function runObserveCli(
     );
     const journal = await loadJournal(paths.journalDir);
     const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId)).size;
+    const relays = await listRelays(rizzHome);
+    if (relays.ok && relays.value.length > 0) {
+      await refreshRelayBrain({ rizzHome, projectRoot, now: new Date().toISOString() });
+    }
+    const relayLines = await relaySummaryLines(rizzHome, projectRoot);
     const dropped = await countUnrecorded(rizzHome, projectRoot);
-    const text = renderSummary({ threads, inbox: openInbox, dropped });
+    const text = renderSummary({ threads, inbox: openInbox, dropped, relayLines });
     process.stdout.write(`${text}\n`);
     return 0;
   }
