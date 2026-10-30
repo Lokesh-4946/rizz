@@ -5,6 +5,8 @@ export type StaffErrorCode =
   | 'IO_FAILED'
   | 'WRITE_VERIFY_FAILED'
   | 'HOST_UNKNOWN'
+  | 'UNKNOWN_RELAY'
+  | 'PAYLOAD_TOO_LARGE'
   | 'CODEX_ROLLUP_COMPRESSED';
 
 export interface StaffError {

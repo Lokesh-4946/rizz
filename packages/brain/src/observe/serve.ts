@@ -11,6 +11,8 @@ import { renderTokenReport } from './ledger.js';
 import { listInbox } from './notes.js';
 import { appendDecisionRecord } from './notes.js';
 import { observePaths } from './paths.js';
+import { relaySummaryLines } from './relay/board.js';
+import { handleRelayHttp } from './relay/http.js';
 import { renderSummary } from './summary.js';
 
 export interface ObserveServer {
@@ -36,7 +38,7 @@ body { font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; margin: 2rem auto; 
 pre { white-space: pre-wrap; background: #fff; border: 1px solid #e7e5e4; padding: 1rem; }
 form { display: flex; gap: .5rem; margin: 1rem 0; }
 input { flex: 1; padding: .4rem .6rem; }
-#answer { min-height: 2rem; }
+#answer, #relay-thread { min-height: 2rem; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -47,16 +49,37 @@ input { flex: 1; padding: .4rem .6rem; }
 <button type="submit">Ask</button>
 </form>
 <div id="answer"></div>
+<h2>Messages</h2>
+<p id="relay-status"></p>
+<div id="relay-thread"></div>
+<form id="relay-send">
+<input name="to" value="jenny" aria-label="Assistant name">
+<input name="text" placeholder="Message your assistant" aria-label="Message text">
+<button type="submit">Send</button>
+</form>
 <pre id="brain">${safe}</pre>
 <script>
 const token = ${JSON.stringify(token)};
 const brain = document.querySelector('#brain');
 const answer = document.querySelector('#answer');
+const thread = document.querySelector('#relay-thread');
+const relayStatus = document.querySelector('#relay-status');
 async function refresh() {
   const response = await fetch('/api/brain?token=' + encodeURIComponent(token));
   if (!response.ok) return;
   const body = await response.json();
   brain.textContent = body.markdown ?? '';
+}
+async function loadRelay() {
+  const response = await fetch('/api/relay/messages?token=' + encodeURIComponent(token));
+  if (!response.ok) return;
+  const body = await response.json();
+  const lines = (body.messages ?? []).map((row) => {
+    const unread = row.unread ? ' UNREAD' : '';
+    const who = row.direction === 'in' ? 'from ' + row.relay : 'to ' + row.relay;
+    return row.at + ' · ' + who + unread + ' · ' + row.status + ' · ' + row.text;
+  });
+  thread.textContent = lines.join('\\n') || 'No messages yet.';
 }
 document.querySelector('#ask').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -65,8 +88,23 @@ document.querySelector('#ask').addEventListener('submit', async (event) => {
   const body = await response.json();
   answer.textContent = body.summary ?? '';
 });
+document.querySelector('#relay-send').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const data = new FormData(event.target);
+  const response = await fetch('/api/relay/send?token=' + encodeURIComponent(token), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ to: String(data.get('to') ?? ''), text: String(data.get('text') ?? '') }),
+  });
+  const body = await response.json();
+  const reason = body.reason ? ': ' + body.reason : '';
+  relayStatus.textContent = body.error || ((body.status || '') + reason);
+  await loadRelay();
+});
 refresh();
+loadRelay();
 setInterval(refresh, 2000);
+setInterval(loadRelay, 2000);
 const events = new EventSource('/events?token=' + encodeURIComponent(token));
 events.onmessage = () => refresh();
 </script>
@@ -134,8 +172,20 @@ export async function startObserveServer(options: {
     }
     if (url.pathname === '/api/query') {
       const q = url.searchParams.get('q') ?? '';
-      const summary = await answer(paths, q);
+      const summary = await answer(paths, q, options.rizzHome, prepared.value.rootPath);
       send(response, 200, JSON.stringify({ summary }), 'application/json');
+      return;
+    }
+    if (url.pathname.startsWith('/api/relay/')) {
+      const raw = request.method === 'POST' ? await readBody(request) : '';
+      const handled = await handleRelayHttp({
+        method: request.method ?? 'GET',
+        pathname: url.pathname,
+        rizzHome: options.rizzHome,
+        projectRoot: prepared.value.rootPath,
+        body: raw,
+      });
+      send(response, handled.status, handled.body, handled.type);
       return;
     }
     if (url.pathname === '/api/decide' && request.method === 'POST') {
@@ -200,13 +250,19 @@ export async function startObserveServer(options: {
   };
 }
 
-async function answer(paths: ReturnType<typeof observePaths>, query: string): Promise<string> {
+async function answer(
+  paths: ReturnType<typeof observePaths>,
+  query: string,
+  rizzHome: string,
+  projectRoot: string,
+): Promise<string> {
   const inbox = await listInbox(paths.inboxDir);
   const journal = await loadJournal(paths.journalDir);
   const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId));
   const normalized = query.trim().toLowerCase();
   if (normalized === '' || normalized === 'summary') {
-    return renderSummary({ threads: threads.size, inbox: inbox.ok ? inbox.value : [] });
+    const relayLines = await relaySummaryLines(rizzHome, projectRoot);
+    return renderSummary({ threads: threads.size, inbox: inbox.ok ? inbox.value : [], relayLines });
   }
   if (normalized === 'tokens') {
     const rows = await readTokenRows(paths.ledger);

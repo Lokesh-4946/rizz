@@ -7,6 +7,9 @@ import { readText } from './io.js';
 import { type HostId, type ObserveEvent, isHostId, isRecord, normalizeHook } from './model.js';
 import { ensureObserveVault } from './notes.js';
 import { observePaths } from './paths.js';
+import { refreshRelayBrain, takeUnreadRelayContext } from './relay/board.js';
+import { listRelays } from './relay/config.js';
+import { queueRelayPrompt } from './relay/delivery.js';
 import { staffOk } from './result.js';
 
 export interface HookResponse {
@@ -22,8 +25,27 @@ function projectRootFrom(payload: Record<string, unknown>, fallback: string): st
   return fallback;
 }
 
-export function hookStdout(tool: HostId, hook: string, brainText: string): string {
-  const context = brainText.trim() === '' ? 'Rizz brain index is empty.' : brainText.slice(0, 6000);
+function withQuote(brainText: string, extra: string): string {
+  const base = brainText.trim() === '' ? 'Rizz brain index is empty.' : brainText.slice(0, 6000);
+  if (extra.trim() === '') return base;
+  return `${base}\n\n${extra.trim()}`;
+}
+
+function promptStdout(tool: HostId, hook: string, extra: string): string {
+  if (extra.trim() === '') return `${JSON.stringify({ continue: true })}\n`;
+  const text = extra.trim();
+  if (tool === 'claude') {
+    return `${JSON.stringify({
+      continue: true,
+      hookSpecificOutput: { hookEventName: hook, additionalContext: text },
+    })}\n`;
+  }
+  if (tool === 'codex') return `${JSON.stringify({ continue: true, additionalContext: text })}\n`;
+  return `${JSON.stringify({ continue: true, additional_context: text })}\n`;
+}
+
+export function hookStdout(tool: HostId, hook: string, brainText: string, extra = ''): string {
+  const context = withQuote(brainText, extra);
   if (hook === 'sessionStart') {
     return `${JSON.stringify({ additional_context: context })}\n`;
   }
@@ -36,7 +58,7 @@ export function hookStdout(tool: HostId, hook: string, brainText: string): strin
     })}\n`;
   }
   if (hook === 'beforeSubmitPrompt' || hook === 'UserPromptSubmit') {
-    return `${JSON.stringify({ continue: true })}\n`;
+    return promptStdout(tool, hook, extra);
   }
   return '{}\n';
 }
@@ -107,12 +129,34 @@ export async function receiveHook(options: {
     at: options.at ?? new Date().toISOString(),
   });
   const spooled = await appendSpoolEvent(rizzHome, event);
-  const stderr = spooled.ok ? '' : `rizz: ${spooled.error.message}\n`;
-  const brain =
-    hook === 'sessionStart' || hook === 'SessionStart'
-      ? await existingBrain(rizzHome, projectRoot)
+  let stderr = spooled.ok ? '' : `rizz: ${spooled.error.message}\n`;
+  const isPrompt = hook === 'beforeSubmitPrompt' || hook === 'UserPromptSubmit';
+  const isSession = hook === 'sessionStart' || hook === 'SessionStart';
+  let note = '';
+  if (isPrompt && typeof payload.prompt === 'string') {
+    const queued = await queueRelayPrompt({
+      rizzHome,
+      projectRoot,
+      prompt: payload.prompt,
+      sourceEventId: event.id,
+      at: event.at,
+    });
+    note = queued.note;
+    if (note.startsWith('Rizz did not')) stderr += `rizz: ${note}\n`;
+  }
+  const quoted =
+    isPrompt || isSession
+      ? await takeUnreadRelayContext({ rizzHome, projectRoot, now: event.at })
       : '';
-  return { exitCode: 0, stdout: hookStdout(tool, hook, brain), stderr };
+  const extra = [note, quoted].filter((part) => part !== '').join('\n\n');
+  if (isSession) {
+    const relays = await listRelays(rizzHome);
+    if (relays.ok && relays.value.length > 0) {
+      await refreshRelayBrain({ rizzHome, projectRoot, now: new Date().toISOString() });
+    }
+  }
+  const brain = isSession ? await existingBrain(rizzHome, projectRoot) : '';
+  return { exitCode: 0, stdout: hookStdout(tool, hook, brain, extra), stderr };
 }
 
 export async function initObserver(options: {
