@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { prepareProjectStore } from '../project-store.js';
 import { BRAIN_LINE_CAP, renderBrain, snapshotFromEvents } from './brain-index.js';
@@ -18,7 +19,13 @@ import {
 } from './install.js';
 import { withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, eventsIn } from './journal.js';
-import { type ObserveEvent, normalizeHook } from './model.js';
+import {
+  type ObserveEvent,
+  STORE_TEXT_CAP,
+  VIEW_TEXT_CAP,
+  normalizeHook,
+  storeText,
+} from './model.js';
 import { ensureObserveVault } from './notes.js';
 import { observePaths, spoolDropDir, spoolFile, spoolLock, spoolPendingDir } from './paths.js';
 import { receiveHook } from './receive.js';
@@ -314,7 +321,7 @@ describe('fake Cursor session', () => {
     const folded = await foldSpool(home);
     expect(folded.ok).toBe(true);
     if (!folded.ok) return;
-    expect(folded.value.duplicates).toBe(1);
+    expect(folded.value.duplicates).toBe(0);
     const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -324,11 +331,17 @@ describe('fake Cursor session', () => {
     expect(brain.split('\n').length).toBeLessThanOrEqual(BRAIN_LINE_CAP);
     expect(brain).toContain('Should health require auth?');
     const journal = await readFile(join(paths.journalDir, '2026-10.md'), 'utf8');
-    expect(eventsIn(journal).filter((item) => item.id.includes('gen-1'))).toHaveLength(1);
-    const handoffEvent = eventsIn(journal).find((item) => item.hook === 'subagentStop');
-    const handoffName = `${(handoffEvent?.id ?? '').replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 80)}.md`;
-    const handoffs = await readFile(join(paths.handoffsDir, handoffName), 'utf8');
-    expect(handoffs).toContain('src/health.ts');
+    expect(eventsIn(journal).filter((item) => item.id.includes('gen-1'))).toHaveLength(2);
+    const subagent = eventsIn(journal).find((item) => item.hook === 'subagentStop');
+    expect(subagent?.kind).toBe('tool');
+    expect(subagent?.files).toContain('src/health.ts');
+    expect(subagent?.text).toContain('Added the route.');
+    expect(journal).toContain('src/health.ts');
+    const thread = await readFile(join(paths.threadsDir, 'cursor-conv-1.md'), 'utf8');
+    expect(thread).toContain('status: active');
+    expect(thread).toContain('Added the route.');
+    const handoffFiles = await readdir(paths.handoffsDir).catch(() => [] as string[]);
+    expect(handoffFiles.filter((name) => name.endsWith('.md'))).toEqual([]);
     const ledger = await readFile(paths.ledger, 'utf8');
     expect(ledger).toContain('"context":1200');
     expect(ledger).toContain('"reported":false');
@@ -841,7 +854,7 @@ describe('concurrent hooks', () => {
     const found = eventsIn(journal).map((item) => item.id);
     expect(new Set(found).size).toBe(90);
     for (const id of ids) {
-      expect(found.some((eventId) => eventId.endsWith(`:${id}`))).toBe(true);
+      expect(found.some((eventId) => eventId.includes(`:${id}:`))).toBe(true);
     }
     const drops = await readdir(spoolDropDir(home)).catch(() => [] as string[]);
     expect(drops.filter((name) => name.endsWith('.json'))).toEqual([]);
@@ -886,6 +899,454 @@ describe('concurrent hooks', () => {
     });
     expect(text).toContain('1 hook event(s) could not be recorded.');
   }, 8_000);
+});
+
+describe('one turn sharing a generation id', () => {
+  const at = '2026-10-28T10:00:00.000Z';
+
+  async function send(
+    home: string,
+    project: string,
+    tool: 'cursor' | 'codex' | 'claude',
+    hook: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const response = await receiveHook({
+      tool,
+      hook,
+      stdin: JSON.stringify(payload),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    expect(response.exitCode).toBe(0);
+    expect(response.stderr).toBe('');
+  }
+
+  async function foldedJournal(home: string, project: string): Promise<ObserveEvent[]> {
+    const folded = await foldSpool(home);
+    expect(folded.ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return [];
+    const journal = await readFile(
+      join(observePaths(prepared.value.projectDir).journalDir, '2026-10.md'),
+      'utf8',
+    );
+    return eventsIn(journal);
+  }
+
+  it('keeps every file edit, shell, tool use, and reply in one Cursor turn', async () => {
+    const home = await tempDir('rizz-turn-');
+    const project = await tempDir('rizz-turn-project-');
+    const shared = {
+      conversation_id: 'conv-turn',
+      generation_id: 'gen-turn',
+      workspace_roots: [project],
+    };
+    const files = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+    for (const filePath of files) {
+      await send(home, project, 'cursor', 'afterFileEdit', {
+        ...shared,
+        hook_event_name: 'afterFileEdit',
+        file_path: filePath,
+      });
+    }
+    const commands = ['npm test', 'npm run build', 'npm test'];
+    for (const command of commands) {
+      await send(home, project, 'cursor', 'afterShellExecution', {
+        ...shared,
+        hook_event_name: 'afterShellExecution',
+        command,
+      });
+    }
+    const tools = [
+      { tool_name: 'Shell', tool_input: { command: 'pnpm lint' } },
+      { tool_name: 'Shell', tool_input: { command: 'pnpm test' } },
+      { tool_name: 'Read', tool_input: { path: 'README.md' } },
+    ];
+    for (const tool of tools) {
+      await send(home, project, 'cursor', 'postToolUse', {
+        ...shared,
+        hook_event_name: 'postToolUse',
+        ...tool,
+      });
+    }
+    const replies = ['Edited the health route.', 'Ran the tests.'];
+    for (const text of replies) {
+      await send(home, project, 'cursor', 'afterAgentResponse', {
+        ...shared,
+        hook_event_name: 'afterAgentResponse',
+        text,
+      });
+    }
+    const events = await foldedJournal(home, project);
+    expect(
+      events.filter((item) => item.hook === 'afterFileEdit').map((item) => item.files[0]),
+    ).toEqual(files);
+    expect(
+      events.filter((item) => item.hook === 'afterShellExecution').map((item) => item.text),
+    ).toEqual(commands);
+    expect(events.filter((item) => item.hook === 'postToolUse')).toHaveLength(tools.length);
+    expect(
+      events.filter((item) => item.hook === 'afterAgentResponse').map((item) => item.text),
+    ).toEqual(replies);
+    expect(events).toHaveLength(files.length + commands.length + tools.length + replies.length);
+  });
+
+  it('does not duplicate a Cursor turn when the same spool is folded twice', async () => {
+    const home = await tempDir('rizz-turn-replay-');
+    const project = await tempDir('rizz-turn-replay-project-');
+    const shared = {
+      conversation_id: 'conv-replay-turn',
+      generation_id: 'gen-replay-turn',
+      workspace_roots: [project],
+    };
+    await send(home, project, 'cursor', 'afterFileEdit', {
+      ...shared,
+      hook_event_name: 'afterFileEdit',
+      file_path: 'src/a.ts',
+    });
+    await send(home, project, 'cursor', 'afterFileEdit', {
+      ...shared,
+      hook_event_name: 'afterFileEdit',
+      file_path: 'src/b.ts',
+    });
+    await send(home, project, 'cursor', 'afterShellExecution', {
+      ...shared,
+      hook_event_name: 'afterShellExecution',
+      command: 'npm test',
+    });
+    await send(home, project, 'cursor', 'postToolUse', {
+      ...shared,
+      hook_event_name: 'postToolUse',
+      tool_name: 'Shell',
+      tool_input: { command: 'pnpm lint' },
+    });
+    const first = await foldedJournal(home, project);
+    await writeFile(join(home, 'spool', 'offset.json'), '{');
+    const again = await foldSpool(home);
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.value.applied).toBe(0);
+    expect(again.value.duplicates).toBe(first.length);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const journal = await readFile(
+      join(observePaths(prepared.value.projectDir).journalDir, '2026-10.md'),
+      'utf8',
+    );
+    expect(eventsIn(journal)).toHaveLength(first.length);
+    expect(eventsIn(journal).map((item) => item.id)).toEqual(first.map((item) => item.id));
+  });
+
+  it('keeps Codex tool calls that share one turn id', async () => {
+    const home = await tempDir('rizz-codex-turn-');
+    const project = await tempDir('rizz-codex-turn-project-');
+    const commands = ['npm test', 'npm run build', 'git status'];
+    for (const command of commands) {
+      await send(home, project, 'codex', 'PostToolUse', {
+        session_id: 'thread-turn',
+        cwd: project,
+        'turn-id': 'turn-shared',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'shell',
+        tool_input: { command },
+      });
+    }
+    const events = await foldedJournal(home, project);
+    const tools = events.filter((item) => item.hook === 'PostToolUse');
+    expect(tools).toHaveLength(commands.length);
+    expect(new Set(tools.map((item) => item.id)).size).toBe(commands.length);
+  });
+
+  it('keeps Claude tool calls that share one turn id', async () => {
+    const home = await tempDir('rizz-claude-turn-');
+    const project = await tempDir('rizz-claude-turn-project-');
+    const commands = ['pnpm test', 'pnpm lint', 'pnpm build'];
+    for (let index = 0; index < commands.length; index += 1) {
+      const command = commands[index] ?? '';
+      await send(home, project, 'claude', 'PostToolUse', {
+        session_id: 'claude-turn',
+        cwd: project,
+        'turn-id': 'turn-shared',
+        tool_use_id: `tool-${index}`,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+      });
+    }
+    const events = await foldedJournal(home, project);
+    const tools = events.filter((item) => item.hook === 'PostToolUse');
+    expect(tools).toHaveLength(commands.length);
+    expect(new Set(tools.map((item) => item.id)).size).toBe(commands.length);
+  });
+
+  it('keeps Claude tool calls that are distinguished only by tool_use_id', async () => {
+    const home = await tempDir('rizz-claude-tool-');
+    const project = await tempDir('rizz-claude-tool-project-');
+    const commands = ['pnpm test', 'pnpm lint'];
+    for (let index = 0; index < commands.length; index += 1) {
+      const command = commands[index] ?? '';
+      await send(home, project, 'claude', 'PostToolUse', {
+        session_id: 'claude-tools',
+        cwd: project,
+        tool_use_id: `tool-${index}`,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+      });
+    }
+    const events = await foldedJournal(home, project);
+    expect(events.filter((item) => item.hook === 'PostToolUse')).toHaveLength(commands.length);
+  });
+});
+
+describe('journal commits and index caps', () => {
+  it('marks a body that exceeds the journal safety cap and keeps its length', () => {
+    const text = `${'y'.repeat(STORE_TEXT_CAP)}TAIL`;
+    const stored = storeText(text);
+    expect(stored.length).toBeLessThanOrEqual(STORE_TEXT_CAP);
+    expect(stored).toContain(`[truncated ${text.length} chars]`);
+    expect(stored).not.toContain('TAIL');
+  });
+
+  it('keeps a late owner decision that sits past the index cap', async () => {
+    const home = await tempDir('rizz-long-prompt-');
+    const project = await tempDir('rizz-long-prompt-project-');
+    const marker = 'LATE-SPEC-MARKER';
+    const prompt = `${'spec '.repeat(400)}${marker}\nOwner decision: keep the late requirement`;
+    expect(prompt.length).toBeGreaterThan(VIEW_TEXT_CAP);
+    expect(prompt.indexOf(marker)).toBeGreaterThan(VIEW_TEXT_CAP);
+    const response = await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-long',
+        generation_id: 'gen-long',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt,
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T11:00:00.000Z',
+    });
+    expect(response.exitCode).toBe(0);
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const journal = await readFile(join(paths.journalDir, '2026-10.md'), 'utf8');
+    const stored = eventsIn(journal).find((item) => item.hook === 'beforeSubmitPrompt');
+    expect(stored?.text.length).toBeGreaterThan(VIEW_TEXT_CAP);
+    expect(stored?.text).toContain(marker);
+    expect(stored?.text).toContain('keep the late requirement');
+    expect(stored?.fields.ownerDecisions).toContain('keep the late requirement');
+    const brain = await readFile(paths.brain, 'utf8');
+    expect(brain).toContain('keep the late requirement');
+    expect(brain).not.toContain(marker);
+    const inbox = await readFile(
+      join(paths.inboxDir, (await readdir(paths.inboxDir))[0] ?? ''),
+      'utf8',
+    );
+    expect(inbox).toContain('keep the late requirement');
+  });
+
+  it('does not inbox an owner decision from an event the journal did not keep', async () => {
+    const home = await tempDir('rizz-dropped-decision-');
+    const project = await tempDir('rizz-dropped-decision-project-');
+    const response = await receiveHook({
+      tool: 'cursor',
+      hook: 'afterAgentResponse',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-drop-reply',
+        generation_id: 'gen-drop-reply',
+        hook_event_name: 'afterAgentResponse',
+        text: 'Edited five files.',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T11:30:00.000Z',
+    });
+    expect(response.exitCode).toBe(0);
+    const raw = (await readFile(spoolFile(home), 'utf8')).trim();
+    const first = JSON.parse(raw) as ObserveEvent;
+    const dropped: ObserveEvent = {
+      ...first,
+      text: 'Owner decision: Ship the dropped reply?',
+      fields: {
+        ...first.fields,
+        ownerDecision: 'Ship the dropped reply?',
+        ownerDecisions: JSON.stringify(['Ship the dropped reply?']),
+      },
+    };
+    await writeFile(spoolFile(home), `${raw}\n${JSON.stringify(dropped)}\n`);
+    const folded = await foldSpool(home);
+    expect(folded.ok).toBe(true);
+    if (!folded.ok) return;
+    expect(folded.value.applied).toBe(1);
+    expect(folded.value.duplicates).toBe(1);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const journal = await readFile(join(paths.journalDir, '2026-10.md'), 'utf8');
+    expect(journal).toContain('Edited five files.');
+    expect(journal).not.toContain('Ship the dropped reply?');
+    const names = await readdir(paths.inboxDir).catch(() => [] as string[]);
+    expect(names.filter((name) => name.endsWith('.md'))).toEqual([]);
+  });
+});
+
+describe('observer regression fixtures', () => {
+  const at = '2026-10-28T12:00:00.000Z';
+
+  interface FixtureRow {
+    readonly hook: string;
+    readonly host: 'cursor' | 'codex' | 'claude';
+    readonly payload: Record<string, unknown>;
+  }
+
+  function fixtureFile(name: string): string {
+    return fileURLToPath(new URL(`./fixtures/${name}/events.jsonl`, import.meta.url));
+  }
+
+  async function readFixture(name: string): Promise<FixtureRow[]> {
+    const raw = await readFile(fixtureFile(name), 'utf8');
+    const rows: FixtureRow[] = [];
+    for (const line of raw.split('\n')) {
+      if (line.trim() === '') continue;
+      const parsed: unknown = JSON.parse(line);
+      if (typeof parsed !== 'object' || parsed === null) continue;
+      const row = parsed as { hook?: unknown; host?: unknown; payload?: unknown };
+      if (row.host !== 'cursor' && row.host !== 'codex' && row.host !== 'claude') continue;
+      if (typeof row.hook !== 'string') continue;
+      if (typeof row.payload !== 'object' || row.payload === null || Array.isArray(row.payload)) {
+        continue;
+      }
+      rows.push({
+        hook: row.hook,
+        host: row.host,
+        payload: row.payload as Record<string, unknown>,
+      });
+    }
+    return rows;
+  }
+
+  async function play(home: string, project: string, rows: readonly FixtureRow[]): Promise<void> {
+    for (const row of rows) {
+      const response = await receiveHook({
+        tool: row.host,
+        hook: row.hook,
+        stdin: JSON.stringify({ ...row.payload, workspace_roots: [project], cwd: project }),
+        projectRoot: project,
+        rizzHome: home,
+        at,
+      });
+      expect(response.exitCode).toBe(0);
+      expect(response.stderr).toBe('');
+    }
+  }
+
+  async function observeOf(home: string, project: string) {
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) throw new Error(prepared.error.message);
+    return observePaths(prepared.value.projectDir);
+  }
+
+  it('keeps the second subagent result and leaves the thread open', async () => {
+    const home = await tempDir('rizz-s15-');
+    const project = await tempDir('rizz-s15-project-');
+    const rows = await readFixture('s15-subagents');
+    await play(home, project, rows.slice(0, 5));
+    expect((await foldSpool(home)).ok).toBe(true);
+    const paths = await observeOf(home, project);
+    const journal = await readFile(join(paths.journalDir, '2026-10.md'), 'utf8');
+    const midway = eventsIn(journal);
+    expect(midway).toHaveLength(5);
+    const second = midway.find((item) => item.text.includes('Plan()'));
+    expect(second?.kind).not.toBe('stop');
+    expect(second?.files).toEqual(['cmd/clean.go', 'internal/walk/walk.go']);
+    expect(second?.text).toContain('TODO: dry-run output is not sorted');
+    expect(second?.text).toContain('exit 3 when it would delete something');
+    const thread = await readFile(join(paths.threadsDir, 'cursor-s15-a.md'), 'utf8');
+    expect(thread).toContain('status: active');
+    const earlyHandoffs = await readdir(paths.handoffsDir).catch(() => [] as string[]);
+    expect(earlyHandoffs.filter((name) => name.endsWith('.md'))).toEqual([]);
+    const inbox = await readdir(paths.inboxDir);
+    const inboxBody = await readFile(join(paths.inboxDir, inbox[0] ?? ''), 'utf8');
+    expect(inboxBody).toContain('exit 3 when it would delete something');
+
+    await play(home, project, rows.slice(5));
+    expect((await foldSpool(home)).ok).toBe(true);
+    const done = eventsIn(await readFile(join(paths.journalDir, '2026-10.md'), 'utf8'));
+    expect(done).toHaveLength(rows.length);
+    const handoffs = (await readdir(paths.handoffsDir)).filter((name) => name.endsWith('.md'));
+    expect(handoffs).toHaveLength(1);
+    const handoff = await readFile(join(paths.handoffsDir, handoffs[0] ?? ''), 'utf8');
+    expect(handoff).toContain('cmd/clean.go');
+    expect(handoff).toContain('internal/walk/walk.go');
+    expect(handoff).toContain('README.md');
+    const stopped = await readFile(join(paths.threadsDir, 'cursor-s15-a.md'), 'utf8');
+    expect(stopped).toContain('status: completed');
+  });
+
+  it('keeps the later owner decision from s18 in the journal and the inbox', async () => {
+    const home = await tempDir('rizz-s18-');
+    const project = await tempDir('rizz-s18-project-');
+    const rows = await readFixture('s18-owner-in-prompt');
+    await play(home, project, rows);
+    expect((await foldSpool(home)).ok).toBe(true);
+    const paths = await observeOf(home, project);
+    const journal = await readFile(join(paths.journalDir, '2026-10.md'), 'utf8');
+    expect(eventsIn(journal)).toHaveLength(rows.length);
+    expect(journal).toContain('use a local SQLite file for the cache');
+    expect(journal).toContain('switch the cache to Redis instead of SQLite');
+    const names = (await readdir(paths.inboxDir)).filter((name) => name.endsWith('.md'));
+    const bodies = await Promise.all(
+      names.map((name) => readFile(join(paths.inboxDir, name), 'utf8')),
+    );
+    const inbox = bodies.join('\n');
+    expect(inbox).toContain('use a local SQLite file for the cache');
+    expect(inbox).toContain('switch the cache to Redis instead of SQLite');
+    expect(inbox).toContain('Key TTL 30 days');
+  });
+
+  it('keeps the tail of the long s19 spec in the journal', async () => {
+    const home = await tempDir('rizz-s19-');
+    const project = await tempDir('rizz-s19-project-');
+    const rows = await readFixture('s19-multi-compaction');
+    await play(home, project, rows);
+    expect((await foldSpool(home)).ok).toBe(true);
+    const paths = await observeOf(home, project);
+    const events = eventsIn(await readFile(join(paths.journalDir, '2026-10.md'), 'utf8'));
+    expect(events).toHaveLength(rows.length);
+    const spec = events.find((item) => item.text.includes('harborlog'));
+    expect(spec?.text.length).toBeGreaterThan(VIEW_TEXT_CAP);
+    expect(spec?.text).toContain('buffer_retention_days');
+    expect(spec?.text).toContain('refuse to start if the buffer directory is on a tmpfs');
+  });
+
+  it('keeps every event in the 1k trace', async () => {
+    const home = await tempDir('rizz-s11-');
+    const project = await tempDir('rizz-s11-project-');
+    const rows = await readFixture('s11-trace-1k');
+    expect(rows).toHaveLength(996);
+    await play(home, project, rows);
+    const folded = await foldSpool(home);
+    expect(folded.ok).toBe(true);
+    if (!folded.ok) return;
+    expect(folded.value.applied).toBe(996);
+    expect(folded.value.duplicates).toBe(0);
+    const paths = await observeOf(home, project);
+    const events = eventsIn(await readFile(join(paths.journalDir, '2026-10.md'), 'utf8'));
+    expect(events).toHaveLength(996);
+  }, 120_000);
 });
 
 async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {

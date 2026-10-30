@@ -4,7 +4,14 @@ import { prepareProjectStore, resolveRizzHome } from '../project-store.js';
 import { readBrainText } from './brain-index.js';
 import { appendSpoolEvent } from './fold.js';
 import { readText } from './io.js';
-import { type HostId, type ObserveEvent, isHostId, isRecord, normalizeHook } from './model.js';
+import {
+  type HostId,
+  type ObserveEvent,
+  hasSharedTurnIdentity,
+  isHostId,
+  isRecord,
+  normalizeHook,
+} from './model.js';
 import { ensureObserveVault } from './notes.js';
 import { observePaths } from './paths.js';
 import { staffOk } from './result.js';
@@ -106,7 +113,9 @@ export async function receiveHook(options: {
     projectRoot,
     at: options.at ?? new Date().toISOString(),
   });
-  const spooled = await appendSpoolEvent(rizzHome, event);
+  const spooled = await appendSpoolEvent(rizzHome, event, {
+    stampSequence: hasSharedTurnIdentity(payload),
+  });
   let stderr = '';
   if (!spooled.ok) stderr = `rizz: ${spooled.error.message}\n`;
   else if (spooled.value === 'dropped') stderr = 'rizz: hook event could not be recorded\n';

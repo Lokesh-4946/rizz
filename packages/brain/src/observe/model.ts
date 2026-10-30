@@ -36,10 +36,28 @@ export function safeThreadId(tool: HostId, raw: string): string {
   return `${tool}-${body}`;
 }
 
+/** Index views (BRAIN.md) keep this much of an event. The journal stores the rest. */
+export const VIEW_TEXT_CAP = 1500;
+
+/**
+ * Safety ceiling for one journal body. A longer payload keeps its original length in the marker.
+ * Owner decisions are taken from the full text before this cap is applied.
+ */
+export const STORE_TEXT_CAP = 1_000_000;
+
 export function clip(text: string, max: number): string {
   const redacted = redactSensitiveText(text);
   if (redacted.length <= max) return redacted;
   return `${redacted.slice(0, max)}…`;
+}
+
+export function storeText(text: string): string {
+  const redacted = redactSensitiveText(text);
+  if (redacted.length <= STORE_TEXT_CAP) return redacted;
+  const marker = `…[truncated ${redacted.length} chars]`;
+  const room = STORE_TEXT_CAP - marker.length - 1;
+  if (room <= 0) return marker;
+  return `${redacted.slice(0, room)}\n${marker}`;
 }
 
 function pickString(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
@@ -69,15 +87,86 @@ export function ownerDecisionLines(text: string): string[] {
   return found;
 }
 
-export function observeEventId(hook: string, payload: Record<string, unknown>): string {
+/** Decisions stored on the journaled event. Ignores a later spool line that reused the id. */
+export function committedOwnerDecisions(event: ObserveEvent): string[] {
+  const raw = event.fields.ownerDecisions;
+  if (raw !== undefined && raw !== '') {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (item): item is string => typeof item === 'string' && item.trim() !== '',
+        );
+      }
+    } catch {
+      // The field is not JSON. The stored text is the fallback.
+    }
+  }
+  return ownerDecisionLines(event.text);
+}
+
+const TURN_KEYS = ['generation_id', 'turn_id', 'turn-id'] as const;
+
+/**
+ * Cursor reuses generation_id for a whole turn. Codex does the same with turn_id.
+ * A tool_use_id is one call, so it wins when the host sent one.
+ * Shared turn ids also mix in a hash of the fields that differ between calls.
+ */
+export function observeEventId(hook: string, payload: Record<string, unknown>, at = ''): string {
   const thread =
     pickString(payload, ['conversation_id', 'session_id', 'thread_id', 'thread-id']) ?? 'none';
-  const generation =
-    pickString(payload, ['generation_id', 'turn_id', 'turn-id', 'tool_use_id']) ?? '';
   const name = pickString(payload, ['hook_event_name']) ?? hook;
-  if (generation !== '') return `${thread}:${name}:${generation}`;
+  const toolUse = pickString(payload, ['tool_use_id']) ?? '';
+  const turn = pickString(payload, TURN_KEYS) ?? '';
+  if (toolUse !== '') return `${thread}:${name}:${toolUse}:${eventDiscriminator(payload, at)}`;
+  if (turn !== '') return `${thread}:${name}:${turn}:${eventDiscriminator(payload, at)}`;
   const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16);
   return `${thread}:${name}:${hash}`;
+}
+
+/** Shared turn ids collide across calls. A tool_use_id does not, so the spool offset is unnecessary. */
+export function hasSharedTurnIdentity(payload: Record<string, unknown>): boolean {
+  if (pickString(payload, ['tool_use_id']) !== undefined) return false;
+  return pickString(payload, TURN_KEYS) !== undefined;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return '';
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function commandOf(payload: Record<string, unknown>): string {
+  const direct = pickString(payload, ['command']);
+  if (direct !== undefined) return direct;
+  if (!isRecord(payload.tool_input)) return '';
+  return pickString(payload.tool_input, ['command']) ?? '';
+}
+
+function eventDiscriminator(payload: Record<string, unknown>, at: string): string {
+  const material = JSON.stringify({
+    at,
+    filePath: pickString(payload, ['file_path']) ?? '',
+    files: filesFrom(payload),
+    command: commandOf(payload),
+    output: pickString(payload, ['output']) ?? '',
+    toolName: pickString(payload, ['tool_name', 'subagent_type']) ?? '',
+    toolUseId: pickString(payload, ['tool_use_id']) ?? '',
+    toolInput: canonicalJson(payload.tool_input),
+    edits: canonicalJson(payload.edits),
+    text:
+      pickString(payload, [
+        'text',
+        'prompt',
+        'summary',
+        'last_assistant_message',
+        'last-assistant-message',
+      ]) ?? '',
+  });
+  return createHash('sha256').update(material).digest('hex').slice(0, 16);
 }
 
 function kindFor(hook: string): ObserveKind {
@@ -98,10 +187,11 @@ function kindFor(hook: string): ObserveKind {
     case 'preCompact':
     case 'PreCompact':
       return 'usage';
-    case 'stop':
-    case 'Stop':
     case 'subagentStop':
     case 'SubagentStop':
+      return 'tool';
+    case 'stop':
+    case 'Stop':
     case 'sessionEnd':
     case 'SessionEnd':
     case 'notify':
@@ -154,11 +244,16 @@ function filesFrom(payload: Record<string, unknown>): string[] {
 }
 
 function textFrom(payload: Record<string, unknown>): string {
+  const command = pickString(payload, ['command']);
+  if (command !== undefined) {
+    const output = pickString(payload, ['output']);
+    if (output !== undefined) return `${command}\n${output}`;
+    return command;
+  }
   const direct = pickString(payload, [
     'prompt',
     'text',
     'summary',
-    'command',
     'last_assistant_message',
     'last-assistant-message',
     'error_message',
@@ -186,8 +281,9 @@ export function normalizeHook(options: {
   const threadRaw =
     pickString(payload, ['conversation_id', 'session_id', 'thread_id', 'thread-id', 'sessionId']) ??
     'unknown';
-  const text = clip(textFrom(payload), 1500);
-  const owners = ownerDecisionLines(text);
+  const fullText = redactSensitiveText(textFrom(payload));
+  const owners = ownerDecisionLines(fullText);
+  const text = storeText(fullText);
   const fields: Record<string, string> = {
     ...usageFields(payload),
   };
@@ -202,7 +298,7 @@ export function normalizeHook(options: {
   const transcript = pickString(payload, ['transcript_path', 'agent_transcript_path']);
   if (transcript !== undefined) fields.transcriptPath = transcript;
   return {
-    id: observeEventId(hook, payload),
+    id: observeEventId(hook, payload, options.at),
     at: options.at,
     tool: options.tool,
     hook,

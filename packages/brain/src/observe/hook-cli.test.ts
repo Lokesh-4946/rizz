@@ -287,7 +287,7 @@ describe('installed CLI hook sessions', () => {
     const journalPath = join(observe, 'journal', `${month}.md`);
     const journalBefore = await readFile(journalPath, 'utf8');
     const journalEvents = eventsIn(journalBefore);
-    expect(journalEvents.filter((item) => item.id.includes('gen-1'))).toHaveLength(1);
+    expect(journalEvents.filter((item) => item.id.includes('gen-1'))).toHaveLength(2);
     expect(journalBefore).toContain('%%rizz:event%%');
     const foldedAgain = await runCli(['fold'], opts);
     expect(foldedAgain.stdout).toContain('folded 0 event(s)');

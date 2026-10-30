@@ -1,7 +1,7 @@
 import type { DecisionRecord } from './decisions.js';
 import { activeDecisions } from './decisions.js';
 import { readText, writeAtomic } from './io.js';
-import type { ObserveEvent } from './model.js';
+import { type ObserveEvent, VIEW_TEXT_CAP, clip } from './model.js';
 import { type StaffResult, staffOk } from './result.js';
 
 export const BRAIN_LINE_CAP = 200;
@@ -135,7 +135,8 @@ export function renderBrain(snapshot: BrainSnapshot): string {
   const recent = [...snapshot.events].slice(-12);
   if (recent.length === 0) lines.push('- none yet');
   for (const event of recent) {
-    const preview = event.text === '' ? event.hook : event.text.slice(0, 80);
+    const view = clip(event.text, VIEW_TEXT_CAP);
+    const preview = view === '' ? event.hook : view.slice(0, 80);
     lines.push(`- ${event.at} · ${event.tool} · ${event.hook} · ${preview}`);
   }
   lines.push('', '## Notes', '- [[vision]]', '- [[decisions]]', '- ledger/tokens.jsonl', '');
