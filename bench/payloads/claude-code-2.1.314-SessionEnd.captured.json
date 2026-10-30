@@ -1,0 +1,15 @@
+{
+  "evidence": "captured",
+  "host": "claude",
+  "hostVersion": "2.1.314",
+  "event": "SessionEnd",
+  "note": "Live stdin from the same unauthenticated run. reason is other. No token-usage fields.",
+  "payload": {
+    "session_id": "d8041fe8-fea0-485a-8d8f-406322125078",
+    "transcript_path": "/tmp/rizz-claude-home/.claude/projects/-workspace/d8041fe8-fea0-485a-8d8f-406322125078.jsonl",
+    "cwd": "/workspace",
+    "prompt_id": "d641b7d2-4bcf-4dd9-aefc-73b645239d93",
+    "hook_event_name": "SessionEnd",
+    "reason": "other"
+  }
+}

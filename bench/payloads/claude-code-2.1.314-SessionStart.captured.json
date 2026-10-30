@@ -1,0 +1,14 @@
+{
+  "evidence": "captured",
+  "host": "claude",
+  "hostVersion": "2.1.314",
+  "event": "SessionStart",
+  "note": "Live stdin from Claude Code 2.1.314 `claude -p` with no credentials. The process ended 'Not logged in · Please run /login'. source is startup, so the resume-only token fields are absent. Stop, PreCompact, and PostToolUse did not fire.",
+  "payload": {
+    "session_id": "d8041fe8-fea0-485a-8d8f-406322125078",
+    "transcript_path": "/tmp/rizz-claude-home/.claude/projects/-workspace/d8041fe8-fea0-485a-8d8f-406322125078.jsonl",
+    "cwd": "/workspace",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  }
+}
