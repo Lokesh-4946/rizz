@@ -63,6 +63,21 @@ function rollupThreads(events: readonly ObserveEvent[]): ThreadRollup[] {
   return [...map.values()].sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
 }
 
+function touchedFiles(events: readonly ObserveEvent[]): string[] {
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event === undefined) continue;
+    for (const file of event.files) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      files.push(file);
+    }
+  }
+  return files;
+}
+
 function tokenTotals(events: readonly ObserveEvent[]): {
   inputTokens: number;
   outputTokens: number;
@@ -81,7 +96,13 @@ function tokenTotals(events: readonly ObserveEvent[]): {
         contextTokens = Number(event.fields.contextTokens);
       }
     }
-    if (event.kind === 'stop' && event.fields.reported !== 'yes') unreportedRuns += 1;
+    if (
+      event.kind === 'stop' &&
+      event.fields.reported !== 'yes' &&
+      event.fields.recovery !== 'yes'
+    ) {
+      unreportedRuns += 1;
+    }
     if (
       event.kind === 'usage' &&
       event.fields.reported !== 'yes' &&
@@ -129,6 +150,11 @@ export function renderBrain(snapshot: BrainSnapshot): string {
     );
   }
   if (threads.length > 12) lines.push(`- ${threads.length - 12} older threads are in the journal`);
+  lines.push('', '## Touched files');
+  const files = touchedFiles(snapshot.events);
+  if (files.length === 0) lines.push('- none');
+  for (const file of files.slice(0, 12)) lines.push(`- ${file}`);
+  if (files.length > 12) lines.push(`- ${files.length - 12} more files are in the journal`);
   lines.push('', '## Current decisions');
   const active = activeDecisions(snapshot.decisions);
   if (active.length === 0) lines.push('- none');

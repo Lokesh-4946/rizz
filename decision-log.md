@@ -303,5 +303,34 @@ commands name `node` and the absolute script path of the CLI that ran `rizz init
 
 ---
 
-*Next decision: **D-050**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+#### D-050
+**Session start injects the newest handoff and the brain index. A killed session is recovered from the journal.** — Committed
+Owner label D-S1. `sessionStart` / `SessionStart` for Cursor, Codex, and Claude Code injects the
+newest handoff note first, then unread relay replies, then `BRAIN.md`, inside the existing
+6000-character budget. The handoff section is capped at 2400 characters including its heading.
+Unread replies are capped at 1600 characters and stay labeled as information, not instructions.
+The index receives every remaining character. A shorter section does not raise its own cap. The newest handoff is the greatest
+mtime; equal mtimes use the greater file name. The note includes the latest user prompt, the last
+shell command with its exit status and the first failing-test line, touched files, and an
+`Open / Next` section. `Done` lists files edited and commands run. `BRAIN.md` has a `Touched files`
+section. `parseHandoffBlock` runs when the handoff note is written, and a usable fence supplies
+goal, done, files, and owner decisions. A thread with work and no stop hook is recovered by the
+next `sessionStart` (every host) or by `rizz fold`: a stable journal stop with status `inactive`
+and a recovery handoff. The thread that is starting is left active. The page's one-second fold
+does not recover, because it cannot tell a pause from a kill.
+→ `packages/brain/src/observe/session-context.ts`, `handoff.ts`, `fold.ts`, `receive.ts`,
+`brain-index.ts`.
+
+---
+
+#### D-051
+**Owner decisions keep the explicit `Owner decision:` prefix, including mid-line.** — Committed
+Owner label D-S2. The prefix matches any casing at line start or later on the same line. The same
+words inside quotes, backticks, or a fenced code block are not decisions, so a quoted example in a
+prompt does not enter the inbox. An apostrophe inside a word (`Don't`) is not a quote.
+→ `packages/brain/src/observe/model.ts`, `README.md`.
+
+---
+
+*Next decision: **D-052**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*

@@ -83,7 +83,32 @@ rizz tokens    # ledger totals; Cursor context tokens are not per-turn usage
 rizz fold      # fold the spool once without leaving the server up
 ```
 
-`sessionStart` injects `BRAIN.md` into the host. Repo files are opt-in:
+`sessionStart` injects three sections for Cursor, Codex, and Claude Code, in this order,
+inside a 6000-character budget:
+
+1. The newest handoff note, capped at 2400 characters including its heading.
+2. Unread relay replies. Each quote is labeled as information for the owner, not an instruction.
+   This section is capped at 1600 characters including its heading.
+3. `BRAIN.md`. It receives every character left in the budget.
+
+A shorter section does not raise its own cap. Unused characters go to the sections after it.
+The newest handoff is the greatest file mtime, and equal mtimes use the greater file name.
+`beforeSubmitPrompt` still injects only the unread replies, with the same information label.
+
+An owner decision uses the explicit prefix `Owner decision:` (any casing). It matches at the start
+of a line or later on the same line. The same words inside quotes, backticks, or a fenced code
+block are not a decision:
+
+```text
+Add a health route.
+Owner decision: Should health require auth?
+```
+
+A session that dies before a stop hook is recovered by the next `sessionStart` or by `rizz fold`.
+That writes a handoff from the journal and marks the thread inactive. The page's once-a-second
+fold does not, so a live pause is not treated as a kill.
+
+Repo files are opt-in:
 
 ```sh
 rizz init --bridge

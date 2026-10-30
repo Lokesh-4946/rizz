@@ -9,7 +9,7 @@ import { detectHosts, runObserveCli } from './cli.js';
 import { readCodexRollout } from './codex-session.js';
 import { checkDrift } from './drift.js';
 import { appendSpoolEvent, countUnrecorded, foldSpool } from './fold.js';
-import { parseHandoffBlock } from './handoff.js';
+import { parseHandoffBlock, renderHandoffNote } from './handoff.js';
 import {
   hookCommand,
   installClaudeHooks,
@@ -18,12 +18,18 @@ import {
 } from './install.js';
 import { withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, eventsIn } from './journal.js';
-import { type ObserveEvent, normalizeHook } from './model.js';
-import { ensureObserveVault } from './notes.js';
+import { type ObserveEvent, normalizeHook, ownerDecisionLines } from './model.js';
+import { ensureObserveVault, readLatestHandoff } from './notes.js';
 import { observePaths, spoolDropDir, spoolFile, spoolLock, spoolPendingDir } from './paths.js';
 import { receiveHook } from './receive.js';
 import { staffOk } from './result.js';
 import { startObserveServer } from './serve.js';
+import {
+  HANDOFF_CONTEXT_CAP,
+  RELAY_CONTEXT_CAP,
+  SESSION_CONTEXT_BUDGET,
+  composeSessionContext,
+} from './session-context.js';
 import { renderSummary } from './summary.js';
 
 const roots: string[] = [];
@@ -91,6 +97,7 @@ describe('append-only brain', () => {
     );
     expect(rendered.split('\n').length).toBeLessThanOrEqual(BRAIN_LINE_CAP);
     expect(rendered).toContain('## Decisions awaiting you');
+    expect(rendered).toContain('## Touched files');
   });
 
   it('flags a Never constraint without treating a similar decision as a block', () => {
@@ -119,6 +126,66 @@ describe('append-only brain', () => {
     );
     expect(parsed.incomplete).toBe(false);
     expect(parsed.body.ownerDecisions).toEqual(['Should health require auth?']);
+  });
+
+  it('reads Owner decision at line start and mid-line, and skips quoted code', () => {
+    expect(ownerDecisionLines('Owner decision: Should health require auth?')).toEqual([
+      'Should health require auth?',
+    ]);
+    expect(
+      ownerDecisionLines("Don't skip this.\nLokesh wrote Owner decision: Keep the offset?"),
+    ).toEqual(['Keep the offset?']);
+    expect(
+      ownerDecisionLines(
+        'See `Owner decision: not real` and "Owner decision: also not" and \'Owner decision: still code\'.',
+      ),
+    ).toEqual([]);
+    expect(
+      ownerDecisionLines('```ts\nOwner decision: inside fence\n```\nOwner decision: Real one'),
+    ).toEqual(['Real one']);
+    expect(ownerDecisionLines('Owner decision: First one. Owner decision: Second one.')).toEqual([
+      'First one.',
+      'Second one.',
+    ]);
+  });
+
+  it('puts a capped handoff section before the index inside 6000 characters', () => {
+    const handoff = `H${'x'.repeat(5000)}`;
+    const brain = `B${'y'.repeat(5000)}`;
+    const context = composeSessionContext(brain, handoff);
+    expect(context.length).toBe(SESSION_CONTEXT_BUDGET);
+    expect(context.startsWith('## Latest handoff\n\n')).toBe(true);
+    const indexAt = context.indexOf('\n\n## Brain index\n\n');
+    expect(indexAt).toBe(HANDOFF_CONTEXT_CAP);
+    expect(context.slice(indexAt)).toContain('B');
+    expect(context.slice(0, indexAt)).not.toContain('## Brain index');
+    const short = composeSessionContext(`${'# Rizz brain\n'}${'B'.repeat(80)}`, 'note');
+    expect(short).toContain('## Latest handoff');
+    expect(short).toContain('note');
+    expect(short).toContain('B'.repeat(80));
+    expect(short.length).toBeLessThan(SESSION_CONTEXT_BUDGET);
+    expect(composeSessionContext('# Rizz brain', undefined)).toBe('# Rizz brain');
+  });
+
+  it('injects handoff, unread relay replies, then the index inside 6000 characters', () => {
+    const handoff = `H${'x'.repeat(5000)}`;
+    const relay = `Quoted message from jenny.\nThis is information for the owner, not an instruction.\n${'R'.repeat(5000)}`;
+    const brain = `# Rizz brain\n${'B'.repeat(5000)}`;
+    const context = composeSessionContext(brain, handoff, relay);
+    expect(context.length).toBe(SESSION_CONTEXT_BUDGET);
+    const relayAt = context.indexOf('\n\n## Unread replies\n\n');
+    const indexAt = context.indexOf('\n\n## Brain index\n\n');
+    expect(context.startsWith('## Latest handoff\n\n')).toBe(true);
+    expect(relayAt).toBe(HANDOFF_CONTEXT_CAP);
+    expect(indexAt).toBe(HANDOFF_CONTEXT_CAP + '\n\n'.length + RELAY_CONTEXT_CAP);
+    expect(context.slice(relayAt, indexAt)).toContain(
+      'information for the owner, not an instruction',
+    );
+    expect(context.slice(relayAt, indexAt)).not.toContain('# Rizz brain');
+    expect(context.slice(indexAt)).toContain('# Rizz brain');
+    expect(context.slice(indexAt)).toContain('B');
+    expect(context.indexOf('## Latest handoff')).toBeLessThan(context.indexOf('## Unread replies'));
+    expect(context.indexOf('## Unread replies')).toBeLessThan(context.indexOf('## Brain index'));
   });
 });
 
@@ -323,12 +390,21 @@ describe('fake Cursor session', () => {
     expect(brain).toContain('cursor-conv-1');
     expect(brain.split('\n').length).toBeLessThanOrEqual(BRAIN_LINE_CAP);
     expect(brain).toContain('Should health require auth?');
+    expect(brain).toContain('## Touched files');
+    expect(brain).toContain('src/health.ts');
     const journal = await readFile(join(paths.journalDir, '2026-10.md'), 'utf8');
     expect(eventsIn(journal).filter((item) => item.id.includes('gen-1'))).toHaveLength(1);
     const handoffEvent = eventsIn(journal).find((item) => item.hook === 'subagentStop');
     const handoffName = `${(handoffEvent?.id ?? '').replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 80)}.md`;
     const handoffs = await readFile(join(paths.handoffsDir, handoffName), 'utf8');
     expect(handoffs).toContain('src/health.ts');
+    expect(handoffs).toContain('## Latest prompt');
+    expect(handoffs).toContain('Add a health route.');
+    expect(handoffs).toContain('ran `npm test` (exit status was not reported)');
+    expect(handoffs).toContain('edited src/health.ts');
+    expect(handoffs).toContain('## Open / Next');
+    expect(handoffs).toContain('## Touched files');
+    expect(handoffs).not.toMatch(/^- (postToolUse|afterFileEdit|Shell|subagentStop)$/m);
     const ledger = await readFile(paths.ledger, 'utf8');
     expect(ledger).toContain('"context":1200');
     expect(ledger).toContain('"reported":false');
@@ -495,6 +571,47 @@ describe('crash-safe brain writes', () => {
     await utimes(lock, old, old);
     const result = await withLock(lock, async () => staffOk('in'));
     expect(result).toEqual({ ok: true, value: 'in' });
+  });
+
+  it('keeps the next spool record after a fold instead of skipping its first byte', async () => {
+    const home = await tempDir('rizz-offset-byte-');
+    const project = await tempDir('rizz-offset-byte-project-');
+    const at = '2026-10-28T08:00:00.000Z';
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'sessionStart',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-byte',
+        hook_event_name: 'sessionStart',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-byte',
+        generation_id: 'gen-byte',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Keep the byte after the fold.',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const journal = await readFile(
+      join(observePaths(prepared.value.projectDir).journalDir, '2026-10.md'),
+      'utf8',
+    );
+    expect(journal).toContain('Keep the byte after the fold.');
   });
 
   it('replays the spool when the offset file was torn', async () => {
@@ -792,6 +909,404 @@ describe('owner answers', () => {
   });
 });
 
+describe('session start handoff', () => {
+  it('describes the command, the failing test, and the next step', () => {
+    const prompt = normalizeHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      payload: {
+        conversation_id: 'conv-note',
+        generation_id: 'prompt-note',
+        prompt: 'Add a health route.\n- [ ] wire auth',
+      },
+      projectRoot: '/tmp/project',
+      at: '2026-10-28T08:00:00.000Z',
+    });
+    const shell = normalizeHook({
+      tool: 'cursor',
+      hook: 'postToolUse',
+      payload: {
+        conversation_id: 'conv-note',
+        generation_id: 'tool-note',
+        tool_name: 'Shell',
+        tool_input: { command: 'npm test' },
+        exit_code: 1,
+        output: ' FAIL  src/health.test.ts > auth required\nAssertionError: expected 200\n',
+      },
+      projectRoot: '/tmp/project',
+      at: '2026-10-28T08:01:00.000Z',
+    });
+    const note = renderHandoffNote(
+      { ...shell, kind: 'stop', fields: { ...shell.fields, status: 'completed' } },
+      [prompt, shell],
+      [],
+    );
+    expect(note).toContain('## Latest prompt');
+    expect(note).toContain('Add a health route.');
+    expect(note).toContain('ran `npm test` (exit 1)');
+    expect(note).toContain('`npm test` exited 1');
+    expect(note).toContain('FAIL  src/health.test.ts > auth required');
+    expect(note).toContain('wire auth');
+    expect(note).toContain('## Open / Next');
+    expect(note).toContain(
+      'Finish "Add a health route." by fixing FAIL  src/health.test.ts > auth required',
+    );
+    expect(note).not.toMatch(/^- (postToolUse|Shell)$/m);
+  });
+
+  it('picks the greater handoff name when mtimes tie', async () => {
+    const home = await tempDir('rizz-handoff-tie-');
+    const project = await tempDir('rizz-handoff-tie-project-');
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    await mkdir(paths.handoffsDir, { recursive: true });
+    await writeFile(join(paths.handoffsDir, 'a-note.md'), 'alpha-only handoff\n');
+    await writeFile(join(paths.handoffsDir, 'm-note.md'), 'zeta-only handoff\n');
+    const stamp = new Date('2026-10-28T08:00:00.000Z');
+    await utimes(join(paths.handoffsDir, 'a-note.md'), stamp, stamp);
+    await utimes(join(paths.handoffsDir, 'm-note.md'), stamp, stamp);
+    const latest = await readLatestHandoff(paths.handoffsDir);
+    expect(latest.ok).toBe(true);
+    if (!latest.ok) return;
+    expect(latest.value).toContain('zeta-only handoff');
+    expect(latest.value).not.toContain('alpha-only');
+    const older = new Date('2026-10-27T08:00:00.000Z');
+    await utimes(join(paths.handoffsDir, 'm-note.md'), older, older);
+    const fresh = await readLatestHandoff(paths.handoffsDir);
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) return;
+    expect(fresh.value).toContain('alpha-only handoff');
+  });
+
+  it.each([
+    {
+      tool: 'cursor' as const,
+      start: 'sessionStart',
+      prompt: 'beforeSubmitPrompt',
+      shell: 'postToolUse',
+      edit: 'afterFileEdit',
+      stop: 'stop',
+    },
+    {
+      tool: 'codex' as const,
+      start: 'SessionStart',
+      prompt: 'UserPromptSubmit',
+      shell: 'PostToolUse',
+      edit: 'PostToolUse',
+      stop: 'Stop',
+    },
+    {
+      tool: 'claude' as const,
+      start: 'SessionStart',
+      prompt: 'UserPromptSubmit',
+      shell: 'PostToolUse',
+      edit: 'PostToolUse',
+      stop: 'Stop',
+    },
+  ])('injects the handoff and the brain index for $tool', async (host) => {
+    const home = await tempDir(`rizz-inject-${host.tool}-`);
+    const project = await tempDir(`rizz-inject-${host.tool}-project-`);
+    const at = '2026-10-28T08:00:00.000Z';
+    const send = async (hook: string, payload: Record<string, unknown>) =>
+      receiveHook({
+        tool: host.tool,
+        hook,
+        stdin: JSON.stringify(payload),
+        projectRoot: project,
+        rizzHome: home,
+        at,
+      });
+    const common = {
+      conversation_id: 'conv-inject',
+      session_id: 'conv-inject',
+      cwd: project,
+      workspace_roots: [project],
+    };
+    await send(host.start, { ...common, hook_event_name: host.start });
+    await send(host.prompt, {
+      ...common,
+      generation_id: 'prompt-inject',
+      'turn-id': 'prompt-inject',
+      hook_event_name: host.prompt,
+      prompt:
+        'Add a health route.\nOwner decision: Should health require auth?\n- [ ] confirm the route',
+    });
+    await send(host.shell, {
+      ...common,
+      generation_id: 'shell-inject',
+      'turn-id': 'shell-inject',
+      tool_use_id: 'shell-inject',
+      hook_event_name: host.shell,
+      tool_name: 'Shell',
+      tool_input: { command: 'npm test' },
+      exit_code: 0,
+    });
+    await send(host.edit, {
+      ...common,
+      generation_id: 'edit-inject',
+      'turn-id': 'edit-inject',
+      tool_use_id: 'edit-inject',
+      hook_event_name: host.edit,
+      tool_name: 'Edit',
+      file_path: 'src/health.ts',
+      tool_input: { file_path: 'src/health.ts' },
+    });
+    await send(host.stop, {
+      ...common,
+      generation_id: 'stop-inject',
+      'turn-id': 'stop-inject',
+      hook_event_name: host.stop,
+      status: 'completed',
+      summary: 'Added the route.',
+    });
+    const next = await send(host.start, {
+      ...common,
+      conversation_id: 'conv-next',
+      session_id: 'conv-next',
+      hook_event_name: host.start,
+    });
+    expect(next.exitCode).toBe(0);
+    const context = contextFrom(host.tool, next.stdout);
+    expect(context.length).toBeLessThanOrEqual(SESSION_CONTEXT_BUDGET);
+    expect(context).toContain('## Latest handoff');
+    expect(context).toContain('## Brain index');
+    expect(context).toContain('# Rizz brain');
+    expect(context).toContain('src/health.ts');
+    expect(context).toContain('Add a health route.');
+    expect(context).toContain('## Open / Next');
+    expect(context).toContain('## Touched files');
+  });
+
+  it('recovers a killed session on fold and on the next sessionStart', async () => {
+    const home = await tempDir('rizz-recover-');
+    const project = await tempDir('rizz-recover-project-');
+    const at = '2026-10-28T08:00:00.000Z';
+    const send = async (hook: string, payload: Record<string, unknown>) => {
+      const response = await receiveHook({
+        tool: 'cursor',
+        hook,
+        stdin: JSON.stringify(payload),
+        projectRoot: project,
+        rizzHome: home,
+        at,
+      });
+      expect(response.exitCode).toBe(0);
+      return response;
+    };
+    const common = { conversation_id: 'conv-killed', workspace_roots: [project] };
+    await send('sessionStart', { ...common, hook_event_name: 'sessionStart' });
+    await send('beforeSubmitPrompt', {
+      ...common,
+      generation_id: 'prompt-killed',
+      hook_event_name: 'beforeSubmitPrompt',
+      prompt: 'Add a health route.\n- [ ] wire auth',
+    });
+    await send('postToolUse', {
+      ...common,
+      generation_id: 'shell-killed',
+      hook_event_name: 'postToolUse',
+      tool_name: 'Shell',
+      tool_input: { command: 'npm test' },
+      exit_code: 1,
+      output: ' FAIL  src/health.test.ts > auth required\n',
+    });
+    await send('afterFileEdit', {
+      ...common,
+      generation_id: 'edit-killed',
+      hook_event_name: 'afterFileEdit',
+      file_path: 'src/health.ts',
+    });
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const quiet = await foldSpool(home);
+    expect(quiet.ok).toBe(true);
+    if (!quiet.ok) return;
+    expect(quiet.value.recovered).toBe(0);
+    await expect(readdir(paths.handoffsDir)).rejects.toThrow();
+    const folded = await foldSpool(home, { recoverKilled: true, at });
+    expect(folded.ok).toBe(true);
+    if (!folded.ok) return;
+    expect(folded.value.recovered).toBe(1);
+    const names = await readdir(paths.handoffsDir);
+    expect(names).toHaveLength(1);
+    const handoff = await readFile(join(paths.handoffsDir, names[0] ?? ''), 'utf8');
+    expect(handoff).toContain('recovery: session ended without a stop hook');
+    expect(handoff).toContain('## Latest prompt');
+    expect(handoff).toContain('Add a health route.');
+    expect(handoff).toContain('ran `npm test` (exit 1)');
+    expect(handoff).toContain('FAIL  src/health.test.ts > auth required');
+    expect(handoff).toContain('edited src/health.ts');
+    expect(handoff).toContain('## Touched files');
+    expect(handoff).toContain('wire auth');
+    expect(handoff).toContain('## Open / Next');
+    expect(handoff).toContain(
+      'Finish "Add a health route." by fixing FAIL  src/health.test.ts > auth required',
+    );
+    expect(handoff).not.toMatch(/^- (postToolUse|afterFileEdit|sessionStart)$/m);
+    const thread = await readFile(join(paths.threadsDir, 'cursor-conv-killed.md'), 'utf8');
+    expect(thread).toContain('status: inactive');
+    const brain = await readFile(paths.brain, 'utf8');
+    expect(brain).toContain('inactive');
+    expect(brain).toContain('## Touched files');
+    expect(brain).toContain('src/health.ts');
+    const again = await foldSpool(home, { recoverKilled: true, at });
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.value.recovered).toBe(0);
+
+    const other = await tempDir('rizz-recover-next-');
+    const otherProject = await tempDir('rizz-recover-next-project-');
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-stale',
+        generation_id: 'prompt-stale',
+        prompt: 'Leave the router unfinished.',
+        workspace_roots: [otherProject],
+      }),
+      projectRoot: otherProject,
+      rizzHome: other,
+      at,
+    });
+    const started = await receiveHook({
+      tool: 'cursor',
+      hook: 'sessionStart',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-fresh',
+        session_id: 'conv-fresh',
+        hook_event_name: 'sessionStart',
+        workspace_roots: [otherProject],
+      }),
+      projectRoot: otherProject,
+      rizzHome: other,
+      at,
+    });
+    const body = JSON.parse(started.stdout) as { additional_context: string };
+    expect(body.additional_context).toContain('## Latest handoff');
+    expect(body.additional_context).toContain('## Brain index');
+    expect(body.additional_context).toContain('Leave the router unfinished.');
+    expect(body.additional_context).toContain('recovery: session ended without a stop hook');
+    expect(body.additional_context.length).toBeLessThanOrEqual(SESSION_CONTEXT_BUDGET);
+    const stored = await prepareProjectStore({ rootDir: otherProject, rizzHome: other });
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    const staleThread = await readFile(
+      join(observePaths(stored.value.projectDir).threadsDir, 'cursor-conv-stale.md'),
+      'utf8',
+    );
+    expect(staleThread).toContain('status: inactive');
+    const freshThread = await readFile(
+      join(observePaths(stored.value.projectDir).threadsDir, 'cursor-conv-fresh.md'),
+      'utf8',
+    );
+    expect(freshThread).toContain('status: active');
+  });
+
+  it('uses a rizz-handoff fence on the fold path and queues its owner decision', async () => {
+    const home = await tempDir('rizz-fence-');
+    const project = await tempDir('rizz-fence-project-');
+    const at = '2026-10-28T08:00:00.000Z';
+    const fence = [
+      '```rizz-handoff',
+      JSON.stringify({
+        goal: 'ship the public health route',
+        done: ['added the route file'],
+        open: ['confirm auth'],
+        decisions: [],
+        files: ['src/from-fence.ts'],
+        ownerDecisions: ['Should the fence decision be queued?'],
+      }),
+      '```',
+    ].join('\n');
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-fence',
+        generation_id: 'prompt-fence',
+        prompt: 'Start the route work.',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'stop',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-fence',
+        generation_id: 'stop-fence',
+        hook_event_name: 'stop',
+        status: 'completed',
+        summary: fence,
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at,
+    });
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const handoff = await readFile(
+      join(paths.handoffsDir, (await readdir(paths.handoffsDir))[0] ?? ''),
+      'utf8',
+    );
+    expect(handoff).toMatch(/## Goal\n\nship the public health route/);
+    expect(handoff).toContain('Start the route work.');
+    expect(handoff).toContain('added the route file');
+    expect(handoff).toContain('src/from-fence.ts');
+    expect(handoff).toContain('confirm auth');
+    expect(handoff).toContain('Should the fence decision be queued?');
+    const inbox = (await readdir(paths.inboxDir)).map((name) => name);
+    const bodies = await Promise.all(
+      inbox.map((name) => readFile(join(paths.inboxDir, name), 'utf8')),
+    );
+    expect(bodies.some((body) => body.includes('Should the fence decision be queued?'))).toBe(true);
+  });
+
+  it('queues a mid-line owner decision and ignores the quoted example', async () => {
+    const home = await tempDir('rizz-owner-inline-');
+    const project = await tempDir('rizz-owner-inline-project-');
+    await receiveHook({
+      tool: 'cursor',
+      hook: 'beforeSubmitPrompt',
+      stdin: JSON.stringify({
+        conversation_id: 'conv-inline',
+        generation_id: 'prompt-inline',
+        prompt:
+          'Please record this. Owner decision: Ship on Friday?\nThe example is "Owner decision: Do not queue this".',
+        workspace_roots: [project],
+      }),
+      projectRoot: project,
+      rizzHome: home,
+      at: '2026-10-28T08:00:00.000Z',
+    });
+    expect((await foldSpool(home)).ok).toBe(true);
+    const prepared = await prepareProjectStore({ rootDir: project, rizzHome: home });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const paths = observePaths(prepared.value.projectDir);
+    const inbox = await readdir(paths.inboxDir);
+    expect(inbox).toHaveLength(1);
+    const body = await readFile(join(paths.inboxDir, inbox[0] ?? ''), 'utf8');
+    expect(body).toContain('Ship on Friday?');
+    expect(body).not.toContain('Do not queue this');
+    const brain = await readFile(paths.brain, 'utf8');
+    const awaiting = brain.split('## Current decisions')[0] ?? '';
+    expect(awaiting).toContain('Ship on Friday?');
+    expect(awaiting).not.toContain('Do not queue this');
+  });
+});
+
 describe('concurrent hooks', () => {
   it('keeps every large hook when thirty arrive together, three times', async () => {
     const home = await tempDir('rizz-stress-');
@@ -887,6 +1402,17 @@ describe('concurrent hooks', () => {
     expect(text).toContain('1 hook event(s) could not be recorded.');
   }, 8_000);
 });
+
+function contextFrom(tool: 'cursor' | 'codex' | 'claude', stdout: string): string {
+  const parsed = JSON.parse(stdout) as {
+    additional_context?: string;
+    additionalContext?: string;
+    hookSpecificOutput?: { additionalContext?: string };
+  };
+  if (tool === 'cursor') return parsed.additional_context ?? '';
+  if (tool === 'codex') return parsed.additionalContext ?? '';
+  return parsed.hookSpecificOutput?.additionalContext ?? '';
+}
 
 async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
   const started = Date.now();

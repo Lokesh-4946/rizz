@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { prepareProjectStore } from '../project-store.js';
 import { type InboxItem, snapshotFromEvents, visionQuote, writeBrain } from './brain-index.js';
+import { parsedOwnerDecisions } from './handoff.js';
 import { appendSynced, readText, withLock, writeAtomic } from './io.js';
 import { appendJournalEvent, loadJournal } from './journal.js';
 import { appendTokenRow, rowFromEvent } from './ledger.js';
@@ -31,7 +32,16 @@ import { type StaffResult, staffErr, staffOk } from './result.js';
 export interface FoldResult {
   readonly applied: number;
   readonly duplicates: number;
+  readonly recovered: number;
   readonly projects: readonly string[];
+}
+
+export interface FoldOptions {
+  /** Write a recovery handoff for threads that never received a stop hook (D-050). */
+  readonly recoverKilled?: boolean;
+  /** Thread that is starting now. It is not treated as killed. */
+  readonly exceptThreadId?: string;
+  readonly at?: string;
 }
 
 async function readOffset(path: string): Promise<StaffResult<number>> {
@@ -93,6 +103,19 @@ async function applyEvent(
     if (!queued.ok) return queued;
   }
   if (event.kind === 'stop') {
+    const reply = events.value
+      .filter((item) => item.threadId === event.threadId)
+      .map((item) => item.text)
+      .filter((text) => text !== '')
+      .join('\n\n');
+    for (const text of parsedOwnerDecisions(reply)) {
+      const queued = await queueInboxItem(paths.inboxDir, decisions.value, {
+        id: inboxId(event.threadId, text),
+        text,
+        threadId: event.threadId,
+      });
+      if (!queued.ok) return queued;
+    }
     const drift = await driftNotesFor(
       paths.vision,
       events.value.filter((item) => item.threadId === event.threadId),
@@ -173,7 +196,10 @@ export async function refreshObserveIndex(options: {
   return staffOk(undefined);
 }
 
-async function foldSpoolLocked(rizzHome: string): Promise<StaffResult<FoldResult>> {
+async function foldSpoolLocked(
+  rizzHome: string,
+  options?: FoldOptions,
+): Promise<StaffResult<FoldResult>> {
   return withLock(spoolLock(rizzHome), async () => {
     const offsetResult = await readOffset(spoolOffsetFile(rizzHome));
     if (!offsetResult.ok) return offsetResult;
@@ -190,8 +216,9 @@ async function foldSpoolLocked(rizzHome: string): Promise<StaffResult<FoldResult
     }
     const offset = Math.min(offsetResult.value, raw.length);
     const pending = raw.slice(offset);
-    const lines = pending.split('\n');
-    const complete = pending.endsWith('\n') ? lines : lines.slice(0, -1);
+    // A trailing newline makes split() return an empty tail. That tail is not a
+    // record; counting it pushed the offset one byte into the next line.
+    const complete = pending.split('\n').slice(0, -1);
     let applied = 0;
     let duplicates = 0;
     const projects = new Set<string>();
@@ -221,16 +248,103 @@ async function foldSpoolLocked(rizzHome: string): Promise<StaffResult<FoldResult
     const queued = await applyPendingEvents(rizzHome);
     if (!queued.ok) return queued;
     for (const project of queued.value.projects) projects.add(project);
+    const recovered = await recoverKilledThreads(rizzHome, options ?? {});
+    if (!recovered.ok) return recovered;
     return staffOk({
       applied: applied + queued.value.applied,
       duplicates: duplicates + queued.value.duplicates,
+      recovered: recovered.value,
       projects: [...projects],
     });
   });
 }
 
-export async function foldSpool(rizzHome: string): Promise<StaffResult<FoldResult>> {
-  const folded = await foldSpoolLocked(rizzHome);
+function recoveryEvent(sample: ObserveEvent, at: string): ObserveEvent {
+  const digest = createHash('sha256').update(sample.threadId).digest('hex').slice(0, 16);
+  return {
+    id: `recovery-${digest}`,
+    at,
+    tool: sample.tool,
+    hook: 'recovery',
+    threadId: sample.threadId,
+    projectRoot: sample.projectRoot,
+    kind: 'stop',
+    text: 'Session ended without a stop hook. Recovered from the journal.',
+    files: [],
+    fields: { status: 'inactive', recovery: 'yes' },
+  };
+}
+
+function killedThreadSamples(
+  events: readonly ObserveEvent[],
+  exceptThreadId: string | undefined,
+): ObserveEvent[] {
+  const grouped = new Map<string, ObserveEvent[]>();
+  for (const event of events) {
+    const list = grouped.get(event.threadId) ?? [];
+    list.push(event);
+    grouped.set(event.threadId, list);
+  }
+  const samples: ObserveEvent[] = [];
+  for (const [threadId, mine] of grouped) {
+    if (exceptThreadId !== undefined && threadId === exceptThreadId) continue;
+    if (mine.some((item) => item.kind === 'stop')) continue;
+    const worked = mine.some(
+      (item) =>
+        item.kind === 'prompt' ||
+        item.kind === 'tool' ||
+        item.kind === 'file' ||
+        item.kind === 'decision',
+    );
+    if (!worked) continue;
+    const last = mine[mine.length - 1];
+    if (last !== undefined) samples.push(last);
+  }
+  return samples;
+}
+
+async function recoverKilledThreads(
+  rizzHome: string,
+  options: FoldOptions,
+): Promise<StaffResult<number>> {
+  if (options.recoverKilled !== true) return staffOk(0);
+  const projectsDir = join(rizzHome, 'projects');
+  let ids: string[] = [];
+  try {
+    ids = await readdir(projectsDir);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+    if (code === 'ENOENT') return staffOk(0);
+    return staffErr('IO_FAILED', 'cannot list projects for recovery');
+  }
+  const at = options.at ?? new Date().toISOString();
+  let recovered = 0;
+  for (const id of ids) {
+    const paths = observePaths(join(projectsDir, id));
+    try {
+      const info = await stat(paths.journalDir);
+      if (!info.isDirectory()) continue;
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      return staffErr('IO_FAILED', `cannot read ${paths.journalDir}`);
+    }
+    const events = await loadJournal(paths.journalDir);
+    if (!events.ok) return events;
+    for (const sample of killedThreadSamples(events.value, options.exceptThreadId)) {
+      const applied = await applyEvent(rizzHome, recoveryEvent(sample, at));
+      if (!applied.ok) return applied;
+      if (applied.value === 'applied') recovered += 1;
+    }
+  }
+  return staffOk(recovered);
+}
+
+export async function foldSpool(
+  rizzHome: string,
+  options?: FoldOptions,
+): Promise<StaffResult<FoldResult>> {
+  const folded = await foldSpoolLocked(rizzHome, options);
   if (!folded.ok) return folded;
   try {
     const relay = await import('./relay/delivery.js');
@@ -285,7 +399,8 @@ async function applyPendingEvents(rizzHome: string): Promise<StaffResult<FoldRes
     names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort();
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
-    if (code === 'ENOENT') return staffOk({ applied: 0, duplicates: 0, projects: [] });
+    if (code === 'ENOENT')
+      return staffOk({ applied: 0, duplicates: 0, recovered: 0, projects: [] });
     return staffErr('IO_FAILED', 'cannot list queued hook events');
   }
   let applied = 0;
@@ -309,7 +424,7 @@ async function applyPendingEvents(rizzHome: string): Promise<StaffResult<FoldRes
     else applied += 1;
     if (typeof parsed.projectRoot === 'string') projects.add(parsed.projectRoot);
   }
-  return staffOk({ applied, duplicates, projects: [...projects] });
+  return staffOk({ applied, duplicates, recovered: 0, projects: [...projects] });
 }
 
 export async function appendSpoolEvent(
