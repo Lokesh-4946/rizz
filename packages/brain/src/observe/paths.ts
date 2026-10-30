@@ -11,6 +11,7 @@ export interface ObservePaths {
   readonly handoffsDir: string;
   readonly inboxDir: string;
   readonly ledger: string;
+  readonly serveLock: string;
 }
 
 export function observePaths(projectDir: string): ObservePaths {
@@ -25,6 +26,7 @@ export function observePaths(projectDir: string): ObservePaths {
     handoffsDir: join(root, 'handoffs'),
     inboxDir: join(root, 'inbox'),
     ledger: join(root, 'ledger', 'tokens.jsonl'),
+    serveLock: join(root, 'serve.lock'),
   };
 }
 

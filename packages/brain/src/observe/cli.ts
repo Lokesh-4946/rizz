@@ -12,6 +12,12 @@ import { type HostId, isHostId } from './model.js';
 import { isInboxAnswered, listInbox, readDecisionRecords } from './notes.js';
 import { observePaths } from './paths.js';
 import { initObserver, receiveHook } from './receive.js';
+import {
+  projectDirForRoot,
+  readLiveServe,
+  registeredProjectDirs,
+  stopServeLock,
+} from './serve-lock.js';
 import { startObserveServer } from './serve.js';
 import { renderSummary, renderTokens } from './summary.js';
 
@@ -20,6 +26,7 @@ const USAGE = `rizz observe — record the host coding agent
   rizz init [--host cursor|codex|claude] [--bridge] [--no-serve] [--no-open]
   rizz hook <cursor|codex|claude> <event>
   rizz serve [--no-open]
+  rizz stop [--all]
   rizz fold
   rizz summary
   rizz tokens
@@ -79,6 +86,8 @@ function openBrowser(url: string): void {
 async function detachServe(options: {
   readonly cwd: string;
   readonly noOpen: boolean;
+  readonly serveLock: string;
+  readonly rizzHome: string;
 }): Promise<{ ok: true; url: string; pid: number } | { ok: false; message: string }> {
   const entry = process.argv[1];
   if (entry === undefined || entry === '') {
@@ -88,7 +97,7 @@ async function detachServe(options: {
   if (options.noOpen) args.push('--no-open');
   const child = spawn(process.execPath, args, {
     cwd: options.cwd,
-    env: process.env,
+    env: { ...process.env, RIZZ_HOME: options.rizzHome },
     detached: true,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -122,7 +131,62 @@ async function detachServe(options: {
     const detail = stderr.trim();
     return { ok: false, message: detail === '' ? 'detached page did not start' : detail };
   }
+  const live = await readLiveServe(options.serveLock);
+  if (live.ok && live.value !== undefined) {
+    return { ok: true, url: live.value.url, pid: live.value.pid };
+  }
   return { ok: true, url, pid: child.pid };
+}
+
+function stoppedCountMessage(count: number): string {
+  if (count === 1) return 'rizz stopped 1 serve process\n';
+  return `rizz stopped ${count} serve processes\n`;
+}
+
+async function runStop(argv: readonly string[], cwd: string, rizzHome: string): Promise<number> {
+  const extra = argv.slice(1).filter((arg) => arg !== '--all');
+  if (extra.length > 0) {
+    process.stderr.write(`rizz: unknown stop argument '${extra[0] ?? ''}'\n`);
+    return 2;
+  }
+  if (flag(argv, '--all')) {
+    const dirs = await registeredProjectDirs(rizzHome);
+    if (!dirs.ok) {
+      process.stderr.write(`rizz: ${dirs.error.code}: ${dirs.error.message}\n`);
+      return 1;
+    }
+    let stopped = 0;
+    for (const dir of dirs.value) {
+      const result = await stopServeLock(observePaths(dir).serveLock);
+      if (!result.ok) {
+        process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+        return 1;
+      }
+      if (result.value.status === 'stopped') stopped += 1;
+    }
+    process.stdout.write(stoppedCountMessage(stopped));
+    return 0;
+  }
+  const projectDir = await projectDirForRoot(rizzHome, cwd);
+  if (!projectDir.ok) {
+    process.stderr.write(`rizz: ${projectDir.error.code}: ${projectDir.error.message}\n`);
+    return 1;
+  }
+  if (projectDir.value === undefined) {
+    process.stderr.write('rizz: no serve process for this project\n');
+    return 1;
+  }
+  const result = await stopServeLock(observePaths(projectDir.value).serveLock);
+  if (!result.ok) {
+    process.stderr.write(`rizz: ${result.error.code}: ${result.error.message}\n`);
+    return 1;
+  }
+  if (result.value.status === 'not-running') {
+    process.stderr.write('rizz: no serve process for this project\n');
+    return 1;
+  }
+  process.stdout.write(`rizz stopped serve ${result.value.pid}\n`);
+  return 0;
 }
 
 async function readStdin(): Promise<string> {
@@ -223,6 +287,7 @@ export async function runObserveCli(
     process.stdout.write(`${text}\n`);
     return 0;
   }
+  if (command === 'stop') return runStop(argv, cwd, rizzHome);
   if (command === 'serve' || command === 'init') {
     const hostFlag = argv.indexOf('--host');
     const forced = hostFlag === -1 ? undefined : argv[hostFlag + 1];
@@ -256,7 +321,26 @@ export async function runObserveCli(
       const assumed = forced === undefined && detected.assumed ? ' (cursor assumed)' : '';
       process.stdout.write(`  hooks: ${hosts.join(', ')}${assumed}\n`);
       if (flag(argv, '--no-serve')) return 0;
-      const detached = await detachServe({ cwd, noOpen: flag(argv, '--no-open') });
+      const serveLock = observePaths(ready.value.projectDir).serveLock;
+      const live = await readLiveServe(serveLock);
+      if (!live.ok) {
+        process.stderr.write(`rizz: ${live.error.code}: ${live.error.message}\n`);
+        return 1;
+      }
+      if (live.value !== undefined) {
+        process.stdout.write(`rizz serve ${live.value.url}\n`);
+        process.stdout.write(`rizz serve pid ${live.value.pid}\n`);
+        if (json) {
+          process.stdout.write(`${JSON.stringify({ url: live.value.url, pid: live.value.pid })}\n`);
+        }
+        return 0;
+      }
+      const detached = await detachServe({
+        cwd,
+        noOpen: flag(argv, '--no-open'),
+        serveLock,
+        rizzHome,
+      });
       if (!detached.ok) {
         process.stderr.write(`rizz: ${detached.message}\n`);
         return 1;
@@ -272,6 +356,7 @@ export async function runObserveCli(
     const server = await startObserveServer({ projectRoot: cwd, rizzHome });
     process.stdout.write(`rizz serve ${server.url}\n`);
     if (json) process.stdout.write(`${JSON.stringify({ url: server.url })}\n`);
+    if (!server.owned) return 0;
     const signal = options?.signal;
     const stopped =
       signal === undefined

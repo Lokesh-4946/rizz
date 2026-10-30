@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
-import { type IncomingMessage, type ServerResponse, createServer } from 'node:http';
+import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
 import { join } from 'node:path';
 import { prepareProjectStore } from '../project-store.js';
 import { readBrainText } from './brain-index.js';
@@ -16,12 +16,14 @@ import {
   readDecisionRecords,
 } from './notes.js';
 import { observePaths } from './paths.js';
+import { type ServeRecord, claimServeLock, releaseServeLock, writeServeUrl } from './serve-lock.js';
 import { renderSummary } from './summary.js';
 
 export interface ObserveServer {
   readonly url: string;
   readonly port: number;
   readonly token: string;
+  readonly owned: boolean;
   close(): Promise<void>;
 }
 
@@ -79,6 +81,27 @@ events.onmessage = () => refresh();
 </html>`;
 }
 
+function unownedServer(record: ServeRecord): ObserveServer {
+  const parsed = new URL(record.url);
+  return {
+    url: record.url,
+    port: Number(parsed.port),
+    token: parsed.searchParams.get('token') ?? '',
+    owned: false,
+    async close() {},
+  };
+}
+
+function closeHttpServer(server: Server): Promise<void> {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error === undefined) resolve();
+      else reject(error);
+    });
+  });
+}
+
 function send(response: ServerResponse, status: number, body: string, type: string): void {
   response.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
   response.end(body);
@@ -107,113 +130,141 @@ export async function startObserveServer(options: {
     throw new Error(prepared.error.message);
   }
   const paths = observePaths(prepared.value.projectDir);
+  const claim = await claimServeLock(paths.serveLock, process.pid);
+  if (!claim.ok) throw new Error(claim.error.message);
+  if (claim.value.state === 'running') return unownedServer(claim.value.record);
+
   const token = options.token ?? randomBytes(16).toString('hex');
   const clients = new Set<ServerResponse>();
-
-  const server = createServer(async (request, response) => {
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    if (!tokenOk(url, token)) {
-      send(response, 401, 'missing token\n', 'text/plain; charset=utf-8');
-      return;
-    }
-    if (url.pathname === '/events') {
-      response.writeHead(200, {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-store',
-        connection: 'keep-alive',
-      });
-      response.write('data: {"type":"ready"}\n\n');
-      clients.add(response);
-      request.on('close', () => clients.delete(response));
-      return;
-    }
-    if (url.pathname === '/api/brain') {
-      const markdown = await readBrainText(paths.brain);
-      send(
-        response,
-        200,
-        JSON.stringify({ markdown: markdown.ok ? markdown.value : '' }),
-        'application/json',
-      );
-      return;
-    }
-    if (url.pathname === '/api/query') {
-      const q = url.searchParams.get('q') ?? '';
-      const summary = await answer(paths, q, options.rizzHome, options.projectRoot);
-      send(response, 200, JSON.stringify({ summary }), 'application/json');
-      return;
-    }
-    if (url.pathname === '/api/decide' && request.method === 'POST') {
-      const posted = readDecisionPost(await readBody(request));
-      if (posted === undefined) {
-        send(response, 400, JSON.stringify({ ok: false }), 'application/json');
+  let server: Server | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  try {
+    server = createServer(async (request, response) => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (!tokenOk(url, token)) {
+        send(response, 401, 'missing token\n', 'text/plain; charset=utf-8');
         return;
       }
-      const inbox = await listInbox(paths.inboxDir);
-      const item = inbox.ok ? inbox.value.find((entry) => entry.id === posted.id) : undefined;
-      if (item === undefined) {
-        send(response, 404, JSON.stringify({ ok: false }), 'application/json');
+      if (url.pathname === '/events') {
+        response.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-store',
+          connection: 'keep-alive',
+        });
+        response.write('data: {"type":"ready"}\n\n');
+        clients.add(response);
+        request.on('close', () => clients.delete(response));
         return;
       }
-      const recorded = await appendDecisionRecord(paths.decisions, {
-        id: inboxDecisionId(posted.id),
-        text: posted.answer,
-        source: 'owner',
-        createdAt: new Date().toISOString(),
-      });
-      if (!recorded.ok) {
+      if (url.pathname === '/api/brain') {
+        const markdown = await readBrainText(paths.brain);
         send(
           response,
-          400,
-          JSON.stringify({ ok: false, code: recorded.error.code }),
+          200,
+          JSON.stringify({ markdown: markdown.ok ? markdown.value : '' }),
           'application/json',
         );
         return;
       }
-      await rm(join(paths.inboxDir, `${posted.id}.md`), { force: true });
-      await refreshObserveIndex({
-        projectDir: prepared.value.projectDir,
-        projectRoot: options.projectRoot,
-        at: new Date().toISOString(),
-      });
-      send(response, 200, JSON.stringify({ ok: true }), 'application/json');
-      return;
+      if (url.pathname === '/api/query') {
+        const q = url.searchParams.get('q') ?? '';
+        const summary = await answer(paths, q, options.rizzHome, options.projectRoot);
+        send(response, 200, JSON.stringify({ summary }), 'application/json');
+        return;
+      }
+      if (url.pathname === '/api/decide' && request.method === 'POST') {
+        const posted = readDecisionPost(await readBody(request));
+        if (posted === undefined) {
+          send(response, 400, JSON.stringify({ ok: false }), 'application/json');
+          return;
+        }
+        const inbox = await listInbox(paths.inboxDir);
+        const item = inbox.ok ? inbox.value.find((entry) => entry.id === posted.id) : undefined;
+        if (item === undefined) {
+          send(response, 404, JSON.stringify({ ok: false }), 'application/json');
+          return;
+        }
+        const recorded = await appendDecisionRecord(paths.decisions, {
+          id: inboxDecisionId(posted.id),
+          text: posted.answer,
+          source: 'owner',
+          createdAt: new Date().toISOString(),
+        });
+        if (!recorded.ok) {
+          send(
+            response,
+            400,
+            JSON.stringify({ ok: false, code: recorded.error.code }),
+            'application/json',
+          );
+          return;
+        }
+        await rm(join(paths.inboxDir, `${posted.id}.md`), { force: true });
+        await refreshObserveIndex({
+          projectDir: prepared.value.projectDir,
+          projectRoot: options.projectRoot,
+          at: new Date().toISOString(),
+        });
+        send(response, 200, JSON.stringify({ ok: true }), 'application/json');
+        return;
+      }
+      const markdown = await readBrainText(paths.brain);
+      send(
+        response,
+        200,
+        page(token, markdown.ok ? markdown.value : ''),
+        'text/html; charset=utf-8',
+      );
+    });
+
+    const listening = server;
+    await new Promise<void>((resolve) => {
+      listening.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = listening.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    const url = `http://127.0.0.1:${port}/?token=${token}`;
+    const saved = await writeServeUrl(paths.serveLock, url);
+    if (!saved.ok) throw new Error(saved.error.message);
+    let folding = false;
+    timer = setInterval(() => {
+      if (folding) return;
+      folding = true;
+      void foldSpool(options.rizzHome)
+        .then((result) => {
+          if (!result.ok || result.value.applied === 0) return;
+          for (const client of clients)
+            client.write(`data: ${JSON.stringify({ type: 'fold' })}\n\n`);
+        })
+        .finally(() => {
+          folding = false;
+        });
+    }, 1000);
+    timer.unref();
+
+    return {
+      url,
+      port,
+      token,
+      owned: true,
+      async close() {
+        if (timer !== undefined) clearInterval(timer);
+        try {
+          await closeHttpServer(listening);
+        } finally {
+          await releaseServeLock(paths.serveLock, process.pid);
+        }
+      },
+    };
+  } catch (error) {
+    if (timer !== undefined) clearInterval(timer);
+    try {
+      if (server !== undefined) await closeHttpServer(server);
+    } finally {
+      await releaseServeLock(paths.serveLock, process.pid);
     }
-    const markdown = await readBrainText(paths.brain);
-    send(response, 200, page(token, markdown.ok ? markdown.value : ''), 'text/html; charset=utf-8');
-  });
-
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  const port = typeof address === 'object' && address !== null ? address.port : 0;
-  let folding = false;
-  const timer = setInterval(() => {
-    if (folding) return;
-    folding = true;
-    void foldSpool(options.rizzHome)
-      .then((result) => {
-        if (!result.ok || result.value.applied === 0) return;
-        for (const client of clients) client.write(`data: ${JSON.stringify({ type: 'fold' })}\n\n`);
-      })
-      .finally(() => {
-        folding = false;
-      });
-  }, 1000);
-  timer.unref();
-
-  return {
-    url: `http://127.0.0.1:${port}/?token=${token}`,
-    port,
-    token,
-    async close() {
-      clearInterval(timer);
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error === undefined ? resolve() : reject(error)));
-      });
-    },
-  };
+    throw error;
+  }
 }
 
 function readDecisionPost(

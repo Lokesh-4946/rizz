@@ -9,7 +9,7 @@ evidence close to the source files.
 
 ## Current Product
 
-The current `0.4.0` product surface is:
+The `0.4.0` product surface in development is:
 
 - `rizz prepare` isolated project intelligence under the platform user-data directory without
   changing repository files or Git status
@@ -45,7 +45,7 @@ The current `0.4.0` product surface is:
 - no workspace agents, cloud sync, browser extension, mobile app, project-local skills, or
   enterprise providers in the default path
 
-This release is `0.4.0`.
+`0.4.0` is in development on `dev`. The latest published version is `0.3.1`.
 
 ## Observe the host agent
 
@@ -73,8 +73,10 @@ rizz init
 ```
 
 Then use the host normally. Hooks append to a spool and always exit 0. `rizz init` starts the
-local page in the background and returns. `rizz serve` keeps that page in the foreground. Pass
-`--no-serve` to skip it. The page is `http://127.0.0.1:<port>/?token=...` and only reads that
+local page in the background and returns. A later `rizz init` in the same project reuses that
+page instead of starting another. `rizz serve` keeps the page in the foreground. Pass
+`--no-serve` to skip it. `rizz stop` stops the page for the current project, and `rizz stop --all`
+stops it for every project. The page is `http://127.0.0.1:<port>/?token=...` and only reads that
 brain. Ask it `summary` or `tokens`.
 
 ```sh

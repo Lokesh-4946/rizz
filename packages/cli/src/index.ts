@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import {
   OPENROUTER_DEFAULT_MODEL_ID,
   type ResolvedProvider,
@@ -16,13 +18,28 @@ import {
 } from '@valoir/rizz-core';
 import { StubProvider, openSecretStore, openSessionStore } from '@valoir/rizz-providers';
 
-const VERSION = '0.4.0';
+const FALLBACK_VERSION = '0.4.0';
+
+function readOwnPackageVersion(): string {
+  try {
+    const manifestPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || !('version' in parsed)) {
+      return FALLBACK_VERSION;
+    }
+    const version = parsed.version;
+    if (typeof version !== 'string' || version === '') return FALLBACK_VERSION;
+    return version;
+  } catch {
+    return FALLBACK_VERSION;
+  }
+}
 
 const USAGE = `rizz - prepare software for AI development
 
 Usage:
   rizz prepare | brain | brief <task> | review | explain <target>
-  rizz init | hook | serve | summary | tokens
+  rizz init | hook | serve | stop | summary | tokens
   rizz loop <action> | vault <action> | agents <action>
   rizz project relink [id]
   rizz mcp | --json | --rpc
@@ -660,6 +677,7 @@ async function main(argv: readonly string[]): Promise<number> {
     c.rest[0] === 'init' ||
     c.rest[0] === 'hook' ||
     c.rest[0] === 'serve' ||
+    c.rest[0] === 'stop' ||
     c.rest[0] === 'fold' ||
     c.rest[0] === 'summary' ||
     c.rest[0] === 'tokens' ||
@@ -1041,7 +1059,7 @@ async function main(argv: readonly string[]): Promise<number> {
       return 0;
     case '-v':
     case '--version':
-      process.stdout.write(`${VERSION}\n`);
+      process.stdout.write(`${readOwnPackageVersion()}\n`);
       return 0;
     case '-h':
     case '--help':

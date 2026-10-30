@@ -637,7 +637,129 @@ describe('installed CLI hook sessions', () => {
       await stopDetachedPage(pid);
     }
   }, 20_000);
+
+  it('reuses the running server when init is repeated', async () => {
+    const home = await tempDir('rizz-reuse-home-');
+    const hookHome = await tempDir('rizz-reuse-hooks-');
+    const project = await tempDir('rizz-reuse-project-');
+    const opts = { cwd: project, home, hookHome };
+    const pids: number[] = [];
+    try {
+      const first = await runCli(['init', '--host', 'cursor', '--no-open'], opts);
+      expect(first.code).toBe(0);
+      const pid = servePid(first.stdout);
+      const url = serveUrl(first.stdout);
+      pids.push(pid);
+      const second = await runCli(['init', '--host', 'cursor', '--no-open'], opts);
+      expect(second.code).toBe(0);
+      expect(servePid(second.stdout)).toBe(pid);
+      expect(serveUrl(second.stdout)).toBe(url);
+      expect(processAlive(pid)).toBe(true);
+      const page = await fetch(url);
+      expect(page.status).toBe(200);
+      const registry = JSON.parse(await readFile(join(home, 'registry.json'), 'utf8')) as {
+        projects: Record<string, { project_dir: string }>;
+      };
+      const projectDir = Object.values(registry.projects)[0]?.project_dir;
+      expect(projectDir).toBeDefined();
+      const lockPid = Number(
+        await readFile(join(projectDir ?? '', 'observe', 'serve.lock', 'pid'), 'utf8'),
+      );
+      expect(lockPid).toBe(pid);
+    } finally {
+      await stopPids(pids);
+    }
+  }, 30_000);
+
+  it('stops the serve process for the current project', async () => {
+    const home = await tempDir('rizz-stop-home-');
+    const hookHome = await tempDir('rizz-stop-hooks-');
+    const project = await tempDir('rizz-stop-project-');
+    const opts = { cwd: project, home, hookHome };
+    const pids: number[] = [];
+    try {
+      const init = await runCli(['init', '--host', 'cursor', '--no-open'], opts);
+      expect(init.code).toBe(0);
+      const pid = servePid(init.stdout);
+      const url = serveUrl(init.stdout);
+      pids.push(pid);
+      const stopped = await runCli(['stop'], opts);
+      expect(stopped.code).toBe(0);
+      expect(stopped.stdout).toContain(`rizz stopped serve ${pid}`);
+      expect(processAlive(pid)).toBe(false);
+      await expect(fetch(url)).rejects.toThrow();
+      const again = await runCli(['stop'], opts);
+      expect(again.code).toBe(1);
+      expect(again.stderr).toContain('no serve process for this project');
+    } finally {
+      await stopPids(pids);
+    }
+  }, 30_000);
+
+  it('stops only the current project unless --all is set', async () => {
+    const home = await tempDir('rizz-stop-all-home-');
+    const hookHome = await tempDir('rizz-stop-all-hooks-');
+    const projectA = await tempDir('rizz-stop-all-a-');
+    const projectB = await tempDir('rizz-stop-all-b-');
+    const pids: number[] = [];
+    try {
+      const initA = await runCli(['init', '--host', 'cursor', '--no-open'], {
+        cwd: projectA,
+        home,
+        hookHome,
+      });
+      const initB = await runCli(['init', '--host', 'cursor', '--no-open'], {
+        cwd: projectB,
+        home,
+        hookHome,
+      });
+      expect(initA.code).toBe(0);
+      expect(initB.code).toBe(0);
+      const pidA = servePid(initA.stdout);
+      const pidB = servePid(initB.stdout);
+      pids.push(pidA, pidB);
+      expect(pidA).not.toBe(pidB);
+      const one = await runCli(['stop'], { cwd: projectA, home, hookHome });
+      expect(one.code).toBe(0);
+      expect(one.stdout).toContain(`rizz stopped serve ${pidA}`);
+      expect(processAlive(pidA)).toBe(false);
+      expect(processAlive(pidB)).toBe(true);
+      const pageB = await fetch(serveUrl(initB.stdout));
+      expect(pageB.status).toBe(200);
+      const all = await runCli(['stop', '--all'], { cwd: projectB, home, hookHome });
+      expect(all.code).toBe(0);
+      expect(all.stdout).toContain('rizz stopped 1 serve process');
+      expect(processAlive(pidB)).toBe(false);
+    } finally {
+      await stopPids(pids);
+    }
+  }, 40_000);
 });
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function servePid(stdout: string): number {
+  const pid = Number(stdout.match(/rizz serve pid (\d+)/)?.[1]);
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`missing serve pid\n${stdout}`);
+  return pid;
+}
+
+function serveUrl(stdout: string): string {
+  const url = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[^\s]+/)?.[0];
+  if (url === undefined) throw new Error(`missing serve url\n${stdout}`);
+  return url;
+}
+
+async function stopPids(pids: readonly number[]): Promise<void> {
+  await Promise.all(pids.map((pid) => stopDetachedPage(pid)));
+}
 
 async function stopDetachedPage(pid: number): Promise<void> {
   try {
