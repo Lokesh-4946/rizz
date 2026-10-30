@@ -98,10 +98,10 @@ function runShell(
     readonly path?: string;
   },
 ): Promise<CliResult> {
-  const shell = process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'sh';
-  const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
   return new Promise((resolve) => {
-    const child = spawn(shell, args, {
+    // shell:true matches Node's cmd.exe /d /s /c quoting, which keeps the pinned paths intact.
+    const child = spawn(command, {
+      shell: true,
       cwd: options.cwd,
       env: {
         ...process.env,
