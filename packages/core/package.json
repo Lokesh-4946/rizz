@@ -1,11 +1,12 @@
 {
   "name": "@valoir/rizz-core",
   "version": "0.4.0",
+  "license": "MIT",
   "description": "Core orchestration primitives for Rizz.",
   "type": "module",
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
-  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "package.json"],
+  "files": ["dist/**/*.js", "dist/**/*.d.ts", "!dist/**/*.test.*", "LICENSE", "package.json"],
   "publishConfig": {
     "access": "public"
   },
