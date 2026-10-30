@@ -303,5 +303,21 @@ commands name `node` and the absolute script path of the CLI that ran `rizz init
 
 ---
 
-*Next decision: **D-050**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
+#### D-050
+**`rizz summary` folds the current project's spool, and missing token counts use a lazy o200k encoder.** — Committed
+Hook events stay in the spool until something folds them, so `rizz summary` right after `rizz init`
+and a few Cursor hooks printed no owner decisions. Summary and tokens now fold first, then read
+only the project for the current directory. `rizz summary --json` prints `{ threads, dropped, decisions }`
+for a harness. Host-reported input and output counts are stored as `source: host`. When those
+counts are missing, the ledger counts the event text with `js-tiktoken` `o200k_base` through a lazy
+dynamic import and stores `source: tiktoken-o200k`. If that package fails to load, or encoding
+throws, the row uses the existing 4-character approximation and `source: approx`. `js-tiktoken` is a
+dependency of the bench, eval, and simulation tooling only, so the core, providers, cli, and brain
+manifests and the CLI cold-start path stay free of it. → `packages/brain/src/observe/cli.ts`,
+`packages/brain/src/observe/ledger.ts`, `packages/brain/src/observe/tokenize.ts`, `bench/package.json`,
+`eval/package.json`, `simulation/package.json`.
+
+---
+
+*Next decision: **D-051**. Append in `feat:`/`fix:` PRs that make a non-obvious call; cite the ID in
 the commit, runbook, or source comment that implements it.*

@@ -72,7 +72,7 @@ async function applyEvent(
   if (!events.ok) return events;
   const thread = await appendThreadEntry(paths.threadsDir, event, events.value);
   if (!thread.ok) return thread;
-  const row = rowFromEvent(event);
+  const row = await rowFromEvent(event);
   if (row !== undefined) {
     const existingLedger = await readText(paths.ledger);
     if (!existingLedger.ok) return existingLedger;

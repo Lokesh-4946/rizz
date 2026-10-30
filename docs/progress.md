@@ -25,7 +25,8 @@ Codex, or Claude Code. Threads were only recorded when an agent called MCP on pu
 `BRAIN.md` is a rewritten index of at most 200 lines. `journal/YYYY-MM.md` is append-only.
 `rizz hook <tool> <event>` always exits 0 and appends to a spool. `rizz serve` folds the spool,
 updates the ledger, writes a handoff on stop, and serves a stateless page on `127.0.0.1`.
-`rizz summary` prints the thread count and only the inbox items waiting on the owner.
+`rizz summary` folds the spool, then prints the thread count and only the inbox items waiting
+on the owner for the current project. `rizz summary --json` prints `{ threads, dropped, decisions }`.
 
 **Demo:**
 
@@ -52,6 +53,8 @@ Needs the owner:
 
 $ RIZZ_HOME=/tmp/rizz-obs-home node packages/cli/dist/index.js tokens
 reported: 0 in / 0 out
+tiktoken-o200k: 0 in / 0 out
+approx: 0 in / 0 out
 cache: 0 read / 0 write
 context: 0
 unreported runs: 1

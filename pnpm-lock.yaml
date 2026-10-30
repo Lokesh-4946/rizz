@@ -24,6 +24,18 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.13.2)
 
+  bench:
+    dependencies:
+      js-tiktoken:
+        specifier: 1.0.21
+        version: 1.0.21
+
+  eval:
+    dependencies:
+      js-tiktoken:
+        specifier: 1.0.21
+        version: 1.0.21
+
   packages/brain: {}
 
   packages/cli:
@@ -57,6 +69,12 @@ importers:
       '@valoir/rizz-providers':
         specifier: workspace:^
         version: link:../providers
+
+  simulation:
+    dependencies:
+      js-tiktoken:
+        specifier: 1.0.21
+        version: 1.0.21
 
 packages:
 
@@ -435,6 +453,9 @@ packages:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
 
+  base64-js@1.5.1:
+    resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
+
   cac@6.7.14:
     resolution: {integrity: sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==}
     engines: {node: '>=8'}
@@ -479,6 +500,9 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  js-tiktoken@1.0.21:
+    resolution: {integrity: sha512-biOj/6M5qdgx5TKjDnFT1ymSpM5tbd3ylwDtrQvFQSu0Z7bBYko2dF+W/aUkXUPuk6IVpRxk/3Q2sHOzGlS36g==}
 
   loupe@3.2.1:
     resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
@@ -849,6 +873,8 @@ snapshots:
 
   assertion-error@2.0.1: {}
 
+  base64-js@1.5.1: {}
+
   cac@6.7.14: {}
 
   chai@5.3.3:
@@ -903,6 +929,10 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  js-tiktoken@1.0.21:
+    dependencies:
+      base64-js: 1.5.1
 
   loupe@3.2.1: {}
 

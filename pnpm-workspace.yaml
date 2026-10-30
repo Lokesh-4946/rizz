@@ -1,5 +1,14 @@
 packages:
   - "packages/*"
+  - "bench"
+  - "eval"
+  - "simulation"
+
+# D-050. js-tiktoken is declared only by bench, eval, and simulation. Hoist that one package so the
+# observe ledger can lazy-import it during workspace runs. Published runtime packages do not depend
+# on it, so a normal install falls back to the approximation.
+publicHoistPattern:
+  - "js-tiktoken"
 
 # pnpm 11 gates native-binary build scripts. Biome ships its binary via optional deps; esbuild
 # (vitest's bundler) needs its build script. Both are trusted, lightweight devDeps.

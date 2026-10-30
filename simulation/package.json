@@ -1,0 +1,10 @@
+{
+  "name": "@valoir/rizz-simulation",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Simulation tooling. Installs js-tiktoken for the observe ledger's lazy o200k_base import. Not part of the rizz runtime.",
+  "dependencies": {
+    "js-tiktoken": "1.0.21"
+  }
+}

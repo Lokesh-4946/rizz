@@ -13,7 +13,7 @@ import { isInboxAnswered, listInbox, readDecisionRecords } from './notes.js';
 import { observePaths } from './paths.js';
 import { initObserver, receiveHook } from './receive.js';
 import { startObserveServer } from './serve.js';
-import { renderSummary, renderTokens } from './summary.js';
+import { ownerDecisionSummary, renderSummary, renderTokens } from './summary.js';
 
 const USAGE = `rizz observe — record the host coding agent
 
@@ -21,7 +21,7 @@ const USAGE = `rizz observe — record the host coding agent
   rizz hook <cursor|codex|claude> <event>
   rizz serve [--no-open]
   rizz fold
-  rizz summary
+  rizz summary [--json]
   rizz tokens
 
 The brain is stored per project under the Rizz home, keyed by the project path.
@@ -198,6 +198,11 @@ export async function runObserveCli(
     return 0;
   }
   if (command === 'summary' || command === 'tokens') {
+    const folded = await foldSpool(rizzHome);
+    if (!folded.ok) {
+      process.stderr.write(`rizz: ${folded.error.code}: ${folded.error.message}\n`);
+      return 1;
+    }
     const projectRoot = await realpath(cwd);
     const prepared = await prepareProjectStore({ rootDir: projectRoot, rizzHome });
     if (!prepared.ok) {
@@ -219,8 +224,12 @@ export async function runObserveCli(
     const journal = await loadJournal(paths.journalDir);
     const threads = new Set((journal.ok ? journal.value : []).map((event) => event.threadId)).size;
     const dropped = await countUnrecorded(rizzHome, projectRoot);
-    const text = renderSummary({ threads, inbox: openInbox, dropped });
-    process.stdout.write(`${text}\n`);
+    const summary = { threads, inbox: openInbox, dropped };
+    if (json) {
+      process.stdout.write(`${JSON.stringify(ownerDecisionSummary(summary))}\n`);
+      return 0;
+    }
+    process.stdout.write(`${renderSummary(summary)}\n`);
     return 0;
   }
   if (command === 'serve' || command === 'init') {

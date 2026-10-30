@@ -194,6 +194,96 @@ async function observeDir(home: string): Promise<string> {
 }
 
 describe('installed CLI hook sessions', () => {
+  it('prints the owner-decision summary for the current project', async () => {
+    const home = await tempDir('rizz-summary-home-');
+    const hookHome = await tempDir('rizz-summary-hooks-');
+    const project = await tempDir('rizz-summary-project-');
+    const other = await tempDir('rizz-summary-other-');
+    const opts = { cwd: project, home, hookHome };
+    const init = await runCli(['init', '--host', 'cursor', '--no-serve', '--no-open'], opts);
+    expect(init.code).toBe(0);
+    const otherInit = await runCli(['init', '--host', 'cursor', '--no-serve', '--no-open'], {
+      cwd: other,
+      home,
+      hookHome,
+    });
+    expect(otherInit.code).toBe(0);
+    const common = { conversation_id: 'conv-1', workspace_roots: [project] };
+    await runCli(['hook', 'cursor', 'sessionStart'], {
+      ...opts,
+      stdin: JSON.stringify({
+        ...common,
+        session_id: 'conv-1',
+        hook_event_name: 'sessionStart',
+      }),
+    });
+    await runCli(['hook', 'cursor', 'beforeSubmitPrompt'], {
+      ...opts,
+      stdin: JSON.stringify({
+        ...common,
+        generation_id: 'gen-1',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt:
+          'Add a health route.\nOwner decision: Should health require auth?\nAgent plan: run npm test.',
+      }),
+    });
+    await runCli(['hook', 'cursor', 'postToolUse'], {
+      ...opts,
+      stdin: JSON.stringify({
+        ...common,
+        generation_id: 'tool-1',
+        tool_use_id: 'tool-1',
+        hook_event_name: 'postToolUse',
+        tool_name: 'Shell',
+        tool_input: { command: 'npm test' },
+      }),
+    });
+    await runCli(['hook', 'cursor', 'stop'], {
+      ...opts,
+      stdin: JSON.stringify({
+        ...common,
+        generation_id: 'stop-1',
+        hook_event_name: 'stop',
+        status: 'completed',
+        summary: 'Added the route.',
+      }),
+    });
+    await runCli(['hook', 'cursor', 'beforeSubmitPrompt'], {
+      cwd: other,
+      home,
+      hookHome,
+      stdin: JSON.stringify({
+        conversation_id: 'conv-other',
+        workspace_roots: [other],
+        generation_id: 'gen-other',
+        hook_event_name: 'beforeSubmitPrompt',
+        prompt: 'Owner decision: Should the other project leak?',
+      }),
+    });
+
+    const summary = await runCli(['summary'], opts);
+    expect(summary.code).toBe(0);
+    expect(summary.stderr).toBe('');
+    expect(summary.stdout).toContain('thread(s) observed.');
+    expect(summary.stdout).toContain('Needs the owner:');
+    expect(summary.stdout).toContain('Should health require auth?');
+    expect(summary.stdout).not.toContain('Should the other project leak?');
+    expect(summary.stdout).not.toContain('npm test');
+    expect(summary.stdout).not.toContain('Added the route');
+
+    const json = await runCli(['summary', '--json'], opts);
+    expect(json.code).toBe(0);
+    const parsed = JSON.parse(json.stdout) as {
+      threads: number;
+      dropped: number;
+      decisions: { id: string; text: string; threadId: string }[];
+    };
+    expect(parsed.threads).toBeGreaterThan(0);
+    expect(parsed.dropped).toBe(0);
+    expect(parsed.decisions.map((item) => item.text)).toEqual(['Should health require auth?']);
+    expect(parsed.decisions[0]?.threadId).toBe('cursor-conv-1');
+  }, 20_000);
+
   it('records a Cursor session into the brain, ledger, handoff, and local page', async () => {
     const home = await tempDir('rizz-cli-home-');
     const hookHome = await tempDir('rizz-cli-hooks-');
@@ -310,10 +400,17 @@ describe('installed CLI hook sessions', () => {
       .split('\n')
       .map(
         (line) =>
-          JSON.parse(line) as { input: number; output: number; context: number; reported: boolean },
+          JSON.parse(line) as {
+            input: number;
+            output: number;
+            context: number;
+            reported: boolean;
+            source: string;
+          },
       );
     expect(ledgerRows.some((row) => row.context === 1800 && row.reported === false)).toBe(true);
-    expect(ledgerRows.every((row) => row.input === 0 && row.output === 0)).toBe(true);
+    expect(ledgerRows.every((row) => row.input === 0)).toBe(true);
+    expect(ledgerRows.some((row) => row.source === 'tiktoken-o200k' && row.output > 0)).toBe(true);
 
     const summary = await runCli(['summary'], opts);
     expect(summary.stdout).toContain('Should health require auth?');
