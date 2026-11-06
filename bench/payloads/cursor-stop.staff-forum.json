@@ -1,0 +1,21 @@
+{
+  "evidence": "staff-reported",
+  "host": "cursor",
+  "event": "stop",
+  "note": "Copied from a Cursor staff reply. It is not a payload captured in this VM. The same reply says these four token fields are optional and are also present on afterAgentResponse, and that they are not listed on the hooks reference page.",
+  "source": "https://forum.cursor.com/t/how-to-obtain-token-usage-per-request/168317",
+  "payload": {
+    "hook_event_name": "stop",
+    "conversation_id": "a1b2c3d4-1111-4222-8333-444455556666",
+    "generation_id": "f0e1d2c3-7777-4888-8999-aaaabbbbcccc",
+    "model": "cursor-grok-4.6-high-fast",
+    "model_id": "grok-4.6",
+    "model_params": [{ "id": "effort", "value": "high" }, { "id": "fast", "value": "true" }],
+    "status": "completed",
+    "loop_count": 0,
+    "input_tokens": 1180993,
+    "output_tokens": 8146,
+    "cache_read_tokens": 1007022,
+    "cache_write_tokens": 173957
+  }
+}

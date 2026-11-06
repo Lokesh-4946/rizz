@@ -1,0 +1,14 @@
+{
+  "evidence": "captured",
+  "host": "codex",
+  "hostVersion": "0.166.0",
+  "event": "SessionEnd",
+  "note": "Live stdin from the same unauthenticated Codex exec, after the 401. No token-usage fields.",
+  "payload": {
+    "session_id": "01a18d48-1e6f-7fa0-a6f5-0252836adfe9",
+    "transcript_path": "/home/ubuntu/rizz-codex-home/.codex/sessions/2026/10/30/rollout-2026-10-30T14-47-56-01a18d48-1e6f-7fa0-a6f5-0252836adfe9.jsonl",
+    "cwd": "/workspace",
+    "hook_event_name": "SessionEnd",
+    "reason": "other"
+  }
+}

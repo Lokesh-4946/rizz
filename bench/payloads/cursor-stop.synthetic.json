@@ -1,0 +1,11 @@
+{
+  "evidence": "synthetic",
+  "host": "cursor",
+  "event": "stop",
+  "note": "Reconstructed from the published hooks-reference input, which lists only status and loop_count. A Cursor staff forum reply says optional token fields are also sent; that reply is quoted separately and was not captured here.",
+  "source": "https://cursor.com/docs/hooks",
+  "payload": {
+    "status": "completed",
+    "loop_count": 0
+  }
+}

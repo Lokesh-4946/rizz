@@ -1,0 +1,241 @@
+{
+  "machine": {
+    "commit": "c1d12483403461ef6795f91d67daf7a3952d7a20",
+    "head": "c1d12483403461ef6795f91d67daf7a3952d7a20",
+    "node": "v22.23.4",
+    "platform": "linux",
+    "release": "6.12.94+",
+    "arch": "x64",
+    "cpu": {
+      "model": "Intel(R) Xeon(R) Processor",
+      "count": 4
+    },
+    "filesystem": "ext4   /dev/vdc"
+  },
+  "productCommit": "c1d12483403461ef6795f91d67daf7a3952d7a20",
+  "rounds": [
+    {
+      "width": 30,
+      "round": 1,
+      "stdinBytes": 51408,
+      "wallMs": 1037.293442,
+      "foldCode": 0,
+      "foldStdout": "rizz folded 30 event(s)",
+      "foldStderr": "",
+      "hookExit": {
+        "zero": 30,
+        "killed": 0,
+        "other": 0
+      },
+      "dropped": 0,
+      "lockTimeouts": 0,
+      "maxHookMs": 606.5308789999999,
+      "journalEvents": 30,
+      "lost": [],
+      "spool": {
+        "spoolBytes": 52590,
+        "spoolParsed": 30,
+        "spoolTorn": 0,
+        "spoolSeqs": 30,
+        "tornTailSeq": null,
+        "pending": 0,
+        "drops": 0,
+        "dropSeqs": []
+      },
+      "sampleStderr": ""
+    },
+    {
+      "width": 30,
+      "round": 2,
+      "stdinBytes": 51408,
+      "wallMs": 1068.1383869999997,
+      "foldCode": 0,
+      "foldStdout": "rizz folded 30 event(s)",
+      "foldStderr": "",
+      "hookExit": {
+        "zero": 30,
+        "killed": 0,
+        "other": 0
+      },
+      "dropped": 0,
+      "lockTimeouts": 0,
+      "maxHookMs": 723.8554159999999,
+      "journalEvents": 30,
+      "lost": [],
+      "spool": {
+        "spoolBytes": 52590,
+        "spoolParsed": 30,
+        "spoolTorn": 0,
+        "spoolSeqs": 30,
+        "tornTailSeq": null,
+        "pending": 0,
+        "drops": 0,
+        "dropSeqs": []
+      },
+      "sampleStderr": ""
+    },
+    {
+      "width": 30,
+      "round": 3,
+      "stdinBytes": 51408,
+      "wallMs": 941.3514140000002,
+      "foldCode": 0,
+      "foldStdout": "rizz folded 30 event(s)",
+      "foldStderr": "",
+      "hookExit": {
+        "zero": 30,
+        "killed": 0,
+        "other": 0
+      },
+      "dropped": 0,
+      "lockTimeouts": 0,
+      "maxHookMs": 550.2176079999999,
+      "journalEvents": 30,
+      "lost": [],
+      "spool": {
+        "spoolBytes": 52590,
+        "spoolParsed": 30,
+        "spoolTorn": 0,
+        "spoolSeqs": 30,
+        "tornTailSeq": null,
+        "pending": 0,
+        "drops": 0,
+        "dropSeqs": []
+      },
+      "sampleStderr": ""
+    },
+    {
+      "width": 100,
+      "round": 1,
+      "stdinBytes": 51408,
+      "wallMs": 3822.790289,
+      "foldCode": 0,
+      "foldStdout": "rizz folded 99 event(s)",
+      "foldStderr": "",
+      "hookExit": {
+        "zero": 99,
+        "killed": 0,
+        "other": 1
+      },
+      "dropped": 0,
+      "lockTimeouts": 0,
+      "maxHookMs": 2447.454178,
+      "journalEvents": 99,
+      "lost": [
+        {
+          "seq": "seq-001094",
+          "code": 1,
+          "signal": null,
+          "dropped": false,
+          "timedOut": false,
+          "stderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-rhQzwR/spool/lock'\n"
+        }
+      ],
+      "spool": {
+        "spoolBytes": 164782,
+        "spoolParsed": 94,
+        "spoolTorn": 0,
+        "spoolSeqs": 94,
+        "tornTailSeq": null,
+        "pending": 0,
+        "drops": 0,
+        "dropSeqs": []
+      },
+      "sampleStderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-rhQzwR/spool/lock'\n"
+    },
+    {
+      "width": 100,
+      "round": 2,
+      "stdinBytes": 51408,
+      "wallMs": 3754.977317,
+      "foldCode": 0,
+      "foldStdout": "rizz folded 98 event(s)",
+      "foldStderr": "",
+      "hookExit": {
+        "zero": 98,
+        "killed": 0,
+        "other": 2
+      },
+      "dropped": 0,
+      "lockTimeouts": 0,
+      "maxHookMs": 2289.880046,
+      "journalEvents": 98,
+      "lost": [
+        {
+          "seq": "seq-002049",
+          "code": 1,
+          "signal": null,
+          "dropped": false,
+          "timedOut": false,
+          "stderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-SJ8iQm/spool/lock'\n"
+        },
+        {
+          "seq": "seq-002062",
+          "code": 1,
+          "signal": null,
+          "dropped": false,
+          "timedOut": false,
+          "stderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-SJ8iQm/spool/lock'\n"
+        }
+      ],
+      "spool": {
+        "spoolBytes": 166535,
+        "spoolParsed": 95,
+        "spoolTorn": 0,
+        "spoolSeqs": 95,
+        "tornTailSeq": null,
+        "pending": 0,
+        "drops": 0,
+        "dropSeqs": []
+      },
+      "sampleStderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-SJ8iQm/spool/lock'\n"
+    },
+    {
+      "width": 100,
+      "round": 3,
+      "stdinBytes": 51408,
+      "wallMs": 3719.5277510000014,
+      "foldCode": 0,
+      "foldStdout": "rizz folded 99 event(s)",
+      "foldStderr": "",
+      "hookExit": {
+        "zero": 99,
+        "killed": 0,
+        "other": 1
+      },
+      "dropped": 0,
+      "lockTimeouts": 0,
+      "maxHookMs": 2401.139380999999,
+      "journalEvents": 99,
+      "lost": [
+        {
+          "seq": "seq-003003",
+          "code": 1,
+          "signal": null,
+          "dropped": false,
+          "timedOut": false,
+          "stderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-OiITsF/spool/lock'\n"
+        }
+      ],
+      "spool": {
+        "spoolBytes": 161276,
+        "spoolParsed": 92,
+        "spoolTorn": 0,
+        "spoolSeqs": 92,
+        "tornTailSeq": null,
+        "pending": 0,
+        "drops": 0,
+        "dropSeqs": []
+      },
+      "sampleStderr": "rizz: fatal: ENOTEMPTY: directory not empty, rmdir '/tmp/rizz-conc-home-OiITsF/spool/lock'\n"
+    }
+  ],
+  "lost": {
+    "successes": 4,
+    "total": 390,
+    "rate": 0.010256410256410256,
+    "low": 0.003995479700006297,
+    "high": 0.026071430448642297
+  },
+  "diagnosis": "4 sequence ids were missing. Each lost hook exited 1 with `rizz: fatal: ENOTEMPTY: directory not empty, rmdir '<RIZZ_HOME>/spool/lock'`. None of them were in spool/drops, none logged a lock timeout, and no torn spool line or leftover pending file accounts for them. Root cause: `withLock` (`packages/brain/src/observe/io.ts`) removes the lock directory in two places that can overlap. The holder removes it in the `finally` at lines 177–178. A waiter that decides the lock is stale also removes it at lines 184–186. `lockIsStale` (lines 153–162) returns true when the pid file is already gone and `stat` throws (line 161), or when the directory is older than `ORPHAN_LOCK_MS` (1000ms, line 5). The waiter `rm` sits in the `catch` and is not wrapped, so `ENOTEMPTY` from `rmdir` rejects the promise instead of returning `{ ok: false }`. `appendSpoolEvent` (`packages/brain/src/observe/fold.ts` lines 298–303) writes `spool/pending` only when `withLock` returns a failed result. A thrown `ENOTEMPTY` skips that fallback. `receiveHook` does not catch it. `packages/cli/src/index.ts` lines 1070–1076 print `rizz: fatal:` and exit 1. The event is never spooled. Widths of 30 stayed under the 1000ms stale threshold and lost nothing. Widths of 100 ran past 2s and lost events. 15 other events in the 100-wide rounds were missing from the spool file but present in the journal: those took the returned-error path, landed in spool/pending, and fold applied them. Lock-timeout stderr lines: 0. Drop stderr lines: 0. Torn spool lines: 0. Pending files left after fold: 0."
+}

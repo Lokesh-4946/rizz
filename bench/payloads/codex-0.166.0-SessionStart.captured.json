@@ -1,0 +1,16 @@
+{
+  "evidence": "captured",
+  "host": "codex",
+  "hostVersion": "0.166.0",
+  "event": "SessionStart",
+  "note": "Live stdin from Codex CLI 0.166.0 `codex exec --dangerously-bypass-hook-trust` with no API credentials. The model call returned HTTP 401. The hook command was `tee` of stdin; Codex logged the hook as Failed because tee also wrote the payload to stdout. These bytes are the hook input. Stop, PreCompact, and PostToolUse did not fire.",
+  "payload": {
+    "session_id": "01a18d48-1e6f-7fa0-a6f5-0252836adfe9",
+    "transcript_path": "/home/ubuntu/rizz-codex-home/.codex/sessions/2026/10/30/rollout-2026-10-30T14-47-56-01a18d48-1e6f-7fa0-a6f5-0252836adfe9.jsonl",
+    "cwd": "/workspace",
+    "hook_event_name": "SessionStart",
+    "model": "gpt-6.1-sol",
+    "permission_mode": "bypassPermissions",
+    "source": "startup"
+  }
+}
